@@ -4,6 +4,8 @@
 
 Execution checklist for **M0 - Foundations**.
 
+M0 is complete as of 2026-03-16.
+
 Decisions confirmed:
 
 - include Rust daemon bootstrap in M0
@@ -45,11 +47,11 @@ Exit criteria:
 
 ## 3.1 Workspace + package bootstrapping
 
-- [ ] Add workspace root config (`package.json`, `pnpm-workspace.yaml`, `tsconfig` baseline).
-- [ ] Add `apps/server` with strict TypeScript setup and a minimal health endpoint.
-- [ ] Add `packages/domain` with strict TypeScript and exported core model types.
-- [ ] Add `apps/daemon` Rust crate with minimal executable and crate-level tests.
-- [ ] Add root scripts:
+- [x] Add workspace root config (`package.json`, `pnpm-workspace.yaml`, `tsconfig` baseline).
+- [x] Add `apps/server` with strict TypeScript setup and a minimal health endpoint.
+- [x] Add `packages/domain` with strict TypeScript and exported core model types.
+- [x] Add `apps/daemon` Rust crate with minimal executable and crate-level tests.
+- [x] Add root scripts:
   - `pnpm lint`
   - `pnpm build`
   - `pnpm test`
@@ -57,7 +59,7 @@ Exit criteria:
 
 ## 3.2 Domain model + schema baseline
 
-- [ ] Define core entities in `packages/domain`:
+- [x] Define core entities in `packages/domain`:
   - User
   - Machine
   - DaemonInstance
@@ -68,22 +70,22 @@ Exit criteria:
   - SessionAttachment
   - ControllerLease
   - Schedule
-- [ ] Add minimal domain contract tests:
+- [x] Add minimal domain contract tests:
   - serialization/shape invariants
   - enum/status validation for key entities
-- [ ] Add Prisma baseline schema in `prisma/schema.prisma` for the same core entities.
-- [ ] Ensure naming aligns with docs (`session`, `provider run`, `attachment`, `capability`, `control op`).
+- [x] Add Prisma baseline schema in `prisma/schema.prisma` for the same core entities.
+- [x] Ensure naming aligns with docs (`session`, `provider run`, `attachment`, `capability`, `control op`).
 
 ## 3.3 CI baseline (GitHub Actions)
 
-- [ ] Create `.github/workflows/ci.yml` with jobs for:
+- [x] Create `.github/workflows/ci.yml` with jobs for:
   - install dependencies
   - lint
   - build
   - test
   - Rust checks for daemon crate (`cargo fmt --check`, `cargo clippy`, `cargo test`)
-- [ ] Cache pnpm store and cargo artifacts for reasonable CI time.
-- [ ] Trigger on pull requests and pushes to main branches.
+- [x] Cache pnpm store and cargo artifacts for reasonable CI time.
+- [x] Trigger on pull requests and pushes to main branches.
 
 ## 3.4 Verification commands (M0 gate)
 
@@ -106,17 +108,17 @@ cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features
 
 ## 3.5 Documentation updates required in same PR set
 
-- [ ] Update `docs/CONTRIBUTING.md` with exact baseline commands.
-- [ ] Update `docs/ROADMAP.md` M0 notes if scope materially changes.
-- [ ] Update `agents/AGENTS.md` **Current Status** once code scaffolding lands.
+- [x] Update `docs/CONTRIBUTING.md` with exact baseline commands.
+- [x] Update `docs/ROADMAP.md` M0 notes if scope materially changes.
+- [x] Update `agents/AGENTS.md` **Current Status** once code scaffolding lands.
 
 ## 4. Definition of Done for M0
 
 M0 is complete when all are true:
 
-- [ ] Option A structure exists and builds.
-- [ ] Rust daemon crate exists and passes baseline tests.
-- [ ] Shared domain package + minimal contract tests pass.
-- [ ] Prisma core schema exists and is coherent with domain docs.
-- [ ] GitHub Actions CI passes lint/build/test checks for baseline packages.
-- [ ] Documentation is updated and consistent.
+- [x] Option A structure exists and builds.
+- [x] Rust daemon crate exists and passes baseline tests.
+- [x] Shared domain package + minimal contract tests pass.
+- [x] Prisma core schema exists and is coherent with domain docs.
+- [x] GitHub Actions CI passes lint/build/test checks for baseline packages.
+- [x] Documentation is updated and consistent.

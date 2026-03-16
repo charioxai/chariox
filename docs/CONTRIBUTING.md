@@ -68,6 +68,25 @@ For client implementations across web/mobile/desktop/CLI:
 - compare against xterm.js reference expectations where applicable
 - preserve control-sequence fidelity and resize semantics
 
+## 3.4 Baseline Commands
+
+Use these commands from the repository root for the current M0 baseline:
+
+```bash
+pnpm install
+pnpm lint
+pnpm build
+pnpm test
+cargo test --manifest-path apps/daemon/Cargo.toml
+```
+
+Recommended Rust quality checks:
+
+```bash
+cargo fmt --manifest-path apps/daemon/Cargo.toml --check
+cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
+```
+
 ## 4. Pull Request Expectations
 
 - Explain **why** and **what** changed.

@@ -24,6 +24,11 @@ Planning roadmap derived from `docs/spec-v1.md`.
 
 ## M0 - Foundations
 
+Status:
+
+- completed on 2026-03-16
+- delivered workspace scaffolding, baseline CI, shared domain types, Prisma schema baseline, and Rust daemon/server bootstrap packages
+
 Outcomes:
 
 - monorepo/workspace setup and baseline CI

@@ -714,8 +714,8 @@ Arroba should:
 
 ## Current Status
 
-Architecture direction has been discussed and M0 implementation has started.
-Baseline workspace scaffolding now exists (root pnpm workspace config, strict TypeScript server/domain packages, and an initial Rust daemon crate bootstrap).
+M0 foundations are complete.
+The repository now includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, a Rust daemon crate bootstrap, and baseline CI coverage for TypeScript and Rust verification.
 
 Related architecture docs:
 - docs/spec-v1.md

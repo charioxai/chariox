@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+enum DaemonStatus {
+  online
+  offline
+}
+
+enum SessionStatus {
+  created
+  active
+  parked
+  ended
+}
+
+enum ProviderRunState {
+  starting
+  running
+  parked
+  ended
+}
+
+enum ClientCapabilityLevel {
+  full_terminal
+  interactive_structured
+  message_transport
+  automation_only
+}
+
+model User {
+  id         String     @id @default(cuid())
+  machines   Machine[]
+  workspaces Workspace[]
+}
+
+model Machine {
+  id             String           @id @default(cuid())
+  userId         String
+  hostname       String
+  user           User             @relation(fields: [userId], references: [id])
+  daemons        DaemonInstance[]
+  hostedSessions Session[]        @relation("SessionHostMachine")
+}
+
+model DaemonInstance {
+  id             String           @id @default(cuid())
+  machineId      String
+  osUser         String
+  version        String
+  status         DaemonStatus
+  machine        Machine          @relation(fields: [machineId], references: [id])
+  hostedSessions Session[]        @relation("SessionHostDaemon")
+}
+
+model Workspace {
+  id        String     @id @default(cuid())
+  userId    String
+  name      String
+  rootPath  String
+  user      User       @relation(fields: [userId], references: [id])
+  worktrees Worktree[]
+  sessions  Session[]
+}
+
+model Worktree {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  gitBranch    String
+  absolutePath String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+  sessions     Session[]
+}
+
+model Session {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  worktreeId        String
+  hostMachineId     String
+  hostDaemonId      String
+  status            SessionStatus
+  activeProviderRunId String?           @unique
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id])
+  worktree          Worktree            @relation(fields: [worktreeId], references: [id])
+  hostMachine       Machine             @relation("SessionHostMachine", fields: [hostMachineId], references: [id])
+  hostDaemon        DaemonInstance      @relation("SessionHostDaemon", fields: [hostDaemonId], references: [id])
+  activeProviderRun ProviderRun?        @relation("ActiveProviderRun", fields: [activeProviderRunId], references: [id])
+  providerRuns      ProviderRun[]       @relation("SessionProviderRuns")
+  attachments       SessionAttachment[]
+  controllerLeases  ControllerLease[]
+  schedules         Schedule[]
+}
+
+model ProviderRun {
+  id               String      @id @default(cuid())
+  sessionId        String
+  provider         String
+  accountProfile   String
+  model            String
+  state            ProviderRunState
+  session          Session     @relation("SessionProviderRuns", fields: [sessionId], references: [id])
+  activeForSession Session?    @relation("ActiveProviderRun")
+}
+
+model SessionAttachment {
+  id              String                @id @default(cuid())
+  sessionId       String
+  clientId        String
+  capabilityLevel ClientCapabilityLevel
+  isObserver      Boolean               @default(true)
+  joinedAt        DateTime              @default(now())
+  session         Session               @relation(fields: [sessionId], references: [id])
+  controllerLeases ControllerLease[]
+}
+
+model ControllerLease {
+  id           String            @id @default(cuid())
+  sessionId    String
+  attachmentId String
+  grantedAt    DateTime          @default(now())
+  expiresAt    DateTime?
+  session      Session           @relation(fields: [sessionId], references: [id])
+  attachment   SessionAttachment @relation(fields: [attachmentId], references: [id])
+}
+
+model Schedule {
+  id        String   @id @default(cuid())
+  sessionId String
+  cron      String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  session   Session  @relation(fields: [sessionId], references: [id])
+}

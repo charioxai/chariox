@@ -35,3 +35,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Completed workspace/package bootstrapping (`M0-001`, `M0-002`, `M0-004`, `M0-005`).
 - Added root workspace scripts for `build`, `lint`, `test`, and daemon test invocation.
 
+### M0 completion update
+
+- Expanded `packages/domain` to cover the full M0 entity baseline and added contract tests.
+- Added `prisma/schema.prisma` for the initial persistence model.
+- Added `.github/workflows/ci.yml` for pnpm and Rust verification.
+- Updated `README.md`, `docs/CONTRIBUTING.md`, `docs/ROADMAP.md`, and `docs/M0_IMPLEMENTATION_CHECKLIST.md`.
+- M0 verification now consists of `pnpm lint`, `pnpm build`, `pnpm test`, and `cargo test --manifest-path apps/daemon/Cargo.toml`.
+- M0 is considered complete once those commands pass on the repository state produced in this update.
