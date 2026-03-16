@@ -82,3 +82,17 @@ For client implementations across web/mobile/desktop/CLI:
 - Message and control contracts: `docs/PROTOCOL.md`
 - Delivery planning: `docs/ROADMAP.md`
 - Contributor style/testing workflow: `docs/CONTRIBUTING.md`
+
+## 6. Lightweight Task Tracking (No PM Tool Required)
+
+Use the repo-native tracker under `docs/ops/`:
+
+- task board: `docs/ops/TASKS.md`
+- chronological handoff notes: `docs/ops/PROGRESS_LOG.md`
+
+Workflow:
+
+- create tasks with stable IDs (example: `M0-001`)
+- move tasks across `Backlog`, `In Progress`, `Done`
+- when marking done, record a short note + commit hash
+- append significant milestones/decisions in `PROGRESS_LOG.md` for future contributors/agents

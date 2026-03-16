@@ -1,3 +1,13 @@
-happy-main/
-.DS_Store
-happy-main/
+# Node
+node_modules/
+.pnpm-store/
+
+# Build artifacts
+dist/
+coverage/
+
+# Rust
+**/target/
+
+# Logs
+*.log
