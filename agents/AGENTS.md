@@ -714,8 +714,8 @@ Arroba should:
 
 ## Current Status
 
-Architecture direction has been discussed.
-No code has been implemented yet.
+Architecture direction has been discussed and M0 implementation has started.
+Baseline workspace scaffolding now exists (root pnpm workspace config, strict TypeScript server/domain packages, and an initial Rust daemon crate bootstrap).
 
 Related architecture docs:
 - docs/spec-v1.md
