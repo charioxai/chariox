@@ -36,6 +36,79 @@ This document summarizes the current architectural decisions and constraints so 
    - Arroba should not attempt to manage or control provider internal state.
    - It only tracks enough context to support provider switching when requested.
 
+## Daemon-First, API-First, Multi-Client Rule
+
+Arroba is daemon-first, API-first, and multi-client by design.
+
+Required implications:
+
+- CLI is only one client surface; it is not the architecture center.
+- Core logic must live below the CLI in daemon services and shared protocol contracts.
+- Terminal I/O must remain separated from structured control/state operations.
+- New features must be implemented so they can be reused by multiple clients (web app, native app, VS Code extension, and future clients) without re-implementing business logic in each client.
+
+Design guardrails:
+
+- capability and control behaviors belong to daemon + protocol layers
+- client layers should focus on rendering, interaction, and transport adaptation
+- avoid feature implementations that are CLI-only unless explicitly marked as temporary
+
+## Multi-Surface, Multi-Transport Client Architecture Constraints
+
+Arroba remote terminals MUST be designed as multi-surface, multi-transport clients. Contributors MUST NOT assume a single web app or a single local CLI as the only valid client model.
+
+### Normative Rules
+
+1. Remote terminals are not tied to one UI surface
+- A remote terminal MAY be implemented as a web terminal, native app terminal, or a CLI client running inside another terminal.
+- The architecture MUST support a remote terminal CLI as a first-class client, both when run on a remote machine and when used locally.
+
+2. Third-party messaging apps are supported through adapters, not by pretending they are full terminals
+- Messaging apps such as Slack, Telegram, Discord, WhatsApp, and similar channels MUST be modeled as constrained transport/adapter surfaces.
+- They MAY support session control, prompt submission, approvals, notifications, summaries, and status queries.
+- They MUST NOT be assumed to support full PTY/terminal semantics unless explicitly validated.
+
+3. Separate terminal streaming from structured control/state
+- Full terminal clients MUST use a PTY/terminal streaming interface.
+- Constrained clients and messaging integrations MUST use a structured control/state API.
+- Non-terminal clients MUST NOT be forced to parse terminal text in order to integrate with Arroba.
+
+4. Define client capability levels
+- New features MUST specify which client capability level they require.
+- Capability levels MUST include at least:
+  - `full_terminal`
+  - `interactive_structured`
+  - `message_transport`
+  - `automation_only`
+
+5. Remote CLI clients are first-class citizens
+- A CLI that attaches remotely to Arroba sessions MUST be treated as a first-class full terminal client, not as a debug tool or special case.
+- The same session attachment model MUST support:
+  - local CLI
+  - remote CLI
+  - web terminal
+  - future native terminal apps
+
+6. Core runtime must remain below all clients
+- The daemon MUST own sessions, PTYs, provider runs, jobs, scheduling, worktrees, and runtime state.
+- All remote terminal implementations, including messaging adapters and remote CLI clients, MUST build on the same daemon/core APIs.
+
+7. New features must be reusable across client surfaces
+- When adding a feature, contributors MUST classify whether it belongs in:
+  - terminal streaming layer
+  - structured control/state layer
+  - adapter layer
+- Contributors MUST NOT implement features in a way that only works in the web app or only works in the local CLI.
+
+### Protocol-First, Capability-Based Model
+
+Arroba MUST be treated as protocol-first and capability-based:
+
+- some clients are true terminals
+- some clients are structured interactive clients
+- some clients are message-based adapters
+- all integrations MUST use stable core interfaces rather than UI-specific logic
+
 ## High-Level System Overview
 
 Arroba has three primary runtime components:
@@ -148,7 +221,7 @@ Switching providers does not immediately destroy the previous provider run.
 Current intended behavior:
 1. User requests a provider switch
 2. Arroba asks whether context should be transferred
-3. If yes, Arroba uses its tracked context to initialize the new provider run
+3. If yes, Arroba uses session memory (short-term + long-term) to initialize the new provider run
 4. Previous provider run becomes parked
 5. If user switches back before truly continuing with the new provider, the parked provider run can be resumed
 6. Otherwise the old run may be terminated later, but the design preference is to be minimally intrusive and let the user decide when possible
@@ -164,8 +237,8 @@ When switching providers:
 1. User triggers switch via command palette/hotkey
 2. Arroba asks whether context should be transferred
 3. If yes, Arroba uses:
-   - recent transcript
-   - context summary/checkpoint if available
+   - short-term memory (recent transcript/task state)
+   - long-term memory (durable user/project guidance)
    - current workspace state
 4. New provider process starts
 5. Old provider process becomes parked
@@ -187,6 +260,8 @@ Users must be able to:
 Arroba only really needs to care about:
 1. context compaction / reset
 2. permission requests that need to be relayed to attached terminals
+3. daemon-initiated memory update inquiries to refresh Arroba memory after provider compaction/reset
+4. user-triggered Arroba compaction flow (`<reserved character for arroba commands>compact`) and compaction summary retrieval
 
 Current design preference:
 - be permission-agnostic
@@ -203,6 +278,9 @@ Examples:
 - Local CLI terminal 2
 - Web terminal
 - Another remote terminal
+
+Arroba command example:
+- `<reserved character for arroba commands>compact` triggers daemon-managed context compaction
 
 Attachment modes:
 - observer
@@ -357,21 +435,28 @@ The daemon returns:
 
 This acts as a terminal-friendly equivalent of an IDE file explorer.
 
-## Context Tracking
+## Memory Management and Context Transfer
 
-Arroba tracks short-term context only to support provider transfer.
+Arroba uses a dual memory model to support provider transfer and reduce repeated user instructions.
+
+Memory scopes:
+- short-term memory for immediate conversational/task continuity
+- long-term memory for durable user/project guidance
 
 Tracked items may include:
-- recent transcript
+- recent transcript and task state
 - context summaries/checkpoints
+- persistent user-approved notes and constraints
 - workspace state
 
-Context tracking resets when:
+Short-term memory resets when:
 - provider compacts context
 - user resets conversation
 - provider-native session is effectively restarted
 
-Arroba does not need to preserve provider-native hidden state.
+Long-term memory remains until user edits or removes it.
+
+Arroba memory augments provider workflows but does not require or replace provider-native hidden state.
 
 ## Data Storage
 
@@ -555,11 +640,19 @@ One session has one active provider run at a time.
 
 1. User selects switch provider
 2. Arroba asks whether to transfer context
-3. If yes, Arroba prepares tracked context for transfer
+3. If yes, Arroba may first request provider memory-update signals, then prepares a transfer package from short-term + long-term memory
 4. New provider run is started
 5. Existing provider run becomes parked
 6. If user returns quickly, parked run may resume
 7. If not, old run may later terminate or remain parked depending on implementation/user choice
+
+## Arroba-Driven Compaction Flow
+
+1. User triggers `<reserved character for arroba commands>compact`
+2. Daemon requests provider compaction summary via `request_compaction_summary`
+3. Daemon stores summary as memory/artifact input
+4. Daemon launches fresh provider run with empty context window
+5. Daemon warms new run with compaction summary + selected Arroba memory/workspace state
 
 ## Permission Flow
 
@@ -580,10 +673,10 @@ Monorepo:
 Frontend:
 - React
 - TypeScript
-- xterm.js
+- xterm.js (reference terminal behavior baseline for web/remote clients)
 
 Daemon:
-- Rust
+- Rust (required daemon implementation baseline for v1)
 
 Backend:
 - Fastify
@@ -600,6 +693,15 @@ Local client communication:
 - Unix socket on Unix-like systems
 - named pipe on Windows
 
+Cross-platform terminal consistency:
+- platform-native clients are allowed
+- terminal behavior should conform to shared protocol/conformance expectations so remote and local experiences remain consistent
+- iOS: `WKWebView` for xterm.js-hosted terminal surfaces
+- Android: `android.webkit.WebView` for xterm.js-hosted terminal surfaces
+- macOS: `WKWebView` host for xterm.js terminal surfaces
+- Windows: WebView2 host for xterm.js terminal surfaces
+- Linux desktop: embedded Chromium/WebKit host for xterm.js terminal surfaces
+
 ## Development Philosophy
 
 Arroba should:
@@ -615,7 +717,9 @@ Arroba should:
 Architecture direction has been discussed.
 No code has been implemented yet.
 
-Recommended next documents after this:
-- ARCHITECTURE.md
-- PROTOCOL.md
-- ROADMAP.md
+Related architecture docs:
+- docs/spec-v1.md
+- docs/ARCHITECTURE.md
+- docs/PROTOCOL.md
+- docs/ROADMAP.md
+- docs/CONTRIBUTING.md

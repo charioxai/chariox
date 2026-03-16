@@ -1,0 +1,357 @@
+# Arroba v1 Architecture
+
+## Status
+
+Draft architecture aligned with `docs/spec-v1.md`.
+
+## 1. Purpose
+
+This document translates the v1 specification into an implementation-oriented architecture view:
+
+- component boundaries
+- runtime ownership
+- trust and security boundaries
+- state ownership and storage boundaries
+- critical runtime flows
+
+## 2. System Topology
+
+Arroba v1 is composed of four runtime components:
+
+- Client
+- Machine
+- Daemon
+- Server
+
+High-level topology:
+
+`Client <-> Daemon <-> Provider`
+
+Remote topology:
+
+`Remote Client <-> Server (relay) <-> Daemon <-> Provider`
+
+A user may operate multiple clients and multiple machines in the same account.
+
+## 2.1 Daemon-First, API-First, Multi-Client Design Rule
+
+Arroba v1 architecture is explicitly daemon-first, API-first, and multi-client.
+
+Normative rules:
+
+- CLI is one client implementation, not the primary owner of business logic.
+- Core session/capability/control behavior must be implemented in daemon and protocol layers.
+- Terminal stream handling (unstructured I/O) must remain separate from structured control/state APIs.
+- New features must be introduced in reusable daemon/protocol surfaces so they can be consumed by web, native, CLI, and extension clients (for example VS Code) with minimal duplication.
+
+Implementation consequences:
+
+- client code should be thin and focused on UI, input, and transport binding
+- daemon services should expose stable operations that any client can invoke
+- protocol/docs should be updated when reusable behavior contracts change
+
+## 2.2 Multi-Surface, Multi-Transport Client Architecture Constraints
+
+Arroba remote terminals MUST be architected as multi-surface, multi-transport clients. The architecture MUST NOT assume a single web app or a single local CLI surface.
+
+### Normative Rules
+
+1. Remote terminals are not tied to one UI surface
+- A remote terminal MAY be implemented as web terminal, native app terminal, or CLI client attached through another terminal.
+- Remote terminal CLI clients MUST be supported as first-class clients, both remotely and locally.
+
+2. Third-party messaging apps are adapter surfaces
+- Slack, Telegram, Discord, WhatsApp, and similar messaging channels MUST be modeled as constrained adapters/transports.
+- These surfaces MAY support session control, prompt submission, approvals, notifications, summaries, and status queries.
+- These surfaces MUST NOT be treated as full PTY clients unless verified to satisfy PTY semantics.
+
+3. Terminal streaming vs structured control/state separation
+- Full terminal clients MUST integrate through PTY streaming interfaces.
+- Constrained clients and messaging adapters MUST integrate through structured control/state APIs.
+- Non-terminal clients MUST NOT parse terminal text as their primary integration contract.
+
+4. Client capability levels
+- Every new feature MUST declare the minimum required client capability level.
+- Capability levels MUST include:
+  - `full_terminal`
+  - `interactive_structured`
+  - `message_transport`
+  - `automation_only`
+
+5. Remote CLI is first-class
+- Remote CLI attachments MUST be treated as first-class full terminal clients.
+- Session attachment model MUST consistently support local CLI, remote CLI, web terminals, and native terminal apps.
+
+6. Core runtime below all clients
+- Daemon/core services MUST own sessions, PTYs, provider runs, jobs, scheduling, worktrees, and runtime state.
+- All client surfaces (terminal, structured, messaging, automation) MUST consume the same core APIs/protocols.
+
+7. Reusable feature implementation
+- Features MUST be implemented in reusable core layers (terminal streaming, structured control/state, adapter layer) as appropriate.
+- Feature delivery MUST NOT be coupled to one UI surface.
+
+### Protocol-First, Capability-Based Interpretation
+
+Arroba is protocol-first and capability-based:
+
+- some clients are true terminals
+- some clients are structured interactive clients
+- some clients are message-based adapters
+- all clients MUST integrate through stable core interfaces, not UI-specific logic
+
+## 3. Component Responsibilities
+
+### 3.1 Client
+
+Client examples include local terminal clients, web terminals, and third-party messaging adapters (Telegram/Discord/Slack/WhatsApp).
+
+Responsibilities:
+
+- render terminal stream from active provider run
+- capture terminal input and send it to daemon
+- render overlays/palette for Arroba capabilities
+- upload files and display artifacts
+- expose controller/observer state and session metadata
+
+### 3.2 Machine
+
+A machine is a host capable of running agent workloads.
+
+Responsibilities:
+
+- provide execution environment for daemon, providers, and artifacts
+- host session worktree and runtime files
+- participate in machine registration and reachability for remote use
+
+Constraints:
+
+- one daemon per OS user account on a machine
+- sessions can have multiple eligible machines, but only one active execution host at a time
+
+### 3.3 Daemon
+
+The daemon is the runtime authority for live session state.
+
+Responsibilities:
+
+- session lifecycle and attachment lifecycle
+- PTY lifecycle for provider runs
+- provider switching and parked-run management
+- capability execution (shell/tree/view/edit/screenshot/git/transfer/compact)
+- memory management (short-term + long-term)
+- context transfer package generation
+- scheduler execution
+
+### 3.4 Server
+
+The server is a lightweight control and relay layer.
+
+Responsibilities:
+
+- auth and identity
+- machine/session discovery
+- websocket relay
+- presence and controller lease metadata
+- schedule metadata and operational metadata
+
+Non-responsibility:
+
+- should not require plaintext access to user-generated session content
+
+## 4. Runtime Ownership and State Authority
+
+### 4.1 Authority Model
+
+- **Daemon**: source of truth for active runtime state
+- **Server**: source of truth for shared operational metadata
+- **Provider process**: source of truth for provider-native behavior
+
+### 4.2 Session Ownership
+
+A session is bound to:
+
+- one workspace
+- one worktree
+- one active provider run
+- an eligible set of machines with one active host at a time
+
+A session may include:
+
+- many client attachments
+- parked provider runs
+- schedules
+- artifacts
+
+## 5. Interaction Lanes
+
+### 5.1 Terminal Lane
+
+- Carries raw PTY output and user keystrokes.
+- Must preserve provider-native semantics.
+- Must not be transformed into structured command traffic by default.
+
+### 5.2 Capability Lane
+
+- Carries daemon capability requests/results.
+- Used for shell, file ops, screenshot, git/worktree, schedules, transfers.
+
+### 5.3 Control Lane
+
+Structured daemon-to-provider adapter control boundary.
+
+Canonical control operations in v1:
+
+- `attach_file`
+- `request_memory_update`
+- `request_compaction_summary`
+
+`request_memory_update` and `request_compaction_summary` are daemon-owned and distinct from normal user prompt/response traffic.
+
+## 6. Security and Trust Boundaries
+
+### 6.1 E2E Encryption Scope
+
+User-generated content in transit must use session-scoped end-to-end encryption when crossing remote transport boundaries, including:
+
+- terminal-entered prompts/content
+- capability payloads (edit instructions, prompt templates)
+- uploaded file payloads
+- memory transfer package payloads
+- compaction summary payloads
+
+### 6.2 Relay Trust Model
+
+Server acts as relay/registry and should not require content plaintext to perform core duties.
+
+### 6.3 Session Key Isolation
+
+Cryptographic context is session-scoped. A key compromise in one session must not imply compromise of other sessions.
+
+## 7. Memory Architecture
+
+## 7.1 Dual Memory Model
+
+Arroba memory has two scopes:
+
+- short-term memory: recent transcript/task continuity
+- long-term memory: durable user/project guidance
+
+## 7.2 Memory Update Mechanism
+
+Daemon may call `request_memory_update` to refresh memory-relevant signals after provider compaction/reset or before transfer.
+Daemon may call `request_compaction_summary` during user-triggered Arroba compaction before starting a fresh warmed run.
+
+Fallback:
+
+- if unsupported, daemon continues with Arroba-managed memory sources
+- memory refresh failure must not terminate provider run
+
+## 7.3 Context Transfer Package
+
+Transfer package composes:
+
+- selected short-term snapshot
+- relevant long-term entries
+- workspace state
+
+Requirements:
+
+- deterministic and auditable composition
+- user control over long-term entry inclusion
+- encrypted in transit
+
+### 7.4 Arroba-Driven Context Compaction
+
+Arroba provides a user-triggered compaction command: `<reserved character for arroba commands>compact`.
+
+Compaction sequence:
+
+1. daemon requests compaction summary via `request_compaction_summary`
+2. daemon stores summary as a session artifact/memory input
+3. daemon launches fresh provider run with empty context window
+4. daemon warms new run with compaction summary + selected Arroba memory/workspace context
+
+This flow is daemon-orchestrated and separate from ordinary user prompt traffic.
+
+## 8. Failure and Degradation
+
+Mandatory behavior:
+
+- adapter lacking `attach_file`, `request_memory_update`, and/or `request_compaction_summary` does not break core PTY usage
+- control operation failures are isolated and user-visible
+- remote client disconnect does not terminate session by default
+
+## 9. Deployment and Evolution Notes
+
+v1 is local-first and single-active-host-per-session. Architecture should remain forward-compatible with:
+
+- richer multi-machine scheduling/migration
+- expanded provider adapter capabilities
+- optional content persistence policies
+
+## 10. Implementation Choices (v1 baseline)
+
+Contributor workflow conventions (coding style, testing, PR hygiene) are documented in `docs/CONTRIBUTING.md`.
+
+This section captures current implementation choices for v1 so engineering work has a stable baseline. These are implementation defaults, not product invariants, and may evolve with explicit architecture updates.
+
+### 10.1 Monorepo and Package Management
+
+- monorepo layout
+- pnpm workspaces
+
+### 10.2 Client Stack
+
+- React
+- TypeScript
+- xterm.js for terminal rendering
+
+### 10.3 Daemon Stack
+
+- Rust (required for v1 daemon implementation baseline)
+
+### 10.4 Backend Stack
+
+- Fastify
+
+### 10.5 Data Layer
+
+- Prisma
+- SQLite for early/local phases
+- Postgres as scale-up target
+
+### 10.6 Transport and Local IPC
+
+- WebSockets for remote relay transport
+- Unix socket on Unix-like systems for local client-daemon communication
+- named pipe on Windows for local client-daemon communication
+
+### 10.7 Governance
+
+Implementation choices should be revised when they materially change runtime architecture, protocol assumptions, security posture, or operational behavior.
+
+### 10.8 Cross-Platform Terminal Consistency Strategy
+
+Arroba should use a shared terminal behavior contract while allowing platform-native implementation languages.
+
+Approach:
+
+- define canonical terminal behavior in protocol/conformance terms (PTY byte stream handling, resize semantics, key mapping expectations, control-sequence fidelity)
+- use xterm.js as the web/remote reference implementation and golden-behavior baseline
+- keep overlay and command-palette semantics consistent across clients, even when UI widgets are platform-native
+
+Platform framework options for xterm.js-consistent rendering:
+
+- Web: browser-hosted xterm.js
+- iOS: `WKWebView` hosting xterm.js plus native shell for platform integration
+- Android: `android.webkit.WebView` hosting xterm.js plus native shell for platform integration
+- macOS desktop: `WKWebView` (AppKit/SwiftUI host) with xterm.js
+- Windows desktop: WebView2 (`Microsoft.Web.WebView2`) with xterm.js
+- Linux desktop: embedded Chromium/WebKit host (for example Electron or GTK WebKit) with xterm.js
+- CLI/TUI clients: native terminal stack is allowed, but must pass the same conformance profile for input/output/resize semantics
+
+Result:
+
+- consistent remote terminal behavior across platforms
+- freedom to use standard language/tooling per target platform
+
