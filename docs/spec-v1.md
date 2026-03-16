@@ -45,9 +45,10 @@ Arroba is a wrapper, not a replacement for provider CLIs. Provider-native behavi
 
 ## 5. Runtime Components
 
-Arroba v1 has three runtime components:
+Arroba v1 has four runtime components:
 
 - Client
+- Machine
 - Daemon
 - Server
 
@@ -60,6 +61,7 @@ Examples:
 - local CLI client
 - web terminal client
 - future desktop or mobile clients
+- third-party messaging clients (for example Telegram, Discord, Slack, or WhatsApp adapters)
 
 Responsibilities:
 
@@ -70,7 +72,17 @@ Responsibilities:
 - upload artifacts for transfer when requested
 - show controller and observer state
 
-### 5.2 Daemon
+### 5.2 Machine
+
+A machine is a host where Arroba can run agent workloads through its daemon.
+
+Properties:
+
+- each machine has one daemon per OS user account
+- a user may register and use multiple machines for the same Arroba account
+- machines are the execution hosts for session workspaces, provider processes, and artifacts
+
+### 5.3 Daemon
 
 There is one daemon per machine OS user account.
 
@@ -87,7 +99,7 @@ The daemon is responsible for:
 
 The daemon is the source of truth for live runtime state.
 
-### 5.3 Server
+### 5.4 Server
 
 The server is intentionally lightweight.
 
@@ -104,6 +116,11 @@ Responsibilities:
 
 The server should not depend on interpreting user content.
 
+Security boundary requirement:
+
+- the server relays encrypted payloads and should not require plaintext access to user-generated content
+- end-to-end encryption keys are session-scoped so each session has an isolated cryptographic context
+
 ## 6. Interaction Lanes
 
 Arroba v1 has three interaction lanes between clients, daemon, and providers.
@@ -118,6 +135,10 @@ Properties:
 - transports provider stdout, stderr, and terminal control sequences
 - transports user keystrokes as terminal input
 - is the default interaction path for ordinary user work
+
+Transmission requirement:
+
+- user-generated information sent through this lane (for example prompts and terminal-entered content) must be protected with session-scoped end-to-end encryption whenever it traverses remote transport
 
 Arroba must not require terminal traffic to be parsed into structured commands.
 
@@ -137,6 +158,10 @@ The capability lane is used for:
 - file view
 - file edit flows
 - shell command execution
+
+Transmission requirement:
+
+- user-generated capability payloads (for example uploaded files, prompt templates, and edit instructions) must be transmitted with session-scoped end-to-end encryption when crossing client, server, and daemon boundaries
 
 ### 6.3 Control Lane
 
@@ -165,14 +190,18 @@ A session is bound to:
 - one workspace
 - one worktree
 - one active provider run at a time
+- a set of eligible agent machines, with one active execution host at a time
 
 A session may have:
 
 - multiple attached clients
 - multiple parked provider runs
+- multiple eligible agent machine options (local or remote)
 - scheduled jobs
 
 Sessions do not move across workspaces in v1.
+
+A session can be reassigned between its eligible agent machines over time, but only one machine hosts the active provider run at any moment.
 
 ### 7.2 Provider Run
 
@@ -411,6 +440,8 @@ The server may store:
 ### 12.2 Session Content
 
 By default, prompts and model outputs should be relayed rather than persisted by the server.
+
+All user-generated session content in transit (including prompts, model-visible instructions, uploaded files, and equivalent payloads) must use per-session end-to-end encryption so intermediary relay infrastructure does not require plaintext access.
 
 If content persistence is added later, it should be treated as a separate design decision.
 
