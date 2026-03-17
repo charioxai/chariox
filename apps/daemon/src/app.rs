@@ -79,7 +79,15 @@ impl DaemonApp {
     }
 
     pub fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
-        self.attachments.detach(&mut self.sessions, attachment_id)
+        let (attachment, effect) = self
+            .attachments
+            .detach_with_effect(&mut self.sessions, attachment_id)?;
+
+        if effect.removed_active_prompt {
+            let _ = self.advance_next_queued_prompt(attachment.session_id())?;
+        }
+
+        Ok(attachment)
     }
 
     pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
@@ -209,28 +217,8 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<PromptCompletion, DaemonError> {
-        let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
         let (_session, completed) = self.sessions.complete_active_prompt(session_id)?;
-        let next_candidate = self.sessions.peek_next_queued_prompt(session_id)?;
-        let started_next = if let Some(next) = next_candidate {
-            self.send_provider_input(
-                session_id,
-                &provider_run_id,
-                next.source_attachment_id(),
-                next.prompt().as_bytes(),
-            )?;
-
-            self.sessions.activate_next_queued_prompt(session_id)?.1
-        } else {
-            None
-        };
+        let started_next = self.advance_next_queued_prompt(session_id)?;
 
         Ok(PromptCompletion {
             completed,
@@ -428,6 +416,64 @@ impl DaemonApp {
             .into_iter()
             .filter(|attachment_id| attachment_id != source_attachment_id)
             .collect()
+    }
+
+    fn advance_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let provider_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+
+        loop {
+            let (_session, next_candidate) = self.sessions.pop_next_queued_prompt(session_id)?;
+            let Some(next) = next_candidate else {
+                return Ok(None);
+            };
+
+            if let Err(error) =
+                self.ensure_attachment_in_session(session_id, next.source_attachment_id())
+            {
+                self.terminal.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                        next.id(),
+                        error
+                    ),
+                );
+                continue;
+            }
+
+            if let Err(error) = self.send_provider_input(
+                session_id,
+                &provider_run_id,
+                next.source_attachment_id(),
+                next.prompt().as_bytes(),
+            ) {
+                self.terminal.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Skipped queued prompt `{}` after PTY delivery failure: {}",
+                        next.id(),
+                        error
+                    ),
+                );
+                continue;
+            }
+
+            return Ok(Some(self.sessions.activate_prompt(session_id, next)?.1));
+        }
     }
 
     pub fn startup_message(&self) -> String {

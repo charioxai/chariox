@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::DaemonError;
-use crate::session::SessionService;
+use crate::session::{PromptDetachEffect, SessionService};
 
 use super::{AttachRequest, AttachmentEvent, RuntimeAttachment};
 
@@ -46,19 +46,29 @@ impl AttachmentService {
         sessions: &mut SessionService,
         attachment_id: &str,
     ) -> Result<RuntimeAttachment, DaemonError> {
+        self.detach_with_effect(sessions, attachment_id)
+            .map(|(attachment, _)| attachment)
+    }
+
+    pub fn detach_with_effect(
+        &mut self,
+        sessions: &mut SessionService,
+        attachment_id: &str,
+    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
         let attachment = self.attachments.remove(attachment_id).ok_or_else(|| {
             DaemonError::AttachmentNotFound {
                 attachment_id: attachment_id.to_string(),
             }
         })?;
 
-        sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
+        let (_, effect) =
+            sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
         self.events.push(AttachmentEvent::Left {
             session_id: attachment.session_id().to_string(),
             attachment_id: attachment.id().to_string(),
         });
 
-        Ok(attachment)
+        Ok((attachment, effect))
     }
 
     pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {

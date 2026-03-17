@@ -37,6 +37,21 @@ pub enum PromptStatus {
     Completed,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SchedulerState {
+    Idle,
+    Runnable,
+    Running,
+    Waiting,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WorktreeIsolationMode {
+    SharedSession,
+    IsolatedBranch,
+    IsolatedWorktree,
+}
+
 impl fmt::Display for SessionExecutionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -150,6 +165,49 @@ pub struct PromptCompletion {
     pub started_next: Option<PromptQueueItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PromptDetachEffect {
+    pub removed_active_prompt: bool,
+    pub removed_queued_prompt_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWorktreeAssignment {
+    id: String,
+    worktree_id: String,
+    branch: String,
+    isolation_mode: WorktreeIsolationMode,
+}
+
+impl RuntimeWorktreeAssignment {
+    pub fn new(
+        id: impl Into<String>,
+        worktree_id: impl Into<String>,
+        branch: impl Into<String>,
+        isolation_mode: WorktreeIsolationMode,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            worktree_id: worktree_id.into(),
+            branch: branch.into(),
+            isolation_mode,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn worktree_id(&self) -> &str {
+        &self.worktree_id
+    }
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+    pub fn isolation_mode(&self) -> WorktreeIsolationMode {
+        self.isolation_mode
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSession {
     id: String,
@@ -163,7 +221,9 @@ pub struct RuntimeSession {
     attachment_ids: BTreeSet<String>,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
+    scheduler_state: SchedulerState,
     config_state: SessionConfigState,
+    worktree_assignments: Vec<RuntimeWorktreeAssignment>,
 }
 
 impl RuntimeSession {
@@ -174,10 +234,13 @@ impl RuntimeSession {
         host_machine_id: impl Into<String>,
         host_daemon_id: impl Into<String>,
     ) -> Self {
+        let id = id.into();
+        let worktree_id = worktree_id.into();
+
         Self {
-            id: id.into(),
+            id: id.clone(),
             workspace_id: workspace_id.into(),
-            worktree_id: worktree_id.into(),
+            worktree_id: worktree_id.clone(),
             host_machine_id: host_machine_id.into(),
             host_daemon_id: host_daemon_id.into(),
             execution_mode: SessionExecutionMode::SingleAgent,
@@ -186,7 +249,14 @@ impl RuntimeSession {
             attachment_ids: BTreeSet::new(),
             active_prompt: None,
             queued_prompts: VecDeque::new(),
+            scheduler_state: SchedulerState::Idle,
             config_state: SessionConfigState::default(),
+            worktree_assignments: vec![RuntimeWorktreeAssignment::new(
+                format!("worktree-assignment-{}-1", id),
+                worktree_id,
+                format!("session/{id}"),
+                WorktreeIsolationMode::SharedSession,
+            )],
         }
     }
 
@@ -226,8 +296,14 @@ impl RuntimeSession {
     pub fn queued_prompts(&self) -> &VecDeque<PromptQueueItem> {
         &self.queued_prompts
     }
+    pub fn scheduler_state(&self) -> SchedulerState {
+        self.scheduler_state
+    }
     pub fn config_state(&self) -> &SessionConfigState {
         &self.config_state
+    }
+    pub fn worktree_assignments(&self) -> &[RuntimeWorktreeAssignment] {
+        &self.worktree_assignments
     }
 
     pub fn has_attachment(&self, attachment_id: &str) -> bool {
@@ -251,11 +327,13 @@ impl RuntimeSession {
             let mut running = prompt;
             running.set_status(PromptStatus::Running);
             self.active_prompt = Some(running.clone());
+            self.refresh_scheduler_state();
             PromptSubmissionOutcome::Started { prompt: running }
         } else {
             let mut queued = prompt;
             queued.set_status(PromptStatus::Queued);
             self.queued_prompts.push_back(queued.clone());
+            self.refresh_scheduler_state();
             PromptSubmissionOutcome::Queued { prompt: queued }
         }
     }
@@ -270,6 +348,8 @@ impl RuntimeSession {
             next
         });
 
+        self.refresh_scheduler_state();
+
         Some(PromptCompletion {
             completed,
             started_next,
@@ -279,6 +359,7 @@ impl RuntimeSession {
     pub fn complete_active_prompt_only(&mut self) -> Option<PromptQueueItem> {
         let mut completed = self.active_prompt.take()?;
         completed.set_status(PromptStatus::Completed);
+        self.refresh_scheduler_state();
         Some(completed)
     }
 
@@ -290,12 +371,14 @@ impl RuntimeSession {
         let mut next = self.queued_prompts.pop_front()?;
         next.set_status(PromptStatus::Running);
         self.active_prompt = Some(next.clone());
+        self.refresh_scheduler_state();
         Some(next)
     }
 
     pub fn clear_active_prompt_if(&mut self, prompt_id: &str) -> bool {
         if self.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id) {
             self.active_prompt = None;
+            self.refresh_scheduler_state();
             return true;
         }
 
@@ -306,7 +389,22 @@ impl RuntimeSession {
         let original_len = self.queued_prompts.len();
         self.queued_prompts
             .retain(|prompt| prompt.source_attachment_id() != attachment_id);
-        original_len - self.queued_prompts.len()
+        let removed = original_len - self.queued_prompts.len();
+        self.refresh_scheduler_state();
+        removed
+    }
+
+    pub fn pop_next_queued_prompt(&mut self) -> Option<PromptQueueItem> {
+        let next = self.queued_prompts.pop_front();
+        self.refresh_scheduler_state();
+        next
+    }
+
+    pub fn activate_prompt(&mut self, mut prompt: PromptQueueItem) -> PromptQueueItem {
+        prompt.set_status(PromptStatus::Running);
+        self.active_prompt = Some(prompt.clone());
+        self.refresh_scheduler_state();
+        prompt
     }
 
     pub fn apply_config_changes(
@@ -341,8 +439,23 @@ impl RuntimeSession {
             self.attachment_ids.clear();
             self.active_prompt = None;
             self.queued_prompts.clear();
+            self.scheduler_state = SchedulerState::Idle;
         }
 
         true
+    }
+
+    fn refresh_scheduler_state(&mut self) {
+        self.scheduler_state = if self.active_prompt.is_some() {
+            if self.queued_prompts.is_empty() {
+                SchedulerState::Running
+            } else {
+                SchedulerState::Waiting
+            }
+        } else if self.queued_prompts.is_empty() {
+            SchedulerState::Idle
+        } else {
+            SchedulerState::Runnable
+        };
     }
 }

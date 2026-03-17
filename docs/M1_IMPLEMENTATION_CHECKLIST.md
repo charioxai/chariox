@@ -4,7 +4,7 @@
 
 Execution checklist for **M1 - Core Session Runtime**.
 
-M1 is not complete yet.
+M1 is complete.
 
 This checklist translates the M1 roadmap milestone into concrete implementation steps for the repository state after M0.
 
@@ -182,27 +182,27 @@ The M1 implementation is not required to ship full workflow execution, but every
 ## 4.9 Testing and verification
 
 - [x] Add Rust unit tests for session lifecycle logic.
-- [ ] Add Rust integration tests for shared-attachment queue/config behavior.
+- [x] Add Rust integration tests for shared-attachment queue/config behavior.
 - [x] Add Rust integration tests for provider run activation/parking behavior.
 - [x] Add PTY/terminal conformance-oriented tests or smoke tests for local runtime behavior.
 - [x] Ensure documented JS workspace verification still passes after M1 work lands, and keep daemon verification passing through the dedicated Rust commands.
 
 ## 4.10 Documentation updates required in the same PR set
 
-- [ ] Update `docs/PROTOCOL.md` if concrete M1 session or attachment events are introduced.
-- [ ] Update `docs/ARCHITECTURE.md` if implementation choices for daemon runtime, PTY handling, or attachment semantics become concrete.
-- [ ] Update `docs/CONTRIBUTING.md` with any new daemon test commands.
-- [ ] Update `agents/AGENTS.md` current status when usable M1 runtime behavior lands.
-- [ ] Update `docs/ops/TASKS.md` and `docs/ops/PROGRESS_LOG.md` as work progresses.
-- [ ] Keep `docs/spec-v1.md` and `docs/ARCHITECTURE.md` aligned with workflow-compatibility constraints introduced during M1 implementation.
+- [x] Update `docs/PROTOCOL.md` if concrete M1 session or attachment events are introduced.
+- [x] Update `docs/ARCHITECTURE.md` if implementation choices for daemon runtime, PTY handling, or attachment semantics become concrete.
+- [x] Update `docs/CONTRIBUTING.md` with any new daemon test commands.
+- [x] Update `agents/AGENTS.md` current status when usable M1 runtime behavior lands.
+- [x] Update `docs/ops/TASKS.md` and `docs/ops/PROGRESS_LOG.md` as work progresses.
+- [x] Keep `docs/spec-v1.md` and `docs/ARCHITECTURE.md` aligned with workflow-compatibility constraints introduced during M1 implementation.
 
 ## 4.11 Workflow-Compatibility Guardrails
 
 - [x] Keep session APIs compatible with future single-agent and multi-agent workflow modes.
 - [x] Do not assume raw terminal transcript forwarding as a valid future inter-agent communication mechanism.
 - [x] Keep provider-run ownership flexible enough for future node-scoped runs in workflow mode.
-- [ ] Keep worktree handling compatible with future explicit worktree assignment and branch isolation for parallel code-writing nodes.
-- [ ] Keep scheduler-related runtime decisions daemon-owned so a generic workflow engine can later enforce runnable/waiting/completed node state, barriers, retries, and resource limits.
+- [x] Keep worktree handling compatible with future explicit worktree assignment and branch isolation for parallel code-writing nodes.
+- [x] Keep scheduler-related runtime decisions daemon-owned so a generic workflow engine can later enforce runnable/waiting/completed node state, barriers, retries, and resource limits.
 
 ## 5. Suggested execution order
 
@@ -239,11 +239,11 @@ If a dedicated daemon integration test target is introduced during M1, add the e
 
 M1 is complete when all are true:
 
-- [ ] A local daemon runtime can create and end sessions.
-- [ ] A provider process can be launched under daemon ownership through a PTY abstraction.
-- [ ] A session supports multiple attachments with daemon-owned prompt queueing and canonical config propagation.
-- [ ] Terminal input/output flows through the daemon without breaking provider-native PTY behavior.
-- [ ] Parked provider run behavior exists with one active run at a time.
-- [ ] A deterministic local harness or integration test proves the managed-session flow end to end.
-- [ ] Documentation and protocol references are updated to match the implemented runtime behavior.
-- [ ] The resulting runtime remains compatible with the documented future workflow graph model, structured handoff contract, and explicit worktree isolation requirements.
+- [x] A local daemon runtime can create and end sessions.
+- [x] A provider process can be launched under daemon ownership through a PTY abstraction.
+- [x] A session supports multiple attachments with daemon-owned prompt queueing and canonical config propagation.
+- [x] Terminal input/output flows through the daemon without breaking provider-native PTY behavior.
+- [x] Parked provider run behavior exists with one active run at a time.
+- [x] A deterministic local harness or integration test proves the managed-session flow end to end.
+- [x] Documentation and protocol references are updated to match the implemented runtime behavior.
+- [x] The resulting runtime remains compatible with the documented future workflow graph model, structured handoff contract, and explicit worktree isolation requirements.

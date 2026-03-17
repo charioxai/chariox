@@ -4,8 +4,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptQueueItem, PromptSubmissionOutcome, RuntimeSession,
-    SessionConfigState, SessionStatus, SessionStore,
+    CreateSessionRequest, PromptDetachEffect, PromptQueueItem, PromptSubmissionOutcome,
+    RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
 };
 
 #[derive(Debug, Clone)]
@@ -95,7 +95,7 @@ impl SessionService {
         &mut self,
         session_id: &str,
         attachment_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
+    ) -> Result<(RuntimeSession, PromptDetachEffect), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "detach")?;
 
         if !session.remove_attachment(attachment_id) {
@@ -105,9 +105,23 @@ impl SessionService {
             });
         }
 
-        session.remove_queued_prompts_by_attachment(attachment_id);
+        let removed_active_prompt = session
+            .active_prompt()
+            .map(|prompt| prompt.source_attachment_id() == attachment_id)
+            .unwrap_or(false);
+        if removed_active_prompt {
+            let _ = session.complete_active_prompt_only();
+        }
+        let removed_queued_prompt_count =
+            session.remove_queued_prompts_by_attachment(attachment_id);
 
-        Ok(session.clone())
+        Ok((
+            session.clone(),
+            PromptDetachEffect {
+                removed_active_prompt,
+                removed_queued_prompt_count,
+            },
+        ))
     }
 
     pub fn set_active_provider_run(
@@ -194,7 +208,28 @@ impl SessionService {
         session_id: &str,
     ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "activate next prompt")?;
-        let next = session.activate_next_queued_prompt();
+        let next = session
+            .pop_next_queued_prompt()
+            .map(|prompt| session.activate_prompt(prompt));
+        Ok((session.clone(), next))
+    }
+
+    pub fn activate_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: super::PromptQueueItem,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "activate prompt")?;
+        let active = session.activate_prompt(prompt);
+        Ok((session.clone(), active))
+    }
+
+    pub fn pop_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "pop next prompt")?;
+        let next = session.pop_next_queued_prompt();
         Ok((session.clone(), next))
     }
 
@@ -268,7 +303,10 @@ mod tests {
     use super::SessionService;
     use crate::config::DaemonConfig;
     use crate::error::DaemonError;
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionStatus};
+    use crate::session::{
+        CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
+        WorktreeIsolationMode,
+    };
 
     fn test_config() -> DaemonConfig {
         DaemonConfig::for_tests()
@@ -291,7 +329,13 @@ mod tests {
         assert!(created.attachment_ids().is_empty());
         assert!(created.active_prompt().is_none());
         assert!(created.queued_prompts().is_empty());
+        assert_eq!(created.scheduler_state(), SchedulerState::Idle);
         assert_eq!(created.config_state().version(), 0);
+        assert_eq!(created.worktree_assignments().len(), 1);
+        assert_eq!(
+            created.worktree_assignments()[0].isolation_mode(),
+            WorktreeIsolationMode::SharedSession
+        );
         assert_eq!(service.active_session_count(), 1);
 
         let fetched = service
@@ -330,6 +374,14 @@ mod tests {
             _ => panic!("expected queued prompt"),
         }
 
+        assert_eq!(
+            service
+                .get_session(created.id())
+                .expect("session should exist")
+                .scheduler_state(),
+            SchedulerState::Waiting
+        );
+
         let (_session, completed) = service
             .complete_active_prompt(created.id())
             .expect("active prompt should complete");
@@ -345,6 +397,7 @@ mod tests {
             session.active_prompt().expect("active prompt exists").id(),
             "prompt-2"
         );
+        assert_eq!(session.scheduler_state(), SchedulerState::Running);
     }
 
     #[test]

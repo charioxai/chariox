@@ -144,7 +144,7 @@ Minimum response/result shapes:
 - attach/detach returns structured attachment metadata
 - provider launch returns structured provider-run metadata
 - session state reads return canonical queue and config state
-- notice polling returns structured daemon notices for session attachments
+- notice polling returns structured daemon notices scoped to the requesting attachment within the session
 - prompt submission returns structured prompt status (`started` or `queued`) plus canonical session state
 - prompt completion returns structured completion details and the next started prompt when relevant
 - config update returns canonical session config state, version, and updated session state

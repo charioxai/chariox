@@ -59,6 +59,7 @@ pub struct GetSessionStateRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
+    pub attachment_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,7 +180,7 @@ impl DaemonApp {
                 Ok(LocalDaemonResponse::RuntimeNotices {
                     notices: self
                         .terminal_mut()
-                        .drain_notice_records(&request.session_id),
+                        .drain_notice_records(&request.session_id, &request.attachment_id),
                 })
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
@@ -477,6 +478,7 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::PollRuntimeNotices(
                 PollRuntimeNoticesRequest {
                     session_id: session.id().to_string(),
+                    attachment_id: b.id().to_string(),
                 },
             ))
             .expect("notice polling should succeed");

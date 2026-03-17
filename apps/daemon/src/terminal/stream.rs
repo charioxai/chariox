@@ -97,12 +97,22 @@ impl TerminalStreamService {
         &self.notice_records
     }
 
-    pub fn drain_notice_records(&mut self, session_id: &str) -> Vec<RuntimeNoticeRecord> {
+    pub fn drain_notice_records(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<RuntimeNoticeRecord> {
         let mut drained = Vec::new();
         let mut kept = Vec::with_capacity(self.notice_records.len());
 
         for record in self.notice_records.drain(..) {
-            if record.session_id == session_id {
+            if record.session_id == session_id
+                && (record.recipient_attachment_ids.is_empty()
+                    || record
+                        .recipient_attachment_ids
+                        .iter()
+                        .any(|id| id == attachment_id))
+            {
                 drained.push(record);
             } else {
                 kept.push(record);
