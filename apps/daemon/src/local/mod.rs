@@ -5,6 +5,6 @@ pub use api::{
     AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest, EndSessionRequest,
     GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
     PollRuntimeNoticesRequest, PumpTerminalOutputRequest, ResizeTerminalRequest,
-    SubmitPromptRequest, UpdateSessionConfigRequest,
+    RunShellCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 pub use harness::{run_local_harness, LocalHarnessReport};

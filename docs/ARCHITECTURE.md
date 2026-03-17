@@ -127,7 +127,7 @@ Client examples include local terminal clients, web terminals, and third-party m
 Responsibilities:
 
 - render terminal stream from active provider run
-- capture terminal input and send it to daemon
+- capture terminal keystrokes and prompt/config interactions, then route them to the daemon through the appropriate runtime surface
 - render overlays/palette for Arroba capabilities
 - upload files and display artifacts
 - expose daemon-owned queue/config/session metadata
@@ -164,6 +164,7 @@ Responsibilities:
 - memory management (short-term + long-term)
 - context transfer package generation
 - scheduler execution, failure propagation, retry hooks, and resource-limit enforcement
+- reusable capability services with structured request/response contracts (starting with shell command execution)
 
 ### 3.4 Server
 
@@ -216,11 +217,17 @@ In single-agent mode, attachments are shared session participants rather than ex
 Required daemon-owned responsibilities:
 
 - serializing prompt execution per session
+- maintaining explicit scheduler state boundaries (`idle`, `runnable`, `running`, `waiting`) for queued work
 - maintaining canonical queued-prompt state
+- exposing canonical session state and runtime notices to attachments
 - applying accepted config changes to canonical session config state
 - rejecting unsafe config changes while a prompt is running
 - notifying all other attachments when a prompt is queued
 - propagating canonical config updates to all attachments after acceptance
+
+Current M1 runtime note:
+
+- the daemon now keeps explicit primary worktree assignment metadata for each session even in single-agent mode so later branch/worktree isolation can extend the same runtime shape
 
 The daemon MUST treat prompt scheduling and config state as structured runtime state, not terminal-local behavior.
 

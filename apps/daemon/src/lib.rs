@@ -1,5 +1,6 @@
 pub mod app;
 pub mod attachment;
+pub mod capability;
 pub mod config;
 pub mod error;
 pub mod local;
@@ -326,6 +327,28 @@ mod tests {
         assert!(app.terminal().notice_records()[0]
             .message
             .contains("resumed the previous provider run"));
+    }
+
+    #[test]
+    fn shell_command_capability_runs_through_daemon_app() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let result = app
+            .run_shell_command(crate::capability::RunShellCommandRequest::new(
+                session.id(),
+                "/bin/sh",
+                vec!["-lc".to_string(), "printf shell-app".to_string()],
+                None,
+            ))
+            .expect("shell capability should succeed");
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "shell-app");
     }
 
     fn wait_for_terminal_output(

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::attachment::{AttachRequest, AttachmentService, RuntimeAttachment};
+use crate::capability::{RunShellCommandRequest, RunShellCommandResult, ShellCommandService};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
@@ -14,6 +15,7 @@ use crate::terminal::{TerminalOutputRecord, TerminalStreamService};
 pub struct DaemonApp {
     config: DaemonConfig,
     attachments: AttachmentService,
+    capabilities: ShellCommandService,
     pty: PtyManager,
     providers: ProviderProcessService,
     sessions: SessionService,
@@ -26,6 +28,7 @@ impl DaemonApp {
 
         Ok(Self {
             attachments: AttachmentService::new(),
+            capabilities: ShellCommandService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             sessions: SessionService::new(&config),
@@ -52,6 +55,10 @@ impl DaemonApp {
 
     pub fn attachments_mut(&mut self) -> &mut AttachmentService {
         &mut self.attachments
+    }
+
+    pub fn capabilities(&self) -> &ShellCommandService {
+        &self.capabilities
     }
 
     pub fn providers(&self) -> &ProviderProcessService {
@@ -105,6 +112,14 @@ impl DaemonApp {
             self.pty.remove_process(run.id())?;
         }
         self.sessions.end_session(session_id)
+    }
+
+    pub fn run_shell_command(
+        &self,
+        request: RunShellCommandRequest,
+    ) -> Result<RunShellCommandResult, DaemonError> {
+        let _ = self.sessions.get_session(&request.session_id)?;
+        self.capabilities.run(request)
     }
 
     pub fn launch_provider(

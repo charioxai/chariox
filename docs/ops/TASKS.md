@@ -12,11 +12,23 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## Backlog
 
-- [ ] **M1-008** Align protocol and architecture docs with concrete M1 runtime behavior
-  - Note: Update docs once M1 runtime surfaces and event contracts are real.
+## In Progress
+
+- [ ] **M2-001** Expand daemon capability surface beyond runtime baseline
+  - Note: Started with a daemon-owned shell command capability plus local API exposure; continue with richer file/git/transfer/screenshot behavior.
+
+## Backlog
+
+- [ ] **M2-003** Add directory tree and file view/edit capability baselines
+  - Note: Extend the new capability layer with structured filesystem inspection and edit flows.
+- [ ] **M2-004** Add git/worktree inspection, transfer, and schedule baselines
+  - Note: Build on the capability layer with git/worktree, file transfer, and schedule execution surfaces.
 
 ## Done
 
+- [x] **M2-002** Create M2 implementation checklist and execution plan
+  - Note: Added `docs/M2_IMPLEMENTATION_CHECKLIST.md` to break M2 into concrete capability workstreams, testing, and documentation steps.
+  - Commit: _pending next commit_
 - [x] **M1-001** Add daemon runtime skeleton and module layout
   - Note: Added a lean daemon bootstrap around config, structured runtime errors, shutdown handling, and expandable real services instead of placeholder scaffolding.
   - Commit: _pending next commit_
@@ -37,6 +49,9 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Commit: _pending next commit_
 - [x] **M1-007** Add session runtime and PTY-oriented integration tests
   - Note: Added daemon integration coverage for lifecycle cleanup, prompt queue notifications, active run switching, and local managed-session PTY/config flow.
+  - Commit: _pending next commit_
+- [x] **M1-008** Align protocol and architecture docs with concrete M1 runtime behavior
+  - Note: Updated protocol, architecture, checklist, and status docs to match shared attachments, prompt queueing, session-state reads, notice polling, and config propagation.
   - Commit: _pending next commit_
 - [x] **M0-001** Bootstrap workspace root (`pnpm-workspace`, root scripts, TS base config)
   - Note: Added workspace root `package.json`, `pnpm-workspace.yaml`, and `tsconfig.base.json`.

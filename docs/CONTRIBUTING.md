@@ -65,7 +65,7 @@ Use `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, and `docs/PROTOCOL.md` for produc
 
 For client implementations across web/mobile/desktop/CLI:
 
-- validate `terminal.input`, `terminal.output`, and `terminal.resize` behavior
+- validate prompt/config interactions plus `terminal.output` and `terminal.resize` behavior
 - compare against xterm.js reference expectations where applicable
 - preserve control-sequence fidelity and resize semantics
 

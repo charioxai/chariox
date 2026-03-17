@@ -88,6 +88,12 @@ pub enum DaemonError {
         rows: u16,
         message: String,
     },
+    #[error("shell command `{command}` failed for session `{session_id}`: {message}")]
+    ShellCommandFailed {
+        session_id: String,
+        command: String,
+        message: String,
+    },
     #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]
     LocalHarnessTimeout { session_id: String, timeout_ms: u64 },
 }

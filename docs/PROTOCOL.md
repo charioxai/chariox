@@ -155,6 +155,33 @@ This local API MUST remain daemon-owned, local-first, and compatible with later 
 
 ## 5. Control Operations
 
+## 5.0 Capability API Baseline
+
+Once M2 capability work begins, the local daemon API MAY expose structured capability requests in addition to session-runtime requests.
+
+Current baseline capability request:
+
+- `capability.shell.run`
+
+Minimum shell request fields:
+
+- `session_id`
+- `command`
+- `args`
+- optional `working_directory`
+
+Minimum shell response fields:
+
+- `session_id`
+- `command`
+- `args`
+- `working_directory`
+- `exit_code`
+- `stdout`
+- `stderr`
+
+Capability failures MUST remain structured and MUST NOT corrupt PTY/session runtime state.
+
 ## 5.1 `attach_file`
 
 Request payload:

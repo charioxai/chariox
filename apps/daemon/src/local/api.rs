@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
+use crate::capability::{RunShellCommandRequest, RunShellCommandResult};
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
@@ -80,6 +82,14 @@ pub struct EndSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunShellCapabilityRequest {
+    pub session_id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub working_directory: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -92,6 +102,7 @@ pub enum LocalDaemonRequest {
     UpdateSessionConfig(UpdateSessionConfigRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
+    RunShellCommand(RunShellCapabilityRequest),
     EndSession(EndSessionRequest),
 }
 
@@ -133,6 +144,9 @@ pub enum LocalDaemonResponse {
     },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
+    },
+    ShellCommandCompleted {
+        result: RunShellCommandResult,
     },
     SessionEnded {
         session: RuntimeSession,
@@ -221,6 +235,16 @@ impl DaemonApp {
                     records: self.pump_terminal_output(&request.session_id)?,
                 })
             }
+            LocalDaemonRequest::RunShellCommand(request) => {
+                Ok(LocalDaemonResponse::ShellCommandCompleted {
+                    result: self.run_shell_command(RunShellCommandRequest::new(
+                        request.session_id,
+                        request.command,
+                        request.args,
+                        request.working_directory,
+                    ))?,
+                })
+            }
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
                 session: self.end_session(&request.session_id)?,
             }),
@@ -239,7 +263,8 @@ mod tests {
     use super::{
         AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest, EndSessionRequest,
         GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        PollRuntimeNoticesRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        PollRuntimeNoticesRequest, RunShellCapabilityRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -512,6 +537,40 @@ mod tests {
                 assert!(completion.started_next.is_some())
             }
             _ => panic!("unexpected completion response"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_runs_shell_command_capability() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let response = app
+            .handle_local_request(LocalDaemonRequest::RunShellCommand(
+                RunShellCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    command: "/bin/sh".to_string(),
+                    args: vec!["-lc".to_string(), "printf capability".to_string()],
+                    working_directory: None,
+                },
+            ))
+            .expect("shell capability should succeed");
+
+        match response {
+            LocalDaemonResponse::ShellCommandCompleted { result } => {
+                assert_eq!(result.exit_code, 0);
+                assert_eq!(result.stdout, "capability");
+            }
+            _ => panic!("unexpected shell response"),
         }
     }
 }

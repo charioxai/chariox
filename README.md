@@ -7,7 +7,8 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 ## Status
 
 M0, "Foundations", is complete in this repository.
-M1, "Core Session Runtime", is in progress.
+M1, "Core Session Runtime", is complete.
+M2, "Capability Surface", is now in progress.
 
 v1 scope includes both:
 
@@ -51,7 +52,7 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-Today it includes the daemon bootstrap, in-memory session lifecycle, shared multi-attachment participation, prompt queueing, session config propagation, provider runtime orchestration, PTY-backed terminal streaming, and rollback notices for failed provider switches. Workflow execution surfaces are still being built.
+Today it includes the daemon bootstrap, in-memory session lifecycle, shared multi-attachment participation, prompt queueing, session config propagation, provider runtime orchestration, PTY-backed terminal streaming, rollback notices for failed provider switches, and an initial structured shell command capability. Workflow execution surfaces are still being built.
 
 ### `apps/server`
 

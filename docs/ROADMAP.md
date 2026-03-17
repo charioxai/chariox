@@ -69,6 +69,11 @@ Exit criteria:
 
 ## M2 - Capability Surface
 
+Status:
+
+- in progress as of 2026-03-17
+- started with a daemon-owned shell command capability baseline and local API exposure
+
 Outcomes:
 
 - shell command capability

@@ -145,3 +145,25 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added daemon-owned prompt queue state, active-prompt completion/advancement, and queued-message notices for the other attachments in a session.
 - Added canonical session config state with versioned updates plus propagation notices to the rest of the session attachments.
 - Updated local daemon APIs, domain types, Prisma schema, and daemon tests to match the shared-attachment queue/config model.
+
+### M1-008 documentation alignment update
+
+- Aligned `docs/PROTOCOL.md` with the current local daemon API: session state reads, notice polling, prompt submit/complete, and config update responses now match the implemented runtime surface.
+- Aligned `docs/ARCHITECTURE.md`, `docs/spec-v1.md`, `agents/AGENTS.md`, and `docs/CONTRIBUTING.md` with the shared-attachment prompt/config model and the current client/daemon responsibilities.
+- Reconciled the M1 checklist and task board with the now-complete runtime, integration coverage, and documentation work for M1-001 through M1-008.
+
+### M1 closure update
+
+- Added explicit scheduler-state ownership and primary worktree-assignment-compatible session state so the remaining workflow-compatibility guardrails are satisfied without redesigning the current runtime.
+- Closed the remaining M1 checklist items and marked M1 complete in the project status docs.
+
+### M2 planning update
+
+- Added `docs/M2_IMPLEMENTATION_CHECKLIST.md` to break M2 into concrete capability workstreams, local API alignment, testing, and documentation requirements.
+- Seeded the task board with initial M2 planning and implementation tasks.
+
+### M2 shell capability baseline update
+
+- Added a new `capability` module in the daemon runtime and implemented a structured shell command capability service.
+- Exposed shell command execution through the local daemon API with structured stdout/stderr/exit-code results.
+- Added daemon tests and local API tests covering successful shell execution, non-zero exits, and working-directory scoping.

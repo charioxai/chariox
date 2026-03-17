@@ -37,6 +37,13 @@ enum PromptStatus {
   completed
 }
 
+enum SchedulerState {
+  idle
+  runnable
+  running
+  waiting
+}
+
 enum ClientCapabilityLevel {
   full_terminal
   interactive_structured
@@ -159,6 +166,7 @@ model Session {
   activeWorkflowRunId String?             @unique
   activePromptId      String?             @unique
   configVersion       Int                 @default(0)
+  schedulerState      SchedulerState      @default(idle)
   workspace           Workspace           @relation(fields: [workspaceId], references: [id])
   worktree            Worktree            @relation(fields: [worktreeId], references: [id])
   hostMachine         Machine             @relation("SessionHostMachine", fields: [hostMachineId], references: [id])

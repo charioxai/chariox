@@ -72,7 +72,7 @@ Responsibilities:
 
 - render the provider terminal stream
 - render Arroba overlays and command palette UI
-- send raw terminal input to the active provider PTY
+- send terminal keystrokes or structured prompt/config actions to the daemon through the appropriate surface
 - invoke daemon capabilities
 - upload artifacts for transfer when requested
 - show queue/config/session state reported by the daemon
@@ -338,13 +338,23 @@ Required rules:
 - at most one prompt may execute at a time per single-agent session
 - if a prompt arrives while another prompt is running, the daemon MUST enqueue it rather than dropping or interleaving it
 - when a prompt is enqueued, the daemon MUST notify all other attachments in the session that a queued message exists and expose the canonical queue state
+- attachments MUST be able to fetch canonical session state and daemon notices through a structured daemon-owned surface
 - attachments MUST render daemon-owned queue and config state, not rely on locally assumed state
+
+Scheduler/runtime boundary rule:
+
+- the daemon MUST own explicit scheduler state for session work such as `idle`, `runnable`, `running`, and `waiting`
+- queue advancement and prompt completion semantics MUST remain daemon-owned runtime decisions, even when a client triggers the completion action through a structured API
 
 Config behavior:
 
 - config changes that are safe during execution MAY be applied immediately
 - config changes that are unsafe during execution MUST be rejected with an explicit busy-state error while a prompt is running
 - after an accepted config change, the daemon MUST propagate the canonical updated config state to all session attachments
+
+Worktree compatibility rule:
+
+- even in single-agent mode, the runtime SHOULD keep explicit worktree-assignment metadata so future isolated branches/worktrees can extend the same runtime shape without redesign
 
 ### 8.1 Provider Adapter Requirement
 

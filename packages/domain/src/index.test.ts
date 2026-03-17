@@ -9,6 +9,7 @@ import {
   NODE_RUN_STATUSES,
   PROMPT_STATUSES,
   PROVIDER_RUN_STATES,
+  SCHEDULER_STATES,
   SESSION_EXECUTION_MODES,
   SESSION_STATUSES,
   STOP_RECOMMENDATIONS,
@@ -43,6 +44,7 @@ test('runtime enum constants stay aligned with the workflow-oriented domain mode
   assert.deepEqual(SESSION_EXECUTION_MODES, ['single_agent', 'multi_agent_workflow'])
   assert.deepEqual(PROVIDER_RUN_STATES, ['starting', 'running', 'parked', 'ended'])
   assert.deepEqual(PROMPT_STATUSES, ['queued', 'running', 'completed'])
+  assert.deepEqual(SCHEDULER_STATES, ['idle', 'runnable', 'running', 'waiting'])
   assert.deepEqual(CLIENT_CAPABILITY_LEVELS, [
     'full_terminal',
     'interactive_structured',
@@ -93,6 +95,7 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
     activeWorkflowRunId: 'workflow_run_1',
     activePromptId: 'prompt_1',
     configVersion: 2,
+    schedulerState: 'running',
   }
   const attachment: SessionAttachment = {
     id: 'attachment_1',
@@ -250,6 +253,7 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
 
   assert.equal(snapshot.session.activePromptId, snapshot.queuedPrompt.id)
   assert.equal(snapshot.session.configVersion, snapshot.configState.version)
+  assert.equal(snapshot.session.schedulerState, 'running')
   assert.equal(snapshot.queuedPrompt.sourceAttachmentId, snapshot.attachment.id)
   assert.equal(snapshot.configState.updatedByAttachmentId, snapshot.attachment.id)
   assert.equal(snapshot.providerRun.worktreeAssignmentId, snapshot.worktreeAssignment.id)

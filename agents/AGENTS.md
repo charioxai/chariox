@@ -399,10 +399,12 @@ All attachments in a session MAY submit prompts and request supported config cha
 Required rules:
 
 - the daemon MUST remain the single source of truth for prompt scheduling and session config state
+- the daemon MUST own explicit scheduler state boundaries for queued work
 - attachments MUST NOT maintain conflicting local authority over queued work or session config
 - at most one prompt may execute at a time per single-agent session
 - if a prompt is submitted while another prompt is running, the daemon MUST enqueue it
 - when a prompt is enqueued, the daemon MUST notify all other attachments in the session that a queued message exists and expose the canonical queue state
+- attachments MUST be able to fetch canonical session state and daemon notices through a structured daemon-owned API surface
 - attachments SHOULD render daemon-reported queue/config state rather than assuming local state is authoritative
 
 Config update rules:
@@ -936,8 +938,9 @@ Arroba should:
 ## Current Status
 
 M0 foundations are complete.
-M1 is now in progress.
-The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, a workflow-oriented Prisma schema baseline, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, shared attachment participation, provider-run orchestration, PTY-backed terminal fan-out, and a local daemon smoke harness. Baseline CI coverage for TypeScript and Rust verification remains in place.
+M1 is complete.
+M2 is now in progress.
+The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, a workflow-oriented Prisma schema baseline, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, shared attachment participation, daemon-owned prompt queueing/config propagation, explicit scheduler state, worktree-assignment-compatible session state, PTY-backed terminal fan-out, a local daemon smoke harness, and an initial structured shell command capability. Baseline CI coverage for TypeScript and Rust verification remains in place.
 
 Related architecture docs:
 - docs/spec-v1.md
