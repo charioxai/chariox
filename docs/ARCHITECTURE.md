@@ -130,7 +130,7 @@ Responsibilities:
 - capture terminal input and send it to daemon
 - render overlays/palette for Arroba capabilities
 - upload files and display artifacts
-- expose controller/observer state and session metadata
+- expose daemon-owned queue/config/session metadata
 
 ### 3.2 Machine
 
@@ -174,7 +174,7 @@ Responsibilities:
 - auth and identity
 - machine/session discovery
 - websocket relay
-- presence and controller lease metadata
+- presence plus queue/config/session metadata as needed
 - schedule metadata and operational metadata
 
 Non-responsibility:
@@ -202,11 +202,27 @@ A session may include:
 
 - many client attachments
 - parked provider runs
+- prompt queue state and canonical session config state
 - a workflow definition and zero or one active workflow run
 - node-scoped provider runs when workflow mode is active
 - worktree assignments for isolated workflow branches
 - schedules
 - artifacts
+
+### 4.2.1 Shared Attachment and Queue Ownership
+
+In single-agent mode, attachments are shared session participants rather than exclusive control roles.
+
+Required daemon-owned responsibilities:
+
+- serializing prompt execution per session
+- maintaining canonical queued-prompt state
+- applying accepted config changes to canonical session config state
+- rejecting unsafe config changes while a prompt is running
+- notifying all other attachments when a prompt is queued
+- propagating canonical config updates to all attachments after acceptance
+
+The daemon MUST treat prompt scheduling and config state as structured runtime state, not terminal-local behavior.
 
 ### 4.3 Workflow Ownership
 
@@ -273,6 +289,7 @@ Required rules:
 - Carries raw PTY output and user keystrokes.
 - Must preserve provider-native semantics.
 - Must not be transformed into structured command traffic by default.
+- Must not be used as the source of truth for prompt queue ordering or session config state.
 
 ### 5.2 Capability Lane
 

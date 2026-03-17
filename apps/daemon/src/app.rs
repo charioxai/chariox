@@ -1,9 +1,14 @@
+use std::collections::BTreeMap;
+
 use crate::attachment::{AttachRequest, AttachmentService, RuntimeAttachment};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
 use crate::pty::PtyManager;
-use crate::session::{RuntimeSession, SessionService, SessionStatus};
+use crate::session::{
+    PromptCompletion, PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionService,
+    SessionStatus,
+};
 use crate::terminal::{TerminalOutputRecord, TerminalStreamService};
 
 pub struct DaemonApp {
@@ -61,6 +66,10 @@ impl DaemonApp {
         &self.terminal
     }
 
+    pub(crate) fn terminal_mut(&mut self) -> &mut TerminalStreamService {
+        &mut self.terminal
+    }
+
     pub fn pty(&self) -> &PtyManager {
         &self.pty
     }
@@ -99,6 +108,9 @@ impl DaemonApp {
             .get_session(&request.session_id)?
             .active_provider_run_id()
             .map(str::to_owned);
+        let recipients = self
+            .attachments
+            .list_session_attachment_ids(&request.session_id);
         let run = self.providers.launch_run(&mut self.sessions, request)?;
         if let Err(error) = self.pty.spawn_for_run(&run) {
             let _ = self
@@ -114,6 +126,7 @@ impl DaemonApp {
                         self.terminal.record_notice(
                             run.session_id(),
                             Some(resumed_run.id()),
+                            recipients,
                             format!(
                                 "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
                                 run.session_id(),
@@ -125,6 +138,7 @@ impl DaemonApp {
                         self.terminal.record_notice(
                             run.session_id(),
                             None,
+                            recipients,
                             format!(
                                 "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
                                 run.session_id(),
@@ -139,6 +153,117 @@ impl DaemonApp {
         Ok(run)
     }
 
+    pub fn submit_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        prompt: &str,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let session_before = self.sessions.get_session(session_id)?;
+        let provider_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+
+        let (_session, outcome) = self
+            .sessions
+            .submit_prompt(session_id, attachment_id, prompt)?;
+
+        match &outcome {
+            PromptSubmissionOutcome::Started { prompt } => {
+                if let Err(error) = self.send_provider_input(
+                    session_id,
+                    &provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt().as_bytes(),
+                ) {
+                    let _ = self.sessions.cancel_active_prompt(session_id, prompt.id());
+                    return Err(error);
+                }
+            }
+            PromptSubmissionOutcome::Queued { prompt } => {
+                self.terminal.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.other_attachment_ids(session_id, attachment_id),
+                    format!(
+                        "A queued message from attachment `{}` was added to session `{}` as `{}`. Queue depth is now {}.",
+                        attachment_id,
+                        session_id,
+                        prompt.id(),
+                        session_before.queued_prompts().len() + 1
+                    ),
+                );
+            }
+        }
+
+        Ok(outcome)
+    }
+
+    pub fn complete_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PromptCompletion, DaemonError> {
+        let provider_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        let (_session, completed) = self.sessions.complete_active_prompt(session_id)?;
+        let next_candidate = self.sessions.peek_next_queued_prompt(session_id)?;
+        let started_next = if let Some(next) = next_candidate {
+            self.send_provider_input(
+                session_id,
+                &provider_run_id,
+                next.source_attachment_id(),
+                next.prompt().as_bytes(),
+            )?;
+
+            self.sessions.activate_next_queued_prompt(session_id)?.1
+        } else {
+            None
+        };
+
+        Ok(PromptCompletion {
+            completed,
+            started_next,
+        })
+    }
+
+    pub fn update_session_config(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        values: BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<SessionConfigState, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let (_session, config) =
+            self.sessions
+                .update_config(session_id, attachment_id, values, requires_idle)?;
+
+        self.terminal.record_notice(
+            session_id,
+            None,
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Session config updated to version {} by attachment `{}`.",
+                config.version(),
+                attachment_id
+            ),
+        );
+
+        Ok(config)
+    }
+
     pub fn send_provider_input(
         &mut self,
         session_id: &str,
@@ -146,7 +271,7 @@ impl DaemonApp {
         attachment_id: &str,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
-        self.ensure_controller_attachment(session_id, attachment_id)?;
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
 
         if provider_run.state() != crate::provider::ProviderRunState::Running {
@@ -265,20 +390,11 @@ impl DaemonApp {
             .collect())
     }
 
-    fn ensure_controller_attachment(
+    fn ensure_attachment_in_session(
         &self,
         session_id: &str,
         attachment_id: &str,
     ) -> Result<RuntimeAttachment, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-
-        if session.controller_attachment_id() != Some(attachment_id) {
-            return Err(DaemonError::AttachmentIsNotController {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
         let attachment = self.attachments.get_attachment(attachment_id)?;
         if attachment.session_id() != session_id {
             return Err(DaemonError::AttachmentNotInSession {
@@ -286,7 +402,6 @@ impl DaemonApp {
                 attachment_id: attachment_id.to_string(),
             });
         }
-
         Ok(attachment)
     }
 
@@ -305,6 +420,14 @@ impl DaemonApp {
         }
 
         Ok(provider_run)
+    }
+
+    fn other_attachment_ids(&self, session_id: &str, source_attachment_id: &str) -> Vec<String> {
+        self.attachments
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter(|attachment_id| attachment_id != source_attachment_id)
+            .collect()
     }
 
     pub fn startup_message(&self) -> String {

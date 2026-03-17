@@ -27,17 +27,16 @@ pub enum DaemonError {
         session_id: String,
         attachment_id: String,
     },
-    #[error("attachment `{attachment_id}` is not the controller for session `{session_id}`")]
-    AttachmentIsNotController {
-        session_id: String,
-        attachment_id: String,
-    },
     #[error("session `{session_id}` cannot perform `{operation}` while {status}")]
     SessionOperationNotAllowed {
         session_id: String,
         status: SessionStatus,
         operation: &'static str,
     },
+    #[error("session `{session_id}` has no active prompt")]
+    NoActivePrompt { session_id: String },
+    #[error("session `{session_id}` rejected the config change while a prompt is running")]
+    ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
     #[error("provider run `{provider_run_id}` was not found")]

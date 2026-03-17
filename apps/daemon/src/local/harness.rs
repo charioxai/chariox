@@ -3,20 +3,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::DaemonApp;
-use crate::attachment::{AttachmentMode, ClientCapabilityLevel};
+use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
     AttachToSessionRequest, EndSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-    LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest,
-    SendTerminalInputRequest,
+    LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
 };
 use crate::session::CreateSessionRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalHarnessReport {
     pub session_id: String,
-    pub controller_attachment_id: String,
-    pub observer_attachment_id: String,
+    pub prompt_attachment_id: String,
+    pub second_attachment_id: String,
     pub provider_run_id: String,
     pub output_preview: String,
 }
@@ -29,24 +28,22 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
         _ => unreachable!("create-session must return SessionCreated"),
     };
 
-    let controller = match app.handle_local_request(LocalDaemonRequest::AttachToSession(
+    let prompt_source = match app.handle_local_request(LocalDaemonRequest::AttachToSession(
         AttachToSessionRequest {
             session_id: session.id().to_string(),
-            client_id: "client-controller".to_string(),
+            client_id: "client-primary".to_string(),
             capability_level: ClientCapabilityLevel::FullTerminal,
-            mode: AttachmentMode::Controller,
         },
     ))? {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => unreachable!("attach must return SessionAttached"),
     };
 
-    let observer = match app.handle_local_request(LocalDaemonRequest::AttachToSession(
+    let second = match app.handle_local_request(LocalDaemonRequest::AttachToSession(
         AttachToSessionRequest {
             session_id: session.id().to_string(),
-            client_id: "client-observer".to_string(),
+            client_id: "client-secondary".to_string(),
             capability_level: ClientCapabilityLevel::InteractiveStructured,
-            mode: AttachmentMode::Observer,
         },
     ))? {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
@@ -73,13 +70,11 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
             rows: 30,
         }))?;
 
-    let _ = app.handle_local_request(LocalDaemonRequest::SendTerminalInput(
-        SendTerminalInputRequest {
-            session_id: session.id().to_string(),
-            attachment_id: controller.id().to_string(),
-            bytes: b"harness smoke\n".to_vec(),
-        },
-    ))?;
+    let _ = app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id: prompt_source.id().to_string(),
+        prompt: "harness smoke\n".to_string(),
+    }))?;
 
     let output_preview = wait_for_output(app, session.id())?;
 
@@ -89,8 +84,8 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
 
     Ok(LocalHarnessReport {
         session_id: session.id().to_string(),
-        controller_attachment_id: controller.id().to_string(),
-        observer_attachment_id: observer.id().to_string(),
+        prompt_attachment_id: prompt_source.id().to_string(),
+        second_attachment_id: second.id().to_string(),
         provider_run_id: provider_run.id().to_string(),
         output_preview,
     })

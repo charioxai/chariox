@@ -31,6 +31,12 @@ enum ProviderRunState {
   ended
 }
 
+enum PromptStatus {
+  queued
+  running
+  completed
+}
+
 enum ClientCapabilityLevel {
   full_terminal
   interactive_structured
@@ -151,6 +157,8 @@ model Session {
   status              SessionStatus
   activeProviderRunId String?             @unique
   activeWorkflowRunId String?             @unique
+  activePromptId      String?             @unique
+  configVersion       Int                 @default(0)
   workspace           Workspace           @relation(fields: [workspaceId], references: [id])
   worktree            Worktree            @relation(fields: [worktreeId], references: [id])
   hostMachine         Machine             @relation("SessionHostMachine", fields: [hostMachineId], references: [id])
@@ -159,7 +167,8 @@ model Session {
   activeWorkflowRun   WorkflowRun?        @relation("ActiveWorkflowRun", fields: [activeWorkflowRunId], references: [id])
   providerRuns        ProviderRun[]       @relation("SessionProviderRuns")
   attachments         SessionAttachment[]
-  controllerLeases    ControllerLease[]
+  promptQueueItems    PromptQueueItem[]
+  configState         SessionConfigState?
   schedules           Schedule[]
   workflowDefinitions WorkflowDefinition[]
   workflowRuns        WorkflowRun[]       @relation("SessionWorkflowRuns")
@@ -182,24 +191,35 @@ model ProviderRun {
 }
 
 model SessionAttachment {
-  id               String                @id @default(cuid())
+  id               String              @id @default(cuid())
   sessionId        String
   clientId         String
   capabilityLevel  ClientCapabilityLevel
-  isObserver       Boolean               @default(true)
-  joinedAt         DateTime              @default(now())
-  session          Session               @relation(fields: [sessionId], references: [id])
-  controllerLeases ControllerLease[]
+  joinedAt         DateTime            @default(now())
+  session          Session             @relation(fields: [sessionId], references: [id])
+  promptQueueItems PromptQueueItem[]
 }
 
-model ControllerLease {
-  id           String            @id @default(cuid())
-  sessionId    String
-  attachmentId String
-  grantedAt    DateTime          @default(now())
-  expiresAt    DateTime?
-  session      Session           @relation(fields: [sessionId], references: [id])
-  attachment   SessionAttachment @relation(fields: [attachmentId], references: [id])
+model PromptQueueItem {
+  id                 String            @id @default(cuid())
+  sessionId          String
+  sourceAttachmentId String
+  prompt             String
+  status             PromptStatus
+  submittedAt        DateTime          @default(now())
+  startedAt          DateTime?
+  completedAt        DateTime?
+  session            Session           @relation(fields: [sessionId], references: [id])
+  sourceAttachment   SessionAttachment @relation(fields: [sourceAttachmentId], references: [id])
+}
+
+model SessionConfigState {
+  sessionId              String   @id
+  version                Int      @default(0)
+  values                 String   @default("{}")
+  updatedByAttachmentId  String?
+  updatedAt              DateTime @default(now())
+  session                Session  @relation(fields: [sessionId], references: [id])
 }
 
 model Schedule {

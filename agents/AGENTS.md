@@ -394,18 +394,24 @@ Examples:
 Arroba command example:
 - `<reserved character for arroba commands>compact` triggers daemon-managed context compaction
 
-Attachment modes:
-- observer
-- controller
+All attachments in a session MAY submit prompts and request supported config changes.
 
-There is one controller per session at a time.
+Required rules:
 
-Control can be instantly stolen.
-When control is stolen, the previous controller remains attached as observer.
+- the daemon MUST remain the single source of truth for prompt scheduling and session config state
+- attachments MUST NOT maintain conflicting local authority over queued work or session config
+- at most one prompt may execute at a time per single-agent session
+- if a prompt is submitted while another prompt is running, the daemon MUST enqueue it
+- when a prompt is enqueued, the daemon MUST notify all other attachments in the session that a queued message exists and expose the canonical queue state
+- attachments SHOULD render daemon-reported queue/config state rather than assuming local state is authoritative
 
-A single client may control multiple sessions at once if it has multiple tabs/attachments.
+Config update rules:
 
-Control is per session, not per client.
+- config changes that are safe during execution MAY be applied immediately
+- config changes that are not safe during execution MUST be rejected with an explicit busy-state error while a prompt is running
+- after an accepted config change, the daemon MUST propagate the canonical updated config state to all attachments in the session
+
+A single client may interact with multiple sessions at once if it has multiple tabs or attachments.
 
 ## Command System
 
@@ -592,7 +598,7 @@ Operational metadata examples:
 - attachments
 - schedules
 - provider run metadata
-- presence/controller info
+- prompt queue and session config state
 
 If later features require persistence of content, storage design can be revisited.
 
@@ -616,7 +622,8 @@ Likely entities:
 - AggregationState
 - ProviderRun
 - SessionAttachment
-- ControllerLease
+- PromptQueueItem
+- SessionConfigState
 - Schedule
 
 Possible future entities:
@@ -759,14 +766,25 @@ Useful conceptual fields:
 - session_id
 - client_id
 - transport_type
-- mode
 - connected_at
 - last_seen_at
 
-### ControllerLease
+### PromptQueueItem
+- id
 - session_id
-- holder_attachment_id
-- acquired_at
+- source_attachment_id
+- prompt_payload
+- status
+- submitted_at
+- started_at
+- completed_at
+
+### SessionConfigState
+- session_id
+- version
+- config_payload
+- updated_by_attachment_id
+- updated_at
 
 ### Schedule
 - id
@@ -919,7 +937,7 @@ Arroba should:
 
 M0 foundations are complete.
 M1 is now in progress.
-The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, a workflow-oriented Prisma schema baseline, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, provider-run orchestration, PTY-backed terminal fan-out, and a local daemon smoke harness. Baseline CI coverage for TypeScript and Rust verification remains in place.
+The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, a workflow-oriented Prisma schema baseline, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, shared attachment participation, provider-run orchestration, PTY-backed terminal fan-out, and a local daemon smoke harness. Baseline CI coverage for TypeScript and Rust verification remains in place.
 
 Related architecture docs:
 - docs/spec-v1.md

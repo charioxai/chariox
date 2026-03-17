@@ -1,16 +1,20 @@
+use std::collections::BTreeMap;
+
 use crate::app::DaemonApp;
-use crate::attachment::{AttachRequest, AttachmentMode, ClientCapabilityLevel, RuntimeAttachment};
+use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
-use crate::session::{CreateSessionRequest, RuntimeSession};
-use crate::terminal::TerminalOutputRecord;
+use crate::session::{
+    CreateSessionRequest, PromptCompletion, PromptSubmissionOutcome, RuntimeSession,
+    SessionConfigState,
+};
+use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachToSessionRequest {
     pub session_id: String,
     pub client_id: String,
     pub capability_level: ClientCapabilityLevel,
-    pub mode: AttachmentMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,10 +32,33 @@ pub struct DetachFromSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SendTerminalInputRequest {
+pub struct SubmitPromptRequest {
     pub session_id: String,
     pub attachment_id: String,
-    pub bytes: Vec<u8>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletePromptRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateSessionConfigRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub values: BTreeMap<String, String>,
+    pub requires_idle: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetSessionStateRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PollRuntimeNoticesRequest {
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +84,11 @@ pub enum LocalDaemonRequest {
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
-    SendTerminalInput(SendTerminalInputRequest),
+    GetSessionState(GetSessionStateRequest),
+    PollRuntimeNotices(PollRuntimeNoticesRequest),
+    SubmitPrompt(SubmitPromptRequest),
+    CompletePrompt(CompletePromptRequest),
+    UpdateSessionConfig(UpdateSessionConfigRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     EndSession(EndSessionRequest),
@@ -77,9 +108,22 @@ pub enum LocalDaemonResponse {
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,
     },
-    TerminalInputAccepted {
-        session_id: String,
-        attachment_id: String,
+    SessionState {
+        session: RuntimeSession,
+    },
+    RuntimeNotices {
+        notices: Vec<RuntimeNoticeRecord>,
+    },
+    PromptSubmitted {
+        outcome: PromptSubmissionOutcome,
+        session: RuntimeSession,
+    },
+    PromptCompleted {
+        completion: PromptCompletion,
+    },
+    SessionConfigUpdated {
+        config: SessionConfigState,
+        session: RuntimeSession,
     },
     TerminalResized {
         session_id: String,
@@ -109,7 +153,6 @@ impl DaemonApp {
                         request.session_id,
                         request.client_id,
                         request.capability_level,
-                        request.mode,
                     ))?,
                 })
             }
@@ -129,21 +172,43 @@ impl DaemonApp {
                     ))?,
                 })
             }
-            LocalDaemonRequest::SendTerminalInput(request) => {
-                self.send_terminal_input(
+            LocalDaemonRequest::GetSessionState(request) => Ok(LocalDaemonResponse::SessionState {
+                session: self.sessions().get_session(&request.session_id)?,
+            }),
+            LocalDaemonRequest::PollRuntimeNotices(request) => {
+                Ok(LocalDaemonResponse::RuntimeNotices {
+                    notices: self
+                        .terminal_mut()
+                        .drain_notice_records(&request.session_id),
+                })
+            }
+            LocalDaemonRequest::SubmitPrompt(request) => {
+                let outcome = self.submit_prompt(
                     &request.session_id,
                     &request.attachment_id,
-                    &request.bytes,
+                    &request.prompt,
                 )?;
-
-                Ok(LocalDaemonResponse::TerminalInputAccepted {
-                    session_id: request.session_id,
-                    attachment_id: request.attachment_id,
+                let session = self.sessions().get_session(&request.session_id)?;
+                Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
+            }
+            LocalDaemonRequest::CompletePrompt(request) => {
+                Ok(LocalDaemonResponse::PromptCompleted {
+                    completion: self.complete_active_prompt(&request.session_id)?,
                 })
+            }
+            LocalDaemonRequest::UpdateSessionConfig(request) => {
+                let session_id = request.session_id.clone();
+                let config = self.update_session_config(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.values,
+                    request.requires_idle,
+                )?;
+                let session = self.sessions().get_session(&session_id)?;
+                Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
             }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 self.resize_terminal(&request.session_id, request.cols, request.rows)?;
-
                 Ok(LocalDaemonResponse::TerminalResized {
                     session_id: request.session_id,
                     cols: request.cols,
@@ -164,21 +229,22 @@ impl DaemonApp {
 
 #[cfg(test)]
 mod tests {
-    use crate::attachment::{AttachmentMode, ClientCapabilityLevel};
-    use crate::session::CreateSessionRequest;
+    use std::collections::BTreeMap;
+
+    use crate::attachment::ClientCapabilityLevel;
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
-        AttachToSessionRequest, DetachFromSessionRequest, EndSessionRequest,
-        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SendTerminalInputRequest,
+        AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest, EndSessionRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+        PollRuntimeNoticesRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
     fn local_request_api_supports_session_attach_and_end() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-
         let session = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -195,7 +261,6 @@ mod tests {
                     session_id: session.id().to_string(),
                     client_id: "client-1".to_string(),
                     capability_level: ClientCapabilityLevel::FullTerminal,
-                    mode: AttachmentMode::Controller,
                 },
             ))
             .expect("attach should succeed")
@@ -232,10 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn local_request_api_rejects_terminal_input_without_active_provider_run() {
+    fn local_request_api_rejects_prompt_without_active_provider_run() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-
         let session = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -245,14 +309,12 @@ mod tests {
             LocalDaemonResponse::SessionCreated { session } => session,
             _ => panic!("unexpected local response"),
         };
-
-        let controller = match app
+        let attachment = match app
             .handle_local_request(LocalDaemonRequest::AttachToSession(
                 AttachToSessionRequest {
                     session_id: session.id().to_string(),
                     client_id: "client-1".to_string(),
                     capability_level: ClientCapabilityLevel::FullTerminal,
-                    mode: AttachmentMode::Controller,
                 },
             ))
             .expect("attach should succeed")
@@ -262,19 +324,15 @@ mod tests {
         };
 
         let error = app
-            .handle_local_request(LocalDaemonRequest::SendTerminalInput(
-                SendTerminalInputRequest {
-                    session_id: session.id().to_string(),
-                    attachment_id: controller.id().to_string(),
-                    bytes: b"whoami\n".to_vec(),
-                },
-            ))
-            .expect_err("terminal input should fail without an active provider run");
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                prompt: "whoami".to_string(),
+            }))
+            .expect_err("prompt submit should fail without active provider run");
 
         match error {
-            DaemonError::NoActiveProviderRun { session_id } => {
-                assert_eq!(session_id, session.id());
-            }
+            DaemonError::NoActiveProviderRun { session_id } => assert_eq!(session_id, session.id()),
             other => panic!("unexpected error: {other}"),
         }
     }
@@ -283,7 +341,6 @@ mod tests {
     fn local_request_api_rejects_invalid_provider_adapter() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-
         let session = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -308,17 +365,16 @@ mod tests {
 
         match error {
             DaemonError::ProviderAdapterNotFound { adapter_key } => {
-                assert_eq!(adapter_key, "missing-adapter");
+                assert_eq!(adapter_key, "missing-adapter")
             }
             other => panic!("unexpected error: {other}"),
         }
     }
 
     #[test]
-    fn local_request_api_rejects_terminal_input_from_non_controller() {
+    fn local_request_api_exposes_queue_config_and_notices() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-
         let session = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -328,38 +384,33 @@ mod tests {
             LocalDaemonResponse::SessionCreated { session } => session,
             _ => panic!("unexpected local response"),
         };
-
-        let _controller = match app
+        let a = match app
             .handle_local_request(LocalDaemonRequest::AttachToSession(
                 AttachToSessionRequest {
                     session_id: session.id().to_string(),
-                    client_id: "controller".to_string(),
+                    client_id: "client-a".to_string(),
                     capability_level: ClientCapabilityLevel::FullTerminal,
-                    mode: AttachmentMode::Controller,
                 },
             ))
-            .expect("controller attach should succeed")
+            .expect("attach should succeed")
         {
             LocalDaemonResponse::SessionAttached { attachment } => attachment,
             _ => panic!("unexpected local response"),
         };
-
-        let observer = match app
+        let b = match app
             .handle_local_request(LocalDaemonRequest::AttachToSession(
                 AttachToSessionRequest {
                     session_id: session.id().to_string(),
-                    client_id: "observer".to_string(),
+                    client_id: "client-b".to_string(),
                     capability_level: ClientCapabilityLevel::InteractiveStructured,
-                    mode: AttachmentMode::Observer,
                 },
             ))
-            .expect("observer attach should succeed")
+            .expect("attach should succeed")
         {
             LocalDaemonResponse::SessionAttached { attachment } => attachment,
             _ => panic!("unexpected local response"),
         };
-
-        let _run = match app
+        let _ = app
             .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
@@ -369,31 +420,96 @@ mod tests {
                     model: "sonnet".to_string(),
                 },
             ))
-            .expect("provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+            .expect("provider launch should succeed");
 
-        let error = app
-            .handle_local_request(LocalDaemonRequest::SendTerminalInput(
-                SendTerminalInputRequest {
+        let first = app
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: a.id().to_string(),
+                prompt: "first".to_string(),
+            }))
+            .expect("first prompt should start");
+        let second = app
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: b.id().to_string(),
+                prompt: "second".to_string(),
+            }))
+            .expect("second prompt should queue");
+        let config = app
+            .handle_local_request(LocalDaemonRequest::UpdateSessionConfig(
+                UpdateSessionConfigRequest {
                     session_id: session.id().to_string(),
-                    attachment_id: observer.id().to_string(),
-                    bytes: b"pwd\n".to_vec(),
+                    attachment_id: a.id().to_string(),
+                    values: BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                    requires_idle: false,
                 },
             ))
-            .expect_err("non-controller terminal input should be rejected");
+            .expect("config update should succeed");
 
-        match error {
-            DaemonError::AttachmentIsNotController {
-                session_id,
-                attachment_id,
+        match first {
+            LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Started { .. },
+                session,
             } => {
-                assert_eq!(session_id, session.id());
-                assert_eq!(attachment_id, observer.id());
+                assert!(session.active_prompt().is_some());
             }
-            other => panic!("unexpected error: {other}"),
+            _ => panic!("unexpected first prompt response"),
+        }
+        match second {
+            LocalDaemonResponse::PromptSubmitted {
+                outcome: PromptSubmissionOutcome::Queued { .. },
+                session,
+            } => {
+                assert_eq!(session.queued_prompts().len(), 1);
+            }
+            _ => panic!("unexpected second prompt response"),
+        }
+        match config {
+            LocalDaemonResponse::SessionConfigUpdated { config, session } => {
+                assert_eq!(config.version(), 1);
+                assert_eq!(session.config_state().version(), 1);
+            }
+            _ => panic!("unexpected config response"),
+        }
+
+        let notices = app
+            .handle_local_request(LocalDaemonRequest::PollRuntimeNotices(
+                PollRuntimeNoticesRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("notice polling should succeed");
+        match notices {
+            LocalDaemonResponse::RuntimeNotices { notices } => assert!(!notices.is_empty()),
+            _ => panic!("unexpected notices response"),
+        }
+
+        let state = app
+            .handle_local_request(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("state request should succeed");
+        match state {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(session.queued_prompts().len(), 1);
+                assert_eq!(session.config_state().version(), 1);
+            }
+            _ => panic!("unexpected state response"),
+        }
+
+        let completed = app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("complete prompt should succeed");
+        match completed {
+            LocalDaemonResponse::PromptCompleted { completion } => {
+                assert!(completion.started_next.is_some())
+            }
+            _ => panic!("unexpected completion response"),
         }
     }
 }

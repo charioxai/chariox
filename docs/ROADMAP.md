@@ -57,7 +57,7 @@ Outcomes:
 - daemon process lifecycle
 - session lifecycle (create/attach/detach/end)
 - PTY manager for provider runs
-- multi-attachment support + controller/observer model
+- multi-attachment support with daemon-owned prompt queueing and canonical config propagation
 - parked provider run support with one active run at a time
 - workflow-compatible runtime foundations so later multi-agent graph execution can be added without redesigning session/provider/worktree ownership
 

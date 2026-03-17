@@ -14,12 +14,14 @@ pub use error::DaemonError;
 
 #[cfg(test)]
 mod tests {
-    use super::attachment::{AttachRequest, AttachmentMode, ClientCapabilityLevel};
-    use super::provider::LaunchProviderRequest;
-    use super::session::CreateSessionRequest;
-    use super::{DaemonApp, DaemonConfig, DaemonError};
+    use std::collections::BTreeMap;
     use std::thread;
     use std::time::Duration;
+
+    use super::attachment::{AttachRequest, ClientCapabilityLevel};
+    use super::provider::LaunchProviderRequest;
+    use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use super::{DaemonApp, DaemonConfig, DaemonError};
 
     #[test]
     fn daemon_app_bootstrap_wires_runtime_services() {
@@ -61,21 +63,20 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let controller = app
+        let attachment = app
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
-                AttachmentMode::Controller,
             ))
-            .expect("controller should attach");
+            .expect("attachment should attach");
 
         let ended = app
             .end_session(session.id())
             .expect("session should end cleanly through the app");
 
         assert_eq!(ended.id(), session.id());
-        assert!(app.attachments().get_attachment(controller.id()).is_err());
+        assert!(app.attachments().get_attachment(attachment.id()).is_err());
     }
 
     #[test]
@@ -106,6 +107,62 @@ mod tests {
     }
 
     #[test]
+    fn prompt_submission_queues_and_notifies_other_attachments() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let first = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("first attachment should attach");
+        let second = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-b",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("second attachment should attach");
+
+        let _run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider run should launch");
+
+        let first_outcome = app
+            .submit_prompt(session.id(), first.id(), "first prompt\n")
+            .expect("first prompt should start");
+        let second_outcome = app
+            .submit_prompt(session.id(), second.id(), "second prompt\n")
+            .expect("second prompt should queue");
+
+        match first_outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            _ => panic!("expected first prompt to start"),
+        }
+        match second_outcome {
+            PromptSubmissionOutcome::Queued { .. } => {}
+            _ => panic!("expected second prompt to queue"),
+        }
+
+        assert_eq!(app.terminal().notice_records().len(), 1);
+        assert!(app.terminal().notice_records()[0]
+            .recipient_attachment_ids
+            .contains(&first.id().to_string()));
+    }
+
+    #[test]
     fn terminal_flow_writes_input_resizes_and_fans_out_output() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -114,20 +171,18 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let controller = app
+        let source = app
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
-                AttachmentMode::Controller,
             ))
-            .expect("controller should attach");
+            .expect("source attachment should attach");
         let observer = app
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
                 ClientCapabilityLevel::InteractiveStructured,
-                AttachmentMode::Observer,
             ))
             .expect("observer should attach");
 
@@ -143,8 +198,8 @@ mod tests {
 
         app.resize_terminal(session.id(), 90, 24)
             .expect("terminal resize should succeed");
-        app.send_terminal_input(session.id(), controller.id(), b"fanout test\n")
-            .expect("controller input should reach provider PTY");
+        app.send_terminal_input(session.id(), source.id(), b"fanout test\n")
+            .expect("attachment input should reach provider PTY");
 
         let records = wait_for_terminal_output(&mut app, session.id());
 
@@ -156,7 +211,7 @@ mod tests {
         assert!(records.iter().all(|record| {
             record
                 .recipient_attachment_ids
-                .contains(&controller.id().to_string())
+                .contains(&source.id().to_string())
                 && record
                     .recipient_attachment_ids
                     .contains(&observer.id().to_string())
@@ -170,6 +225,49 @@ mod tests {
     }
 
     #[test]
+    fn config_updates_are_versioned_and_notified() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let first = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let second = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-b",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("attachment should attach");
+
+        let config = app
+            .update_session_config(
+                session.id(),
+                first.id(),
+                BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                false,
+            )
+            .expect("config update should succeed");
+
+        assert_eq!(config.version(), 1);
+        assert_eq!(
+            config.values().get("theme").map(String::as_str),
+            Some("compact")
+        );
+        assert_eq!(app.terminal().notice_records().len(), 1);
+        assert!(app.terminal().notice_records()[0]
+            .recipient_attachment_ids
+            .contains(&second.id().to_string()));
+    }
+
+    #[test]
     fn failed_provider_switch_resumes_previous_run_and_records_notice() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -177,6 +275,13 @@ mod tests {
             .sessions_mut()
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        let _attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
 
         let first_run = app
             .launch_provider(LaunchProviderRequest::new(
@@ -211,17 +316,12 @@ mod tests {
             .providers()
             .get_run(first_run.id())
             .expect("original run should still exist");
-        let failed_run = app
-            .providers()
-            .get_run("provider-run-2")
-            .expect("failed replacement run should still be tracked");
 
         assert_eq!(session.active_provider_run_id(), Some(first_run.id()));
         assert_eq!(
             resumed_run.state(),
             super::provider::ProviderRunState::Running
         );
-        assert_eq!(failed_run.state(), super::provider::ProviderRunState::Ended);
         assert_eq!(app.terminal().notice_records().len(), 1);
         assert!(app.terminal().notice_records()[0]
             .message

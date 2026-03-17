@@ -51,7 +51,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Recommended M1 execution order:
   1. daemon runtime skeleton
   2. session lifecycle service
-  3. attachment/controller lease logic
+  3. attachment and shared-session interaction logic
   4. provider adapter baseline
   5. PTY manager and terminal fan-out
   6. local harness/API
@@ -71,17 +71,16 @@ Chronological notes to preserve execution context between contributors/agents.
 ### M1-002 implementation update
 
 - Implemented an in-memory session lifecycle service in `apps/daemon/src/session/`.
-- Added runtime session records for workspace/worktree/host ownership, active provider run, attachment IDs, and controller lease state.
+- Added runtime session records for workspace/worktree/host ownership, active provider run, and attachment membership state. This was later extended to prompt-queue and config-state ownership.
 - Added explicit session transition validation for `created`, `active`, `parked`, and `ended` states.
 - Added Rust unit tests for create/get/list/end flows, invalid transitions, and unknown-session lookup behavior.
 - Refined the session model to remove duplicated derived state, keep host metadata out of the in-memory store, and encapsulate session mutation behind methods.
 
 ### M1-003 implementation update
 
-- Added a real `attachment` runtime module with in-memory attachment records, capability levels, observer/controller modes, and event recording.
-- Implemented attach, detach, controller acquire, controller release, and controller handoff behavior against the session runtime.
-- Enforced single-controller semantics by demoting the previous controller to observer whenever another attachment acquires control.
-- Added Rust tests covering multiple observers, controller handoff, and detach cleanup for the active controller.
+- Initial implementation added a real `attachment` runtime module with in-memory attachment records and daemon-facing event recording.
+- The original implementation used controller-style semantics, which were later superseded by the shared-attachment prompt-queue/config-state model.
+- Current runtime behavior is governed by the later shared-attachment refactor notes in this log.
 
 ## 2026-03-17
 
@@ -114,7 +113,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Integrated `portable-pty` as the PTY baseline for the daemon runtime.
 - Added a PTY manager for spawn, write, resize, output draining, and process cleanup keyed by provider run.
-- Added terminal stream records for controller input routing and multi-attachment output fan-out.
+- Added terminal stream records for attachment-driven input routing and multi-attachment output fan-out.
 - Added daemon-level tests covering PTY spawn, terminal input/write path, resize behavior, and output fan-out to multiple attachments.
 
 ### Runtime hardening update
@@ -125,7 +124,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M1-006 implementation update
 
-- Added a local daemon request/response API in `apps/daemon/src/local/` covering create, attach, detach, provider launch, terminal input, terminal output polling, terminal resize, and session end flows.
+- Added a local daemon request/response API in `apps/daemon/src/local/` covering create, attach, detach, provider launch, session state reads, notice polling, prompt submit/complete, config updates, terminal output polling, terminal resize, and session end flows.
 - Added a local smoke harness binary in `apps/daemon/src/bin/arroba-daemon-harness.rs` plus runtime tests proving a managed-session path through the PTY and terminal fan-out surfaces.
 - Updated `docs/PROTOCOL.md` to record the local-first daemon API baseline for M1 flows.
 
@@ -133,3 +132,16 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Expanded `packages/domain/src/index.ts` and `packages/domain/src/index.test.ts` to reflect workflow-oriented runtime naming, richer workflow entities, handoff/completion fields, worktree-isolation modes, and delivery statuses.
 - Updated `prisma/schema.prisma` to add workflow-oriented enums, execution-mode/session fields, and baseline models for workflow definitions, runs, nodes, edges, node messages, worktree assignments, and aggregation state.
+
+### M1-007 implementation update
+
+- Added daemon integration tests in `apps/daemon/tests/runtime_integration.rs`.
+- Covered session lifecycle cleanup, prompt queue/notification behavior, provider run switching with PTY-backed terminal flow, and the local managed-session smoke harness path.
+- Marked the M1 testing/verification checklist items complete now that daemon integration coverage passes and the documented JS workspace verification plus dedicated daemon verification commands both pass.
+
+### Shared-attachment refactor update
+
+- Replaced the earlier controller/observer runtime model with shared attachment participation in the daemon runtime.
+- Added daemon-owned prompt queue state, active-prompt completion/advancement, and queued-message notices for the other attachments in a session.
+- Added canonical session config state with versioned updates plus propagation notices to the rest of the session attachments.
+- Updated local daemon APIs, domain types, Prisma schema, and daemon tests to match the shared-attachment queue/config model.

@@ -15,7 +15,7 @@ From `docs/ROADMAP.md`, M1 outcomes are:
 - daemon process lifecycle
 - session lifecycle (`create`, `attach`, `detach`, `end`)
 - PTY manager for provider runs
-- multi-attachment support + controller/observer model
+- multi-attachment support with daemon-owned prompt queueing and canonical config propagation
 - parked provider run support with one active run at a time
 - workflow-compatible runtime ownership so later multi-agent graph execution can reuse session/provider/worktree foundations without redesign
 
@@ -52,7 +52,7 @@ apps/
         types.rs              # runtime-only session state structs
       attachment/
         mod.rs
-        service.rs            # attach/detach/controller lease logic
+        service.rs            # attach/detach and session membership logic
       provider/
         mod.rs
         registry.rs           # provider adapter lookup
@@ -104,23 +104,24 @@ The M1 implementation is not required to ship full workflow execution, but every
   - host daemon id
   - active provider run id
   - attachment set
-  - controller lease
+  - prompt queue state and canonical config state hooks
 - [x] Implement session lookup/listing in daemon memory.
 - [x] Implement session termination/end behavior.
 - [x] Define session state transitions and reject invalid transitions with explicit errors.
 - [x] Add unit tests for create/get/end session behavior.
 
-## 4.3 Attachment lifecycle and controller lease
+## 4.3 Attachment lifecycle and shared-session interaction model
 
-- [x] Implement attachment join for a session with capability level and observer/controller intent.
-- [x] Implement attachment detach and cleanup.
-- [x] Implement controller lease acquisition, release, and reassignment.
-- [x] Enforce that only one controlling attachment exists at a time.
-- [x] Broadcast or record attachment/controller events in a daemon-facing event model.
-- [x] Add tests for:
-  - multiple observers on one session
-  - controller handoff
-  - detach cleanup for the current controller
+- [ ] Implement attachment join for a session with capability level and shared participation semantics.
+- [ ] Implement attachment detach and cleanup.
+- [ ] Implement daemon-owned prompt queueing for prompts submitted while another prompt is running.
+- [ ] Notify all other attachments in the session when a prompt is queued and expose canonical queue state.
+- [ ] Implement canonical session config updates and propagation to all attachments.
+- [ ] Reject config updates that are unsafe while a prompt is running with an explicit busy-state error.
+- [ ] Add tests for:
+  - prompt queueing from multiple attachments in one session
+  - queued-message notifications to other attachments
+  - config propagation after accepted updates
 
 ## 4.4 Provider adapter baseline
 
@@ -140,7 +141,7 @@ The M1 implementation is not required to ship full workflow execution, but every
 - [x] Implement PTY spawn/read/write/resize operations behind a dedicated manager.
 - [x] Keep PTY byte stream handling isolated from structured daemon control state.
 - [x] Implement terminal output fan-out so multiple attachments can observe the same session stream.
-- [x] Implement terminal input routing from the current controlling attachment to the active provider PTY.
+- [x] Align prompt submission semantics with the shared-attachment queue model and keep raw terminal input outside the public local daemon API contract.
 - [x] Add tests or harness coverage for:
   - PTY spawn
   - input/write path
@@ -153,7 +154,11 @@ The M1 implementation is not required to ship full workflow execution, but every
   - create session
   - attach to session
   - detach from session
-  - send terminal input
+  - get session state
+  - poll runtime notices
+  - submit prompt
+  - complete prompt
+  - update session config
   - receive terminal output
   - resize terminal
   - end session
@@ -162,7 +167,7 @@ The M1 implementation is not required to ship full workflow execution, but every
 
 ## 4.7 Domain and schema alignment
 
-- [x] Review `packages/domain` and add any M1 fields/enums needed for attachment/controller/provider runtime coherence.
+- [x] Review `packages/domain` and add any M1 fields/enums needed for attachment/shared-session/provider runtime coherence.
 - [x] Ensure domain and runtime naming remain compatible with future workflow entities (`WorkflowDefinition`, `WorkflowNode`, `WorkflowEdge`, `WorkflowRun`, `NodeRun`, `NodeMessage`, `WorktreeAssignment`, `AggregationState`).
 - [x] Ensure current session/provider/worktree fields do not assume single-agent execution as the only long-term runtime shape.
 - [x] Keep Prisma changes minimal unless M1 code truly requires persisted runtime metadata.
@@ -176,11 +181,11 @@ The M1 implementation is not required to ship full workflow execution, but every
 
 ## 4.9 Testing and verification
 
-- [ ] Add Rust unit tests for session lifecycle logic.
-- [ ] Add Rust integration tests for attachment/controller behavior.
-- [ ] Add Rust integration tests for provider run activation/parking behavior.
-- [ ] Add PTY/terminal conformance-oriented tests or smoke tests for local runtime behavior.
-- [ ] Ensure M0 verification still passes after M1 work lands.
+- [x] Add Rust unit tests for session lifecycle logic.
+- [ ] Add Rust integration tests for shared-attachment queue/config behavior.
+- [x] Add Rust integration tests for provider run activation/parking behavior.
+- [x] Add PTY/terminal conformance-oriented tests or smoke tests for local runtime behavior.
+- [x] Ensure documented JS workspace verification still passes after M1 work lands, and keep daemon verification passing through the dedicated Rust commands.
 
 ## 4.10 Documentation updates required in the same PR set
 
@@ -203,7 +208,7 @@ The M1 implementation is not required to ship full workflow execution, but every
 
 1. M1-001 daemon runtime skeleton and module layout
 2. M1-002 session service and in-memory runtime store
-3. M1-003 attachment lifecycle and controller lease
+3. M1-003 attachment lifecycle and shared-session interaction model
 4. M1-004 provider adapter baseline and provider run service
 5. M1-005 PTY manager and terminal stream fan-out
 6. M1-006 local daemon API/harness
@@ -236,7 +241,7 @@ M1 is complete when all are true:
 
 - [ ] A local daemon runtime can create and end sessions.
 - [ ] A provider process can be launched under daemon ownership through a PTY abstraction.
-- [ ] A session supports multiple attachments with a single active controller.
+- [ ] A session supports multiple attachments with daemon-owned prompt queueing and canonical config propagation.
 - [ ] Terminal input/output flows through the daemon without breaking provider-native PTY behavior.
 - [ ] Parked provider run behavior exists with one active run at a time.
 - [ ] A deterministic local harness or integration test proves the managed-session flow end to end.

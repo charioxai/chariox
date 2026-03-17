@@ -21,7 +21,7 @@ The current codebase provides:
 - a pnpm workspace for TypeScript packages
 - a minimal Fastify server with a health endpoint
 - a shared domain package for workflow-oriented core v1 entities
-- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, attachment/controller lease management, provider-run orchestration, and PTY-backed terminal fan-out
+- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a local daemon smoke harness for managed-session flows
 - a Prisma schema aligned with workflow-oriented runtime entities
 - baseline CI for TypeScript and Rust checks
@@ -51,7 +51,7 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-Today it includes the daemon bootstrap, in-memory session lifecycle, attachment/controller lease management, provider runtime orchestration, PTY-backed terminal streaming, and rollback notices for failed provider switches. Workflow execution surfaces are still being built.
+Today it includes the daemon bootstrap, in-memory session lifecycle, shared multi-attachment participation, prompt queueing, session config propagation, provider runtime orchestration, PTY-backed terminal streaming, and rollback notices for failed provider switches. Workflow execution surfaces are still being built.
 
 ### `apps/server`
 

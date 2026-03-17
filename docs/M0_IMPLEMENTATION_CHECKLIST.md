@@ -68,7 +68,7 @@ Exit criteria:
   - Session
   - ProviderRun
   - SessionAttachment
-  - ControllerLease
+  - PromptQueueItem / SessionConfigState baseline hooks for later shared-session interaction
   - Schedule
 - [x] Add minimal domain contract tests:
   - serialization/shape invariants

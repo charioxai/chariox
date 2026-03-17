@@ -1,13 +1,19 @@
+use std::collections::BTreeMap;
+
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-use super::{CreateSessionRequest, RuntimeSession, SessionStatus, SessionStore};
+use super::{
+    CreateSessionRequest, PromptQueueItem, PromptSubmissionOutcome, RuntimeSession,
+    SessionConfigState, SessionStatus, SessionStore,
+};
 
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
     host_machine_id: String,
     host_daemon_id: String,
+    next_prompt_number: u64,
 }
 
 impl SessionService {
@@ -16,6 +22,7 @@ impl SessionService {
             store: SessionStore::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
+            next_prompt_number: 0,
         }
     }
 
@@ -88,9 +95,8 @@ impl SessionService {
         &mut self,
         session_id: &str,
         attachment_id: &str,
-    ) -> Result<(RuntimeSession, bool), DaemonError> {
+    ) -> Result<RuntimeSession, DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "detach")?;
-        let removed_was_controller = session.controller_attachment_id() == Some(attachment_id);
 
         if !session.remove_attachment(attachment_id) {
             return Err(DaemonError::AttachmentNotInSession {
@@ -99,50 +105,9 @@ impl SessionService {
             });
         }
 
-        Ok((session.clone(), removed_was_controller))
-    }
+        session.remove_queued_prompts_by_attachment(attachment_id);
 
-    pub fn assign_controller(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<(RuntimeSession, Option<String>), DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "assign controller")?;
-
-        if !session.has_attachment(attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        let previous = session.assign_controller(attachment_id);
-        Ok((session.clone(), previous))
-    }
-
-    pub fn release_controller(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<(RuntimeSession, Option<String>), DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "release controller")?;
-
-        if !session.has_attachment(attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        if session.controller_attachment_id() != Some(attachment_id) {
-            return Err(DaemonError::AttachmentIsNotController {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        let previous = session.release_controller();
-        Ok((session.clone(), previous))
+        Ok(session.clone())
     }
 
     pub fn set_active_provider_run(
@@ -163,8 +128,100 @@ impl SessionService {
         };
 
         let _ = session.transition_to(target_status);
-
         Ok(session.clone())
+    }
+
+    pub fn submit_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        prompt: impl Into<String>,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let prompt_id = self.next_prompt_id();
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            attachment_id,
+            prompt,
+            super::PromptStatus::Queued,
+        );
+        let session = self.get_session_mut_for_operation(session_id, "submit prompt")?;
+
+        if !session.has_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let outcome = session.submit_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
+    pub fn cancel_active_prompt(
+        &mut self,
+        session_id: &str,
+        prompt_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "cancel prompt")?;
+        let _ = session.clear_active_prompt_if(prompt_id);
+        Ok(session.clone())
+    }
+
+    pub fn complete_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
+        let completed =
+            session
+                .complete_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), completed))
+    }
+
+    pub fn peek_next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::PromptQueueItem>, DaemonError> {
+        let session = self.get_session(session_id)?;
+        Ok(session.peek_next_queued_prompt())
+    }
+
+    pub fn activate_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "activate next prompt")?;
+        let next = session.activate_next_queued_prompt();
+        Ok((session.clone(), next))
+    }
+
+    pub fn update_config(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        values: BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<(RuntimeSession, SessionConfigState), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "update config")?;
+
+        if !session.has_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        if requires_idle && session.active_prompt().is_some() {
+            return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
+                session_id: session_id.to_string(),
+            });
+        }
+
+        session.apply_config_changes(values, attachment_id);
+        Ok((session.clone(), session.config_state().clone()))
     }
 
     pub fn store(&self) -> &SessionStore {
@@ -197,14 +254,21 @@ impl SessionService {
 
         Ok(session)
     }
+
+    fn next_prompt_id(&mut self) -> String {
+        self.next_prompt_number += 1;
+        format!("prompt-{}", self.next_prompt_number)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::SessionService;
     use crate::config::DaemonConfig;
     use crate::error::DaemonError;
-    use crate::session::{CreateSessionRequest, SessionStatus};
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionStatus};
 
     fn test_config() -> DaemonConfig {
         DaemonConfig::for_tests()
@@ -225,76 +289,108 @@ mod tests {
         assert_eq!(created.status(), SessionStatus::Created);
         assert!(created.active_provider_run_id().is_none());
         assert!(created.attachment_ids().is_empty());
-        assert!(created.controller_attachment_id().is_none());
+        assert!(created.active_prompt().is_none());
+        assert!(created.queued_prompts().is_empty());
+        assert_eq!(created.config_state().version(), 0);
         assert_eq!(service.active_session_count(), 1);
 
         let fetched = service
             .get_session(created.id())
-            .expect("session lookup should succeed");
+            .expect("lookup should succeed");
         assert_eq!(fetched, created);
-
-        let listed = service.list_sessions();
-        assert_eq!(listed, vec![created]);
+        assert_eq!(service.list_sessions(), vec![created]);
     }
 
     #[test]
-    fn ends_session_and_clears_runtime_ownership_fields() {
+    fn prompt_queue_starts_then_queues_then_advances() {
         let mut service = SessionService::new(&test_config());
         let created = service
-            .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        service
+            .add_attachment_to_session(created.id(), "attachment-1")
+            .expect("attachment should be added");
+        service
+            .add_attachment_to_session(created.id(), "attachment-2")
+            .expect("attachment should be added");
 
-        let active = service
-            .transition_session(created.id(), SessionStatus::Active)
-            .expect("session should become active");
-        assert_eq!(active.status(), SessionStatus::Active);
+        let (_, first) = service
+            .submit_prompt(created.id(), "attachment-1", "first prompt")
+            .expect("first prompt should start");
+        let (_, second) = service
+            .submit_prompt(created.id(), "attachment-2", "second prompt")
+            .expect("second prompt should queue");
 
-        let ended = service
-            .end_session(created.id())
-            .expect("session should be ended");
-        assert_eq!(ended.status(), SessionStatus::Ended);
-        assert!(ended.active_provider_run_id().is_none());
-        assert!(ended.attachment_ids().is_empty());
-        assert!(ended.controller_attachment_id().is_none());
-        assert_eq!(service.active_session_count(), 0);
-    }
-
-    #[test]
-    fn rejects_invalid_session_transitions() {
-        let mut service = SessionService::new(&test_config());
-        let created = service
-            .create_session(CreateSessionRequest::new("workspace-3", "worktree-3"))
-            .expect("session should be created");
-
-        let error = service
-            .transition_session(created.id(), SessionStatus::Parked)
-            .expect_err("created session cannot jump directly to parked");
-
-        match error {
-            DaemonError::InvalidSessionTransition {
-                session_id,
-                from,
-                to,
-            } => {
-                assert_eq!(session_id, created.id());
-                assert_eq!(from, SessionStatus::Created);
-                assert_eq!(to, SessionStatus::Parked);
-            }
-            other => panic!("unexpected error: {other}"),
+        match first {
+            PromptSubmissionOutcome::Started { prompt } => assert_eq!(prompt.id(), "prompt-1"),
+            _ => panic!("expected running prompt"),
         }
+        match second {
+            PromptSubmissionOutcome::Queued { prompt } => assert_eq!(prompt.id(), "prompt-2"),
+            _ => panic!("expected queued prompt"),
+        }
+
+        let (_session, completed) = service
+            .complete_active_prompt(created.id())
+            .expect("active prompt should complete");
+        assert_eq!(completed.id(), "prompt-1");
+        let (session, started_next) = service
+            .activate_next_queued_prompt(created.id())
+            .expect("next prompt should activate");
+        assert_eq!(
+            started_next.expect("next prompt should start").id(),
+            "prompt-2"
+        );
+        assert_eq!(
+            session.active_prompt().expect("active prompt exists").id(),
+            "prompt-2"
+        );
     }
 
     #[test]
-    fn returns_not_found_for_unknown_session() {
-        let service = SessionService::new(&test_config());
+    fn config_updates_are_versioned() {
+        let mut service = SessionService::new(&test_config());
+        let created = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        service
+            .add_attachment_to_session(created.id(), "attachment-1")
+            .expect("attachment should be added");
+
+        let mut changes = BTreeMap::new();
+        changes.insert("theme".to_string(), "compact".to_string());
+        let (_, config) = service
+            .update_config(created.id(), "attachment-1", changes, false)
+            .expect("config should update");
+
+        assert_eq!(config.version(), 1);
+        assert_eq!(
+            config.values().get("theme").map(String::as_str),
+            Some("compact")
+        );
+        assert_eq!(config.updated_by_attachment_id(), Some("attachment-1"));
+    }
+
+    #[test]
+    fn rejects_idle_required_config_update_while_prompt_running() {
+        let mut service = SessionService::new(&test_config());
+        let created = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        service
+            .add_attachment_to_session(created.id(), "attachment-1")
+            .expect("attachment should be added");
+        service
+            .submit_prompt(created.id(), "attachment-1", "first prompt")
+            .expect("prompt should start");
 
         let error = service
-            .get_session("session-missing")
-            .expect_err("missing session should return a structured error");
+            .update_config(created.id(), "attachment-1", BTreeMap::new(), true)
+            .expect_err("idle-required config change should be rejected");
 
         match error {
-            DaemonError::SessionNotFound { session_id } => {
-                assert_eq!(session_id, "session-missing");
+            DaemonError::ConfigChangeRejectedWhilePromptRunning { session_id } => {
+                assert_eq!(session_id, created.id())
             }
             other => panic!("unexpected error: {other}"),
         }

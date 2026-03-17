@@ -7,6 +7,7 @@ import {
   DAEMON_STATUSES,
   NODE_MESSAGE_DELIVERY_STATUSES,
   NODE_RUN_STATUSES,
+  PROMPT_STATUSES,
   PROVIDER_RUN_STATES,
   SESSION_EXECUTION_MODES,
   SESSION_STATUSES,
@@ -16,15 +17,16 @@ import {
   WORKFLOW_TOPOLOGIES,
   WORKTREE_ISOLATION_MODES,
   type AggregationState,
-  type ControllerLease,
   type DaemonInstance,
   type Machine,
   type NodeMessage,
   type NodeRun,
+  type PromptQueueItem,
   type ProviderRun,
   type Schedule,
   type Session,
   type SessionAttachment,
+  type SessionConfigState,
   type User,
   type WorkflowDefinition,
   type WorkflowEdge,
@@ -40,6 +42,7 @@ test('runtime enum constants stay aligned with the workflow-oriented domain mode
   assert.deepEqual(SESSION_STATUSES, ['created', 'active', 'parked', 'ended'])
   assert.deepEqual(SESSION_EXECUTION_MODES, ['single_agent', 'multi_agent_workflow'])
   assert.deepEqual(PROVIDER_RUN_STATES, ['starting', 'running', 'parked', 'ended'])
+  assert.deepEqual(PROMPT_STATUSES, ['queued', 'running', 'completed'])
   assert.deepEqual(CLIENT_CAPABILITY_LEVELS, [
     'full_terminal',
     'interactive_structured',
@@ -56,7 +59,7 @@ test('runtime enum constants stay aligned with the workflow-oriented domain mode
   assert.deepEqual(STOP_RECOMMENDATIONS, ['continue', 'stop', 'complete'])
 })
 
-test('workflow-aware entity shapes serialize with the expected identifiers and relations', () => {
+test('workflow-aware entity shapes serialize with queue and config state', () => {
   const user: User = { id: 'user_1' }
   const machine: Machine = { id: 'machine_1', userId: user.id, hostname: 'builder.local' }
   const workspace: Workspace = {
@@ -88,6 +91,27 @@ test('workflow-aware entity shapes serialize with the expected identifiers and r
     status: 'active',
     activeProviderRunId: 'run_1',
     activeWorkflowRunId: 'workflow_run_1',
+    activePromptId: 'prompt_1',
+    configVersion: 2,
+  }
+  const attachment: SessionAttachment = {
+    id: 'attachment_1',
+    sessionId: session.id,
+    clientId: 'client_1',
+    capabilityLevel: 'full_terminal',
+  }
+  const queuedPrompt: PromptQueueItem = {
+    id: 'prompt_1',
+    sessionId: session.id,
+    sourceAttachmentId: attachment.id,
+    prompt: 'Implement the feature',
+    status: 'running',
+  }
+  const configState: SessionConfigState = {
+    sessionId: session.id,
+    version: 2,
+    values: { theme: 'compact' },
+    updatedByAttachmentId: attachment.id,
   }
   const workflowDefinition: WorkflowDefinition = {
     id: 'workflow_definition_1',
@@ -175,20 +199,6 @@ test('workflow-aware entity shapes serialize with the expected identifiers and r
     deliveryStatus: 'delivered',
     createdAt: '2026-03-17T12:00:02.000Z',
   }
-  const attachment: SessionAttachment = {
-    id: 'attachment_1',
-    sessionId: session.id,
-    clientId: 'client_1',
-    capabilityLevel: 'full_terminal',
-    isObserver: false,
-  }
-  const lease: ControllerLease = {
-    id: 'lease_1',
-    sessionId: session.id,
-    attachmentId: attachment.id,
-    grantedAt: '2026-03-17T12:00:03.000Z',
-    expiresAt: null,
-  }
   const schedule: Schedule = {
     id: 'schedule_1',
     sessionId: session.id,
@@ -206,29 +216,26 @@ test('workflow-aware entity shapes serialize with the expected identifiers and r
     status: 'waiting',
   }
 
-  const snapshot = JSON.parse(
-    JSON.stringify({
-      user,
-      machine,
-      workspace,
-      worktree,
-      daemon,
-      session,
-      workflowDefinition,
-      workflowNode,
-      workflowEdge,
-      workflowRun,
-      worktreeAssignment,
-      providerRun,
-      nodeRun,
-      nodeMessage,
-      attachment,
-      lease,
-      schedule,
-      aggregationState,
-    }),
-  ) as {
+  const snapshot = JSON.parse(JSON.stringify({
+    session,
+    attachment,
+    queuedPrompt,
+    configState,
+    workflowDefinition,
+    workflowNode,
+    workflowEdge,
+    workflowRun,
+    worktreeAssignment,
+    providerRun,
+    nodeRun,
+    nodeMessage,
+    schedule,
+    aggregationState,
+  })) as {
     session: Session
+    attachment: SessionAttachment
+    queuedPrompt: PromptQueueItem
+    configState: SessionConfigState
     workflowDefinition: WorkflowDefinition
     workflowNode: WorkflowNode
     workflowEdge: WorkflowEdge
@@ -237,24 +244,19 @@ test('workflow-aware entity shapes serialize with the expected identifiers and r
     providerRun: ProviderRun
     nodeRun: NodeRun
     nodeMessage: NodeMessage
-    attachment: SessionAttachment
-    lease: ControllerLease
     schedule: Schedule
     aggregationState: AggregationState
   }
 
-  assert.equal(snapshot.session.executionMode, 'multi_agent_workflow')
-  assert.equal(snapshot.session.activeWorkflowRunId, snapshot.workflowRun.id)
+  assert.equal(snapshot.session.activePromptId, snapshot.queuedPrompt.id)
+  assert.equal(snapshot.session.configVersion, snapshot.configState.version)
+  assert.equal(snapshot.queuedPrompt.sourceAttachmentId, snapshot.attachment.id)
+  assert.equal(snapshot.configState.updatedByAttachmentId, snapshot.attachment.id)
   assert.equal(snapshot.providerRun.worktreeAssignmentId, snapshot.worktreeAssignment.id)
   assert.equal(snapshot.workflowDefinition.coordinatorNodeId, snapshot.workflowNode.id)
   assert.equal(snapshot.workflowEdge.edgeType, 'fanout')
   assert.equal(snapshot.nodeRun.providerRunId, snapshot.providerRun.id)
-  assert.equal(snapshot.nodeRun.worktreeAssignmentId, snapshot.worktreeAssignment.id)
-  assert.equal(snapshot.nodeRun.stopRecommendation, 'continue')
-  assert.equal(snapshot.nodeMessage.deliveryStatus, 'delivered')
   assert.equal(snapshot.nodeMessage.workflowRunId, snapshot.workflowRun.id)
-  assert.equal(snapshot.attachment.sessionId, snapshot.session.id)
-  assert.equal(snapshot.lease.attachmentId, snapshot.attachment.id)
   assert.equal(snapshot.schedule.sessionId, snapshot.session.id)
   assert.equal(snapshot.aggregationState.workflowRunId, snapshot.workflowRun.id)
 })

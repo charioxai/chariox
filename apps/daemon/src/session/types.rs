@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +30,13 @@ pub enum SessionExecutionMode {
     MultiAgentWorkflow,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PromptStatus {
+    Queued,
+    Running,
+    Completed,
+}
+
 impl fmt::Display for SessionExecutionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -55,6 +62,95 @@ impl fmt::Display for SessionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptQueueItem {
+    id: String,
+    source_attachment_id: String,
+    prompt: String,
+    status: PromptStatus,
+}
+
+impl PromptQueueItem {
+    pub fn new(
+        id: impl Into<String>,
+        source_attachment_id: impl Into<String>,
+        prompt: impl Into<String>,
+        status: PromptStatus,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source_attachment_id: source_attachment_id.into(),
+            prompt: prompt.into(),
+            status,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn source_attachment_id(&self) -> &str {
+        &self.source_attachment_id
+    }
+
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn status(&self) -> PromptStatus {
+        self.status
+    }
+
+    pub fn set_status(&mut self, status: PromptStatus) {
+        self.status = status;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionConfigState {
+    version: u64,
+    values: BTreeMap<String, String>,
+    updated_by_attachment_id: Option<String>,
+}
+
+impl SessionConfigState {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn values(&self) -> &BTreeMap<String, String> {
+        &self.values
+    }
+
+    pub fn updated_by_attachment_id(&self) -> Option<&str> {
+        self.updated_by_attachment_id.as_deref()
+    }
+
+    pub fn apply_changes(
+        &mut self,
+        values: BTreeMap<String, String>,
+        updated_by_attachment_id: impl Into<String>,
+    ) {
+        for (key, value) in values {
+            self.values.insert(key, value);
+        }
+        self.version += 1;
+        self.updated_by_attachment_id = Some(updated_by_attachment_id.into());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptSubmissionOutcome {
+    Started { prompt: PromptQueueItem },
+    Queued { prompt: PromptQueueItem },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptCompletion {
+    pub completed: PromptQueueItem,
+    pub started_next: Option<PromptQueueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSession {
     id: String,
     workspace_id: String,
@@ -65,7 +161,9 @@ pub struct RuntimeSession {
     status: SessionStatus,
     active_provider_run_id: Option<String>,
     attachment_ids: BTreeSet<String>,
-    controller_attachment_id: Option<String>,
+    active_prompt: Option<PromptQueueItem>,
+    queued_prompts: VecDeque<PromptQueueItem>,
+    config_state: SessionConfigState,
 }
 
 impl RuntimeSession {
@@ -86,48 +184,50 @@ impl RuntimeSession {
             status: SessionStatus::Created,
             active_provider_run_id: None,
             attachment_ids: BTreeSet::new(),
-            controller_attachment_id: None,
+            active_prompt: None,
+            queued_prompts: VecDeque::new(),
+            config_state: SessionConfigState::default(),
         }
     }
 
     pub fn id(&self) -> &str {
         &self.id
     }
-
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
-
     pub fn worktree_id(&self) -> &str {
         &self.worktree_id
     }
-
     pub fn host_machine_id(&self) -> &str {
         &self.host_machine_id
     }
-
     pub fn host_daemon_id(&self) -> &str {
         &self.host_daemon_id
     }
-
     pub fn status(&self) -> SessionStatus {
         self.status
     }
-
     pub fn execution_mode(&self) -> SessionExecutionMode {
         self.execution_mode
     }
-
     pub fn active_provider_run_id(&self) -> Option<&str> {
         self.active_provider_run_id.as_deref()
     }
-
     pub fn attachment_ids(&self) -> &BTreeSet<String> {
         &self.attachment_ids
     }
-
-    pub fn controller_attachment_id(&self) -> Option<&str> {
-        self.controller_attachment_id.as_deref()
+    pub fn active_prompt(&self) -> Option<&PromptQueueItem> {
+        self.active_prompt.as_ref()
+    }
+    pub fn has_active_prompt(&self) -> bool {
+        self.active_prompt.is_some()
+    }
+    pub fn queued_prompts(&self) -> &VecDeque<PromptQueueItem> {
+        &self.queued_prompts
+    }
+    pub fn config_state(&self) -> &SessionConfigState {
+        &self.config_state
     }
 
     pub fn has_attachment(&self, attachment_id: &str) -> bool {
@@ -139,27 +239,83 @@ impl RuntimeSession {
     }
 
     pub fn remove_attachment(&mut self, attachment_id: &str) -> bool {
-        let removed = self.attachment_ids.remove(attachment_id);
-
-        if removed && self.controller_attachment_id.as_deref() == Some(attachment_id) {
-            self.controller_attachment_id = None;
-        }
-
-        removed
-    }
-
-    pub fn assign_controller(&mut self, attachment_id: &str) -> Option<String> {
-        let previous = self.controller_attachment_id.clone();
-        self.controller_attachment_id = Some(attachment_id.to_owned());
-        previous
-    }
-
-    pub fn release_controller(&mut self) -> Option<String> {
-        self.controller_attachment_id.take()
+        self.attachment_ids.remove(attachment_id)
     }
 
     pub fn set_active_provider_run(&mut self, provider_run_id: Option<String>) {
         self.active_provider_run_id = provider_run_id;
+    }
+
+    pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {
+        if self.active_prompt.is_none() {
+            let mut running = prompt;
+            running.set_status(PromptStatus::Running);
+            self.active_prompt = Some(running.clone());
+            PromptSubmissionOutcome::Started { prompt: running }
+        } else {
+            let mut queued = prompt;
+            queued.set_status(PromptStatus::Queued);
+            self.queued_prompts.push_back(queued.clone());
+            PromptSubmissionOutcome::Queued { prompt: queued }
+        }
+    }
+
+    pub fn complete_active_prompt(&mut self) -> Option<PromptCompletion> {
+        let mut completed = self.active_prompt.take()?;
+        completed.set_status(PromptStatus::Completed);
+
+        let started_next = self.queued_prompts.pop_front().map(|mut next| {
+            next.set_status(PromptStatus::Running);
+            self.active_prompt = Some(next.clone());
+            next
+        });
+
+        Some(PromptCompletion {
+            completed,
+            started_next,
+        })
+    }
+
+    pub fn complete_active_prompt_only(&mut self) -> Option<PromptQueueItem> {
+        let mut completed = self.active_prompt.take()?;
+        completed.set_status(PromptStatus::Completed);
+        Some(completed)
+    }
+
+    pub fn peek_next_queued_prompt(&self) -> Option<PromptQueueItem> {
+        self.queued_prompts.front().cloned()
+    }
+
+    pub fn activate_next_queued_prompt(&mut self) -> Option<PromptQueueItem> {
+        let mut next = self.queued_prompts.pop_front()?;
+        next.set_status(PromptStatus::Running);
+        self.active_prompt = Some(next.clone());
+        Some(next)
+    }
+
+    pub fn clear_active_prompt_if(&mut self, prompt_id: &str) -> bool {
+        if self.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id) {
+            self.active_prompt = None;
+            return true;
+        }
+
+        false
+    }
+
+    pub fn remove_queued_prompts_by_attachment(&mut self, attachment_id: &str) -> usize {
+        let original_len = self.queued_prompts.len();
+        self.queued_prompts
+            .retain(|prompt| prompt.source_attachment_id() != attachment_id);
+        original_len - self.queued_prompts.len()
+    }
+
+    pub fn apply_config_changes(
+        &mut self,
+        values: BTreeMap<String, String>,
+        updated_by_attachment_id: impl Into<String>,
+    ) {
+        self.config_state
+            .apply_changes(values, updated_by_attachment_id);
     }
 
     pub fn transition_to(&mut self, next: SessionStatus) -> bool {
@@ -182,8 +338,9 @@ impl RuntimeSession {
 
         if next == SessionStatus::Ended {
             self.active_provider_run_id = None;
-            self.controller_attachment_id = None;
             self.attachment_ids.clear();
+            self.active_prompt = None;
+            self.queued_prompts.clear();
         }
 
         true

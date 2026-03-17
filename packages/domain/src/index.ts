@@ -4,6 +4,7 @@ export const DAEMON_STATUSES = ['online', 'offline'] as const;
 export const SESSION_STATUSES = ['created', 'active', 'parked', 'ended'] as const;
 export const SESSION_EXECUTION_MODES = ['single_agent', 'multi_agent_workflow'] as const;
 export const PROVIDER_RUN_STATES = ['starting', 'running', 'parked', 'ended'] as const;
+export const PROMPT_STATUSES = ['queued', 'running', 'completed'] as const;
 export const CLIENT_CAPABILITY_LEVELS = [
   'full_terminal',
   'interactive_structured',
@@ -38,6 +39,7 @@ export type DaemonStatus = (typeof DAEMON_STATUSES)[number];
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 export type SessionExecutionMode = (typeof SESSION_EXECUTION_MODES)[number];
 export type ProviderRunState = (typeof PROVIDER_RUN_STATES)[number];
+export type PromptStatus = (typeof PROMPT_STATUSES)[number];
 export type ClientCapabilityLevel = (typeof CLIENT_CAPABILITY_LEVELS)[number];
 export type WorkflowTopology = (typeof WORKFLOW_TOPOLOGIES)[number];
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
@@ -90,6 +92,8 @@ export interface Session {
   status: SessionStatus;
   activeProviderRunId: EntityId | null;
   activeWorkflowRunId: EntityId | null;
+  activePromptId: EntityId | null;
+  configVersion: number;
 }
 
 export interface ProviderRun {
@@ -108,15 +112,21 @@ export interface SessionAttachment {
   sessionId: EntityId;
   clientId: EntityId;
   capabilityLevel: ClientCapabilityLevel;
-  isObserver: boolean;
 }
 
-export interface ControllerLease {
+export interface PromptQueueItem {
   id: EntityId;
   sessionId: EntityId;
-  attachmentId: EntityId;
-  grantedAt: string;
-  expiresAt: string | null;
+  sourceAttachmentId: EntityId;
+  prompt: string;
+  status: PromptStatus;
+}
+
+export interface SessionConfigState {
+  sessionId: EntityId;
+  version: number;
+  values: Record<string, string>;
+  updatedByAttachmentId: EntityId | null;
 }
 
 export interface Schedule {

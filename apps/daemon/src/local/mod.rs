@@ -2,8 +2,9 @@ mod api;
 mod harness;
 
 pub use api::{
-    AttachToSessionRequest, DetachFromSessionRequest, EndSessionRequest, LaunchProviderRunRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest,
-    SendTerminalInputRequest,
+    AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest, EndSessionRequest,
+    GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+    PollRuntimeNoticesRequest, PumpTerminalOutputRequest, ResizeTerminalRequest,
+    SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 pub use harness::{run_local_harness, LocalHarnessReport};

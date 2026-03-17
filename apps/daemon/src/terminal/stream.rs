@@ -18,6 +18,7 @@ pub struct TerminalOutputRecord {
 pub struct RuntimeNoticeRecord {
     pub session_id: String,
     pub provider_run_id: Option<String>,
+    pub recipient_attachment_ids: Vec<String>,
     pub message: String,
 }
 
@@ -70,11 +71,13 @@ impl TerminalStreamService {
         &mut self,
         session_id: &str,
         provider_run_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
         let record = RuntimeNoticeRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
+            recipient_attachment_ids,
             message: message.into(),
         };
 
@@ -92,6 +95,22 @@ impl TerminalStreamService {
 
     pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
         &self.notice_records
+    }
+
+    pub fn drain_notice_records(&mut self, session_id: &str) -> Vec<RuntimeNoticeRecord> {
+        let mut drained = Vec::new();
+        let mut kept = Vec::with_capacity(self.notice_records.len());
+
+        for record in self.notice_records.drain(..) {
+            if record.session_id == session_id {
+                drained.push(record);
+            } else {
+                kept.push(record);
+            }
+        }
+
+        self.notice_records = kept;
+        drained
     }
 }
 
@@ -113,6 +132,7 @@ mod tests {
         let notice = terminal.record_notice(
             "session-1",
             Some("provider-run-1"),
+            vec!["attachment-2".to_string()],
             "provider switch failed; resumed previous run",
         );
 
@@ -121,5 +141,6 @@ mod tests {
         assert_eq!(terminal.notice_records().len(), 1);
         assert_eq!(output.recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
+        assert_eq!(notice.recipient_attachment_ids.len(), 1);
     }
 }

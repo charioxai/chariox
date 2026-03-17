@@ -129,7 +129,11 @@ Minimum request set:
 - `session.attach`
 - `session.detach`
 - `provider_run.launch`
-- `terminal.input`
+- `session.state.get`
+- `session.notice.poll`
+- `prompt.submit`
+- `prompt.complete`
+- `session.config.update`
 - `terminal.output.poll`
 - `terminal.resize`
 - `session.end`
@@ -139,6 +143,11 @@ Minimum response/result shapes:
 - session creation returns structured session metadata
 - attach/detach returns structured attachment metadata
 - provider launch returns structured provider-run metadata
+- session state reads return canonical queue and config state
+- notice polling returns structured daemon notices for session attachments
+- prompt submission returns structured prompt status (`started` or `queued`) plus canonical session state
+- prompt completion returns structured completion details and the next started prompt when relevant
+- config update returns canonical session config state, version, and updated session state
 - terminal output polling returns structured terminal-output fan-out records
 - end-session returns structured final session metadata
 
@@ -226,15 +235,21 @@ Error isolation rules:
 
 ## 7. Session and Attachment Semantics
 
-- multiple attachments can observe a session
-- controller lease indicates active controlling attachment
-- lease changes are broadcast as structured session events
+- multiple attachments can participate in the same session concurrently
+- any attachment may submit prompts or request supported config changes
+- the daemon is the source of truth for prompt queue state and session config state
+- queued prompts MUST be surfaced to all other attachments in the session through structured events or equivalent state sync
+- config changes accepted by the daemon MUST be propagated to all attachments in the session
 
 Suggested events:
 
 - `session.attachment.joined`
 - `session.attachment.left`
-- `session.controller.changed`
+- `session.prompt.queued`
+- `session.prompt.started`
+- `session.prompt.completed`
+- `session.config.updated`
+- `session.notice`
 - `session.provider_run.changed`
 
 ## 7.1 Workflow Semantics

@@ -75,7 +75,7 @@ Responsibilities:
 - send raw terminal input to the active provider PTY
 - invoke daemon capabilities
 - upload artifacts for transfer when requested
-- show controller and observer state
+- show queue/config/session state reported by the daemon
 
 ### 5.2 Machine
 
@@ -115,7 +115,7 @@ Responsibilities:
 - session discovery
 - WebSocket relay
 - presence tracking
-- controller lease tracking
+- queued prompt and config-state metadata when server-side operational metadata is needed
 - schedule metadata storage
 - operational metadata storage
 
@@ -325,6 +325,26 @@ Required rules:
 - the daemon MUST NOT allow parallel code-writing agents to mutate the same worktree concurrently
 
 ## 8. Attachments and Provider Adapter Model
+
+### 8.0 Shared Attachment Semantics
+
+Attachments are shared session participants, not exclusive control roles.
+
+Required rules:
+
+- every attachment MAY submit prompts
+- every attachment MAY request supported config changes
+- the daemon MUST remain the single source of truth for prompt scheduling and effective session config state
+- at most one prompt may execute at a time per single-agent session
+- if a prompt arrives while another prompt is running, the daemon MUST enqueue it rather than dropping or interleaving it
+- when a prompt is enqueued, the daemon MUST notify all other attachments in the session that a queued message exists and expose the canonical queue state
+- attachments MUST render daemon-owned queue and config state, not rely on locally assumed state
+
+Config behavior:
+
+- config changes that are safe during execution MAY be applied immediately
+- config changes that are unsafe during execution MUST be rejected with an explicit busy-state error while a prompt is running
+- after an accepted config change, the daemon MUST propagate the canonical updated config state to all session attachments
 
 ### 8.1 Provider Adapter Requirement
 
@@ -678,7 +698,7 @@ The server may store:
 - worktree assignments
 - aggregation state metadata
 - attachments
-- controller lease state
+- queued prompt and session config metadata
 - schedule metadata
 - provider run metadata
 - artifact metadata
@@ -713,7 +733,7 @@ The following rules are mandatory in v1:
 - `request_compaction_summary` failure must not terminate the provider run.
 - Capability failures must be reported separately from provider terminal traffic.
 - A lost remote client must not terminate the session by default.
-- The daemon must remain the authority for controller and observer state.
+- The daemon must remain the authority for prompt queue state and effective session config state.
 - The daemon must remain the authority for workflow scheduling, node state, and inter-agent routing.
 - Workflow failures, retries, and termination policies must be explicit daemon-owned runtime decisions.
 - Circular and hierarchical topologies must be implemented as policies over a generic workflow engine.
@@ -738,7 +758,8 @@ Likely entities for v1:
 - AggregationState
 - ProviderRun
 - SessionAttachment
-- ControllerLease
+- PromptQueueItem
+- SessionConfigState
 - Schedule
 - Artifact
 
