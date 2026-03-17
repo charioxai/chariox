@@ -24,6 +24,23 @@ pub enum SessionStatus {
     Ended,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SessionExecutionMode {
+    SingleAgent,
+    MultiAgentWorkflow,
+}
+
+impl fmt::Display for SessionExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::SingleAgent => "single_agent",
+            Self::MultiAgentWorkflow => "multi_agent_workflow",
+        };
+
+        write!(f, "{value}")
+    }
+}
+
 impl fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -44,6 +61,7 @@ pub struct RuntimeSession {
     worktree_id: String,
     host_machine_id: String,
     host_daemon_id: String,
+    execution_mode: SessionExecutionMode,
     status: SessionStatus,
     active_provider_run_id: Option<String>,
     attachment_ids: BTreeSet<String>,
@@ -64,6 +82,7 @@ impl RuntimeSession {
             worktree_id: worktree_id.into(),
             host_machine_id: host_machine_id.into(),
             host_daemon_id: host_daemon_id.into(),
+            execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             active_provider_run_id: None,
             attachment_ids: BTreeSet::new(),
@@ -93,6 +112,10 @@ impl RuntimeSession {
 
     pub fn status(&self) -> SessionStatus {
         self.status
+    }
+
+    pub fn execution_mode(&self) -> SessionExecutionMode {
+        self.execution_mode
     }
 
     pub fn active_provider_run_id(&self) -> Option<&str> {

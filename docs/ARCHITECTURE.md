@@ -90,6 +90,25 @@ Arroba remote terminals MUST be architected as multi-surface, multi-transport cl
 - Features MUST be implemented in reusable core layers (terminal streaming, structured control/state, adapter layer) as appropriate.
 - Feature delivery MUST NOT be coupled to one UI surface.
 
+## 2.3 Multi-Agent Workflow Architecture Rule
+
+Arroba MUST support a workflow layer above single-agent sessions.
+
+Delivery priority inside v1:
+
+- circular topology is the earlier implementation target
+- hierarchical topology remains in scope for v1, but is expected to land later in v1 after the lower-level runtime and protocol foundations are stable
+
+Normative rules:
+
+- A session MAY run in single-agent mode or multi-agent workflow mode.
+- Multi-agent execution MUST be modeled as a general directed workflow graph.
+- v1 validates only two workflow topologies:
+  - circular
+  - hierarchical
+- The runtime MUST still be architecture-compatible with future DAGs, bounded cycles, conditional routing, richer aggregation, and other advanced topologies.
+- Circular and hierarchical behavior MUST be implemented as validators and policies over a generic workflow engine, not as topology-specific logic scattered through unrelated services.
+
 ### Protocol-First, Capability-Based Interpretation
 
 Arroba is protocol-first and capability-based:
@@ -135,12 +154,16 @@ The daemon is the runtime authority for live session state.
 Responsibilities:
 
 - session lifecycle and attachment lifecycle
+- workflow scheduling and workflow-run state ownership
+- inter-agent message routing and structured handoff processing
+- worktree allocation and isolation enforcement for workflow branches
 - PTY lifecycle for provider runs
 - provider switching and parked-run management
+- provider run lifecycle per workflow node when workflows are active
 - capability execution (shell/tree/view/edit/screenshot/git/transfer/compact)
 - memory management (short-term + long-term)
 - context transfer package generation
-- scheduler execution
+- scheduler execution, failure propagation, retry hooks, and resource-limit enforcement
 
 ### 3.4 Server
 
@@ -171,16 +194,77 @@ Non-responsibility:
 A session is bound to:
 
 - one workspace
-- one worktree
-- one active provider run
+- one primary worktree in single-agent mode
+- one active provider run in single-agent mode
 - an eligible set of machines with one active host at a time
 
 A session may include:
 
 - many client attachments
 - parked provider runs
+- a workflow definition and zero or one active workflow run
+- node-scoped provider runs when workflow mode is active
+- worktree assignments for isolated workflow branches
 - schedules
 - artifacts
+
+### 4.3 Workflow Ownership
+
+When a session runs in multi-agent workflow mode, the daemon MUST treat the workflow as a generic directed graph execution problem.
+
+Required runtime concepts:
+
+- `WorkflowDefinition`
+- `WorkflowNode`
+- `WorkflowEdge`
+- `WorkflowRun`
+- `NodeRun`
+- `NodeMessage`
+- `WorktreeAssignment`
+- `AggregationState` or equivalent barrier/fan-in state
+
+Required rules:
+
+- Every multi-agent workflow MUST have a designated coordinator node.
+- The coordinator MUST receive the initial user prompt.
+- The coordinator MUST decide whether execution continues, stops, or completes.
+- In circular topology, the coordinator MUST be part of the cycle.
+- In hierarchical topology, the coordinator MUST be the root.
+
+Implementation priority note:
+
+- circular topology should be implemented and stabilized first
+- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+
+### 4.4 Inter-Agent Communication Ownership
+
+Inter-agent communication MUST be daemon-orchestrated.
+
+Required rules:
+
+- Agents MUST NOT communicate directly.
+- The daemon MUST own all routing and delivery between workflow nodes.
+- Output from one node MUST be transformed into a standardized structured handoff payload before it is delivered to the next node.
+- Inter-agent communication MUST NOT be modeled as raw terminal transcript forwarding.
+- Workflow scheduling MUST advance from structured node completion reports, not arbitrary provider turns.
+
+Each node completion artifact/report MUST include at least:
+
+- `status`
+- `summary`
+- `artifacts` or changed files
+- `handoff_payload`
+- `stop_recommendation`
+
+### 4.5 Worktree Isolation
+
+Parallel code-writing branches MUST NOT share the same active worktree.
+
+Required rules:
+
+- Worktree assignment MUST be explicit in runtime state and the data model.
+- In hierarchical workflows, each active code-writing branch or subtree SHOULD receive an isolated worktree and git branch.
+- The daemon MUST reject or prevent concurrent mutation of the same active worktree by parallel code-writing nodes.
 
 ## 5. Interaction Lanes
 
@@ -206,6 +290,17 @@ Canonical control operations in v1:
 - `request_compaction_summary`
 
 `request_memory_update` and `request_compaction_summary` are daemon-owned and distinct from normal user prompt/response traffic.
+
+### 5.4 Workflow Lane Semantics
+
+Workflow scheduling and node-to-node handoffs belong to the daemon's structured state/control surfaces, not the terminal lane.
+
+Implications:
+
+- node handoffs MUST use structured daemon-owned payloads
+- node completion reports MUST be machine-parseable
+- workflow barriers, fan-in, aggregation, and termination decisions MUST operate on structured runtime state
+- PTY traffic MAY be observed by the daemon for runtime coordination when needed, but MUST NOT be reused as the inter-agent contract
 
 ## 6. Security and Trust Boundaries
 
@@ -280,6 +375,8 @@ Mandatory behavior:
 - adapter lacking `attach_file`, `request_memory_update`, and/or `request_compaction_summary` does not break core PTY usage
 - control operation failures are isolated and user-visible
 - remote client disconnect does not terminate session by default
+- workflow node failure propagation and retry policy MUST remain daemon-owned and explicit
+- workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
 
 ## 9. Deployment and Evolution Notes
 
@@ -288,6 +385,12 @@ v1 is local-first and single-active-host-per-session. Architecture should remain
 - richer multi-machine scheduling/migration
 - expanded provider adapter capabilities
 - optional content persistence policies
+- more advanced workflow topologies
+- bounded loops and other cycle policies
+- multi-user and team workflows
+- richer aggregation policies and barrier behavior
+- explicit merge or reconciliation stages
+- per-node provider, model, and account selection
 
 ## 10. Implementation Choices (v1 baseline)
 
@@ -354,4 +457,3 @@ Result:
 
 - consistent remote terminal behavior across platforms
 - freedom to use standard language/tooling per target platform
-

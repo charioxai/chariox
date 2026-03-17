@@ -12,8 +12,6 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## Backlog
 
-- [ ] **M1-005** Add PTY manager and terminal stream fan-out
-  - Note: Implement PTY spawn/read/write/resize and multi-attachment output distribution.
 - [ ] **M1-006** Add local daemon API or harness for managed-session flows
   - Note: Prove a local client path can create a session and attach to a provider stub.
 - [ ] **M1-007** Add session runtime and PTY-oriented integration tests
@@ -33,7 +31,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Added attachment join/detach/controller flows, single-controller enforcement, and in-memory attachment event recording with Rust tests.
   - Commit: _pending next commit_
 - [x] **M1-004** Add provider adapter baseline and provider run service
-  - Note: Added a provider adapter trait, a local dev-stub adapter, and in-memory provider run management with active/parked transitions and runtime tests.
+  - Note: Added a provider adapter trait, a deterministic dev-stub adapter, and in-memory provider run management with active/parked transitions.
+  - Commit: _pending next commit_
+- [x] **M1-005** Add PTY manager and terminal stream fan-out
+  - Note: Added a `portable-pty` backed PTY manager, terminal input/output routing, and multi-attachment fan-out through daemon-owned terminal records.
   - Commit: _pending next commit_
 - [x] **M0-001** Bootstrap workspace root (`pnpm-workspace`, root scripts, TS base config)
   - Note: Added workspace root `package.json`, `pnpm-workspace.yaml`, and `tsconfig.base.json`.

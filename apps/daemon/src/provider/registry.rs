@@ -49,6 +49,8 @@ impl ProviderAdapter for DevStubAdapter {
                 request.provider, request.account_profile, request.model
             ),
             pty_target: Some(format!("stub-pty:{}", request.session_id)),
+            pty_program: "/bin/sh".to_string(),
+            pty_args: vec!["-lc".to_string(), "cat".to_string()],
         }
     }
 

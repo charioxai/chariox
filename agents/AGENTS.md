@@ -191,17 +191,129 @@ The server does not necessarily need to store encrypted content. Current assumpt
 
 An Arroba session is the top-level execution unit.
 
+Every session MUST operate in one of two runtime modes:
+
+- single-agent mode
+- multi-agent workflow mode
+
 A session is bound to:
 - one workspace
-- one worktree
-- one active provider run at a time
+- one primary worktree in single-agent mode
+- one active provider run at a time in single-agent mode
 
 A session may have:
 - multiple attached terminals
 - multiple parked provider runs
 - scheduled jobs
 
+In multi-agent workflow mode, the session additionally owns a daemon-orchestrated workflow graph, node-scoped provider runs, and explicit worktree assignments for isolated branches. Parallel workflow branches MAY therefore have multiple active provider runs at once, subject to daemon-owned concurrency and resource limits.
+
 Sessions do not hop across workspaces.
+
+## Multi-Agent Workflow Layer
+
+Arroba MUST support a workflow layer above the single-agent session model.
+
+Delivery priority inside v1:
+
+- circular topology is the earlier implementation target
+- hierarchical topology remains in scope for v1, but is expected to land later in v1 after the lower-level runtime and protocol foundations are stable
+
+Normative rules:
+
+- Multi-agent execution MUST be modeled as a general directed workflow graph.
+- Contributors MUST NOT implement multi-agent behavior as hardcoded topology-specific branching scattered across the codebase.
+- v1 validates only two workflow topologies:
+  - circular
+  - hierarchical
+- The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer fan-in/fan-out rules, and other topologies can be added without redesigning the core runtime model.
+
+## Workflow Coordinator Model
+
+Every multi-agent workflow MUST have a designated coordinator node.
+
+Coordinator rules:
+
+- the coordinator receives the initial user prompt
+- the coordinator decides whether the workflow should continue, stop, or declare completion
+- in circular topology, the coordinator is part of the cycle
+- in hierarchical topology, the coordinator is the root node
+
+## Multi-Agent Topology Rules
+
+### Circular Topology
+
+The circular topology is valid in v1 only if all are true:
+
+- each node has exactly one incoming edge and one outgoing edge
+- the last node connects back to the coordinator
+- execution is serialized
+- the workflow uses bounded iteration or round limits
+- execution stops when either:
+  - the configured max iteration/round limit is reached, or
+  - the coordinator declares completion or stop
+
+### Hierarchical Topology
+
+The hierarchical topology is valid in v1 only if all are true:
+
+- the workflow forms a rooted tree
+- the coordinator is the root
+- parent nodes may fan out to multiple children
+- child branches may execute in parallel
+- parent fan-in waits for all children by default
+- child results propagate upward through structured aggregation
+- the coordinator decides final stop or continue behavior
+
+Implementation priority note:
+
+- circular topology should be implemented and stabilized first
+- hierarchical topology should reuse the same generic workflow engine and follow later in v1 rather than being deferred beyond v1
+
+## Inter-Agent Communication
+
+Inter-agent communication MUST be daemon-orchestrated.
+
+Required rules:
+
+- agents MUST NOT communicate directly with one another
+- the daemon MUST own all inter-agent routing and message passing
+- outputs from one node MUST be transformed into a standardized structured handoff payload before being routed to another node
+- contributors MUST NOT model inter-agent communication as raw terminal transcript forwarding
+- workflow progression MUST be driven by structured node completion reports, not arbitrary provider turns
+
+Each node MUST emit a structured completion artifact/report containing at least:
+
+- status
+- summary
+- artifacts or changed files
+- handoff payload
+- stop recommendation
+
+## Worktree Isolation in Multi-Agent Mode
+
+Parallel code-writing branches MUST NOT share the same active worktree.
+
+Required rules:
+
+- worktree assignment MUST be explicit in the runtime and data model
+- in hierarchical workflows, each active code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
+- the daemon MUST NOT allow parallel code-writing agents to mutate the same worktree concurrently
+
+## Workflow Runtime Ownership
+
+The daemon MUST own all workflow execution concerns, including:
+
+- workflow scheduling
+- runnable, waiting, and completed node state
+- inter-agent message routing
+- worktree allocation
+- provider run lifecycle per node
+- termination conditions
+- failure propagation and retry hooks
+- concurrency and resource limits
+
+The workflow runtime MUST think in generic graph-execution terms such as message availability, barriers, aggregation state, and termination policy. Circular and hierarchical behavior MUST be implemented as validators or policies over a generic workflow engine.
 
 ## Provider Runs
 
@@ -472,6 +584,11 @@ Operational metadata examples:
 - workspaces
 - worktrees
 - sessions
+- workflow definitions
+- workflow runs
+- workflow nodes and edges
+- node runs and node messages
+- worktree assignments
 - attachments
 - schedules
 - provider run metadata
@@ -489,6 +606,14 @@ Likely entities:
 - Workspace
 - Worktree
 - Session
+- WorkflowDefinition
+- WorkflowNode
+- WorkflowEdge
+- WorkflowRun
+- NodeRun
+- NodeMessage
+- WorktreeAssignment
+- AggregationState
 - ProviderRun
 - SessionAttachment
 - ControllerLease
@@ -541,11 +666,89 @@ Useful conceptual fields:
 - host_daemon_id
 - status
 - active_provider_run_id
+- execution_mode
+- active_workflow_run_id
 - created_at
+
+### WorkflowDefinition
+- id
+- session_id
+- topology_type
+- coordinator_node_id
+- version
+- validation_policy
+
+### WorkflowNode
+- id
+- workflow_definition_id
+- node_key
+- role
+- provider
+- model
+- account_profile
+- concurrency_group
+- writes_code
+
+### WorkflowEdge
+- id
+- workflow_definition_id
+- from_node_id
+- to_node_id
+- edge_type
+- routing_policy
+
+### WorkflowRun
+- id
+- workflow_definition_id
+- session_id
+- status
+- iteration_count
+- max_iterations
+- started_at
+- completed_at
+
+### NodeRun
+- id
+- workflow_run_id
+- workflow_node_id
+- status
+- provider_run_id
+- worktree_assignment_id
+- started_at
+- completed_at
+
+### NodeMessage
+- id
+- workflow_run_id
+- source_node_run_id
+- target_node_run_id or target_node_id
+- message_type
+- handoff_payload
+- delivery_status
+- created_at
+
+### WorktreeAssignment
+- id
+- workflow_run_id
+- workflow_node_id or node_run_id
+- worktree_id
+- branch
+- isolation_mode
+
+### AggregationState
+- id
+- workflow_run_id
+- workflow_node_id
+- barrier_key
+- expected_inputs
+- received_inputs
+- aggregation_policy
+- status
 
 ### ProviderRun
 - id
 - session_id
+- node_run_id
 - provider
 - account_profile
 - model
@@ -716,7 +919,7 @@ Arroba should:
 
 M0 foundations are complete.
 M1 is now in progress.
-The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, and a provider adapter/process baseline. Baseline CI coverage for TypeScript and Rust verification remains in place.
+The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, provider-run orchestration, and PTY-backed terminal fan-out. Baseline CI coverage for TypeScript and Rust verification remains in place.
 
 Related architecture docs:
 - docs/spec-v1.md

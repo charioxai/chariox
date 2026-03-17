@@ -159,13 +159,16 @@ impl AttachmentService {
         &self.events
     }
 
-    pub fn remove_session_attachments(&mut self, session_id: &str) -> Vec<RuntimeAttachment> {
-        let attachment_ids: Vec<String> = self
-            .attachments
+    pub fn list_session_attachment_ids(&self, session_id: &str) -> Vec<String> {
+        self.attachments
             .values()
             .filter(|attachment| attachment.session_id() == session_id)
             .map(|attachment| attachment.id().to_string())
-            .collect();
+            .collect()
+    }
+
+    pub fn remove_session_attachments(&mut self, session_id: &str) -> Vec<RuntimeAttachment> {
+        let attachment_ids = self.list_session_attachment_ids(session_id);
 
         if attachment_ids.is_empty() {
             return Vec::new();

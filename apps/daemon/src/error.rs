@@ -61,4 +61,27 @@ pub enum DaemonError {
         active_provider_run_id: Option<String>,
         requested_provider_run_id: String,
     },
+    #[error("session `{session_id}` has no active provider run")]
+    NoActiveProviderRun { session_id: String },
+    #[error("provider run `{provider_run_id}` has no PTY process")]
+    PtyProcessNotFound { provider_run_id: String },
+    #[error("failed to spawn PTY for provider run `{provider_run_id}`: {message}")]
+    PtySpawn {
+        provider_run_id: String,
+        message: String,
+    },
+    #[error("failed to write PTY input for provider run `{provider_run_id}`: {message}")]
+    PtyWrite {
+        provider_run_id: String,
+        message: String,
+    },
+    #[error(
+        "failed to resize PTY for provider run `{provider_run_id}` to {cols}x{rows}: {message}"
+    )]
+    PtyResize {
+        provider_run_id: String,
+        cols: u16,
+        rows: u16,
+        message: String,
+    },
 }

@@ -9,12 +9,19 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 M0, "Foundations", is complete in this repository.
 M1, "Core Session Runtime", is in progress.
 
+v1 scope includes both:
+
+- single-agent sessions
+- multi-agent workflow execution
+
+Within v1 delivery, circular workflow topology is the earlier priority. Hierarchical workflow execution remains in-scope for v1, but is planned for a later stage of v1 after the lower-level runtime, capability, control, and protocol surfaces are stable.
+
 The current codebase provides:
 
 - a pnpm workspace for TypeScript packages
 - a minimal Fastify server with a health endpoint
 - a shared domain package for core v1 entities
-- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, attachment/controller lease management, and a provider adapter/process baseline
+- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, attachment/controller lease management, provider-run orchestration, and PTY-backed terminal fan-out
 - a Prisma schema for the initial core entities
 - baseline CI for TypeScript and Rust checks
 
@@ -43,7 +50,7 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-At M0 this crate is intentionally minimal. It provides a binary, a reusable library entry point, and a baseline unit test so Rust tooling and CI are in place before runtime behavior is added.
+Today it includes the daemon bootstrap, in-memory session lifecycle, and attachment/controller lease management. Provider runtime, PTY/runtime streaming, and workflow execution surfaces are still being built.
 
 ### `apps/server`
 
@@ -90,7 +97,7 @@ pnpm install
 
 ### Verification Commands
 
-Run the full M0 verification set from the repository root:
+Run the current repository verification set from the repository root:
 
 ```bash
 pnpm lint

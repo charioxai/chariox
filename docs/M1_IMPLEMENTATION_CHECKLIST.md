@@ -17,11 +17,13 @@ From `docs/ROADMAP.md`, M1 outcomes are:
 - PTY manager for provider runs
 - multi-attachment support + controller/observer model
 - parked provider run support with one active run at a time
+- workflow-compatible runtime ownership so later multi-agent graph execution can reuse session/provider/worktree foundations without redesign
 
 Exit criteria:
 
 - local client can run a native provider in a managed session
 - multiple clients can attach without breaking terminal behavior
+- current runtime design does not block future workflow definitions, node-scoped provider runs, structured handoffs, or explicit worktree assignments
 
 ## 2. M1 implementation principles
 
@@ -30,6 +32,8 @@ Exit criteria:
 - Separate terminal streaming from structured session/control state.
 - Treat local CLI and future remote/full-terminal clients as the same attachment model.
 - Prefer additive protocol/domain changes and keep the server lightweight.
+- Keep session/provider/worktree ownership compatible with future multi-agent workflow mode.
+- Avoid topology-specific assumptions in M1 runtime APIs; future workflow execution must be able to compose on top of the same daemon-owned services.
 
 ## 3. Planned M1 deliverables
 
@@ -73,6 +77,14 @@ docs/
 ```
 
 File/module names may change, but these responsibilities must exist by the end of M1.
+
+The M1 implementation is not required to ship full workflow execution, but every runtime boundary introduced here MUST remain compatible with:
+
+- `WorkflowDefinition`, `WorkflowNode`, `WorkflowEdge`, `WorkflowRun`, `NodeRun`, `NodeMessage`, `WorktreeAssignment`, and `AggregationState`
+- coordinator-owned start/stop/completion decisions
+- node-scoped provider runs
+- explicit worktree isolation for parallel code-writing branches
+- structured handoff/completion contracts instead of transcript forwarding
 
 ## 4. Implementation checklist
 
@@ -124,12 +136,12 @@ File/module names may change, but these responsibilities must exist by the end o
 
 ## 4.5 PTY manager and terminal stream path
 
-- [ ] Choose and integrate the Rust PTY library baseline for M1.
-- [ ] Implement PTY spawn/read/write/resize operations behind a dedicated manager.
-- [ ] Keep PTY byte stream handling isolated from structured daemon control state.
-- [ ] Implement terminal output fan-out so multiple attachments can observe the same session stream.
-- [ ] Implement terminal input routing from the current controlling attachment to the active provider PTY.
-- [ ] Add tests or harness coverage for:
+- [x] Choose and integrate the Rust PTY library baseline for M1.
+- [x] Implement PTY spawn/read/write/resize operations behind a dedicated manager.
+- [x] Keep PTY byte stream handling isolated from structured daemon control state.
+- [x] Implement terminal output fan-out so multiple attachments can observe the same session stream.
+- [x] Implement terminal input routing from the current controlling attachment to the active provider PTY.
+- [x] Add tests or harness coverage for:
   - PTY spawn
   - input/write path
   - resize path
@@ -151,6 +163,8 @@ File/module names may change, but these responsibilities must exist by the end o
 ## 4.7 Domain and schema alignment
 
 - [ ] Review `packages/domain` and add any M1 fields/enums needed for attachment/controller/provider runtime coherence.
+- [ ] Ensure domain and runtime naming remain compatible with future workflow entities (`WorkflowDefinition`, `WorkflowNode`, `WorkflowEdge`, `WorkflowRun`, `NodeRun`, `NodeMessage`, `WorktreeAssignment`, `AggregationState`).
+- [ ] Ensure current session/provider/worktree fields do not assume single-agent execution as the only long-term runtime shape.
 - [ ] Keep Prisma changes minimal unless M1 code truly requires persisted runtime metadata.
 - [ ] If schema/domain names change, update all affected docs in the same change.
 
@@ -175,6 +189,15 @@ File/module names may change, but these responsibilities must exist by the end o
 - [ ] Update `docs/CONTRIBUTING.md` with any new daemon test commands.
 - [ ] Update `agents/AGENTS.md` current status when usable M1 runtime behavior lands.
 - [ ] Update `docs/ops/TASKS.md` and `docs/ops/PROGRESS_LOG.md` as work progresses.
+- [ ] Keep `docs/spec-v1.md` and `docs/ARCHITECTURE.md` aligned with workflow-compatibility constraints introduced during M1 implementation.
+
+## 4.11 Workflow-Compatibility Guardrails
+
+- [x] Keep session APIs compatible with future single-agent and multi-agent workflow modes.
+- [x] Do not assume raw terminal transcript forwarding as a valid future inter-agent communication mechanism.
+- [x] Keep provider-run ownership flexible enough for future node-scoped runs in workflow mode.
+- [ ] Keep worktree handling compatible with future explicit worktree assignment and branch isolation for parallel code-writing nodes.
+- [ ] Keep scheduler-related runtime decisions daemon-owned so a generic workflow engine can later enforce runnable/waiting/completed node state, barriers, retries, and resource limits.
 
 ## 5. Suggested execution order
 
@@ -218,3 +241,4 @@ M1 is complete when all are true:
 - [ ] Parked provider run behavior exists with one active run at a time.
 - [ ] A deterministic local harness or integration test proves the managed-session flow end to end.
 - [ ] Documentation and protocol references are updated to match the implemented runtime behavior.
+- [ ] The resulting runtime remains compatible with the documented future workflow graph model, structured handoff contract, and explicit worktree isolation requirements.

@@ -198,14 +198,16 @@ A session is the top-level execution unit.
 A session is bound to:
 
 - one workspace
-- one worktree
-- one active provider run at a time
+- one primary worktree in single-agent mode
+- one active provider run at a time in single-agent mode
 - a set of eligible agent machines, with one active execution host at a time
 
 A session may have:
 
 - multiple attached clients
 - multiple parked provider runs
+- multiple node-scoped provider runs when workflow mode is active and daemon resource policy allows it
+- multiple worktree assignments when workflow mode is active
 - multiple eligible agent machine options (local or remote)
 - scheduled jobs
 
@@ -232,6 +234,95 @@ Switching providers:
 5. The user may resume a parked run later if supported by the provider process model.
 
 Provider switching must remain minimally intrusive.
+
+### 7.3 Workflow Layer Above Sessions
+
+Arroba v1 MUST support a workflow layer above the single-agent session model.
+
+Delivery priority inside v1:
+
+- circular topology is the earlier implementation target
+- hierarchical topology remains in scope for v1, but is expected to land later in v1 after the lower-level runtime and protocol foundations are stable
+
+Normative rules:
+
+- A session MAY run in single-agent mode or multi-agent workflow mode.
+- Multi-agent execution MUST be modeled as a general directed workflow graph.
+- v1 validates only two workflow topologies:
+  - circular
+  - hierarchical
+- The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer aggregation, and more advanced topologies can be added without redesigning the core workflow engine.
+- Contributors MUST NOT implement multi-agent behavior as topology-specific special cases scattered through unrelated codepaths.
+
+### 7.4 Coordinator Model
+
+Every multi-agent workflow MUST have a designated coordinator node.
+
+Coordinator rules:
+
+- the coordinator receives the initial user prompt
+- the coordinator may decide to continue, stop, or declare completion
+- in circular topology, the coordinator MUST be part of the cycle
+- in hierarchical topology, the coordinator MUST be the root
+
+### 7.5 Inter-Agent Communication Contract
+
+Inter-agent communication MUST be daemon-orchestrated.
+
+Required rules:
+
+- agents MUST NOT communicate directly
+- the daemon MUST own all routing and message passing between nodes
+- output from one node MUST be converted into a standardized structured handoff format before it is passed to the next node
+- inter-agent communication MUST NOT be modeled as raw terminal transcript forwarding
+- workflow scheduling MUST advance on structured node completion reports, not arbitrary provider turns
+
+Each node MUST emit a structured completion artifact/report containing at least:
+
+- `status`
+- `summary`
+- `artifacts` or changed files
+- `handoff_payload`
+- `stop_recommendation`
+
+### 7.6 Circular Topology Rules
+
+Circular topology is valid in v1 only if all are true:
+
+- each node has exactly one incoming edge and one outgoing edge
+- the last node connects back to the coordinator
+- execution is serialized
+- the workflow uses bounded iteration or round limits
+- execution stops when either:
+  - the max iteration or round limit is reached, or
+  - the coordinator declares completion or stop
+
+### 7.7 Hierarchical Topology Rules
+
+Hierarchical topology is valid in v1 only if all are true:
+
+- the workflow forms a rooted tree
+- the coordinator is the root
+- parent nodes may fan out to multiple children
+- child branches may run in parallel
+- parent fan-in waits for all children by default
+- results propagate upward through structured aggregation
+- the coordinator decides final stop or continue behavior
+
+Implementation priority note:
+
+- circular topology should be implemented and stabilized first
+- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+
+### 7.8 Worktree Isolation Rules
+
+Parallel code-writing branches MUST NOT share the same active worktree.
+
+Required rules:
+
+- in hierarchical workflows, each active code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
+- worktree assignment MUST be explicit in runtime state and the data model
+- the daemon MUST NOT allow parallel code-writing agents to mutate the same worktree concurrently
 
 ## 8. Attachments and Provider Adapter Model
 
@@ -580,6 +671,12 @@ The server may store:
 - workspaces
 - worktrees
 - sessions
+- workflow definitions
+- workflow runs
+- workflow nodes and edges
+- node runs and node messages
+- worktree assignments
+- aggregation state metadata
 - attachments
 - controller lease state
 - schedule metadata
@@ -601,6 +698,8 @@ Session artifacts may include:
 - uploaded files
 - screenshots
 - generated session-side files needed for workflows
+- structured node completion reports
+- structured handoff payload artifacts when retained for audit or replay
 
 Artifacts should be stored on the daemon host and referenced by metadata.
 
@@ -615,6 +714,9 @@ The following rules are mandatory in v1:
 - Capability failures must be reported separately from provider terminal traffic.
 - A lost remote client must not terminate the session by default.
 - The daemon must remain the authority for controller and observer state.
+- The daemon must remain the authority for workflow scheduling, node state, and inter-agent routing.
+- Workflow failures, retries, and termination policies must be explicit daemon-owned runtime decisions.
+- Circular and hierarchical topologies must be implemented as policies over a generic workflow engine.
 
 ## 15. Suggested Core Entities
 
@@ -626,6 +728,14 @@ Likely entities for v1:
 - Workspace
 - Worktree
 - Session
+- WorkflowDefinition
+- WorkflowNode
+- WorkflowEdge
+- WorkflowRun
+- NodeRun
+- NodeMessage
+- WorktreeAssignment
+- AggregationState
 - ProviderRun
 - SessionAttachment
 - ControllerLease
@@ -641,3 +751,5 @@ Arroba v1 is defined by three lanes:
 - control lane for three narrow provider integration points: `attach_file`, `request_memory_update`, and `request_compaction_summary`
 
 This keeps Arroba faithful to the native CLI experience while still supporting practical daemon-owned features such as scheduling, screenshots, file transfer, memory-aware context transfer, git inspection, file operations, and attachment-aware workflows.
+
+In workflow mode, Arroba extends that same daemon-owned model to multi-agent execution through a generic graph runtime, structured handoffs, explicit worktree isolation, and coordinator-driven completion decisions.

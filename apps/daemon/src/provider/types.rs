@@ -52,6 +52,8 @@ impl LaunchProviderRequest {
 pub struct ProviderLaunchResult {
     pub process_label: String,
     pub pty_target: Option<String>,
+    pub pty_program: String,
+    pub pty_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +67,8 @@ pub struct RuntimeProviderRun {
     state: ProviderRunState,
     process_label: String,
     pty_target: Option<String>,
+    pty_program: String,
+    pty_args: Vec<String>,
 }
 
 impl RuntimeProviderRun {
@@ -83,6 +87,8 @@ impl RuntimeProviderRun {
             state: ProviderRunState::Starting,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
+            pty_program: launch_result.pty_program,
+            pty_args: launch_result.pty_args,
         }
     }
 
@@ -112,6 +118,12 @@ impl RuntimeProviderRun {
     }
     pub fn pty_target(&self) -> Option<&str> {
         self.pty_target.as_deref()
+    }
+    pub fn pty_program(&self) -> &str {
+        &self.pty_program
+    }
+    pub fn pty_args(&self) -> &[String] {
+        &self.pty_args
     }
 
     pub fn mark_running(&mut self) {

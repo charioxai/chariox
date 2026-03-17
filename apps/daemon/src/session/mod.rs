@@ -4,4 +4,4 @@ mod types;
 
 pub use service::SessionService;
 pub use store::SessionStore;
-pub use types::{CreateSessionRequest, RuntimeSession, SessionStatus};
+pub use types::{CreateSessionRequest, RuntimeSession, SessionExecutionMode, SessionStatus};

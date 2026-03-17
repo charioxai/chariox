@@ -83,9 +83,36 @@ Chronological notes to preserve execution context between contributors/agents.
 - Enforced single-controller semantics by demoting the previous controller to observer whenever another attachment acquires control.
 - Added Rust tests covering multiple observers, controller handoff, and detach cleanup for the active controller.
 
+## 2026-03-17
+
+### Scope clarification update
+
+- Multi-agent workflow execution is explicitly in scope for v1.
+- Circular topology is the earlier implementation priority inside v1.
+- Hierarchical topology remains in scope for v1, but is planned for a later stage of v1 after lower-level runtime, capability, control, and protocol foundations stabilize.
+
+### Documentation alignment update
+
+- Updated `README.md` to distinguish current implementation status from planned v1 scope.
+- Updated `agents/AGENTS.md`, `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/PROTOCOL.md` so workflow execution is clearly in v1 scope, with circular earlier and hierarchical later within v1.
+- Corrected planning/status drift by marking `M1-004` as pending again in `docs/M1_IMPLEMENTATION_CHECKLIST.md` and `docs/ops/TASKS.md`.
+- Updated `docs/CONTRIBUTING.md` so testing guidance and baseline-command wording match the current repository state and the new workflow-oriented scope.
+
+### Runtime review update
+
+- Reviewed the current daemon runtime against the new workflow-oriented specifications before continuing M1 work.
+- Added explicit session execution mode metadata so the session model now distinguishes current single-agent behavior from future multi-agent workflow mode.
+- Kept PTY ownership and terminal stream handling keyed by provider run so future node-scoped provider runs can reuse the same runtime surfaces.
+
 ### M1-004 implementation update
 
-- Added a real `provider` runtime module with a provider adapter trait, registry, and in-memory provider process service.
-- Added a deterministic `dev-stub` adapter to exercise launch, park, resume, terminate, and PTY-target metadata flows without depending on an external provider CLI.
-- Implemented provider run runtime records and session integration so one run is active per session while prior active runs are parked.
-- Added Rust tests covering first-run launch, automatic parking when a new run becomes active, and rejection of inconsistent active-run state.
+- Added a provider adapter trait, registry, and deterministic `dev-stub` adapter for local runtime tests without depending on external provider CLIs.
+- Added in-memory provider run lifecycle management for launch, park, resume, terminate, and session active-run ownership.
+- Added provider runtime tests covering first launch, automatic parking on active-run replacement, and inconsistent active-run rejection.
+
+### M1-005 implementation update
+
+- Integrated `portable-pty` as the PTY baseline for the daemon runtime.
+- Added a PTY manager for spawn, write, resize, output draining, and process cleanup keyed by provider run.
+- Added terminal stream records for controller input routing and multi-attachment output fan-out.
+- Added daemon-level tests covering PTY spawn, terminal input/write path, resize behavior, and output fan-out to multiple attachments.

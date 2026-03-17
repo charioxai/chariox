@@ -86,16 +86,36 @@ Canonical operations in v1:
 
 These operations are not typed by users into terminal traffic.
 
+## 3.4 Workflow Coordination Semantics
+
+Multi-agent workflow coordination is a daemon-owned structured protocol concern.
+
+Delivery priority inside v1:
+
+- circular topology is the earlier implementation target
+- hierarchical topology remains in scope for v1, but is expected to land later in v1 after lower-level runtime and protocol foundations are stable
+
+Required rules:
+
+- node-to-node communication MUST use structured handoff payloads
+- workflow progression MUST be driven by node completion reports, not raw provider turns
+- workflow routing, barrier/fan-in handling, and termination decisions MUST NOT depend on forwarding raw terminal transcript output between agents
+
 ## 4. Common Message Envelope
 
-All structured messages (capability/control) should carry:
+All structured messages should carry a minimum common envelope. Some fields are lane-specific or message-class-specific.
+
+Common fields:
 
 - `version` (protocol version, e.g. `v1`)
-- `lane` (`capability` | `control`)
+- `lane` when applicable (`capability` | `control`)
 - `type` (event/action identifier)
-- `request_id` (for request/response matching)
+- `request_id` when request/response matching is needed
 - `session_id`
-- `provider_run_id` (when relevant)
+- `provider_run_id` when provider-scoped
+- `workflow_run_id` when workflow-scoped
+- `node_run_id` when node-scoped
+- `target_node_id` or `target_node_run_id` when routing workflow handoffs
 - `payload`
 - `meta` (timestamps, source attachment id, trace id)
 
@@ -192,6 +212,96 @@ Suggested events:
 - `session.controller.changed`
 - `session.provider_run.changed`
 
+## 7.1 Workflow Semantics
+
+When a session runs in multi-agent workflow mode:
+
+- the daemon MUST treat the workflow as a general directed graph
+- v1 validators may accept only `circular` and `hierarchical` topologies
+- every workflow MUST declare a coordinator node
+- the coordinator MUST receive the initial user prompt
+- the coordinator MUST decide final continue, stop, or completion behavior
+
+Required runtime entities:
+
+- `WorkflowDefinition`
+- `WorkflowNode`
+- `WorkflowEdge`
+- `WorkflowRun`
+- `NodeRun`
+- `NodeMessage`
+- `WorktreeAssignment`
+- `AggregationState` or equivalent barrier/fan-in state
+
+## 7.2 Node Completion Contract
+
+Each workflow node MUST emit a structured completion report that the daemon can parse.
+
+Minimum fields:
+
+- `workflow_run_id`
+- `node_run_id`
+- `status`
+- `summary`
+- `artifacts` or changed files
+- `handoff_payload`
+- `stop_recommendation`
+
+Suggested event:
+
+- `workflow.node.completed`
+
+The daemon scheduler MUST advance workflow execution from these completion reports.
+
+## 7.3 Handoff Contract
+
+Outputs from one node MUST be transformed by the daemon into a structured handoff payload before delivery to the next node.
+
+Suggested payload fields:
+
+- `workflow_run_id`
+- `source_node_run_id`
+- `target_node_id` or `target_node_run_id`
+- `message_type`
+- `summary`
+- `artifacts`
+- `handoff_payload`
+- `meta`
+
+Suggested event:
+
+- `workflow.node.handoff`
+
+## 7.4 Topology and Barrier Semantics
+
+Circular topology rules in v1:
+
+- each node has one incoming edge and one outgoing edge
+- the final node routes back to the coordinator
+- execution is serialized
+- the workflow uses bounded iteration or round limits
+
+Hierarchical topology rules in v1:
+
+- the workflow forms a rooted tree
+- child branches may run in parallel
+- parent fan-in waits for all children by default
+- results propagate upward through structured aggregation
+
+Implementation priority note:
+
+- circular topology should be implemented and stabilized first
+- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+
+Suggested events:
+
+- `workflow.run.started`
+- `workflow.run.completed`
+- `workflow.node.started`
+- `workflow.node.waiting`
+- `workflow.node.failed`
+- `workflow.aggregation.updated`
+
 ## 8. Security Semantics
 
 ## 8.1 Encryption
@@ -241,4 +351,3 @@ Reference model:
   - Windows: WebView2
   - Linux desktop: embedded Chromium/WebKit container
 - non-web clients should be validated against the same conformance suite and snapshot expectations
-

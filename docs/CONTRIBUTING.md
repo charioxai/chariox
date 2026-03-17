@@ -57,6 +57,7 @@ Use `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, and `docs/PROTOCOL.md` for produc
 
 - Unit tests for pure/domain logic.
 - Integration tests for daemon-session-provider interactions.
+- Workflow validation tests for coordinator behavior, structured handoffs, graph/topology rules, and worktree isolation once those surfaces land.
 - Conformance tests for terminal lane behavior across client types.
 - End-to-end tests for critical workflows (attach, provider switch, memory update, compact flow).
 
@@ -70,7 +71,7 @@ For client implementations across web/mobile/desktop/CLI:
 
 ## 3.4 Baseline Commands
 
-Use these commands from the repository root for the current M0 baseline:
+Use these commands from the repository root for the current repository baseline:
 
 ```bash
 pnpm install

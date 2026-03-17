@@ -192,6 +192,27 @@ impl ProviderProcessService {
             })
     }
 
+    pub fn terminate_session_runs(
+        &mut self,
+        sessions: &mut SessionService,
+        session_id: &str,
+    ) -> Result<Vec<RuntimeProviderRun>, DaemonError> {
+        let run_ids: Vec<String> = self
+            .runs
+            .values()
+            .filter(|run| run.session_id() == session_id && run.state() != ProviderRunState::Ended)
+            .map(|run| run.id().to_string())
+            .collect();
+
+        let mut terminated_runs = Vec::with_capacity(run_ids.len());
+
+        for run_id in run_ids {
+            terminated_runs.push(self.terminate_run(sessions, session_id, &run_id)?);
+        }
+
+        Ok(terminated_runs)
+    }
+
     fn get_run_mut(&mut self, run_id: &str) -> Result<&mut RuntimeProviderRun, DaemonError> {
         self.runs
             .get_mut(run_id)

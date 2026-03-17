@@ -10,6 +10,7 @@ Planning roadmap derived from `docs/spec-v1.md`.
 - preserve native provider UX while adding orchestration value
 - ship memory-aware context transfer with minimal provider coupling
 - keep server lightweight with strict security boundaries
+- keep the runtime compatible with multi-agent workflow execution, structured handoffs, and isolated branch worktrees
 
 ## 2. Milestone Structure
 
@@ -19,6 +20,15 @@ Planning roadmap derived from `docs/spec-v1.md`.
 - M3: Control Lane and Memory Management
 - M4: Remote Access and Security Hardening
 - M5: v1 Stabilization and Launch
+
+## 2.1 Workflow Rollout Within v1
+
+Multi-agent workflow execution is part of v1, not a post-v1 feature.
+
+Rollout priority:
+
+- circular topology is the earlier implementation target inside v1
+- hierarchical topology remains in scope for v1, but is planned for a later stage of v1 after the lower-level runtime, capability, control, and protocol layers are stable
 
 ## 3. Milestones
 
@@ -49,11 +59,13 @@ Outcomes:
 - PTY manager for provider runs
 - multi-attachment support + controller/observer model
 - parked provider run support with one active run at a time
+- workflow-compatible runtime foundations so later multi-agent graph execution can be added without redesigning session/provider/worktree ownership
 
 Exit criteria:
 
 - local client can run native provider in managed session
 - multiple clients can attach without breaking terminal behavior
+- implemented runtime surfaces do not block later workflow graph execution, node-scoped provider runs, or explicit worktree assignment
 
 ## M2 - Capability Surface
 
@@ -65,6 +77,7 @@ Outcomes:
 - git/worktree inspection capability
 - file transfer + attach-transferred workflow
 - schedule metadata + daemon execution baseline
+- workflow-aware capability design so structured node handoffs, aggregation artifacts, and isolated branch outputs can reuse the same daemon-owned capability surfaces later
 
 Exit criteria:
 
@@ -85,6 +98,7 @@ Outcomes:
   - long-term memory
 - transfer package generation for provider switch/machine reassignment/resume
 - user-triggered Arroba context compaction flow (`<reserved character for arroba commands>compact`)
+- structured completion and handoff contracts suitable for future multi-agent workflow scheduling
 
 Exit criteria:
 
@@ -113,6 +127,7 @@ Outcomes:
 - operational telemetry and failure diagnostics
 - user/admin docs for setup, security expectations, and limitations
 - release process and upgrade guidance
+- completion of the v1 workflow rollout, with circular topology delivered earlier and hierarchical topology completed later in v1
 
 Exit criteria:
 
@@ -125,6 +140,7 @@ Exit criteria:
 - UX quality for command palette, status, and transfer transparency
 - Security/privacy review and threat modeling
 - Performance targets for PTY throughput and capability latency
+- Generic workflow-engine compatibility: directed-graph scheduling model, structured handoff/completion contracts, worktree isolation, and aggregation/barrier semantics
 
 ## 5. Risks and Mitigations
 
