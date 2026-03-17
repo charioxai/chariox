@@ -119,6 +119,31 @@ Common fields:
 - `payload`
 - `meta` (timestamps, source attachment id, trace id)
 
+## 4.1 Local Daemon API Baseline
+
+For local M1 flows, the daemon may expose a local-first request/response surface over local IPC or a harness shim.
+
+Minimum request set:
+
+- `session.create`
+- `session.attach`
+- `session.detach`
+- `provider_run.launch`
+- `terminal.input`
+- `terminal.output.poll`
+- `terminal.resize`
+- `session.end`
+
+Minimum response/result shapes:
+
+- session creation returns structured session metadata
+- attach/detach returns structured attachment metadata
+- provider launch returns structured provider-run metadata
+- terminal output polling returns structured terminal-output fan-out records
+- end-session returns structured final session metadata
+
+This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
+
 ## 5. Control Operations
 
 ## 5.1 `attach_file`

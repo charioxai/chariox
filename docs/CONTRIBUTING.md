@@ -78,6 +78,7 @@ pnpm install
 pnpm lint
 pnpm build
 pnpm test
+pnpm smoke:daemon
 cargo test --manifest-path apps/daemon/Cargo.toml
 ```
 

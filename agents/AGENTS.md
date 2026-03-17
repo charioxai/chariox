@@ -919,7 +919,7 @@ Arroba should:
 
 M0 foundations are complete.
 M1 is now in progress.
-The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, provider-run orchestration, and PTY-backed terminal fan-out. Baseline CI coverage for TypeScript and Rust verification remains in place.
+The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, a workflow-oriented Prisma schema baseline, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, provider-run orchestration, PTY-backed terminal fan-out, and a local daemon smoke harness. Baseline CI coverage for TypeScript and Rust verification remains in place.
 
 Related architecture docs:
 - docs/spec-v1.md

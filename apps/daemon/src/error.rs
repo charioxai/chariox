@@ -70,6 +70,11 @@ pub enum DaemonError {
         provider_run_id: String,
         message: String,
     },
+    #[error("failed to clean up PTY for provider run `{provider_run_id}`: {message}")]
+    PtyCleanup {
+        provider_run_id: String,
+        message: String,
+    },
     #[error("failed to write PTY input for provider run `{provider_run_id}`: {message}")]
     PtyWrite {
         provider_run_id: String,
@@ -84,4 +89,6 @@ pub enum DaemonError {
         rows: u16,
         message: String,
     },
+    #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]
+    LocalHarnessTimeout { session_id: String, timeout_ms: u64 },
 }

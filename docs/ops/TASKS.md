@@ -12,8 +12,6 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## Backlog
 
-- [ ] **M1-006** Add local daemon API or harness for managed-session flows
-  - Note: Prove a local client path can create a session and attach to a provider stub.
 - [ ] **M1-007** Add session runtime and PTY-oriented integration tests
   - Note: Cover lifecycle, controller handoff, active run switching, and terminal path smoke tests.
 - [ ] **M1-008** Align protocol and architecture docs with concrete M1 runtime behavior
@@ -35,6 +33,9 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Commit: _pending next commit_
 - [x] **M1-005** Add PTY manager and terminal stream fan-out
   - Note: Added a `portable-pty` backed PTY manager, terminal input/output routing, and multi-attachment fan-out through daemon-owned terminal records.
+  - Commit: _pending next commit_
+- [x] **M1-006** Add local daemon API or harness for managed-session flows
+  - Note: Added a local request/response daemon API, a smoke harness binary, and runtime tests proving managed-session PTY flow through the daemon.
   - Commit: _pending next commit_
 - [x] **M0-001** Bootstrap workspace root (`pnpm-workspace`, root scripts, TS base config)
   - Note: Added workspace root `package.json`, `pnpm-workspace.yaml`, and `tsconfig.base.json`.

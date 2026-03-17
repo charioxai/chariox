@@ -116,3 +116,20 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a PTY manager for spawn, write, resize, output draining, and process cleanup keyed by provider run.
 - Added terminal stream records for controller input routing and multi-attachment output fan-out.
 - Added daemon-level tests covering PTY spawn, terminal input/write path, resize behavior, and output fan-out to multiple attachments.
+
+### Runtime hardening update
+
+- Hardened PTY lifecycle ownership so the daemon now retains child-process handles and performs explicit PTY cleanup on provider/session teardown instead of only dropping in-memory records.
+- Updated failed provider-switch handling to resume the previously active run automatically when the replacement PTY cannot be established, and record a user-facing runtime notice for that recovery path.
+- Expanded `packages/domain` with workflow-oriented v1 entities and enums so shared contracts no longer stop at the earlier single-agent baseline.
+
+### M1-006 implementation update
+
+- Added a local daemon request/response API in `apps/daemon/src/local/` covering create, attach, detach, provider launch, terminal input, terminal output polling, terminal resize, and session end flows.
+- Added a local smoke harness binary in `apps/daemon/src/bin/arroba-daemon-harness.rs` plus runtime tests proving a managed-session path through the PTY and terminal fan-out surfaces.
+- Updated `docs/PROTOCOL.md` to record the local-first daemon API baseline for M1 flows.
+
+### Domain and schema alignment update
+
+- Expanded `packages/domain/src/index.ts` and `packages/domain/src/index.test.ts` to reflect workflow-oriented runtime naming, richer workflow entities, handoff/completion fields, worktree-isolation modes, and delivery statuses.
+- Updated `prisma/schema.prisma` to add workflow-oriented enums, execution-mode/session fields, and baseline models for workflow definitions, runs, nodes, edges, node messages, worktree assignments, and aggregation state.

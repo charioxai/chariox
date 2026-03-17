@@ -149,7 +149,7 @@ The M1 implementation is not required to ship full workflow execution, but every
 
 ## 4.6 Daemon APIs for local clients
 
-- [ ] Define the minimum daemon API surface needed for local M1 flows:
+- [x] Define the minimum daemon API surface needed for local M1 flows:
   - create session
   - attach to session
   - detach from session
@@ -157,22 +157,22 @@ The M1 implementation is not required to ship full workflow execution, but every
   - receive terminal output
   - resize terminal
   - end session
-- [ ] Keep the M1 API local-first; do not overbuild remote/server behavior yet.
-- [ ] Document request/response or event shapes in `docs/PROTOCOL.md` if reusable protocol contracts become concrete during implementation.
+- [x] Keep the M1 API local-first; do not overbuild remote/server behavior yet.
+- [x] Document request/response or event shapes in `docs/PROTOCOL.md` if reusable protocol contracts become concrete during implementation.
 
 ## 4.7 Domain and schema alignment
 
-- [ ] Review `packages/domain` and add any M1 fields/enums needed for attachment/controller/provider runtime coherence.
-- [ ] Ensure domain and runtime naming remain compatible with future workflow entities (`WorkflowDefinition`, `WorkflowNode`, `WorkflowEdge`, `WorkflowRun`, `NodeRun`, `NodeMessage`, `WorktreeAssignment`, `AggregationState`).
-- [ ] Ensure current session/provider/worktree fields do not assume single-agent execution as the only long-term runtime shape.
-- [ ] Keep Prisma changes minimal unless M1 code truly requires persisted runtime metadata.
+- [x] Review `packages/domain` and add any M1 fields/enums needed for attachment/controller/provider runtime coherence.
+- [x] Ensure domain and runtime naming remain compatible with future workflow entities (`WorkflowDefinition`, `WorkflowNode`, `WorkflowEdge`, `WorkflowRun`, `NodeRun`, `NodeMessage`, `WorktreeAssignment`, `AggregationState`).
+- [x] Ensure current session/provider/worktree fields do not assume single-agent execution as the only long-term runtime shape.
+- [x] Keep Prisma changes minimal unless M1 code truly requires persisted runtime metadata.
 - [ ] If schema/domain names change, update all affected docs in the same change.
 
 ## 4.8 Local client/dev harness
 
-- [ ] Add a minimal local harness that proves a client can create a session and attach to a running provider stub.
-- [ ] The harness may be a CLI command, integration test harness, or daemon smoke binary, but it must exercise the real runtime path.
-- [ ] Prefer a deterministic stub provider process for tests over a dependency on external provider CLIs.
+- [x] Add a minimal local harness that proves a client can create a session and attach to a running provider stub.
+- [x] The harness may be a CLI command, integration test harness, or daemon smoke binary, but it must exercise the real runtime path.
+- [x] Prefer a deterministic stub provider process for tests over a dependency on external provider CLIs.
 
 ## 4.9 Testing and verification
 

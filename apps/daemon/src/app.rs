@@ -69,6 +69,10 @@ impl DaemonApp {
         self.attachments.attach(&mut self.sessions, request)
     }
 
+    pub fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
+        self.attachments.detach(&mut self.sessions, attachment_id)
+    }
+
     pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
 
@@ -81,7 +85,7 @@ impl DaemonApp {
             .providers
             .terminate_session_runs(&mut self.sessions, session_id)?;
         for run in terminated_runs {
-            self.pty.remove_process(run.id());
+            self.pty.remove_process(run.id())?;
         }
         self.sessions.end_session(session_id)
     }
@@ -90,14 +94,72 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        let previous_active_run_id = self
+            .sessions
+            .get_session(&request.session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
         let run = self.providers.launch_run(&mut self.sessions, request)?;
         if let Err(error) = self.pty.spawn_for_run(&run) {
             let _ = self
                 .providers
                 .terminate_run(&mut self.sessions, run.session_id(), run.id());
+            if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
+                match self.providers.resume_run(
+                    &mut self.sessions,
+                    run.session_id(),
+                    previous_active_run_id,
+                ) {
+                    Ok(resumed_run) => {
+                        self.terminal.record_notice(
+                            run.session_id(),
+                            Some(resumed_run.id()),
+                            format!(
+                                "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+                                run.session_id(),
+                                resumed_run.id()
+                            ),
+                        );
+                    }
+                    Err(resume_error) => {
+                        self.terminal.record_notice(
+                            run.session_id(),
+                            None,
+                            format!(
+                                "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                run.session_id(),
+                                resume_error
+                            ),
+                        );
+                    }
+                }
+            }
             return Err(error);
         }
         Ok(run)
+    }
+
+    pub fn send_provider_input(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        attachment_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        self.ensure_controller_attachment(session_id, attachment_id)?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run_id.to_string(),
+                state: provider_run.state(),
+                operation: "send terminal input",
+            });
+        }
+
+        self.terminal
+            .record_input(session_id, provider_run_id, attachment_id, bytes);
+        self.pty.write_input(provider_run_id, bytes)
     }
 
     pub fn send_terminal_input(
@@ -107,22 +169,6 @@ impl DaemonApp {
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
         let session = self.sessions.get_session(session_id)?;
-
-        if session.controller_attachment_id() != Some(attachment_id) {
-            return Err(DaemonError::AttachmentIsNotController {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        let attachment = self.attachments.get_attachment(attachment_id)?;
-        if attachment.session_id() != session_id {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
         let provider_run_id = session
             .active_provider_run_id()
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
@@ -130,9 +176,27 @@ impl DaemonApp {
             })?
             .to_string();
 
-        self.terminal
-            .record_input(session_id, &provider_run_id, attachment_id, bytes);
-        self.pty.write_input(&provider_run_id, bytes)
+        self.send_provider_input(session_id, &provider_run_id, attachment_id, bytes)
+    }
+
+    pub fn resize_provider_terminal(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+
+        if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run_id.to_string(),
+                state: provider_run.state(),
+                operation: "resize terminal",
+            });
+        }
+
+        self.pty.resize(provider_run_id, cols, rows)
     }
 
     pub fn resize_terminal(
@@ -150,7 +214,7 @@ impl DaemonApp {
             })?
             .to_string();
 
-        self.pty.resize(&provider_run_id, cols, rows)
+        self.resize_provider_terminal(session_id, &provider_run_id, cols, rows)
     }
 
     pub fn pump_terminal_output(
@@ -176,6 +240,16 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+
+        if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run_id.to_string(),
+                state: provider_run.state(),
+                operation: "pump terminal output",
+            });
+        }
+
         let chunks = self.pty.drain_output(provider_run_id)?;
 
         Ok(chunks
@@ -189,6 +263,48 @@ impl DaemonApp {
                 )
             })
             .collect())
+    }
+
+    fn ensure_controller_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<RuntimeAttachment, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+
+        if session.controller_attachment_id() != Some(attachment_id) {
+            return Err(DaemonError::AttachmentIsNotController {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let attachment = self.attachments.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        Ok(attachment)
+    }
+
+    fn ensure_provider_run_in_session(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let provider_run = self.providers.get_run(provider_run_id)?;
+
+        if provider_run.session_id() != session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.to_string(),
+            });
+        }
+
+        Ok(provider_run)
     }
 
     pub fn startup_message(&self) -> String {

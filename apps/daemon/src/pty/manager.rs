@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
@@ -27,6 +27,7 @@ pub struct PtyOutputChunk {
 }
 
 struct PtyProcess {
+    child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
@@ -74,7 +75,8 @@ impl PtyManager {
             command.arg(arg);
         }
 
-        pair.slave
+        let child = pair
+            .slave
             .spawn_command(command)
             .map_err(|error| DaemonError::PtySpawn {
                 provider_run_id: request.provider_run_id.clone(),
@@ -115,6 +117,7 @@ impl PtyManager {
         self.processes.insert(
             request.provider_run_id,
             PtyProcess {
+                child,
                 master: pair.master,
                 writer,
                 output_rx,
@@ -191,8 +194,42 @@ impl PtyManager {
         Ok(chunks)
     }
 
-    pub fn remove_process(&mut self, provider_run_id: &str) {
-        self.processes.remove(provider_run_id);
+    pub fn has_process(&self, provider_run_id: &str) -> bool {
+        self.processes.contains_key(provider_run_id)
+    }
+
+    pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        let mut process = match self.processes.remove(provider_run_id) {
+            Some(process) => process,
+            None => return Ok(false),
+        };
+
+        let status = process
+            .child
+            .try_wait()
+            .map_err(|error| DaemonError::PtyCleanup {
+                provider_run_id: provider_run_id.to_string(),
+                message: error.to_string(),
+            })?;
+
+        if status.is_none() {
+            process
+                .child
+                .kill()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.to_string(),
+                    message: error.to_string(),
+                })?;
+            process
+                .child
+                .wait()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.to_string(),
+                    message: error.to_string(),
+                })?;
+        }
+
+        Ok(true)
     }
 }
 
@@ -245,11 +282,7 @@ mod tests {
             .write_input(run.id(), b"hello from pty\n")
             .expect("pty input should be written");
 
-        thread::sleep(Duration::from_millis(100));
-
-        let output = manager
-            .drain_output(run.id())
-            .expect("pty output should be readable");
+        let output = wait_for_output(&mut manager, run.id());
 
         assert!(!output.is_empty());
         let combined = output
@@ -258,5 +291,32 @@ mod tests {
             .collect::<Vec<u8>>();
         let combined = String::from_utf8_lossy(&combined);
         assert!(combined.contains("hello from pty"));
+
+        manager
+            .remove_process(run.id())
+            .expect("pty process cleanup should succeed");
+        assert!(!manager.has_process(run.id()));
+    }
+
+    fn wait_for_output(
+        manager: &mut PtyManager,
+        provider_run_id: &str,
+    ) -> Vec<super::PtyOutputChunk> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let output = manager
+                .drain_output(provider_run_id)
+                .expect("pty output should be readable");
+            if !output.is_empty() {
+                return output;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for PTY output"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
