@@ -7,13 +7,14 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 ## Status
 
 M0, "Foundations", is complete in this repository.
+M1, "Core Session Runtime", is in progress.
 
 The current codebase provides:
 
 - a pnpm workspace for TypeScript packages
 - a minimal Fastify server with a health endpoint
 - a shared domain package for core v1 entities
-- a bootstrapped Rust daemon crate with a baseline unit test
+- a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, attachment/controller lease management, and a provider adapter/process baseline
 - a Prisma schema for the initial core entities
 - baseline CI for TypeScript and Rust checks
 
@@ -69,6 +70,7 @@ The Prisma schema is the initial persistence model for the same core entities de
 - `docs/ROADMAP.md`: milestone plan
 - `docs/CONTRIBUTING.md`: contributor workflow and testing expectations
 - `docs/M0_IMPLEMENTATION_CHECKLIST.md`: M0 definition of done and execution checklist
+- `docs/M1_IMPLEMENTATION_CHECKLIST.md`: detailed execution checklist for the core session runtime milestone
 - `docs/ops/TASKS.md`: lightweight repo-native task tracking
 - `docs/ops/PROGRESS_LOG.md`: chronological handoff log
 

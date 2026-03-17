@@ -715,7 +715,8 @@ Arroba should:
 ## Current Status
 
 M0 foundations are complete.
-The repository now includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, a Rust daemon crate bootstrap, and baseline CI coverage for TypeScript and Rust verification.
+M1 is now in progress.
+The repository includes workspace scaffolding, a strict TypeScript server bootstrap, a shared domain package with contract tests, an initial Prisma schema, and a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle management, attachment/controller lease management, and a provider adapter/process baseline. Baseline CI coverage for TypeScript and Rust verification remains in place.
 
 Related architecture docs:
 - docs/spec-v1.md

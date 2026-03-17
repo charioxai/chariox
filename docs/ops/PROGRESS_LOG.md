@@ -43,3 +43,49 @@ Chronological notes to preserve execution context between contributors/agents.
 - Updated `README.md`, `docs/CONTRIBUTING.md`, `docs/ROADMAP.md`, and `docs/M0_IMPLEMENTATION_CHECKLIST.md`.
 - M0 verification now consists of `pnpm lint`, `pnpm build`, `pnpm test`, and `cargo test --manifest-path apps/daemon/Cargo.toml`.
 - M0 is considered complete once those commands pass on the repository state produced in this update.
+
+### M1 planning update
+
+- Added `docs/M1_IMPLEMENTATION_CHECKLIST.md` to break M1 into concrete runtime, PTY, attachment, provider, and test workstreams.
+- Seeded `docs/ops/TASKS.md` with `M1-001` through `M1-008`.
+- Recommended M1 execution order:
+  1. daemon runtime skeleton
+  2. session lifecycle service
+  3. attachment/controller lease logic
+  4. provider adapter baseline
+  5. PTY manager and terminal fan-out
+  6. local harness/API
+  7. runtime tests
+  8. docs/protocol alignment
+
+### M1-001 implementation update
+
+- Added the daemon runtime skeleton in `apps/daemon` with:
+  - `app.rs` for bootstrap and shutdown handling
+  - `config.rs` for daemon configuration loading/validation
+  - `error.rs` for structured daemon runtime errors
+  - a lean application container that owns only real runtime services
+- Switched the daemon binary to a Tokio-based async entrypoint and documented Tokio as the M1 async runtime baseline.
+- Added crate tests to verify config validation and top-level runtime wiring.
+
+### M1-002 implementation update
+
+- Implemented an in-memory session lifecycle service in `apps/daemon/src/session/`.
+- Added runtime session records for workspace/worktree/host ownership, active provider run, attachment IDs, and controller lease state.
+- Added explicit session transition validation for `created`, `active`, `parked`, and `ended` states.
+- Added Rust unit tests for create/get/list/end flows, invalid transitions, and unknown-session lookup behavior.
+- Refined the session model to remove duplicated derived state, keep host metadata out of the in-memory store, and encapsulate session mutation behind methods.
+
+### M1-003 implementation update
+
+- Added a real `attachment` runtime module with in-memory attachment records, capability levels, observer/controller modes, and event recording.
+- Implemented attach, detach, controller acquire, controller release, and controller handoff behavior against the session runtime.
+- Enforced single-controller semantics by demoting the previous controller to observer whenever another attachment acquires control.
+- Added Rust tests covering multiple observers, controller handoff, and detach cleanup for the active controller.
+
+### M1-004 implementation update
+
+- Added a real `provider` runtime module with a provider adapter trait, registry, and in-memory provider process service.
+- Added a deterministic `dev-stub` adapter to exercise launch, park, resume, terminate, and PTY-target metadata flows without depending on an external provider CLI.
+- Implemented provider run runtime records and session integration so one run is active per session while prior active runs are parked.
+- Added Rust tests covering first-run launch, automatic parking when a new run becomes active, and rejection of inconsistent active-run state.

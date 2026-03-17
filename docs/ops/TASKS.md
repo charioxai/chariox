@@ -12,10 +12,29 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## Backlog
 
-- [ ] _None currently_
+- [ ] **M1-005** Add PTY manager and terminal stream fan-out
+  - Note: Implement PTY spawn/read/write/resize and multi-attachment output distribution.
+- [ ] **M1-006** Add local daemon API or harness for managed-session flows
+  - Note: Prove a local client path can create a session and attach to a provider stub.
+- [ ] **M1-007** Add session runtime and PTY-oriented integration tests
+  - Note: Cover lifecycle, controller handoff, active run switching, and terminal path smoke tests.
+- [ ] **M1-008** Align protocol and architecture docs with concrete M1 runtime behavior
+  - Note: Update docs once M1 runtime surfaces and event contracts are real.
 
 ## Done
 
+- [x] **M1-001** Add daemon runtime skeleton and module layout
+  - Note: Added a lean daemon bootstrap around config, structured runtime errors, shutdown handling, and expandable real services instead of placeholder scaffolding.
+  - Commit: _pending next commit_
+- [x] **M1-002** Implement in-memory session lifecycle service
+  - Note: Added an in-memory Rust session store with create/get/list/end flows, explicit session transitions, and encapsulated runtime session state.
+  - Commit: _pending next commit_
+- [x] **M1-003** Implement attachment lifecycle and controller lease
+  - Note: Added attachment join/detach/controller flows, single-controller enforcement, and in-memory attachment event recording with Rust tests.
+  - Commit: _pending next commit_
+- [x] **M1-004** Add provider adapter baseline and provider run service
+  - Note: Added a provider adapter trait, a local dev-stub adapter, and in-memory provider run management with active/parked transitions and runtime tests.
+  - Commit: _pending next commit_
 - [x] **M0-001** Bootstrap workspace root (`pnpm-workspace`, root scripts, TS base config)
   - Note: Added workspace root `package.json`, `pnpm-workspace.yaml`, and `tsconfig.base.json`.
   - Commit: _pending next commit_
