@@ -241,7 +241,7 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
 
     app.send_terminal_input(session.id(), source.id(), b"switched run\n")
         .expect("attachment input should reach active provider run");
-    let records = wait_for_terminal_output(&mut app, session.id());
+    let records = wait_for_terminal_output(&mut app, session.id(), source.id());
     let combined = records
         .into_iter()
         .flat_map(|record| record.bytes)
@@ -332,7 +332,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             },
         ))
         .expect("config update should succeed");
-    let output = wait_for_local_terminal_output(&mut app, session.id());
+    let echoed_output = wait_for_local_terminal_output(&mut app, session.id(), second.id());
     let ended = app
         .handle_local_request(LocalDaemonRequest::EndSession(EndSessionRequest {
             session_id: session.id().to_string(),
@@ -359,7 +359,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         }
         _ => panic!("unexpected config response"),
     }
-    assert!(output.contains("first local prompt"));
+    assert!(echoed_output.contains("first local prompt"));
     match ended {
         LocalDaemonResponse::SessionEnded { session } => {
             assert_eq!(session.status(), SessionStatus::Ended)
@@ -401,12 +401,17 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
         .submit_prompt(session.id(), attachment.id(), "second auto prompt\n")
         .expect("second prompt should queue");
 
-    let combined = collect_terminal_output_until(&mut app, session.id(), |output, session| {
-        output.contains("first auto prompt")
-            && output.contains("second auto prompt")
-            && session.active_prompt().is_none()
-            && session.queued_prompts().is_empty()
-    });
+    let combined = collect_terminal_output_until(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        |output, session| {
+            output.contains("first auto prompt")
+                && output.contains("second auto prompt")
+                && session.active_prompt().is_none()
+                && session.queued_prompts().is_empty()
+        },
+    );
 
     assert!(combined.contains("first auto prompt"));
     assert!(combined.contains("second auto prompt"));
@@ -1044,13 +1049,14 @@ fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() 
 fn wait_for_terminal_output(
     app: &mut DaemonApp,
     session_id: &str,
+    attachment_id: &str,
 ) -> Vec<arroba_daemon::terminal::TerminalOutputRecord> {
     let timeout_ms = output_timeout_ms();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
         let records = app
-            .pump_terminal_output(session_id)
+            .pump_terminal_output(session_id, attachment_id)
             .expect("terminal output should fan out");
         if !records.is_empty() {
             return records;
@@ -1064,7 +1070,11 @@ fn wait_for_terminal_output(
     }
 }
 
-fn wait_for_local_terminal_output(app: &mut DaemonApp, session_id: &str) -> String {
+fn wait_for_local_terminal_output(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+) -> String {
     let timeout_ms = output_timeout_ms();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -1073,6 +1083,7 @@ fn wait_for_local_terminal_output(app: &mut DaemonApp, session_id: &str) -> Stri
             .handle_local_request(LocalDaemonRequest::PumpTerminalOutput(
                 PumpTerminalOutputRequest {
                     session_id: session_id.to_string(),
+                    attachment_id: attachment_id.to_string(),
                 },
             ))
             .expect("terminal output polling should succeed");
@@ -1111,7 +1122,12 @@ fn wait_for_socket(path: &Path) {
     }
 }
 
-fn collect_terminal_output_until<F>(app: &mut DaemonApp, session_id: &str, done: F) -> String
+fn collect_terminal_output_until<F>(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+    done: F,
+) -> String
 where
     F: Fn(&str, &arroba_daemon::session::RuntimeSession) -> bool,
 {
@@ -1121,7 +1137,7 @@ where
 
     loop {
         let records = app
-            .pump_terminal_output(session_id)
+            .pump_terminal_output(session_id, attachment_id)
             .expect("terminal output should fan out");
         for record in records {
             output.extend(record.bytes);

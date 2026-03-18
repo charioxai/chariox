@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::local::{
     AttachToSessionRequest, CancelActivePromptRequest, DetachFromSessionRequest,
-    GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LocalIpcClient, PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
+    GetSessionStateRequest, LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LocalIpcClient, PumpTerminalOutputRequest, ResizeTerminalRequest,
+    SubmitPromptRequest,
 };
-use arroba_daemon::session::CreateSessionRequest;
+use arroba_daemon::session::{CreateSessionRequest, RuntimeSession, SessionStatus};
 use arroba_daemon::{DaemonConfig, DaemonError};
 
 fn main() -> Result<(), DaemonError> {
@@ -28,6 +29,8 @@ fn main() -> Result<(), DaemonError> {
 
     let (session_id, created_session) = if let Some(session_id) = options.session_id.clone() {
         (session_id, false)
+    } else if let Some(session) = find_attachable_session(&client, &workspace, &worktree)? {
+        (session.id().to_string(), false)
     } else {
         let session = match client.send(&LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
@@ -78,6 +81,7 @@ fn main() -> Result<(), DaemonError> {
     let output_thread = spawn_output_poller(
         client.clone(),
         session_id.clone(),
+        attachment.id().to_string(),
         stop.clone(),
         output_activity.clone(),
     );
@@ -224,6 +228,7 @@ fn print_usage() {
 fn spawn_output_poller(
     client: LocalIpcClient,
     session_id: String,
+    attachment_id: String,
     stop: Arc<AtomicBool>,
     output_activity: Arc<Mutex<OutputActivity>>,
 ) -> thread::JoinHandle<()> {
@@ -235,6 +240,7 @@ fn spawn_output_poller(
             match client.send(&LocalDaemonRequest::PumpTerminalOutput(
                 PumpTerminalOutputRequest {
                     session_id: session_id.clone(),
+                    attachment_id: attachment_id.clone(),
                 },
             )) {
                 Ok(LocalDaemonResponse::TerminalOutput { records }) => {
@@ -299,6 +305,37 @@ fn get_session_state(
         LocalDaemonResponse::SessionState { session } => Ok(session),
         other => unexpected_response("get session state", &other),
     }
+}
+
+fn find_attachable_session(
+    client: &LocalIpcClient,
+    workspace: &std::path::Path,
+    worktree: &std::path::Path,
+) -> Result<Option<RuntimeSession>, DaemonError> {
+    let sessions = match client.send(&LocalDaemonRequest::ListSessions(ListSessionsRequest))? {
+        LocalDaemonResponse::SessionsListed { sessions } => sessions,
+        other => unexpected_response("list sessions", &other),
+    };
+
+    let workspace = workspace.display().to_string();
+    let worktree = worktree.display().to_string();
+
+    Ok(sessions
+        .into_iter()
+        .filter(|session| {
+            session.workspace_id() == workspace
+                && session.worktree_id() == worktree
+                && session.status() != SessionStatus::Ended
+        })
+        .max_by_key(session_sort_key))
+}
+
+fn session_sort_key(session: &RuntimeSession) -> u64 {
+    session
+        .id()
+        .strip_prefix("session-")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 fn default_working_directory() -> PathBuf {

@@ -418,6 +418,12 @@ impl DaemonApp {
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
+                self.echo_prompt_to_other_attachments(
+                    session_id,
+                    &provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                );
                 if let Err(error) = self.dispatch_prompt_to_provider(
                     session_id,
                     &provider_run_id,
@@ -431,6 +437,12 @@ impl DaemonApp {
                 self.note_prompt_started(session_id);
             }
             PromptSubmissionOutcome::Queued { prompt } => {
+                self.echo_prompt_to_other_attachments(
+                    session_id,
+                    &provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                );
                 self.terminal.record_notice(
                     session_id,
                     Some(&provider_run_id),
@@ -634,7 +646,9 @@ impl DaemonApp {
     pub fn pump_terminal_output(
         &mut self,
         session_id: &str,
+        attachment_id: &str,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
         let provider_run_id = self
             .sessions
             .get_session(session_id)?
@@ -645,7 +659,8 @@ impl DaemonApp {
             .to_string();
         let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
 
-        self.pump_provider_output(session_id, &provider_run_id, recipient_attachment_ids)
+        let _ = self.pump_provider_output(session_id, &provider_run_id, recipient_attachment_ids)?;
+        Ok(self.terminal.drain_output_records(session_id, attachment_id))
     }
 
     pub fn pump_provider_output(
@@ -833,6 +848,29 @@ impl DaemonApp {
                 )
             })
             .collect()
+    }
+
+    fn echo_prompt_to_other_attachments(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        source_attachment_id: &str,
+        prompt: &str,
+    ) {
+        let recipient_attachment_ids = self.other_attachment_ids(session_id, source_attachment_id);
+        if recipient_attachment_ids.is_empty() {
+            return;
+        }
+        let mut bytes = prompt.as_bytes().to_vec();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        self.terminal.fan_out_output(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            &bytes,
+        );
     }
 
     fn ensure_attachment_can_run_capability(

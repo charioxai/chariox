@@ -76,7 +76,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
         prompt: "harness smoke\n".to_string(),
     }))?;
 
-    let output_preview = wait_for_output(app, session.id())?;
+    let output_preview = wait_for_output(app, session.id(), prompt_source.id())?;
 
     let _ = app.handle_local_request(LocalDaemonRequest::EndSession(EndSessionRequest {
         session_id: session.id().to_string(),
@@ -91,7 +91,11 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
     })
 }
 
-fn wait_for_output(app: &mut DaemonApp, session_id: &str) -> Result<String, DaemonError> {
+fn wait_for_output(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<String, DaemonError> {
     let timeout_ms = env::var("ARROBA_HARNESS_OUTPUT_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -102,6 +106,7 @@ fn wait_for_output(app: &mut DaemonApp, session_id: &str) -> Result<String, Daem
         let response = app.handle_local_request(LocalDaemonRequest::PumpTerminalOutput(
             PumpTerminalOutputRequest {
                 session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
             },
         ))?;
 

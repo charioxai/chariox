@@ -13,6 +13,7 @@ pub struct TerminalOutputRecord {
     pub session_id: String,
     pub provider_run_id: String,
     pub recipient_attachment_ids: Vec<String>,
+    pub pending_recipient_attachment_ids: Vec<String>,
     pub bytes: Vec<u8>,
 }
 
@@ -62,6 +63,7 @@ impl TerminalStreamService {
         let record = TerminalOutputRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
+            pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
         };
@@ -95,6 +97,31 @@ impl TerminalStreamService {
 
     pub fn output_records(&self) -> &[TerminalOutputRecord] {
         &self.output_records
+    }
+
+    pub fn drain_output_records(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<TerminalOutputRecord> {
+        let mut drained = Vec::new();
+        for record in &mut self.output_records {
+            if record.session_id == session_id
+                && record
+                    .pending_recipient_attachment_ids
+                    .iter()
+                    .any(|id| id == attachment_id)
+            {
+                drained.push(record.clone());
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
+            }
+        }
+
+        self.output_records
+            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        drained
     }
 
     pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
@@ -159,9 +186,29 @@ mod tests {
         assert_eq!(terminal.output_records().len(), 1);
         assert_eq!(terminal.notice_records().len(), 1);
         assert_eq!(output.recipient_attachment_ids.len(), 2);
+        assert_eq!(output.pending_recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
         assert_eq!(notice.recipient_attachment_ids.len(), 1);
         assert_eq!(notice.pending_recipient_attachment_ids.len(), 1);
+    }
+
+    #[test]
+    fn output_polling_is_per_recipient() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"hello\n",
+        );
+
+        let first = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert_eq!(terminal.output_records().len(), 1);
+
+        let second = terminal.drain_output_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+        assert!(terminal.output_records().is_empty());
     }
 
     #[test]

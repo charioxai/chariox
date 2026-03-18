@@ -70,6 +70,9 @@ pub struct GetSessionStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSessionsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -85,6 +88,7 @@ pub struct ResizeTerminalRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PumpTerminalOutputRequest {
     pub session_id: String,
+    pub attachment_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +156,7 @@ pub enum LocalDaemonRequest {
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
+    ListSessions(ListSessionsRequest),
     GetSessionState(GetSessionStateRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -183,6 +188,9 @@ pub enum LocalDaemonResponse {
     },
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,
+    },
+    SessionsListed {
+        sessions: Vec<RuntimeSession>,
     },
     SessionState {
         session: RuntimeSession,
@@ -272,6 +280,9 @@ impl DaemonApp {
                     ))?,
                 })
             }
+            LocalDaemonRequest::ListSessions(_) => Ok(LocalDaemonResponse::SessionsListed {
+                sessions: self.sessions().list_sessions(),
+            }),
             LocalDaemonRequest::GetSessionState(request) => Ok(LocalDaemonResponse::SessionState {
                 session: self.sessions().get_session(&request.session_id)?,
             }),
@@ -325,7 +336,8 @@ impl DaemonApp {
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Ok(LocalDaemonResponse::TerminalOutput {
-                    records: self.pump_terminal_output(&request.session_id)?,
+                    records: self
+                        .pump_terminal_output(&request.session_id, &request.attachment_id)?,
                 })
             }
             LocalDaemonRequest::RunShellCommand(request) => {

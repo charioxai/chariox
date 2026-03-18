@@ -205,7 +205,7 @@ mod tests {
         app.send_terminal_input(session.id(), source.id(), b"fanout test\n")
             .expect("attachment input should reach provider PTY");
 
-        let records = wait_for_terminal_output(&mut app, session.id());
+        let records = wait_for_terminal_output(&mut app, session.id(), source.id());
 
         assert!(!records.is_empty());
         assert_eq!(app.terminal().input_records().len(), 1);
@@ -506,12 +506,13 @@ mod tests {
     fn wait_for_terminal_output(
         app: &mut DaemonApp,
         session_id: &str,
+        attachment_id: &str,
     ) -> Vec<super::terminal::TerminalOutputRecord> {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
 
         loop {
             let records = app
-                .pump_terminal_output(session_id)
+                .pump_terminal_output(session_id, attachment_id)
                 .expect("terminal output should fan out");
             if !records.is_empty() {
                 return records;
