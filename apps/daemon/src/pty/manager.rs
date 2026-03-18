@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -16,6 +17,7 @@ pub struct PtySpawnRequest {
     pub provider_run_id: String,
     pub program: String,
     pub args: Vec<String>,
+    pub working_directory: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -49,6 +51,7 @@ impl PtyManager {
             provider_run_id: run.id().to_string(),
             program: run.pty_program().to_string(),
             args: run.pty_args().to_vec(),
+            working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
         };
@@ -73,6 +76,9 @@ impl PtyManager {
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
             command.arg(arg);
+        }
+        if let Some(working_directory) = request.working_directory {
+            command.cwd(working_directory);
         }
 
         let child = pair
@@ -263,6 +269,7 @@ mod tests {
                 pty_target: Some("stub-pty:session-1".to_string()),
                 pty_program: "/bin/sh".to_string(),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
+                working_directory: None,
             },
         )
     }

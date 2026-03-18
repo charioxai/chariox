@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::DaemonError;
 
 use super::common::resolve_worktree_scoped_path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreTransferredFileRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -32,7 +34,7 @@ impl StoreTransferredFileRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredTransferArtifact {
     pub session_id: String,
     pub attachment_id: String,

@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalInputRecord {
     pub session_id: String,
     pub provider_run_id: String,
@@ -6,7 +8,7 @@ pub struct TerminalInputRecord {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOutputRecord {
     pub session_id: String,
     pub provider_run_id: String,
@@ -14,7 +16,7 @@ pub struct TerminalOutputRecord {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNoticeRecord {
     pub session_id: String,
     pub provider_run_id: Option<String>,

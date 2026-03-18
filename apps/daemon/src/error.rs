@@ -12,6 +12,11 @@ pub enum DaemonError {
     },
     #[error("failed while waiting for daemon shutdown signal: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("local transport `{operation}` failed: {message}")]
+    LocalTransport {
+        operation: &'static str,
+        message: String,
+    },
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
@@ -39,6 +44,11 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
+    #[error("provider adapter `{adapter_key}` could not resolve executable `{executable}`")]
+    ProviderExecutableNotFound {
+        adapter_key: String,
+        executable: String,
+    },
     #[error("provider run `{provider_run_id}` was not found")]
     ProviderRunNotFound { provider_run_id: String },
     #[error("provider run `{provider_run_id}` does not belong to session `{session_id}`")]

@@ -5,9 +5,12 @@ edition = "2021"
 
 [dependencies]
 portable-pty = "0.8.1"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 thiserror = "2.0.12"
-tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 wait-timeout = "0.2.0"
+libc = "0.2.172"
 
 [lib]
 name = "arroba_daemon"
@@ -16,3 +19,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "arroba-daemon"
 path = "src/main.rs"
+
+[[bin]]
+name = "arroba-cli"
+path = "src/bin/arroba-cli.rs"

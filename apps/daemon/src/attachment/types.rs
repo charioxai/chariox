@@ -1,4 +1,6 @@
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientCapabilityLevel {
     FullTerminal,
     InteractiveStructured,
@@ -6,7 +8,7 @@ pub enum ClientCapabilityLevel {
     AutomationOnly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachRequest {
     pub session_id: String,
     pub client_id: String,
@@ -27,7 +29,7 @@ impl AttachRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeAttachment {
     id: String,
     session_id: String,
@@ -67,7 +69,7 @@ impl RuntimeAttachment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachmentEvent {
     Joined {
         session_id: String,

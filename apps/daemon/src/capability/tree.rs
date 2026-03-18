@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::DaemonError;
 
 use super::common::{path_stays_within_root, resolve_worktree_scoped_path};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadDirectoryTreeRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -31,13 +33,13 @@ impl ReadDirectoryTreeRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryEntry {
     pub relative_path: String,
     pub kind: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadDirectoryTreeResult {
     pub session_id: String,
     pub root_path: PathBuf,

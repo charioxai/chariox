@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::DaemonError;
 
 use super::common::resolve_worktree_scoped_path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -28,14 +30,14 @@ impl ReadFileRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileResult {
     pub session_id: String,
     pub path: PathBuf,
     pub contents: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditFileRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -62,7 +64,7 @@ impl EditFileRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditFileResult {
     pub session_id: String,
     pub path: PathBuf,

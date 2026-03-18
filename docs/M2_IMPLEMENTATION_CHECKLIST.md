@@ -2,140 +2,167 @@
 
 ## Status
 
-Execution checklist for **M2 - Capability Surface**.
+Execution checklist for **M2 - End-to-End Local OpenCode Baseline**.
 
-M2 is now in progress.
+M2 is now the highest-priority milestone.
 
-This checklist translates the M2 roadmap milestone into concrete implementation steps for the repository state after M1.
+This checklist translates the updated roadmap into concrete implementation work for the repository state after M1. The current runtime already has in-memory session lifecycle, PTY management, prompt submission, terminal output fan-out, a local in-process API, and a `dev-stub` provider. M2 is about turning that runtime into a real local daemon + CLI path with a real first provider.
 
 ## 1. Target M2 outcomes
 
 From `docs/ROADMAP.md`, M2 outcomes are:
 
-- shell command capability
-- directory tree + file view/edit capabilities
-- screenshot capture capability
-- git/worktree inspection capability
-- file transfer + attach-transferred workflow
-- schedule metadata + daemon execution baseline
-- workflow-aware capability design so structured node handoffs, aggregation artifacts, and isolated branch outputs can reuse the same daemon-owned capability surfaces later
+- OpenCode provider adapter wired through the daemon
+- local CLI client attached to daemon-managed sessions
+- single-agent prompt submission from an input field
+- live terminal/output streaming from the active OpenCode run back into the CLI as output appears
+- stable session creation/attach/launch/prompt/output loop for one local user on one machine
+- no workflow mode, no remote relay, no web app, and no provider switching in this milestone
 
 Exit criteria:
 
-- core capabilities are callable through a local-first daemon API surface
-- capability failures are isolated from the terminal lane
-- capability results are structured and inspectable by current clients and future workflow nodes
+- local CLI can create or attach to a session, launch OpenCode, submit a prompt, and stream output in real time
+- daemon remains the authority for session and PTY/provider-run lifecycle during that flow
 
 ## 2. M2 implementation principles
 
-- Keep capability execution daemon-owned and separate from provider PTY traffic.
-- Prefer structured request/response results over ad hoc transcript scraping.
-- Keep capability APIs local-first and additive.
-- Preserve compatibility with future workflow-mode node execution and explicit worktree assignment.
-- Treat shell/file/git/screenshot/transfer features as reusable runtime services, not UI-only affordances.
+- Prefer one real end-to-end path over broader but partial feature coverage.
+- Reuse the existing daemon runtime and local request/response surface wherever possible instead of redesigning prompt/output flow.
+- Keep the first provider integration PTY-first and wrapper-style.
+- Defer slash-command UX, broader capability work, workflows, and relay/web concerns until the local OpenCode path is solid.
+- Treat the existing local harness as a prototype to replace with real daemon transport and a real CLI app.
 
-## 3. Suggested module responsibilities
+## 3. Concrete repository target for M2
 
-The exact filenames may evolve, but M2 should converge on something close to:
+At the end of M2, the repo should have something close to:
 
 ```text
-apps/daemon/src/
-  capability/
-    mod.rs
-    shell.rs          # shell command capability runtime
-    tree.rs           # directory snapshot capability
-    file.rs           # file view/edit capability runtime
-    git.rs            # git/worktree inspection capability
-    screenshot.rs     # screenshot capture capability
-    transfer.rs       # file transfer + attachment handoff runtime
-    schedule.rs       # schedule execution baseline
+apps/
+  daemon/
+    src/
+      local/
+        api.rs          # existing local request/response contract
+        ipc.rs          # daemon-side local transport / framing
+      provider/
+        registry.rs     # includes a real opencode adapter
+        opencode.rs     # launch details for the opencode CLI
+  cli/
+    src/
+      main.rs           # local CLI entrypoint
+      client.rs         # request/response wrapper over daemon transport
+      ui.rs             # minimal terminal input/output loop
 ```
 
-## 4. Capability workstreams
+Exact filenames may evolve, but M2 should converge on a shape close to that.
 
-## 4.1 Shell command capability
+## 4. Workstreams
 
-- [x] Add a daemon-owned shell command service with structured request/response types.
-- [x] Capture stdout, stderr, exit status, and execution metadata.
-- [x] Support explicit working directory selection compatible with current session/worktree state.
-- [x] Isolate shell-command failure from provider PTY lifecycle.
-- [x] Enforce timeout bounds for shell commands.
-- [x] Scope shell execution to the session worktree and validate the requesting attachment.
-- [x] Add tests for:
-  - successful command execution
-  - non-zero exit status
-  - working-directory scoping
-  - timeout handling
+## 4.1 Daemon Local Transport
 
-## 4.2 Directory tree capability
+- [ ] Add a real local transport for the daemon instead of relying only on in-process calls.
+- [ ] Prefer Unix domain sockets on Unix-like systems for the first cut.
+- [ ] Use a simple framed request/response protocol suitable for local CLI use.
+- [ ] Expose the existing local daemon request/response types through that transport.
+- [ ] Keep the transport single-user and local-first for M2.
+- [ ] Add tests for:
+  - daemon boot and socket availability
+  - request/response round-trip
+  - malformed request handling
+  - client disconnect handling
 
-- [x] Add a structured directory tree/snapshot capability.
-- [x] Keep output deterministic and suitable for terminal clients and future workflow handoffs.
-- [x] Add tests for scoped tree generation and ignored-path behavior when introduced.
+## 4.2 Local CLI App
 
-## 4.3 File view/edit capabilities
+- [ ] Add a real CLI client app under `apps/` that connects to the daemon transport.
+- [ ] Support create-or-attach session flow for one local user.
+- [ ] Add a prompt input field or line-input loop.
+- [ ] Submit prompts through the daemon rather than writing directly to provider stdin.
+- [ ] Continuously poll or stream terminal output and render it live.
+- [ ] Handle terminal resize and clean shutdown.
+- [ ] Keep the first UI intentionally minimal:
+  - one active session
+  - one active provider run
+  - one input field
+  - one output pane/stream
 
-- [x] Add read-only file view capability with structured text output.
-- [x] Add daemon-owned file edit capability with change reporting.
-- [ ] Add tests for large-file chunking or bounded output once behavior is concrete.
-  - Note: current file edit result reports created/changed and old/new size, but bounded read output is still pending.
+## 4.3 OpenCode Provider Adapter
 
-## 4.4 Git/worktree inspection capability
+- [ ] Add a real `opencode` provider adapter to the daemon provider registry.
+- [ ] Resolve the `opencode` executable from the local machine environment.
+- [ ] Launch OpenCode in a PTY through the existing provider-run lifecycle.
+- [ ] Keep the first iteration PTY-only:
+  - no login flow
+  - no command discovery
+  - no provider control operations
+  - no provider-specific extension projection
+- [ ] Add clear errors for:
+  - executable not found
+  - launch failure
+  - immediate process exit
+- [ ] Add adapter tests using a fixture or controllable subprocess where needed.
 
-- [x] Add git/worktree status inspection capability.
-- [x] Surface branch, dirty state, and relevant worktree metadata through structured responses.
-- [x] Keep the runtime compatible with future isolated workflow branches and worktree assignments.
+## 4.4 Prompt and Output Flow Hardening
 
-## 4.5 Screenshot capability
+- [ ] Reuse the existing prompt submission path instead of bypassing session state.
+- [ ] Ensure the local CLI path exercises:
+  - `session.create`
+  - `session.attach`
+  - `provider_run.launch`
+  - `prompt.submit`
+  - `terminal.output.poll`
+- [ ] Ensure prompt submission failure does not leave session state inconsistent.
+- [ ] Ensure streamed output remains live and incremental rather than only showing a final snapshot.
+- [ ] Verify resize events reach the PTY while output is active.
 
-- [x] Add a screenshot capture capability contract and local runtime baseline.
-- [ ] Ensure produced artifacts are session-associated and discoverable.
+## 4.5 Replace Harness-Only Assumptions
 
-## 4.6 File transfer and attach-transferred workflow
+- [ ] Keep the current local harness for smoke coverage, but stop treating it as the primary user path.
+- [ ] Add a real end-to-end smoke flow using the daemon transport and CLI app.
+- [ ] Update docs and scripts so the recommended local test path references the actual CLI when available.
 
-- [x] Add daemon-owned file transfer metadata and storage baseline.
-- [ ] Add an attach-transferred workflow that can reuse future provider control-lane operations.
-- [ ] Keep degradation behavior explicit when provider-side attach support is absent.
+## 4.6 Deferred M2-old capability work
 
-## 4.7 Schedule baseline
+These items are no longer part of the immediate M2 critical path and should remain deferred until M3:
 
-- [ ] Add daemon-owned schedule metadata handling and execution baseline.
-- [ ] Ensure scheduled prompt execution reuses the same queue/scheduler semantics as interactive prompts.
-- [ ] Add tests for schedule registration and prompt-queue interaction once behavior is concrete.
+- shell command capability expansion
+- directory tree and file capability expansion
+- screenshot and transfer UX completion
+- git integration expansion
+- schedule execution baseline
+- slash-command UX beyond what is needed to keep the local CLI usable
 
-## 4.8 Local API and contract alignment
+Existing implementation work in these areas should be preserved, but it should not drive milestone completion ahead of the end-to-end OpenCode path.
 
-- [x] Extend the local daemon API for implemented capabilities.
-- [x] Keep protocol docs aligned with every new capability request/response shape.
-- [x] Ensure capability APIs remain future-compatible with workflow-node execution.
+## 5. Testing and Verification
 
-## 4.9 Testing and verification
+- [ ] Add unit tests for the OpenCode adapter and daemon local transport.
+- [ ] Add integration tests for the real local daemon request/response path.
+- [ ] Add an end-to-end smoke test covering:
+  - daemon startup
+  - CLI connection
+  - session creation or attachment
+  - provider launch
+  - prompt submission
+  - live output capture
+- [ ] Keep existing daemon tests passing while adding the new path.
+- [ ] Keep formatting and linting clean across Rust and JS workspace checks.
 
-- [x] Add Rust unit tests for each implemented capability service.
-- [x] Add integration tests covering capability execution through the daemon API.
-- [x] Ensure JS workspace verification still passes after M2 changes.
-- [x] Keep daemon formatting, tests, and clippy clean.
+## 6. Documentation updates required in the same PR set
 
-## 4.10 Documentation updates required in the same PR set
+- [ ] Update `README.md` when the CLI app exists and can be run locally.
+- [ ] Update `docs/PROTOCOL.md` if the daemon transport framing or local command surface becomes more concrete.
+- [ ] Update `docs/ARCHITECTURE.md` once the real daemon transport and CLI app land.
+- [ ] Update `docs/ops/TASKS.md` and `docs/ops/PROGRESS_LOG.md` as M2 work advances.
 
-- [x] Update `docs/PROTOCOL.md` for each new capability contract.
-- [x] Update `docs/ARCHITECTURE.md` if capability ownership/responsibilities become more concrete.
-- [x] Update `docs/CONTRIBUTING.md` with any new verification commands.
-- [x] Update `agents/AGENTS.md`, `README.md`, `docs/ops/TASKS.md`, and `docs/ops/PROGRESS_LOG.md` as M2 work lands.
+## 7. Suggested execution order
 
-## 5. Suggested execution order
+1. daemon local transport
+2. minimal CLI app shell
+3. OpenCode adapter
+4. end-to-end prompt/output flow through real transport
+5. smoke and integration tests
+6. doc cleanup around the new default local path
 
-1. shell command capability
-2. local API exposure for shell command
-3. directory tree capability
-4. file view/edit capabilities
-5. git/worktree inspection capability
-6. screenshot capability
-7. file transfer baseline
-8. schedule baseline
-9. docs/protocol alignment
-
-## 6. Verification commands for claiming M2 progress
+## 8. Verification commands for claiming meaningful M2 progress
 
 Run and pass locally before claiming meaningful M2 progress:
 
@@ -143,11 +170,10 @@ Run and pass locally before claiming meaningful M2 progress:
 pnpm lint
 pnpm build
 pnpm test
-pnpm smoke:daemon
 cargo test --manifest-path apps/daemon/Cargo.toml
 ```
 
-Recommended additional daemon checks:
+Recommended additional Rust checks:
 
 ```bash
 cargo fmt --manifest-path apps/daemon/Cargo.toml --check

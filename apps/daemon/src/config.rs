@@ -1,4 +1,6 @@
 use std::env;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::DaemonError;
 
@@ -7,12 +9,17 @@ pub struct DaemonConfig {
     pub daemon_id: String,
     pub host_machine_id: String,
     pub os_user: String,
+    pub local_socket_path: PathBuf,
 }
 
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
+        let daemon_id = env::var("ARROBA_DAEMON_ID").unwrap_or_else(|_| "daemon-local".to_string());
         Self {
-            daemon_id: env::var("ARROBA_DAEMON_ID").unwrap_or_else(|_| "daemon-local".to_string()),
+            local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
+            daemon_id,
             host_machine_id: env::var("ARROBA_MACHINE_ID")
                 .unwrap_or_else(|_| "machine-local".to_string()),
             os_user: env::var("USER")
@@ -26,23 +33,67 @@ impl DaemonConfig {
         host_machine_id: impl Into<String>,
         os_user: impl Into<String>,
     ) -> Self {
+        let daemon_id = daemon_id.into();
         Self {
-            daemon_id: daemon_id.into(),
+            local_socket_path: Self::default_local_socket_path(&daemon_id),
+            daemon_id,
             host_machine_id: host_machine_id.into(),
             os_user: os_user.into(),
         }
     }
 
     pub fn for_tests() -> Self {
-        Self::new("daemon-test", "machine-test", "tester")
+        static TEST_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut config = Self::new("daemon-test", "machine-test", "tester");
+        config.local_socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "daemon-test-{}-{}.sock",
+            std::process::id(),
+            index
+        ));
+        config
+    }
+
+    pub fn with_local_socket_path(mut self, path: PathBuf) -> Self {
+        self.local_socket_path = path;
+        self
+    }
+
+    pub fn default_local_socket_path(daemon_id: &str) -> PathBuf {
+        default_runtime_dir().join(format!("{daemon_id}.sock"))
     }
 
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
         validate_non_empty("os_user", &self.os_user)?;
+        if self.local_socket_path.as_os_str().is_empty() {
+            return Err(DaemonError::InvalidConfig {
+                field: "local_socket_path",
+                message: "value must not be empty",
+            });
+        }
         Ok(())
     }
+}
+
+fn default_runtime_dir() -> PathBuf {
+    if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return runtime_dir.join("arroba");
+    }
+
+    if let Some(home_dir) = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return home_dir.join(".arroba").join("run");
+    }
+
+    std::env::temp_dir().join("arroba")
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DaemonError> {

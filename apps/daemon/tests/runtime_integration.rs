@@ -1,5 +1,11 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -353,6 +359,63 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
     }
 }
 
+#[test]
+fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() {
+    let socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        "cli-smoke-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be monotonic enough")
+            .as_nanos()
+    ));
+    let _ = fs::remove_file(&socket_path);
+    let fixture_path = create_opencode_fixture_script(1);
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_arroba-daemon"))
+        .env("ARROBA_DAEMON_SOCKET", &socket_path)
+        .env("ARROBA_OPENCODE_BIN", &fixture_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("daemon should launch");
+
+    wait_for_socket(&socket_path);
+
+    let mut cli = Command::new(env!("CARGO_BIN_EXE_arroba-cli"))
+        .env("ARROBA_DAEMON_SOCKET", &socket_path)
+        .env("ARROBA_OPENCODE_BIN", &fixture_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("cli should launch");
+
+    {
+        let stdin = cli.stdin.as_mut().expect("cli stdin should be piped");
+        stdin
+            .write_all(b"smoke prompt from cli\n")
+            .expect("cli stdin should accept prompt");
+    }
+
+    let output = cli.wait_with_output().expect("cli should exit");
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    let _ = fs::remove_file(&socket_path);
+    let _ = fs::remove_file(&fixture_path);
+
+    assert!(
+        output.status.success(),
+        "cli stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("fixture response: smoke prompt from cli"),
+        "cli stdout: {stdout}"
+    );
+}
+
 fn wait_for_terminal_output(
     app: &mut DaemonApp,
     session_id: &str,
@@ -408,6 +471,47 @@ fn wait_for_local_terminal_output(app: &mut DaemonApp, session_id: &str) -> Stri
         );
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn wait_for_socket(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for socket {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-opencode-fixture-{}-{}.sh",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be monotonic enough")
+            .as_nanos()
+    ));
+    fs::write(&path, fixture_script_contents(delay_seconds))
+        .expect("fixture script should be created");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture script should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture script should be executable");
+    }
+    path
+}
+
+fn fixture_script_contents(delay_seconds: u64) -> String {
+    format!(
+        "#!/bin/sh\nprintf 'fixture opencode ready\\n'\nif IFS= read -r line; then\n  sleep {delay_seconds}\n  printf 'fixture response: %s\\n' \"$line\"\nfi\n"
+    )
 }
 
 fn output_timeout_ms() -> u64 {

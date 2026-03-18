@@ -38,7 +38,10 @@ mod tests {
         assert!(app.terminal().notice_records().is_empty());
         assert_eq!(
             app.startup_message(),
-            "arroba daemon daemon-test ready on machine machine-test"
+            format!(
+                "arroba daemon daemon-test ready on machine machine-test ({})",
+                config.local_socket_path.display()
+            )
         );
     }
 

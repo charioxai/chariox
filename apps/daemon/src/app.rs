@@ -281,8 +281,15 @@ impl DaemonApp {
 
     pub fn launch_provider(
         &mut self,
-        request: LaunchProviderRequest,
+        mut request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        if request.adapter_key == "opencode" && request.working_directory.is_none() {
+            request.working_directory = Some(PathBuf::from(
+                self.sessions
+                    .get_session(&request.session_id)?
+                    .worktree_id(),
+            ));
+        }
         let previous_active_run_id = self
             .sessions
             .get_session(&request.session_id)?
@@ -671,18 +678,17 @@ impl DaemonApp {
 
     pub fn startup_message(&self) -> String {
         format!(
-            "arroba daemon {} ready on machine {}",
-            self.config.daemon_id, self.config.host_machine_id
+            "arroba daemon {} ready on machine {} ({})",
+            self.config.daemon_id,
+            self.config.host_machine_id,
+            self.config.local_socket_path.display()
         )
     }
 
-    pub async fn run(&self) -> Result<(), DaemonError> {
-        self.wait_for_shutdown_signal().await
-    }
-
-    async fn wait_for_shutdown_signal(&self) -> Result<(), DaemonError> {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(DaemonError::ShutdownSignal)
+    pub async fn run(self) -> Result<(), DaemonError> {
+        crate::local::run_local_ipc_server(self, async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
     }
 }

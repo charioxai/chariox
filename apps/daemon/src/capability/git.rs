@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::DaemonError;
 
 use super::common::resolve_worktree_scoped_path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectGitRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -29,7 +31,7 @@ impl InspectGitRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectGitResult {
     pub session_id: String,
     pub working_directory: PathBuf,

@@ -196,3 +196,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Reordered the near-term roadmap around one end-to-end local success path before broader platform scope.
 - New immediate priority: local daemon + CLI + OpenCode integration with prompt submission and live output streaming.
 - Deferred broader local capabilities, additional providers, multi-agent workflows, relay/web surfaces, provider switching, memory, compaction, and per-agent extension management to later milestones after that baseline is proven.
+
+### M2 checklist realignment update
+
+- Rewrote `docs/M2_IMPLEMENTATION_CHECKLIST.md` so it now matches the new M2 milestone instead of the earlier capability-first ordering.
+- Broke the M2 task board into concrete sub-workstreams: daemon transport, CLI app, OpenCode adapter, and end-to-end smoke coverage.
+- Explicitly marked the already-implemented local capability work as preserved but deferred relative to the new OpenCode-first critical path.

@@ -46,7 +46,7 @@ impl ProviderProcessService {
         })?;
 
         let run_id = self.next_run_id();
-        let launch_result = adapter.launch(&request);
+        let launch_result = adapter.launch(&request)?;
         let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
         run.mark_running();
 

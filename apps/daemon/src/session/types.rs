@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
     pub worktree_id: String,
@@ -16,7 +18,7 @@ impl CreateSessionRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionStatus {
     Created,
     Active,
@@ -24,20 +26,20 @@ pub enum SessionStatus {
     Ended,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionExecutionMode {
     SingleAgent,
     MultiAgentWorkflow,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptStatus {
     Queued,
     Running,
     Completed,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerState {
     Idle,
     Runnable,
@@ -45,7 +47,7 @@ pub enum SchedulerState {
     Waiting,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorktreeIsolationMode {
     SharedSession,
     IsolatedBranch,
@@ -76,7 +78,7 @@ impl fmt::Display for SessionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptQueueItem {
     id: String,
     source_attachment_id: String,
@@ -120,7 +122,7 @@ impl PromptQueueItem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SessionConfigState {
     version: u64,
     values: BTreeMap<String, String>,
@@ -153,25 +155,25 @@ impl SessionConfigState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSubmissionOutcome {
     Started { prompt: PromptQueueItem },
     Queued { prompt: PromptQueueItem },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptCompletion {
     pub completed: PromptQueueItem,
     pub started_next: Option<PromptQueueItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PromptDetachEffect {
     pub removed_active_prompt: bool,
     pub removed_queued_prompt_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeWorktreeAssignment {
     id: String,
     worktree_id: String,
@@ -208,7 +210,7 @@ impl RuntimeWorktreeAssignment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
     workspace_id: String,

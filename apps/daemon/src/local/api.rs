@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
@@ -15,14 +17,14 @@ use crate::session::{
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
     pub session_id: String,
     pub client_id: String,
     pub capability_level: ClientCapabilityLevel,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRunRequest {
     pub session_id: String,
     pub adapter_key: String,
@@ -31,24 +33,24 @@ pub struct LaunchProviderRunRequest {
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetachFromSessionRequest {
     pub attachment_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitPromptRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletePromptRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSessionConfigRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -56,35 +58,35 @@ pub struct UpdateSessionConfigRequest {
     pub requires_idle: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionStateRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
     pub attachment_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResizeTerminalRequest {
     pub session_id: String,
     pub cols: u16,
     pub rows: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PumpTerminalOutputRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndSessionRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunShellCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -94,7 +96,7 @@ pub struct RunShellCapabilityRequest {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadDirectoryTreeCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -102,14 +104,14 @@ pub struct ReadDirectoryTreeCapabilityRequest {
     pub max_depth: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditFileCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -117,20 +119,20 @@ pub struct EditFileCapabilityRequest {
     pub contents: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectGitCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub working_directory: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureScreenshotCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreTransferredFileCapabilityRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -138,7 +140,7 @@ pub struct StoreTransferredFileCapabilityRequest {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -161,7 +163,7 @@ pub enum LocalDaemonRequest {
     EndSession(EndSessionRequest),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     SessionCreated {
         session: RuntimeSession,

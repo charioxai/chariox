@@ -2,13 +2,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 use crate::error::DaemonError;
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunShellCommandRequest {
     pub session_id: String,
     pub attachment_id: String,
@@ -45,7 +46,7 @@ impl RunShellCommandRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunShellCommandResult {
     pub session_id: String,
     pub command: String,

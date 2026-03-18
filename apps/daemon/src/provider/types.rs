@@ -1,6 +1,9 @@
 use std::fmt;
+use std::path::PathBuf;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderRunState {
     Starting,
     Running,
@@ -21,13 +24,14 @@ impl fmt::Display for ProviderRunState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRequest {
     pub session_id: String,
     pub adapter_key: String,
     pub provider: String,
     pub account_profile: String,
     pub model: String,
+    pub working_directory: Option<PathBuf>,
 }
 
 impl LaunchProviderRequest {
@@ -44,19 +48,26 @@ impl LaunchProviderRequest {
             provider: provider.into(),
             account_profile: account_profile.into(),
             model: model.into(),
+            working_directory: None,
         }
+    }
+
+    pub fn with_working_directory(mut self, working_directory: PathBuf) -> Self {
+        self.working_directory = Some(working_directory);
+        self
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderLaunchResult {
     pub process_label: String,
     pub pty_target: Option<String>,
     pub pty_program: String,
     pub pty_args: Vec<String>,
+    pub working_directory: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProviderRun {
     id: String,
     session_id: String,
@@ -69,6 +80,7 @@ pub struct RuntimeProviderRun {
     pty_target: Option<String>,
     pty_program: String,
     pty_args: Vec<String>,
+    working_directory: Option<PathBuf>,
 }
 
 impl RuntimeProviderRun {
@@ -89,6 +101,7 @@ impl RuntimeProviderRun {
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
             pty_args: launch_result.pty_args,
+            working_directory: launch_result.working_directory,
         }
     }
 
@@ -124,6 +137,9 @@ impl RuntimeProviderRun {
     }
     pub fn pty_args(&self) -> &[String] {
         &self.pty_args
+    }
+    pub fn working_directory(&self) -> Option<&PathBuf> {
+        self.working_directory.as_ref()
     }
 
     pub fn mark_running(&mut self) {
