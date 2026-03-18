@@ -75,9 +75,9 @@ Exit criteria:
 
 Status:
 
-- highest priority implementation target
-- narrowed to one provider (`opencode`) and one local CLI surface
-- excludes provider login flows for the first iteration because OpenCode can run without login by default
+- completed on 2026-03-18
+- delivered a real local daemon IPC path, a minimal local CLI, a real `opencode` adapter, and end-to-end prompt/output streaming through the daemon
+- first iteration continues to exclude provider login flows because OpenCode can run without login by default
 
 Outcomes:
 
@@ -94,6 +94,10 @@ Exit criteria:
 - daemon remains the authority for session and PTY/provider-run lifecycle during that flow
 
 ## M3 - Local Capability Surface and Provider Expansion
+
+Status:
+
+- next implementation priority after M2 closure
 
 Outcomes:
 

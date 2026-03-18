@@ -14,17 +14,6 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
-- [ ] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
-  - Note: Highest priority is one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.
-- [ ] **M2-002** Add real local daemon transport
-  - Note: Replace the in-process-only local harness assumption with a real local IPC path that a CLI can connect to.
-- [ ] **M2-003** Add minimal local CLI client
-  - Note: Build the smallest usable CLI that can connect to the daemon, submit prompts, and render live output.
-- [ ] **M2-004** Add real OpenCode provider adapter
-  - Note: Replace `dev-stub` for the main M2 path with a PTY-launched OpenCode adapter.
-- [ ] **M2-005** Add end-to-end smoke coverage for local daemon + CLI + OpenCode
-  - Note: Milestone completion should be based on the real transport and CLI path, not only the in-process harness.
-
 ## Backlog
 
 - [ ] **M3-001** Expand local capability surface after OpenCode baseline
@@ -40,9 +29,24 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## Done
 
+- [x] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
+  - Note: Shipped one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.
+  - Commit: `727a97f`
+- [x] **M2-002** Add real local daemon transport
+  - Note: Replaced the in-process-only local harness assumption with a real local IPC path that a CLI can connect to.
+  - Commit: `727a97f`
+- [x] **M2-003** Add minimal local CLI client
+  - Note: Added a usable CLI that connects to the daemon, submits prompts, and renders live output.
+  - Commit: `727a97f`
+- [x] **M2-004** Add real OpenCode provider adapter
+  - Note: Replaced `dev-stub` for the main M2 path with a PTY-launched OpenCode adapter.
+  - Commit: `727a97f`
+- [x] **M2-005** Add end-to-end smoke coverage for local daemon + CLI + OpenCode
+  - Note: Milestone completion is now covered through the real transport and CLI path rather than only the in-process harness.
+  - Commit: `727a97f`
 - [x] **M2-006** Create and later reshape the M2 implementation checklist and execution plan
   - Note: Added `docs/M2_IMPLEMENTATION_CHECKLIST.md` to break M2 into concrete capability workstreams, testing, and documentation steps.
-  - Commit: _pending next commit_
+  - Commit: `727a97f`
 - [x] **M1-001** Add daemon runtime skeleton and module layout
   - Note: Added a lean daemon bootstrap around config, structured runtime errors, shutdown handling, and expandable real services instead of placeholder scaffolding.
   - Commit: _pending next commit_

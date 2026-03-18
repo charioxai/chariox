@@ -8,7 +8,8 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 
 M0, "Foundations", is complete in this repository.
 M1, "Core Session Runtime", is complete.
-The immediate next milestone is an end-to-end local OpenCode baseline through the daemon and CLI.
+M2, "End-to-End Local OpenCode Baseline", is complete.
+The immediate next milestone is M3, "Local Capability Surface and Provider Expansion".
 
 v1 scope includes both:
 
@@ -17,8 +18,7 @@ v1 scope includes both:
 
 Current delivery priority:
 
-- first: a working local daemon + CLI path for one OpenCode agent, prompt submission, and live output streaming
-- then: local capabilities, slash commands, and more providers
+- first: local capabilities, slash commands, and more providers on top of the now-working local OpenCode path
 - then: multi-agent workflows
 - then: relay/web surfaces
 - then: provider switching, memory, compaction, and per-agent extensions such as MCPs and skills
@@ -29,6 +29,7 @@ The current codebase provides:
 - a minimal Fastify server with a health endpoint
 - a shared domain package for workflow-oriented core v1 entities
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
+- a real local daemon IPC surface, a minimal local CLI, and a working OpenCode baseline path with prompt submission and live streamed output
 - a local daemon smoke harness for managed-session flows
 - a Prisma schema aligned with workflow-oriented runtime entities
 - baseline CI for TypeScript and Rust checks
@@ -58,7 +59,7 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-The immediate implementation target is narrower than the full v1 shape: one local CLI, one provider (`opencode`), one prompt path, and live streamed output. Broader capability work, more providers, workflows, relay/web support, and memory-oriented features follow after that path is solid.
+The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. Broader capability work, more providers, workflows, relay/web support, and memory-oriented features follow in later milestones.
 
 ### `apps/server`
 

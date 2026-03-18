@@ -132,6 +132,11 @@ Responsibilities:
 - upload files and display artifacts
 - expose daemon-owned queue/config/session metadata
 
+Current M2 runtime note:
+
+- the local CLI is now a real daemon client over local IPC, not only a harness/test surface
+- local client-daemon communication currently uses a Unix-socket transport on Unix-like systems
+
 ### 3.2 Machine
 
 A machine is a host capable of running agent workloads.
@@ -484,6 +489,11 @@ This section captures current implementation choices for v1 so engineering work 
 - WebSockets for remote relay transport
 - Unix socket on Unix-like systems for local client-daemon communication
 - named pipe on Windows for local client-daemon communication
+
+Current M2 runtime note:
+
+- the Unix-socket local transport is now implemented for the daemon + local CLI baseline
+- Windows local transport remains a later follow-up
 
 ### 10.7 Governance
 

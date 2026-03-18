@@ -131,7 +131,7 @@ Common fields:
 
 ## 4.1 Local Daemon API Baseline
 
-For local M1 flows, the daemon may expose a local-first request/response surface over local IPC or a harness shim.
+For the current local baseline, the daemon exposes a local-first request/response surface over local IPC.
 
 Minimum request set:
 
@@ -162,6 +162,12 @@ Minimum response/result shapes:
 - end-session returns structured final session metadata
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
+
+Current M2 runtime note:
+
+- the local daemon transport is a daemon-owned Unix-socket IPC path on Unix-like systems
+- the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
+- the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
 
 ## 4.2 Planned Command-Dispatch Surface
 
@@ -212,7 +218,7 @@ Planned extension metadata fields:
 
 ## 5.0 Capability API Baseline
 
-Once M2 capability work begins, the local daemon API MAY expose structured capability requests in addition to session-runtime requests.
+After M2, the local daemon API continues to expose structured capability requests in addition to session-runtime requests.
 
 Current baseline capability request:
 
