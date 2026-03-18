@@ -414,7 +414,7 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
 fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
-        .expect("opencode env lock should not be poisoned");
+        .unwrap_or_else(|poison| poison.into_inner());
     let fixture_path = create_opencode_fixture_script(1);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
@@ -504,7 +504,7 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
 fn end_session_aborts_active_opencode_session_before_cleanup() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
-        .expect("opencode env lock should not be poisoned");
+        .unwrap_or_else(|poison| poison.into_inner());
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
@@ -566,10 +566,172 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
 }
 
 #[test]
+fn session_error_completes_the_active_prompt_and_advances_the_queue() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.fail_next_prompt("fixture prompt failure");
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "first prompt should fail\n")
+        .expect("first prompt should start");
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "second prompt should run\n")
+        .expect("second prompt should queue");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: second prompt should run")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .queued_prompts()
+                    .is_empty()
+        },
+    );
+
+    assert!(output.contains("fixture response: second prompt should run"));
+    assert!(app
+        .terminal()
+        .notice_records()
+        .iter()
+        .any(|record| record.message.contains("fixture prompt failure")));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.disconnect_next_event_stream();
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "prompt after reconnect\n")
+        .expect("prompt should start");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: prompt after reconnect")
+                && app
+                    .providers()
+                    .get_run(run.id())
+                    .expect("run should remain queryable")
+                    .state()
+                    == ProviderRunState::Running
+        },
+    );
+
+    assert!(output.contains("fixture response: prompt after reconnect"));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn opencode_launch_requires_explicit_port_override() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
-        .expect("opencode env lock should not be poisoned");
+        .unwrap_or_else(|poison| poison.into_inner());
     let fixture_path = create_opencode_fixture_script(10);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
@@ -627,7 +789,7 @@ fn opencode_launch_requires_explicit_port_override() {
 fn opencode_event_stream_does_not_depend_on_session_status_polling() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
-        .expect("opencode env lock should not be poisoned");
+        .unwrap_or_else(|poison| poison.into_inner());
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_omit_session_status(true);
@@ -928,7 +1090,9 @@ struct MockOpenCodeServer {
 
 struct MockOpenCodeState {
     abort_count: u64,
+    disconnect_next_event_stream: bool,
     event_subscribers: Vec<mpsc::Sender<String>>,
+    next_prompt_error: Option<String>,
     response_delay: Duration,
     omit_session_status: bool,
     status: String,
@@ -951,7 +1115,9 @@ impl MockOpenCodeServer {
         let stop_flag = stop.clone();
         let state = Arc::new(Mutex::new(MockOpenCodeState {
             abort_count: 0,
+            disconnect_next_event_stream: false,
             event_subscribers: Vec::new(),
+            next_prompt_error: None,
             response_delay,
             omit_session_status: false,
             status: "idle".to_string(),
@@ -1007,6 +1173,20 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .abort_count
+    }
+
+    fn disconnect_next_event_stream(&self) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .disconnect_next_event_stream = true;
+    }
+
+    fn fail_next_prompt(&self, message: impl Into<String>) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .next_prompt_error = Some(message.into());
     }
 
     fn stop(mut self) {
@@ -1104,22 +1284,19 @@ fn handle_mock_opencode_event_stream(
     stop: &Arc<AtomicBool>,
 ) {
     let (tx, rx) = mpsc::channel();
-    {
+    let disconnect_immediately = {
         let mut state = state.lock().expect("mock state should not be poisoned");
         state.event_subscribers.push(tx);
+        let disconnect = state.disconnect_next_event_stream;
+        state.disconnect_next_event_stream = false;
+        disconnect
+    };
+
+    if write_sse_connected_response(&mut stream, disconnect_immediately).is_err() {
+        return;
     }
 
-    write_sse_headers(&mut stream);
-    if write_sse_event(
-        &mut stream,
-        &json!({
-            "type": "server.connected",
-            "properties": {}
-        })
-        .to_string(),
-    )
-    .is_err()
-    {
+    if disconnect_immediately {
         return;
     }
 
@@ -1149,6 +1326,27 @@ fn write_sse_headers(stream: &mut std::net::TcpStream) {
         .write_all(response.as_bytes())
         .expect("mock SSE headers should write");
     let _ = stream.flush();
+}
+
+fn write_sse_connected_response(
+    stream: &mut std::net::TcpStream,
+    include_event_with_headers: bool,
+) -> std::io::Result<()> {
+    let connected = json!({
+        "type": "server.connected",
+        "properties": {}
+    })
+    .to_string();
+    if include_event_with_headers {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\ndata: {connected}\n\n"
+        );
+        stream.write_all(response.as_bytes())?;
+        return stream.flush();
+    }
+
+    write_sse_headers(stream);
+    write_sse_event(stream, &connected)
 }
 
 fn write_sse_event(stream: &mut std::net::TcpStream, payload: &str) -> std::io::Result<()> {
@@ -1183,6 +1381,36 @@ fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) 
         thread::sleep(response_delay);
 
         let mut state = state.lock().expect("mock state should not be poisoned");
+        if let Some(error_message) = state.next_prompt_error.take() {
+            state.status = "idle".to_string();
+            let session_id = state.session_id.clone();
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "session.error",
+                    "properties": {
+                        "sessionID": session_id.clone(),
+                        "error": {
+                            "message": error_message
+                        }
+                    }
+                }),
+            );
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "session.status",
+                    "properties": {
+                        "sessionID": session_id,
+                        "status": {
+                            "type": "idle"
+                        }
+                    }
+                }),
+            );
+            return;
+        }
+
         state.next_message_number += 1;
         let message_id = format!("assistant-message-{}", state.next_message_number);
         let part_id = format!("assistant-part-{}", state.next_message_number);

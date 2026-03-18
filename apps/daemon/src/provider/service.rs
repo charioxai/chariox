@@ -7,7 +7,7 @@ use crate::session::SessionService;
 
 use super::{
     LaunchProviderRequest, OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription,
-    ProviderRegistry, ProviderRunState, RuntimeProviderRun,
+    OpenCodeMessage, ProviderRegistry, ProviderRunState, RuntimeProviderRun,
 };
 
 #[derive(Debug)]
@@ -461,16 +461,24 @@ impl ProviderProcessService {
                 }) => {
                     if session_id == state.session_id {
                         notices.push(message);
+                        prompt_completed = true;
                     }
                 }
                 Ok(OpenCodeEvent::SessionStatus { .. }) => {}
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    return Err(DaemonError::ProviderProtocol {
-                        provider_run_id: provider_run_id.to_string(),
-                        operation: "event_stream",
-                        message: "OpenCode event stream disconnected".to_string(),
-                    });
+                    let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                    state.event_subscription = client.subscribe_events()?;
+                    if let Ok(snapshot) = client.snapshot(&state.session_id) {
+                        deltas.extend(render_snapshot_text_deltas(state, &snapshot.messages));
+                        if snapshot.messages.iter().any(|message| {
+                            message.info.session_id == state.session_id
+                                && message.info.role == "assistant"
+                                && message.info.time.completed.is_some()
+                        }) {
+                            prompt_completed = true;
+                        }
+                    }
                 }
             }
         }
@@ -481,6 +489,34 @@ impl ProviderProcessService {
             notices,
         })
     }
+}
+
+fn render_snapshot_text_deltas(
+    state: &mut OpenCodeRunState,
+    messages: &[OpenCodeMessage],
+) -> Vec<Vec<u8>> {
+    let mut deltas = Vec::new();
+    for message in messages
+        .iter()
+        .filter(|message| message.info.role == "assistant")
+    {
+        for part in message.parts.iter().filter(|part| part.kind == "text") {
+            if part.text.is_empty() {
+                continue;
+            }
+            let emitted = state
+                .emitted_text_offsets
+                .entry(part.id.clone())
+                .or_insert(0);
+            let start = (*emitted).min(part.text.len());
+            if start == part.text.len() {
+                continue;
+            }
+            deltas.push(part.text.as_bytes()[start..].to_vec());
+            *emitted = part.text.len();
+        }
+    }
+    deltas
 }
 
 impl Default for ProviderProcessService {

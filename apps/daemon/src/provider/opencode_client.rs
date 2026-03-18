@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -279,7 +279,7 @@ impl OpenCodeClient {
             .write_all(request.as_bytes())
             .and_then(|_| stream.flush())
             .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
-        let status_code = read_http_headers(&mut stream)
+        let (status_code, buffered_body) = read_http_headers(&mut stream)
             .map_err(|error| self.protocol_error("event_subscribe", error))?;
         if status_code >= 400 {
             return Err(self.protocol_error(
@@ -294,7 +294,7 @@ impl OpenCodeClient {
         let provider_run_id = self.provider_run_id.clone();
 
         thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
+            let mut reader = BufReader::new(Cursor::new(buffered_body).chain(stream));
             let mut data_lines = Vec::new();
 
             loop {
@@ -494,7 +494,7 @@ fn session_error_message(error: serde_json::Value, provider_run_id: &str) -> Str
         })
 }
 
-fn read_http_headers(stream: &mut TcpStream) -> Result<u16, String> {
+fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];
     loop {
@@ -515,7 +515,7 @@ fn read_http_headers(stream: &mut TcpStream) -> Result<u16, String> {
                 .ok_or_else(|| "missing HTTP status code".to_string())?
                 .parse::<u16>()
                 .map_err(|error| error.to_string())?;
-            return Ok(status_code);
+            return Ok((status_code, buffer[header_end..].to_vec()));
         }
     }
 }
@@ -578,7 +578,12 @@ fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_model;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::{parse_model, OpenCodeClient, OpenCodeEvent};
 
     #[test]
     fn parses_provider_model_ids() {
@@ -588,5 +593,61 @@ mod tests {
         );
         assert_eq!(parse_model(Some("default")), None);
         assert_eq!(parse_model(None), None);
+    }
+
+    #[test]
+    fn preserves_first_sse_payload_when_headers_and_body_arrive_together() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let payload = serde_json::json!({
+                "type": "session.error",
+                "properties": {
+                    "sessionID": "session-1",
+                    "error": {
+                        "message": "bundled first event"
+                    }
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {payload}\n\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write headers and first event together");
+            stream.flush().expect("server should flush response");
+        });
+
+        let client =
+            OpenCodeClient::new("provider-run-1", format!("http://127.0.0.1:{port}")).unwrap();
+        let subscription = client
+            .subscribe_events()
+            .expect("client should subscribe to events");
+        let event = subscription
+            .receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first SSE event should be preserved");
+
+        match event {
+            OpenCodeEvent::SessionError {
+                session_id,
+                message,
+            } => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(message, "bundled first event");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        subscription.stop();
+        let _ = server.join();
     }
 }
