@@ -18,6 +18,7 @@ It is intentionally transport-agnostic at the message level (WebSocket recommend
 ## 2. Design Principles
 
 - preserve native PTY behavior for provider interaction
+- reserve `/...` as the Arroba command namespace
 - keep structured control surface intentionally small
 - isolate capability/control errors from terminal stream
 - ensure user-generated in-transit payloads are session-E2E encrypted on remote transport
@@ -34,7 +35,7 @@ Purpose:
 Semantics:
 
 - byte-stream-like behavior
-- no requirement for structured parse by Arroba
+- no requirement for structured parse by Arroba for ordinary non-command traffic
 
 Suggested events:
 
@@ -46,7 +47,7 @@ Suggested events:
 
 Purpose:
 
-- daemon-owned operations invoked from overlay/command palette
+- daemon-owned operations invoked from Arroba slash-command dispatch
 
 Suggested request envelope:
 
@@ -73,8 +74,15 @@ Capabilities in v1:
 - `git.info`
 - `file.transfer`
 - `file.attach_transferred`
-- `context.compact` (mapped from `<reserved character for arroba commands>compact`)
+- `context.compact` (mapped from `/compact`)
 - `schedule.*`
+
+Slash-command routing rules:
+
+- `/...` is parsed by Arroba before PTY forwarding
+- `/agent ...` is resolved against the active provider command catalog
+- ordinary non-command input continues through `terminal.input`
+- unsupported provider versions MAY produce warnings, but MUST NOT disable best-effort `/agent` completions by default
 
 ## 3.3 Control Lane (Structured Daemon->Provider Adapter)
 
@@ -84,7 +92,9 @@ Canonical operations in v1:
 - `request_memory_update`
 - `request_compaction_summary`
 
-These operations are not typed by users into terminal traffic.
+These operations are not typed by users into ordinary terminal traffic.
+
+Arroba MAY route `/agent ...` invocations into the control lane after resolving the active provider command catalog.
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -152,6 +162,51 @@ Minimum response/result shapes:
 - end-session returns structured final session metadata
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
+
+## 4.2 Planned Command-Dispatch Surface
+
+The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
+
+Planned request types:
+
+- `command.list`
+- `command.invoke`
+- `agent.command.list`
+- `agent.command.invoke`
+- `provider.auth.status.get`
+- `extension.install`
+- `extension.list`
+- `extension.bind`
+- `extension.unbind`
+- `mcp.runtime.list`
+
+Planned command metadata fields:
+
+- `command_path`
+- `description`
+- `source` (`builtin` | `custom` | `best_effort_catalog`)
+- `provider`
+- `provider_version`
+- `catalog_version`
+- optional `warning`
+
+Planned provider auth status fields:
+
+- `provider`
+- `account_profile`
+- `auth_state` (`authenticated` | `not_logged_in` | `expired` | `unknown` | `provider_not_installed`)
+- optional `login_hint`
+- optional `detected_version`
+
+Planned extension metadata fields:
+
+- `extension_id`
+- `type` (`skill` | `mcp_server` | `command_pack` | `instruction_pack` | `hook`)
+- `source`
+- `version`
+- `provider_support`
+- `visibility_policy`
+- `install_state`
 
 ## 5. Control Operations
 
@@ -257,6 +312,48 @@ Failure contract:
 
 - errors must not terminate provider run by default
 - daemon may fallback to Arroba-managed memory summary for warm-start
+
+## 5.4 Provider Command Compatibility
+
+Provider adapters SHOULD report command compatibility state to the daemon.
+
+Minimum fields:
+
+- `provider`
+- `detected_version`
+- `catalog_version`
+- `support_status` (`supported` | `best_effort` | `unsupported_not_installed`)
+- optional `warning`
+
+Behavior rules:
+
+- Arroba ships built-in command catalogs for supported provider version families
+- Arroba MAY augment those catalogs by reading supported custom-command files/config
+- Arroba SHOULD NOT rely on scraping human-oriented slash help output as the primary discovery mechanism
+- if the detected version is unsupported, Arroba warns but keeps best-effort `/agent` completions enabled
+
+## 5.5 Provider Authentication
+
+Provider authentication remains provider-native and local to the execution host.
+
+Behavior rules:
+
+- Arroba reuses the local login/session state of the native provider CLI when available
+- Arroba MUST NOT store or relay provider credentials in v1
+- `account_profile` selects a provider-native local profile or config context
+- if the provider is not logged in, the daemon reports structured auth state instead of attempting to silently fall back to API credentials
+- remote clients may view provider-auth status, but provider login itself remains a host-local provider-native flow
+
+## 5.6 Extensions and MCP Runtime
+
+Arroba manages extension installation and per-agent binding through structured daemon-owned APIs.
+
+Behavior rules:
+
+- installation is machine-scoped; binding is agent-scoped
+- provider-facing extension files or config are generated projections, not the canonical source of truth
+- MCP servers are daemon-managed runtime components and SHOULD be exposed only to the top-level provider runs they are bound to
+- provider-native subagents are not separate extension-binding targets in v1
 
 ## 6. Error Model
 

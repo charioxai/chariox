@@ -20,13 +20,15 @@ It provides:
 - lightweight provider integration where needed for file attachment
 - local-first session hosting with optional remote attachment through a relay server
 
-Arroba is a wrapper, not a replacement for provider CLIs. Provider-native behavior remains primary.
+Arroba is a wrapper around provider CLIs, not a replacement for their execution engines.
+Arroba owns the slash-command surface and routes provider behavior through adapters.
 
 ## 2. Goals
 
-- Preserve the exact native terminal experience of supported providers.
+- Preserve native provider PTY behavior for ordinary prompt and terminal work.
 - Allow multiple local or remote clients to attach to the same session.
-- Let users invoke Arroba-specific actions through a command palette or overlay, not by typing special commands into the provider terminal.
+- Let users invoke Arroba actions through daemon-owned slash commands.
+- Reserve `/agent ...` as the provider-specific command namespace exposed by Arroba.
 - Support daemon-owned capabilities for shell, file, git, screenshot, scheduling, and transfer workflows.
 - Support transferring a file to the daemon host and attaching it to the active provider when the provider supports attachment.
 - Keep the provider control boundary intentionally small in v1.
@@ -41,8 +43,8 @@ Arroba is a wrapper, not a replacement for provider CLIs. Provider-native behavi
 
 ## 4. Core Principles
 
-- Provider-native first: provider PTY behavior must remain intact.
-- Minimal interference: Arroba should not reinterpret ordinary provider traffic.
+- Provider-native PTY first: provider terminal behavior must remain intact for ordinary non-command traffic.
+- Slash-command ownership: Arroba owns `/...` command parsing and completion.
 - Daemon-centered runtime: the daemon is the source of truth for live session state.
 - Local-first execution: sessions run on the user's machine.
 - Graceful degradation: a provider without structured control support must still work through raw PTY passthrough.
@@ -71,7 +73,7 @@ Examples:
 Responsibilities:
 
 - render the provider terminal stream
-- render Arroba overlays and command palette UI
+- render Arroba slash-command help, completions, warnings, and command results
 - send terminal keystrokes or structured prompt/config actions to the daemon through the appropriate surface
 - invoke daemon capabilities
 - upload artifacts for transfer when requested
@@ -136,20 +138,20 @@ The terminal lane carries the raw provider PTY stream and user terminal input.
 
 Properties:
 
-- preserves native provider CLI behavior
+- preserves native provider CLI behavior for ordinary non-command traffic
 - transports provider stdout, stderr, and terminal control sequences
-- transports user keystrokes as terminal input
+- transports user keystrokes as terminal input when they are not intercepted as Arroba slash commands
 - is the default interaction path for ordinary user work
 
 Transmission requirement:
 
 - user-generated information sent through this lane (for example prompts and terminal-entered content) must be protected with session-scoped end-to-end encryption whenever it traverses remote transport
 
-Arroba must not require terminal traffic to be parsed into structured commands.
+Arroba must not require ordinary non-command terminal traffic to be parsed into structured commands.
 
 ### 6.2 Capability Lane
 
-The capability lane is used for Arroba commands invoked from the overlay or command palette.
+The capability lane is used for daemon-owned Arroba commands invoked through the slash-command dispatcher.
 
 Capabilities are executed by the daemon, not typed into the provider terminal.
 
@@ -177,6 +179,54 @@ In v1, the canonical control surface contains three operations:
 - `attach_file`
 - `request_memory_update`
 - `request_compaction_summary`
+
+The control lane may also carry `/agent ...` command invocations after Arroba resolves the active provider command catalog and target adapter behavior.
+
+### 6.4 Slash Command System
+
+Arroba owns the slash-command namespace.
+
+Required rules:
+
+- `/...` is reserved for Arroba command dispatch and completion.
+- `/agent ...` is the provider-specific namespace exposed by the active Arroba adapter.
+- command completion is daemon-managed and may depend on session, provider, and attachment context.
+- ordinary non-command input continues to flow through the terminal lane unchanged.
+
+Provider command discovery policy:
+
+- Arroba ships built-in provider command catalogs for explicitly supported provider version families.
+- Arroba augments those catalogs by reading supported custom-command files or config locations when the provider supports that model.
+- Arroba does not rely on scraping human-oriented `/help` output as the primary compatibility mechanism.
+- if the detected provider version is unsupported, Arroba MUST warn the user but MUST still keep best-effort `/agent` completions enabled.
+
+### 6.5 Agent-Scoped Extensions
+
+Arroba manages provider-facing extensions as daemon-owned assets rather than treating project-local provider files as the authoritative source of truth.
+
+Extension classes include:
+
+- skills
+- MCP server definitions
+- custom command packs
+- instruction packs
+- hooks or provider-specific plugin-like assets
+
+Required rules:
+
+- extensions are installed once on the machine and bound per Arroba-managed top-level agent or provider run
+- extension visibility defaults to the bound agent only
+- Arroba materializes provider-specific extension views at launch time rather than requiring the project directory to be the canonical source of truth
+- provider-facing generated files MAY be written for compatibility, but the daemon-owned registry remains authoritative
+- top-level Arroba agents are the scoping boundary for extensions; provider-native subagents are not separately orchestrated by Arroba
+
+Extension visibility policies MAY include:
+
+- `agent_private`
+- `session_shared`
+- `workflow_shared`
+- `workspace_default`
+- `machine_default`
 
 No other canonical control events or RPCs are part of v1.
 
@@ -234,6 +284,44 @@ Switching providers:
 5. The user may resume a parked run later if supported by the provider process model.
 
 Provider switching must remain minimally intrusive.
+
+### 7.2.1 Provider Authentication Model
+
+Arroba uses a wrapper-style provider authentication model.
+
+Required rules:
+
+- Arroba launches native provider CLIs on the host machine and reuses their native local login state.
+- Arroba MUST NOT require Anthropic API keys or other provider API credentials when the provider CLI already supports native end-user login/subscription access.
+- Arroba MUST NOT store, mint, proxy, or relay provider credentials in v1.
+- provider authentication remains local to the machine hosting the provider run.
+- Arroba account/server authentication is separate from provider authentication.
+
+Operational behavior:
+
+- if a provider CLI is already logged in for the selected local profile, the daemon may launch it directly
+- if a provider CLI is installed but not logged in, the daemon surfaces `not_logged_in` status and instructs the user to complete the provider-native login flow on that machine
+- if the provider login has expired or become invalid, the daemon surfaces `expired` status and a reauthentication hint
+- remote Arroba clients may observe and acknowledge provider-auth state, but the actual provider login flow remains provider-native on the host machine
+
+`account_profile` semantics:
+
+- `account_profile` selects a provider-native local account/config context
+- it is not an Arroba-managed credential container
+- adapters MAY map it to provider-specific config roots, profile names, or environment selections
+
+### 7.2.2 Provider-Native Subagents
+
+Provider-native subagents are not first-class Arroba workflow agents in v1.
+
+Required rules:
+
+- Arroba orchestrates only top-level session agents or workflow nodes that it launches explicitly
+- any subagents internally spawned by a provider run are treated as provider-owned implementation details
+- Arroba MUST NOT require separate scheduling, extension binding, or worktree allocation per provider-native subagent by default
+- provider-native subagents may use the skills, MCPs, commands, and instructions available to their parent top-level provider run
+
+Future implementations MAY surface debug or telemetry metadata about provider-native subagents when a provider exposes stable support for that, but such subagents remain outside Arroba's orchestration model.
 
 ### 7.3 Workflow Layer Above Sessions
 
@@ -366,6 +454,26 @@ The adapter is responsible for:
 - exposing PTY integration details
 - declaring whether provider file attachment and memory-update control are supported
 - implementing canonical control operations when supported
+- probing provider installation and authentication status before launch when possible
+- probing the installed provider version
+- selecting a shipped built-in command catalog for supported versions when available
+- discovering custom commands from provider-supported files or config when available
+- projecting daemon-managed extensions into provider-compatible runtime views when required
+
+### 8.1.1 Extension Projection Requirement
+
+Provider adapters MUST translate Arroba's daemon-owned extension bindings into the provider-specific shape expected by that provider runtime.
+
+Examples:
+
+- generated skills or command files under a provider-specific runtime view
+- provider config overlays or environment variables
+- scoped MCP configuration visible only to the selected top-level run
+
+Isolation rule:
+
+- if a provider supports custom config roots, home directories, or equivalent launch-time overrides, Arroba SHOULD use them to keep agent-scoped extension views isolated
+- if a provider only supports project-local extension files, Arroba SHOULD rely on worktree or projected-workspace isolation to preserve per-agent visibility boundaries
 
 ### 8.2 Canonical Control Operations
 
@@ -455,6 +563,53 @@ In that case Arroba must:
 - continue memory transfer using Arroba-managed memory sources without requiring provider-side memory update signals
 - if compaction summary is unsupported, allow Arroba-driven compaction using Arroba-managed memory snapshots as fallback warm-up
 
+### 8.4 Provider Command Compatibility
+
+Arroba MUST surface provider command compatibility status to the user.
+
+Minimum compatibility state:
+
+- detected provider name and version
+- matched Arroba catalog version or version family when one exists
+- support status (`supported` | `best_effort` | `unsupported_not_installed`)
+- warning text when Arroba does not officially support the detected version
+
+Compatibility rule:
+
+- unsupported provider versions MUST NOT disable `/agent` completions by default
+- instead, Arroba continues with best-effort completions from the nearest shipped catalog plus discovered custom commands and surfaces a warning that behavior may drift
+
+### 8.5 Provider Login Procedure
+
+Provider login remains provider-native.
+
+Required rules:
+
+- Arroba SHOULD prefer prompting the user to use the provider's normal CLI login flow rather than reimplementing login itself
+- Arroba MAY surface provider-specific login instructions, but those instructions are advisory and adapter-owned
+- Arroba MUST NOT treat provider login as a server-side or relay-side concern
+- if the provider CLI supports multiple local profiles, the adapter MAY expose those through `account_profile`
+
+Minimum provider auth states:
+
+- `authenticated`
+- `not_logged_in`
+- `expired`
+- `unknown`
+- `provider_not_installed`
+
+### 8.6 Extension and MCP Management
+
+Arroba owns extension installation and binding in v1.
+
+Required rules:
+
+- skills, MCP definitions, command packs, and similar extension assets are installed through Arroba-managed flows rather than delegated to provider CLIs
+- installation is machine-scoped; availability is determined by per-agent binding
+- MCP servers are daemon-managed runtime components and MAY be launched or terminated independently of provider CLIs
+- only the MCPs bound to a given top-level provider run should be exposed to that run
+- extension installation metadata, compatibility state, and bindings should be inspectable through daemon-owned APIs
+
 ## 9. Capability Catalog
 
 The following capabilities are first-class in v1.
@@ -494,7 +649,7 @@ Runs an Arroba-managed file edit flow.
 
 Requirements:
 
-- initiated through the overlay or command palette
+- initiated through an Arroba slash command such as `/edit`
 - applied to workspace files, not daemon internals
 - able to report diffs or change summaries back to the client
 
@@ -546,13 +701,13 @@ If provider attachment is unsupported, the local stored path is surfaced instead
 
 ### 9.9 Compact Context
 
-This capability is triggered by an Arroba command: `<reserved character for arroba commands>compact`.
+This capability is triggered by the Arroba slash command `/compact`.
 
 It is user-triggered and daemon-orchestrated.
 
 Flow:
 
-1. User triggers `<reserved character for arroba commands>compact`.
+1. User triggers `/compact`.
 2. Daemon invokes provider adapter `request_compaction_summary` on the active run.
 3. Daemon stores the returned summary as a compaction artifact/memory input.
 4. Daemon starts a fresh provider run with an empty context window.

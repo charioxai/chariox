@@ -190,3 +190,9 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added a daemon-owned file transfer storage baseline that copies source files from the session worktree into a session artifact root.
 - Exposed transfer storage through the local daemon API and added daemon/local API tests for the stored-artifact path.
+
+### Roadmap reprioritization update
+
+- Reordered the near-term roadmap around one end-to-end local success path before broader platform scope.
+- New immediate priority: local daemon + CLI + OpenCode integration with prompt submission and live output streaming.
+- Deferred broader local capabilities, additional providers, multi-agent workflows, relay/web surfaces, provider switching, memory, compaction, and per-agent extension management to later milestones after that baseline is proven.

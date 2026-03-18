@@ -7,8 +7,8 @@ Planning roadmap derived from `docs/spec-v1.md`.
 ## 1. Roadmap Goals
 
 - deliver a stable daemon-centered v1 runtime
+- ship a fully functioning local daemon + CLI path before expanding orchestration breadth
 - preserve native provider UX while adding orchestration value
-- ship memory-aware context transfer with minimal provider coupling
 - keep server lightweight with strict security boundaries
 - keep the runtime compatible with multi-agent workflow execution, structured handoffs, and isolated branch worktrees
 
@@ -16,19 +16,23 @@ Planning roadmap derived from `docs/spec-v1.md`.
 
 - M0: Foundations
 - M1: Core Session Runtime
-- M2: Capability Surface
-- M3: Control Lane and Memory Management
-- M4: Remote Access and Security Hardening
-- M5: v1 Stabilization and Launch
+- M2: End-to-End Local OpenCode Baseline
+- M3: Local Capability Surface and Provider Expansion
+- M4: Multi-Agent Workflow Runtime
+- M5: Remote Access and Web Surfaces
+- M6: Provider Switching, Memory, and Agent Extensions
+- M7: v1 Stabilization and Launch
 
 ## 2.1 Workflow Rollout Within v1
 
-Multi-agent workflow execution is part of v1, not a post-v1 feature.
+Multi-agent workflow execution remains part of v1, but it is no longer the immediate implementation priority.
 
 Rollout priority:
 
-- circular topology is the earlier implementation target inside v1
-- hierarchical topology remains in scope for v1, but is planned for a later stage of v1 after the lower-level runtime, capability, control, and protocol layers are stable
+- first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
+- then expand local capability surface and additional providers
+- then deliver workflow runtime foundations and concrete multi-agent execution
+- hierarchical topology remains later than circular topology inside the workflow milestone
 
 ## 3. Milestones
 
@@ -67,12 +71,29 @@ Exit criteria:
 - multiple clients can attach without breaking terminal behavior
 - implemented runtime surfaces do not block later workflow graph execution, node-scoped provider runs, or explicit worktree assignment
 
-## M2 - Capability Surface
+## M2 - End-to-End Local OpenCode Baseline
 
 Status:
 
-- in progress as of 2026-03-17
-- started with a daemon-owned shell command capability baseline and local API exposure
+- highest priority implementation target
+- narrowed to one provider (`opencode`) and one local CLI surface
+- excludes provider login flows for the first iteration because OpenCode can run without login by default
+
+Outcomes:
+
+- OpenCode provider adapter wired through the daemon
+- local CLI client attached to daemon-managed sessions
+- single-agent prompt submission from an input field
+- live terminal/output streaming from the active OpenCode run back into the CLI as output appears
+- stable session creation/attach/launch/prompt/output loop for one local user on one machine
+- no workflow mode, no remote relay, no web app, and no provider switching in this milestone
+
+Exit criteria:
+
+- local CLI can create or attach to a session, launch OpenCode, submit a prompt, and stream output in real time
+- daemon remains the authority for session and PTY/provider-run lifecycle during that flow
+
+## M3 - Local Capability Surface and Provider Expansion
 
 Outcomes:
 
@@ -81,15 +102,48 @@ Outcomes:
 - screenshot capture capability
 - git/worktree inspection capability
 - file transfer + attach-transferred workflow
-- schedule metadata + daemon execution baseline
-- workflow-aware capability design so structured node handoffs, aggregation artifacts, and isolated branch outputs can reuse the same daemon-owned capability surfaces later
+- daemon-owned slash-command dispatch for Arroba capabilities
+- Claude Code and Codex provider support after the OpenCode baseline is solid
+- workflow-compatible local capability design so later multi-agent execution can reuse the same surfaces
 
 Exit criteria:
 
-- capabilities callable from overlay/palette
-- capability failures isolated from terminal lane
+- capability failures remain isolated from the terminal lane
+- multiple supported providers can run through the same daemon-managed local CLI model
+- local slash-command UX is usable enough to drive capabilities without a web surface
 
-## M3 - Control Lane and Memory Management
+## M4 - Multi-Agent Workflow Runtime
+
+Outcomes:
+
+- structured completion and handoff contracts suitable for multi-agent workflow scheduling
+- circular workflow topology delivered first
+- worktree-isolated parallel branches where required
+- daemon-owned workflow scheduling, routing, barriers, and aggregation state
+- explicit distinction between Arroba-managed top-level agents and provider-native subagents
+
+Exit criteria:
+
+- multi-agent workflow execution works locally through the daemon without breaking the single-agent path
+- workflow concurrency and worktree safety rules are enforced centrally
+
+## M5 - Remote Access and Web Surfaces
+
+Outcomes:
+
+- server relay and discovery flows
+- machine registry and presence
+- session-scoped E2E encryption for user-generated in-transit payloads
+- operational metadata storage boundaries enforced
+- web client and relay-backed remote attachment path
+
+Exit criteria:
+
+- remote clients attach reliably via relay
+- relay operates without requiring plaintext user content
+- local CLI and web clients share the same daemon/protocol semantics
+
+## M6 - Provider Switching, Memory, and Agent Extensions
 
 Outcomes:
 
@@ -98,33 +152,24 @@ Outcomes:
   - `attach_file`
   - `request_memory_update`
   - `request_compaction_summary`
+- provider installation/auth-state probing with native CLI login reuse
+- provider version probing plus shipped command catalogs for supported provider versions
+- best-effort `/agent` completion on unsupported provider versions with explicit warnings
+- transfer package generation for provider switch/machine reassignment/resume
 - dual memory model implementation:
   - short-term memory
   - long-term memory
-- transfer package generation for provider switch/machine reassignment/resume
-- user-triggered Arroba context compaction flow (`<reserved character for arroba commands>compact`)
-- structured completion and handoff contracts suitable for future multi-agent workflow scheduling
+- user-triggered Arroba context compaction flow (`/compact`)
+- agent-scoped extension registry for skills, MCPs, command packs, and related provider assets
+- daemon-managed MCP runtime with per-agent binding and visibility
 
 Exit criteria:
 
 - daemon can perform memory-refresh inquiry without using terminal prompt path
-- transfer package is deterministic, inspectable, and non-fatal on unsupported control responses
+- provider switching works without depending on provider-private hidden state
+- extension binding and MCP visibility are enforced per top-level agent
 
-## M4 - Remote Access and Security Hardening
-
-Outcomes:
-
-- server relay and discovery flows
-- machine registry and presence
-- session-scoped E2E encryption for user-generated in-transit payloads
-- operational metadata storage boundaries enforced
-
-Exit criteria:
-
-- remote clients attach reliably via relay
-- relay operates without requiring plaintext user content
-
-## M5 - v1 Stabilization and Launch
+## M7 - v1 Stabilization and Launch
 
 Outcomes:
 
@@ -142,7 +187,8 @@ Exit criteria:
 ## 4. Cross-Cutting Workstreams
 
 - Provider compatibility matrix and adapter conformance
-- UX quality for command palette, status, and transfer transparency
+- Extension compatibility matrix and projection rules per provider
+- UX quality for slash-command completion, status, and transfer transparency
 - Security/privacy review and threat modeling
 - Performance targets for PTY throughput and capability latency
 - Generic workflow-engine compatibility: directed-graph scheduling model, structured handoff/completion contracts, worktree isolation, and aggregation/barrier semantics
@@ -150,7 +196,11 @@ Exit criteria:
 ## 5. Risks and Mitigations
 
 - **Risk:** Provider behavior variance across CLIs.
-  - **Mitigation:** strict adapter contracts + degradation rules.
+  - **Mitigation:** strict adapter contracts, shipped versioned command catalogs, custom-command discovery where supported, and explicit best-effort warnings on unsupported versions.
+- **Risk:** Provider login drift or expired local sessions.
+  - **Mitigation:** reuse provider-native login flows, probe structured auth state before launch, and surface local reauthentication guidance without storing provider credentials.
+- **Risk:** Provider-local extension files leak across agents or workflows.
+  - **Mitigation:** keep a daemon-owned extension registry, bind per top-level agent, and use provider config-root/worktree isolation when materializing provider views.
 - **Risk:** Memory drift or stale long-term memory.
   - **Mitigation:** user review/edit/remove controls + explicit refresh reasons.
 - **Risk:** Overgrowth of control surface in v1.

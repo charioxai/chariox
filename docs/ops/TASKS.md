@@ -14,13 +14,21 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
-- [ ] **M2-001** Expand daemon capability surface beyond runtime baseline
-  - Note: Added shell, directory tree, file read/edit, git inspection, screenshot, and transfer storage baselines with local API exposure; continue with schedule work.
+- [ ] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
+  - Note: Highest priority is one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.
 
 ## Backlog
 
-- [ ] **M2-004** Add screenshot, transfer, and schedule baselines
-  - Note: Build on the capability layer with screenshot capture, file transfer, and schedule execution surfaces.
+- [ ] **M3-001** Expand local capability surface after OpenCode baseline
+  - Note: Continue with slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces after the end-to-end OpenCode path is stable.
+- [ ] **M3-002** Add Claude Code and Codex provider support
+  - Note: Reuse the same daemon-managed local CLI model after OpenCode is proven.
+- [ ] **M4-001** Add local multi-agent workflow runtime
+  - Note: Build daemon-owned workflow scheduling and worktree-safe multi-agent execution after the single-agent path is solid.
+- [ ] **M5-001** Add relay/web surfaces on top of the local daemon model
+  - Note: Remote relay and webapp come after the local CLI + provider path and workflow baseline.
+- [ ] **M6-001** Add provider switching, memory, compaction, and per-agent extension management
+  - Note: Defer control-lane-heavy features until after local runtime, provider support, and workflow foundations are working.
 
 ## Done
 

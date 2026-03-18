@@ -128,7 +128,7 @@ Responsibilities:
 
 - render terminal stream from active provider run
 - capture terminal keystrokes and prompt/config interactions, then route them to the daemon through the appropriate runtime surface
-- render overlays/palette for Arroba capabilities
+- render Arroba slash-command completion, help, warnings, and command results
 - upload files and display artifacts
 - expose daemon-owned queue/config/session metadata
 
@@ -166,6 +166,11 @@ Responsibilities:
 - scheduler execution, failure propagation, retry hooks, and resource-limit enforcement
 - reusable capability services with structured request/response contracts (starting with shell command execution)
 - capability authorization and scoping checks tied to session attachments and worktree boundaries
+- slash-command dispatch and command-registry resolution
+- provider installation/auth-state probing and structured login warnings
+- provider version probing, built-in command-catalog selection, and custom-command discovery when supported
+- extension registry, binding resolution, and provider-view materialization
+- MCP runtime lifecycle management
 
 ### 3.4 Server
 
@@ -210,6 +215,7 @@ A session may include:
 - worktree assignments for isolated workflow branches
 - schedules
 - artifacts
+- extension bindings resolved for top-level provider runs
 
 ### 4.2.1 Shared Attachment and Queue Ownership
 
@@ -302,7 +308,7 @@ Required rules:
 ### 5.2 Capability Lane
 
 - Carries daemon capability requests/results.
-- Used for shell, file ops, screenshot, git/worktree, schedules, transfers.
+- Used for shell, file ops, screenshot, git/worktree, schedules, transfers, and other Arroba-owned slash commands.
 
 ### 5.3 Control Lane
 
@@ -315,6 +321,12 @@ Canonical control operations in v1:
 - `request_compaction_summary`
 
 `request_memory_update` and `request_compaction_summary` are daemon-owned and distinct from normal user prompt/response traffic.
+
+`/agent ...` commands are resolved by Arroba first, then dispatched into adapter-owned behavior through the control lane or adapter-specific execution hooks.
+
+Provider authentication is not part of the control lane in v1; adapters probe and report auth state, but login itself remains a provider-native local CLI flow on the host machine.
+
+Provider-facing extension projection is also adapter-owned: the daemon resolves the authoritative extension bindings, and the adapter materializes the provider-specific runtime view.
 
 ### 5.4 Workflow Lane Semantics
 
@@ -380,9 +392,26 @@ Requirements:
 - user control over long-term entry inclusion
 - encrypted in transit
 
-### 7.4 Arroba-Driven Context Compaction
+## 7.4 Extension Architecture
 
-Arroba provides a user-triggered compaction command: `<reserved character for arroba commands>compact`.
+Arroba manages extensions in two phases:
+
+- install: register an extension on the machine
+- bind: make that extension available to a top-level Arroba-managed agent or provider run
+
+The daemon owns:
+
+- extension installation metadata
+- compatibility and validation checks
+- per-agent binding resolution
+- provider-view materialization inputs
+- MCP runtime lifecycle for bound MCP servers
+
+Provider-native subagents are not separate extension targets; they inherit whatever their parent top-level provider run can access.
+
+### 7.5 Arroba-Driven Context Compaction
+
+Arroba provides a user-triggered compaction command: `/compact`.
 
 Compaction sequence:
 
@@ -402,6 +431,8 @@ Mandatory behavior:
 - remote client disconnect does not terminate session by default
 - workflow node failure propagation and retry policy MUST remain daemon-owned and explicit
 - workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
+- unsupported provider versions emit compatibility warnings but retain best-effort `/agent` completions
+- provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Arroba to take ownership of provider credentials
 
 ## 9. Deployment and Evolution Notes
 
@@ -466,7 +497,7 @@ Approach:
 
 - define canonical terminal behavior in protocol/conformance terms (PTY byte stream handling, resize semantics, key mapping expectations, control-sequence fidelity)
 - use xterm.js as the web/remote reference implementation and golden-behavior baseline
-- keep overlay and command-palette semantics consistent across clients, even when UI widgets are platform-native
+- keep slash-command parsing, completion semantics, and warning behavior consistent across clients
 
 Platform framework options for xterm.js-consistent rendering:
 

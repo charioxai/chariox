@@ -8,14 +8,20 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 
 M0, "Foundations", is complete in this repository.
 M1, "Core Session Runtime", is complete.
-M2, "Capability Surface", is now in progress.
+The immediate next milestone is an end-to-end local OpenCode baseline through the daemon and CLI.
 
 v1 scope includes both:
 
 - single-agent sessions
 - multi-agent workflow execution
 
-Within v1 delivery, circular workflow topology is the earlier priority. Hierarchical workflow execution remains in-scope for v1, but is planned for a later stage of v1 after the lower-level runtime, capability, control, and protocol surfaces are stable.
+Current delivery priority:
+
+- first: a working local daemon + CLI path for one OpenCode agent, prompt submission, and live output streaming
+- then: local capabilities, slash commands, and more providers
+- then: multi-agent workflows
+- then: relay/web surfaces
+- then: provider switching, memory, compaction, and per-agent extensions such as MCPs and skills
 
 The current codebase provides:
 
@@ -52,7 +58,7 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-Today it includes the daemon bootstrap, in-memory session lifecycle, shared multi-attachment participation, prompt queueing, session config propagation, provider runtime orchestration, PTY-backed terminal streaming, rollback notices for failed provider switches, and an initial structured shell command capability. Workflow execution surfaces are still being built.
+The immediate implementation target is narrower than the full v1 shape: one local CLI, one provider (`opencode`), one prompt path, and live streamed output. Broader capability work, more providers, workflows, relay/web support, and memory-oriented features follow after that path is solid.
 
 ### `apps/server`
 

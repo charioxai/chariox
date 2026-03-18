@@ -11,17 +11,18 @@ This document summarizes the current architectural decisions and constraints so 
 ## Core Principles
 
 1. Provider-native experience
-   - Users must feel like they are running the provider CLI directly.
-   - Arroba must not interfere with provider commands.
-   - Provider configuration commands such as `/` commands must work normally.
+   - Users must feel like they are running the provider CLI directly for ordinary prompt and terminal work.
+   - Arroba owns the slash-command namespace.
+   - Provider-specific commands are exposed through Arroba as `/agent ...`, not as raw provider `/...` commands.
 
 2. Wrapper, not replacement
    - Arroba orchestrates sessions but does not replace provider logic.
    - All provider state remains owned by the provider.
+   - Provider login remains provider-native and local to the host machine.
 
 3. Terminal-first interface
    - The primary interface is a real terminal.
-   - Arroba-specific actions are invoked through a command palette or hotkey overlay.
+   - Arroba-specific actions are invoked through slash commands.
    - All important actions must be accessible directly from the terminal interface.
 
 4. Daemon-centered architecture
@@ -35,6 +36,12 @@ This document summarizes the current architectural decisions and constraints so 
 6. Minimal provider interference
    - Arroba should not attempt to manage or control provider internal state.
    - It only tracks enough context to support provider switching when requested.
+   - Arroba must not become a provider credential store in v1.
+
+7. Agent-scoped extensions
+   - Skills, MCPs, command packs, and similar provider-facing assets are managed by Arroba on a per top-level agent basis.
+   - Provider-native subagents are not separately orchestrated by Arroba.
+   - MCP runtime ownership belongs to the daemon, not to provider CLIs.
 
 ## Daemon-First, API-First, Multi-Client Rule
 
@@ -346,7 +353,7 @@ Important clarification:
 ## Provider Switching
 
 When switching providers:
-1. User triggers switch via command palette/hotkey
+1. User triggers switch via an Arroba slash command
 2. Arroba asks whether context should be transferred
 3. If yes, Arroba uses:
    - short-term memory (recent transcript/task state)
@@ -361,11 +368,11 @@ If a user resets or compacts the provider context internally, Arroba should simp
 
 ## Provider State Changes
 
-Arroba should interfere as little as possible with provider-native behavior.
+Arroba should interfere as little as possible with provider-native PTY behavior.
 
 Users must be able to:
 - change permissions from within the provider
-- use provider slash/config commands normally
+- use provider functionality exposed by Arroba under `/agent ...`
 - start new native provider sessions
 - reset conversations inside the provider
 
@@ -373,7 +380,7 @@ Arroba only really needs to care about:
 1. context compaction / reset
 2. permission requests that need to be relayed to attached terminals
 3. daemon-initiated memory update inquiries to refresh Arroba memory after provider compaction/reset
-4. user-triggered Arroba compaction flow (`<reserved character for arroba commands>compact`) and compaction summary retrieval
+4. user-triggered Arroba compaction flow (`/compact`) and compaction summary retrieval
 
 Current design preference:
 - be permission-agnostic
@@ -392,7 +399,7 @@ Examples:
 - Another remote terminal
 
 Arroba command example:
-- `<reserved character for arroba commands>compact` triggers daemon-managed context compaction
+- `/compact` triggers daemon-managed context compaction
 
 All attachments in a session MAY submit prompts and request supported config changes.
 
@@ -417,9 +424,14 @@ A single client may interact with multiple sessions at once if it has multiple t
 
 ## Command System
 
-Arroba commands are not typed as normal provider input.
+Arroba owns the slash-command namespace.
 
-They are invoked through a command palette hotkey or overlay.
+Rules:
+
+- `/...` is reserved for Arroba command parsing and completion.
+- `/agent ...` is the provider-specific command namespace exposed by the active adapter.
+- ordinary non-command input continues through the PTY path.
+- unsupported provider versions produce warnings but do not disable best-effort `/agent` completions.
 
 Examples of target commands:
 - switch session
@@ -431,9 +443,11 @@ Examples of target commands:
 - show git status
 - show worktree info
 
-The command palette appears as an in-terminal overlay.
+Provider command discovery policy:
 
-The exact hotkey is still to be finalized.
+- Arroba ships built-in command catalogs for explicitly supported provider version families.
+- Arroba augments those catalogs by reading supported custom-command files/config when the provider supports that pattern.
+- Arroba does not rely on scraping human-oriented slash help output as its primary compatibility mechanism.
 
 ## Capabilities
 
@@ -547,7 +561,7 @@ Arroba should avoid imposing a complex permission model unless later needed.
 
 ## Directory Tree
 
-Users should be able to request a directory snapshot from within the terminal overlay.
+Users should be able to request a directory snapshot from within the terminal slash-command surface.
 
 The daemon returns:
 - workspace tree
@@ -802,11 +816,11 @@ Conceptual structure:
 
 - Local CLI Client
   - terminal UI
-  - command palette overlay
+  - slash-command help and completion UI
 
 - Web App Client
   - xterm.js terminal
-  - command palette overlay
+  - slash-command help and completion UI
 
 - Arroba Daemon
   - session manager
@@ -849,9 +863,9 @@ One session has one active provider run at a time.
 
 ## Command / Control Flow
 
-1. User opens command palette via hotkey
-2. Client shows in-terminal overlay
-3. User selects an Arroba command
+1. User types an Arroba slash command
+2. Client requests completions/help from the daemon as needed
+3. User confirms a command or subcommand
 4. Command is sent:
    - directly to daemon for local CLI
    - through server relay for remote client
@@ -871,7 +885,7 @@ One session has one active provider run at a time.
 
 ## Arroba-Driven Compaction Flow
 
-1. User triggers `<reserved character for arroba commands>compact`
+1. User triggers `/compact`
 2. Daemon requests provider compaction summary via `request_compaction_summary`
 3. Daemon stores summary as memory/artifact input
 4. Daemon launches fresh provider run with empty context window
