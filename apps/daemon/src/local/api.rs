@@ -5,7 +5,7 @@ use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
-    ReadFileResult, RunShellCommandRequest, RunShellCommandResult,
+    ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
@@ -131,6 +131,14 @@ pub struct CaptureScreenshotCapabilityRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreTransferredFileCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub source_path: PathBuf,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -149,6 +157,7 @@ pub enum LocalDaemonRequest {
     EditFile(EditFileCapabilityRequest),
     InspectGit(InspectGitCapabilityRequest),
     CaptureScreenshot(CaptureScreenshotCapabilityRequest),
+    StoreTransferredFile(StoreTransferredFileCapabilityRequest),
     EndSession(EndSessionRequest),
 }
 
@@ -208,6 +217,9 @@ pub enum LocalDaemonResponse {
     },
     ScreenshotCaptured {
         result: CaptureScreenshotResult,
+    },
+    FileTransferred {
+        result: StoredTransferArtifact,
     },
     SessionEnded {
         session: RuntimeSession,
@@ -350,6 +362,16 @@ impl DaemonApp {
                     result: self.capture_screenshot(&request.session_id, &request.attachment_id)?,
                 })
             }
+            LocalDaemonRequest::StoreTransferredFile(request) => {
+                Ok(LocalDaemonResponse::FileTransferred {
+                    result: self.store_transferred_file(
+                        &request.session_id,
+                        &request.attachment_id,
+                        request.source_path,
+                        request.display_name,
+                    )?,
+                })
+            }
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
                 session: self.end_session(&request.session_id)?,
             }),
@@ -371,7 +393,7 @@ mod tests {
         GetSessionStateRequest, InspectGitCapabilityRequest, LaunchProviderRunRequest,
         LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RunShellCapabilityRequest,
-        SubmitPromptRequest, UpdateSessionConfigRequest,
+        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -945,6 +967,62 @@ mod tests {
                 );
             }
             _ => panic!("unexpected screenshot response"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_stores_transferred_file_under_session_artifacts() {
+        let worktree_root = std::env::temp_dir().join("arroba-transfer-local-api-test");
+        let _ = std::fs::remove_dir_all(&worktree_root);
+        std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+        let source = worktree_root.join("artifact.txt");
+        std::fs::write(&source, "artifact").expect("file should exist");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-transfer".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let response = app
+            .handle_local_request(LocalDaemonRequest::StoreTransferredFile(
+                StoreTransferredFileCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                    source_path: source,
+                    display_name: None,
+                },
+            ))
+            .expect("transfer should succeed");
+
+        match response {
+            LocalDaemonResponse::FileTransferred { result } => {
+                assert!(result
+                    .stored_path
+                    .to_string_lossy()
+                    .contains("arroba-session-artifacts"));
+                assert_eq!(result.bytes, 8);
+            }
+            _ => panic!("unexpected transfer response"),
         }
     }
 }

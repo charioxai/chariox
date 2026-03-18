@@ -3,6 +3,7 @@ mod file;
 mod git;
 mod screenshot;
 mod shell;
+mod transfer;
 mod tree;
 
 pub use file::{
@@ -14,6 +15,7 @@ pub use screenshot::{
     ScreenshotStatus,
 };
 pub use shell::{RunShellCommandRequest, RunShellCommandResult, ShellCommandService};
+pub use transfer::{FileTransferService, StoreTransferredFileRequest, StoredTransferArtifact};
 pub use tree::{
     DirectoryEntry, DirectoryTreeService, ReadDirectoryTreeRequest, ReadDirectoryTreeResult,
 };

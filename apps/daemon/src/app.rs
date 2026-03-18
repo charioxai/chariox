@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use crate::attachment::{AttachRequest, AttachmentService, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotRequest, CaptureScreenshotResult, DirectoryTreeService, EditFileRequest,
-    EditFileResult, FileCapabilityService, GitCapabilityService, InspectGitRequest,
-    InspectGitResult, ReadDirectoryTreeRequest, ReadDirectoryTreeResult, ReadFileRequest,
-    ReadFileResult, RunShellCommandRequest, RunShellCommandResult, ScreenshotCapabilityService,
-    ShellCommandService,
+    EditFileResult, FileCapabilityService, FileTransferService, GitCapabilityService,
+    InspectGitRequest, InspectGitResult, ReadDirectoryTreeRequest, ReadDirectoryTreeResult,
+    ReadFileRequest, ReadFileResult, RunShellCommandRequest, RunShellCommandResult,
+    ScreenshotCapabilityService, ShellCommandService, StoreTransferredFileRequest,
+    StoredTransferArtifact,
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
@@ -27,6 +28,7 @@ pub struct DaemonApp {
     file_capabilities: FileCapabilityService,
     git_capabilities: GitCapabilityService,
     screenshot_capabilities: ScreenshotCapabilityService,
+    transfer_capabilities: FileTransferService,
     pty: PtyManager,
     providers: ProviderProcessService,
     sessions: SessionService,
@@ -44,6 +46,7 @@ impl DaemonApp {
             file_capabilities: FileCapabilityService::new(),
             git_capabilities: GitCapabilityService::new(),
             screenshot_capabilities: ScreenshotCapabilityService::new(),
+            transfer_capabilities: FileTransferService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             sessions: SessionService::new(&config),
@@ -158,7 +161,7 @@ impl DaemonApp {
         let session = self.sessions.get_session(&request.session_id)?;
         let attachment =
             self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-        self.ensure_attachment_can_run_capability(&request.session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(&request.session_id, &attachment, "shell")?;
 
         let mut request = request;
         request.worktree_root = std::path::PathBuf::from(session.worktree_id());
@@ -174,7 +177,7 @@ impl DaemonApp {
     ) -> Result<ReadDirectoryTreeResult, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "directory_tree")?;
         self.directory_tree.read_tree(ReadDirectoryTreeRequest::new(
             session_id,
             attachment_id,
@@ -192,7 +195,7 @@ impl DaemonApp {
     ) -> Result<ReadFileResult, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "file_read")?;
         self.file_capabilities.read_file(ReadFileRequest::new(
             session_id,
             attachment_id,
@@ -210,7 +213,7 @@ impl DaemonApp {
     ) -> Result<EditFileResult, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "file_edit")?;
         self.file_capabilities.edit_file(EditFileRequest::new(
             session_id,
             attachment_id,
@@ -228,7 +231,7 @@ impl DaemonApp {
     ) -> Result<InspectGitResult, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "git_inspect")?;
         self.git_capabilities.inspect(InspectGitRequest::new(
             session_id,
             attachment_id,
@@ -244,7 +247,7 @@ impl DaemonApp {
     ) -> Result<CaptureScreenshotResult, DaemonError> {
         let _session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "screenshot")?;
         self.screenshot_capabilities
             .capture(CaptureScreenshotRequest::new(
                 session_id,
@@ -253,6 +256,26 @@ impl DaemonApp {
                     .join("arroba-session-artifacts")
                     .join(session_id)
                     .join("screenshots"),
+            ))
+    }
+
+    pub fn store_transferred_file(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        source_path: PathBuf,
+        display_name: Option<String>,
+    ) -> Result<StoredTransferArtifact, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, "transfer_store")?;
+        self.transfer_capabilities
+            .store_file(StoreTransferredFileRequest::new(
+                session_id,
+                attachment_id,
+                PathBuf::from(session.worktree_id()),
+                source_path,
+                display_name,
             ))
     }
 
@@ -571,6 +594,7 @@ impl DaemonApp {
         &self,
         session_id: &str,
         attachment: &RuntimeAttachment,
+        capability: &'static str,
     ) -> Result<(), DaemonError> {
         if matches!(
             attachment.capability_level(),
@@ -582,7 +606,7 @@ impl DaemonApp {
             Err(DaemonError::AttachmentCapabilityDenied {
                 session_id: session_id.to_string(),
                 attachment_id: attachment.id().to_string(),
-                capability: "daemon_capability",
+                capability,
             })
         }
     }

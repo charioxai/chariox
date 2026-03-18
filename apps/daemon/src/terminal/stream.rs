@@ -19,6 +19,7 @@ pub struct RuntimeNoticeRecord {
     pub session_id: String,
     pub provider_run_id: Option<String>,
     pub recipient_attachment_ids: Vec<String>,
+    pub pending_recipient_attachment_ids: Vec<String>,
     pub message: String,
 }
 
@@ -77,6 +78,7 @@ impl TerminalStreamService {
         let record = RuntimeNoticeRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
+            pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             message: message.into(),
         };
@@ -103,23 +105,28 @@ impl TerminalStreamService {
         attachment_id: &str,
     ) -> Vec<RuntimeNoticeRecord> {
         let mut drained = Vec::new();
-        let mut kept = Vec::with_capacity(self.notice_records.len());
-
-        for record in self.notice_records.drain(..) {
+        for record in &mut self.notice_records {
             if record.session_id == session_id
-                && (record.recipient_attachment_ids.is_empty()
+                && (record.pending_recipient_attachment_ids.is_empty()
                     || record
-                        .recipient_attachment_ids
+                        .pending_recipient_attachment_ids
                         .iter()
                         .any(|id| id == attachment_id))
             {
-                drained.push(record);
-            } else {
-                kept.push(record);
+                drained.push(record.clone());
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
             }
         }
 
-        self.notice_records = kept;
+        self.notice_records.retain(|record| {
+            if record.recipient_attachment_ids.is_empty() {
+                false
+            } else {
+                !record.pending_recipient_attachment_ids.is_empty()
+            }
+        });
         drained
     }
 }
@@ -152,5 +159,25 @@ mod tests {
         assert_eq!(output.recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
         assert_eq!(notice.recipient_attachment_ids.len(), 1);
+        assert_eq!(notice.pending_recipient_attachment_ids.len(), 1);
+    }
+
+    #[test]
+    fn notice_polling_is_per_recipient() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_notice(
+            "session-1",
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "queued prompt",
+        );
+
+        let first = terminal.drain_notice_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+        assert_eq!(terminal.notice_records().len(), 1);
+
+        let second = terminal.drain_notice_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+        assert!(terminal.notice_records().is_empty());
     }
 }

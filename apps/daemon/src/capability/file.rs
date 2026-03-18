@@ -108,7 +108,7 @@ impl FileCapabilityService {
             &request.worktree_root,
             Some(&request.path),
         )?;
-        let previous_contents = std::fs::read_to_string(&path).ok();
+        let previous_bytes = std::fs::read(&path).ok();
         std::fs::write(&path, request.contents.as_bytes()).map_err(|error| {
             DaemonError::FileEditFailed {
                 session_id: request.session_id.clone(),
@@ -120,14 +120,14 @@ impl FileCapabilityService {
         Ok(EditFileResult {
             session_id: request.session_id,
             path,
-            created: previous_contents.is_none(),
-            old_size: previous_contents
+            created: previous_bytes.is_none(),
+            old_size: previous_bytes
                 .as_ref()
-                .map(|contents| contents.len())
+                .map(|bytes| bytes.len())
                 .unwrap_or(0),
             new_size: request.contents.len(),
             bytes_written: request.contents.len(),
-            changed: previous_contents.as_deref() != Some(request.contents.as_str()),
+            changed: previous_bytes.as_deref() != Some(request.contents.as_bytes()),
         })
     }
 }
@@ -174,5 +174,30 @@ mod tests {
             fs::read_to_string(file).expect("file should be readable"),
             "after"
         );
+    }
+
+    #[test]
+    fn reports_existing_binary_file_as_not_created() {
+        let root = std::env::temp_dir().join("arroba-file-capability-binary-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root should exist");
+        let file = root.join("binary.bin");
+        fs::write(&file, [0xff_u8, 0xfe_u8, 0xfd_u8]).expect("binary file should exist");
+        let service = FileCapabilityService::new();
+
+        let edit = service
+            .edit_file(EditFileRequest::new(
+                "session-1",
+                "attachment-1",
+                root,
+                file,
+                "text",
+            ))
+            .expect("file edit should succeed");
+
+        assert!(!edit.created);
+        assert_eq!(edit.old_size, 3);
+        assert_eq!(edit.new_size, 4);
+        assert!(edit.changed);
     }
 }

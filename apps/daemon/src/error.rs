@@ -138,6 +138,13 @@ pub enum DaemonError {
         working_directory: String,
         message: String,
     },
+    #[error("file transfer failed for session `{session_id}`: {message}")]
+    TransferCapabilityFailed { session_id: String, message: String },
+    #[error("invalid transfer display name `{display_name}` for session `{session_id}`")]
+    InvalidTransferDisplayName {
+        session_id: String,
+        display_name: String,
+    },
     #[error("screenshot capture failed for session `{session_id}`: {message}")]
     ScreenshotCapabilityFailed { session_id: String, message: String },
     #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]

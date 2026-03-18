@@ -15,7 +15,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
 ## In Progress
 
 - [ ] **M2-001** Expand daemon capability surface beyond runtime baseline
-  - Note: Added shell, directory tree, file read/edit, git inspection, and screenshot capability baselines with local API exposure; continue with transfer/schedule work.
+  - Note: Added shell, directory tree, file read/edit, git inspection, screenshot, and transfer storage baselines with local API exposure; continue with schedule work.
 
 ## Backlog
 

@@ -465,6 +465,41 @@ mod tests {
         assert!(result.artifact_path.is_none());
     }
 
+    #[test]
+    fn transfer_capability_stores_artifact_under_session_root() {
+        let worktree_root = std::env::temp_dir().join("arroba-transfer-app-test");
+        let _ = std::fs::remove_dir_all(&worktree_root);
+        std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+        let source = worktree_root.join("artifact.txt");
+        std::fs::write(&source, "artifact").expect("source should exist");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-1",
+                worktree_root.display().to_string(),
+            ))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-transfer",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let result = app
+            .store_transferred_file(session.id(), attachment.id(), source, None)
+            .expect("transfer should succeed");
+
+        assert!(result
+            .stored_path
+            .to_string_lossy()
+            .contains("arroba-session-artifacts"));
+        assert_eq!(result.bytes, 8);
+    }
+
     fn wait_for_terminal_output(
         app: &mut DaemonApp,
         session_id: &str,

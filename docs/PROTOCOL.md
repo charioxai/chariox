@@ -167,6 +167,7 @@ Current baseline capability request:
 - `capability.file.edit`
 - `capability.git.inspect`
 - `capability.screenshot.capture`
+- `capability.transfer.store`
 
 Minimum shell request fields:
 

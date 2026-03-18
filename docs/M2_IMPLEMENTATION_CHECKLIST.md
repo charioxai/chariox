@@ -93,7 +93,7 @@ apps/daemon/src/
 
 ## 4.6 File transfer and attach-transferred workflow
 
-- [ ] Add daemon-owned file transfer metadata and storage baseline.
+- [x] Add daemon-owned file transfer metadata and storage baseline.
 - [ ] Add an attach-transferred workflow that can reuse future provider control-lane operations.
 - [ ] Keep degradation behavior explicit when provider-side attach support is absent.
 

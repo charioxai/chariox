@@ -7,6 +7,6 @@ pub use api::{
     InspectGitCapabilityRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
     PollRuntimeNoticesRequest, PumpTerminalOutputRequest, ReadDirectoryTreeCapabilityRequest,
     ReadFileCapabilityRequest, ResizeTerminalRequest, RunShellCapabilityRequest,
-    SubmitPromptRequest, UpdateSessionConfigRequest,
+    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 pub use harness::{run_local_harness, LocalHarnessReport};

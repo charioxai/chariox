@@ -185,3 +185,8 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Added a screenshot capability contract and local runtime baseline with structured unavailable fallback when no capture backend is available.
 - Exposed screenshot capture through the local daemon API and added daemon/local API tests for the baseline unavailable path.
+
+### M2 transfer baseline update
+
+- Added a daemon-owned file transfer storage baseline that copies source files from the session worktree into a session artifact root.
+- Exposed transfer storage through the local daemon API and added daemon/local API tests for the stored-artifact path.
