@@ -260,9 +260,28 @@ impl ProviderProcessService {
             })?
             .to_string();
         let client = OpenCodeClient::new(run.id(), &base_url)?;
-        client.wait_until_healthy(Duration::from_secs(5))?;
+        eprintln!(
+            "[arroba][daemon][opencode] waiting for health at {} for run {}",
+            base_url,
+            run.id()
+        );
+        client.wait_until_healthy(Duration::from_secs(30))?;
+        eprintln!(
+            "[arroba][daemon][opencode] healthy at {} for run {}",
+            base_url,
+            run.id()
+        );
         let session_id = client.create_session()?;
+        eprintln!(
+            "[arroba][daemon][opencode] created OpenCode session {} for run {}",
+            session_id,
+            run.id()
+        );
         let event_subscription = client.subscribe_events()?;
+        eprintln!(
+            "[arroba][daemon][opencode] subscribed to events for run {}",
+            run.id()
+        );
         self.opencode_runs.insert(
             run.id().to_string(),
             OpenCodeRunState {

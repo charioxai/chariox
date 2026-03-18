@@ -1316,7 +1316,7 @@ fn handle_mock_opencode_request(
     }
 
     let response = match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/health") => json!({ "healthy": true, "version": "test" }),
+        ("GET", "/global/health") => json!({ "healthy": true, "version": "test" }),
         ("POST", "/session") => {
             let session_id = state
                 .lock()
@@ -1341,7 +1341,7 @@ fn handle_mock_opencode_request(
             let state = state.lock().expect("mock state should not be poisoned");
             Value::Array(state.messages.clone())
         }
-        ("POST", path) if path.starts_with("/session/") && path.ends_with("/message") => {
+        ("POST", path) if path.starts_with("/session/") && path.ends_with("/prompt_async") => {
             let payload: Value =
                 serde_json::from_slice(&request.body).expect("prompt body should parse");
             let prompt = payload["parts"][0]["text"]
@@ -1350,7 +1350,8 @@ fn handle_mock_opencode_request(
                 .trim_end_matches('\n')
                 .to_string();
             schedule_mock_response(state.clone(), prompt);
-            json!({ "accepted": true })
+            write_http_empty_response(&mut stream, 204);
+            return;
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/abort") => {
             let mut state = state.lock().expect("mock state should not be poisoned");
@@ -1655,6 +1656,22 @@ fn write_http_response(stream: &mut std::net::TcpStream, status: u16, body: Valu
     stream
         .write_all(&body)
         .expect("mock response body should write");
+    let _ = stream.flush();
+}
+
+fn write_http_empty_response(stream: &mut std::net::TcpStream, status: u16) {
+    let status_text = match status {
+        204 => "No Content",
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("mock empty response should write");
     let _ = stream.flush();
 }
 

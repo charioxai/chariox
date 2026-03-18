@@ -218,9 +218,9 @@ impl OpenCodeClient {
             });
         }
 
-        self.send_json_request::<serde_json::Value>(
+        self.send_no_content_request(
             "POST",
-            &format!("/session/{session_id}/message"),
+            &format!("/session/{session_id}/prompt_async"),
             Some(&body),
         )?;
         Ok(())
@@ -344,7 +344,7 @@ impl OpenCodeClient {
     }
 
     fn health(&self) -> Result<(), DaemonError> {
-        let health: OpenCodeHealth = self.send_json_request("GET", "/health", None)?;
+        let health: OpenCodeHealth = self.send_json_request("GET", "/global/health", None)?;
         if health.healthy {
             Ok(())
         } else {
@@ -366,6 +366,57 @@ impl OpenCodeClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<T, DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+
+        serde_json::from_slice(&response_body).map_err(|error| {
+            self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "{}; response body: {}",
+                    error,
+                    preview_response_body(&response_body)
+                ),
+            )
+        })
+    }
+
+    fn send_no_content_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+        if !response_body.is_empty() {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "expected empty response body; got {}",
+                    preview_response_body(&response_body)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn send_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(u16, Vec<u8>), DaemonError> {
         let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
             self.protocol_error(
                 "base_url_parse",
@@ -405,31 +456,36 @@ impl OpenCodeClient {
                 self.protocol_error(method_to_operation(method, path), error.to_string())
             })?;
 
-        let (status_code, response_body) = read_http_response(&mut stream)
-            .map_err(|error| self.protocol_error(method_to_operation(method, path), error))?;
-        if status_code >= 400 {
-            return Err(self.protocol_error(
-                method_to_operation(method, path),
-                format!("OpenCode returned HTTP {status_code}"),
-            ));
-        }
-
-        serde_json::from_slice(&response_body).map_err(|error| {
-            self.protocol_error(method_to_operation(method, path), error.to_string())
-        })
+        read_http_response(&mut stream)
+            .map_err(|error| self.protocol_error(method_to_operation(method, path), error))
     }
 }
 
 fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
-        ("GET", "/health") => "health",
+        ("GET", "/global/health") => "health",
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
+        _ if method == "POST" && path.ends_with("/prompt_async") => "session_prompt",
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
         _ if method == "GET" && path.ends_with("/message") => "session_messages",
         _ => "opencode_http",
+    }
+}
+
+fn preview_response_body(body: &[u8]) -> String {
+    if body.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let preview = String::from_utf8_lossy(body);
+    let preview = preview.trim();
+    if preview.len() > 240 {
+        format!("{}...", &preview[..240])
+    } else {
+        preview.to_string()
     }
 }
 

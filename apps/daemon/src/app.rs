@@ -296,6 +296,10 @@ impl DaemonApp {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        eprintln!(
+            "[arroba][daemon] launching provider adapter={} provider={} session={}",
+            request.adapter_key, request.provider, request.session_id
+        );
         if request.adapter_key == "opencode" && request.working_directory.is_none() {
             request.working_directory = Some(PathBuf::from(
                 self.sessions
@@ -312,7 +316,17 @@ impl DaemonApp {
             .attachments
             .list_session_attachment_ids(&request.session_id);
         let run = self.providers.launch_run(&mut self.sessions, request)?;
+        eprintln!(
+            "[arroba][daemon] spawned provider run {} for session {}",
+            run.id(),
+            run.session_id()
+        );
         if let Err(error) = self.pty.spawn_for_run(&run) {
+            eprintln!(
+                "[arroba][daemon] PTY spawn failed for provider run {}: {}",
+                run.id(),
+                error
+            );
             let _ = self
                 .providers
                 .terminate_run(&mut self.sessions, run.session_id(), run.id());
@@ -350,7 +364,16 @@ impl DaemonApp {
             }
             return Err(error);
         }
+        eprintln!(
+            "[arroba][daemon] initializing runtime for provider run {}",
+            run.id()
+        );
         if let Err(error) = self.providers.initialize_runtime(&run) {
+            eprintln!(
+                "[arroba][daemon] runtime initialization failed for provider run {}: {}",
+                run.id(),
+                error
+            );
             let _ = self.pty.remove_process(run.id());
             self.providers.clear_runtime(run.id());
             let _ = self
@@ -365,6 +388,10 @@ impl DaemonApp {
             }
             return Err(error);
         }
+        eprintln!(
+            "[arroba][daemon] provider run {} initialized successfully",
+            run.id()
+        );
         Ok(run)
     }
 
