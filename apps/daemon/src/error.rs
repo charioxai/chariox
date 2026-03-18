@@ -74,6 +74,12 @@ pub enum DaemonError {
     NoActiveProviderRun { session_id: String },
     #[error("provider run `{provider_run_id}` has no PTY process")]
     PtyProcessNotFound { provider_run_id: String },
+    #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
+    ProviderProtocol {
+        provider_run_id: String,
+        operation: &'static str,
+        message: String,
+    },
     #[error("failed to spawn PTY for provider run `{provider_run_id}`: {message}")]
     PtySpawn {
         provider_run_id: String,

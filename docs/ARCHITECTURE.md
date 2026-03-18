@@ -335,9 +335,9 @@ Provider authentication is not part of the control lane in v1; adapters probe an
 
 Provider-facing extension projection is also adapter-owned: the daemon resolves the authoritative extension bindings, and the adapter materializes the provider-specific runtime view.
 
-### 5.3.1 OpenCode Structured Adapter Target
+### 5.3.1 OpenCode Structured Adapter
 
-OpenCode should be treated as the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
+OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
 
 Target runtime flow:
 
@@ -345,7 +345,8 @@ Target runtime flow:
 - daemon waits for the local OpenCode server health endpoint
 - daemon creates or binds an OpenCode session for the Arroba provider run
 - daemon submits prompts through the OpenCode session API
-- daemon subscribes to the OpenCode SSE event stream
+- daemon currently polls the OpenCode session/message APIs for structured output
+- daemon will later subscribe to the OpenCode SSE event stream
 - daemon maps OpenCode session/message events into Arroba prompt lifecycle, notices, and client-facing output
 
 Target signal mapping:
@@ -353,10 +354,10 @@ Target signal mapping:
 - prompt submit: OpenCode session prompt API
 - `/agent ...`: OpenCode command list plus session command API
 - turn abort: OpenCode session abort API
-- turn busy/idle: OpenCode session status events
-- incremental text: OpenCode message-part delta events
+- turn busy/idle: OpenCode session status responses today, session status events once SSE is in place
+- incremental text: OpenCode message snapshots today, message-part delta events once SSE is in place
 - assistant completion: OpenCode assistant message updates with completion timestamps
-- provider errors: OpenCode session error events
+- provider errors: OpenCode protocol errors today, session error events once SSE is in place
 
 Implication:
 

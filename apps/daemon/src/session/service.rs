@@ -195,6 +195,20 @@ impl SessionService {
         Ok((session.clone(), completed))
     }
 
+    pub fn complete_active_prompt_only(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
+        let completed =
+            session
+                .complete_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), completed))
+    }
+
     pub fn peek_next_queued_prompt(
         &self,
         session_id: &str,

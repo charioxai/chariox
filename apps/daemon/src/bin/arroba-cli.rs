@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::local::{
-    AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest,
-    GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LocalIpcClient, PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
+    AttachToSessionRequest, DetachFromSessionRequest, GetSessionStateRequest,
+    LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, LocalIpcClient,
+    PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonConfig, DaemonError};
@@ -107,13 +107,6 @@ fn main() -> Result<(), DaemonError> {
         }
         if line.trim().is_empty() {
             continue;
-        }
-
-        let session = get_session_state(&client, &session_id)?;
-        if session.active_prompt().is_some() {
-            let _ = client.send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-                session_id: session_id.clone(),
-            }))?;
         }
 
         let _ = client.send(&LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {

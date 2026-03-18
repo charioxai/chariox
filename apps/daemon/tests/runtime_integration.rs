@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,6 +21,9 @@ use arroba_daemon::local::{
 use arroba_daemon::provider::{LaunchProviderRequest, ProviderRunState};
 use arroba_daemon::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionStatus};
 use arroba_daemon::{DaemonApp, DaemonConfig};
+use serde_json::{json, Value};
+
+static OPENCODE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn session_lifecycle_round_trip_cleans_runtime_state() {
@@ -360,6 +366,292 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
 }
 
 #[test]
+fn prompt_queue_advances_after_provider_output_goes_idle() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let _run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "first auto prompt\n")
+        .expect("first prompt should start");
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "second auto prompt\n")
+        .expect("second prompt should queue");
+
+    let combined = collect_terminal_output_until(&mut app, session.id(), |output, session| {
+        output.contains("first auto prompt")
+            && output.contains("second auto prompt")
+            && session.active_prompt().is_none()
+            && session.queued_prompts().is_empty()
+    });
+
+    assert!(combined.contains("first auto prompt"));
+    assert!(combined.contains("second auto prompt"));
+}
+
+#[test]
+fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .expect("opencode env lock should not be poisoned");
+    let fixture_path = create_opencode_fixture_script(1);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "first exit prompt\n")
+        .expect("first prompt should start");
+    let _ = app
+        .submit_prompt(session.id(), attachment.id(), "second exit prompt\n")
+        .expect("second prompt should queue");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: first exit prompt")
+                && app
+                    .providers()
+                    .get_run(run.id())
+                    .expect("run should remain queryable")
+                    .state()
+                    == ProviderRunState::Ended
+        },
+    );
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(output.contains("fixture response: first exit prompt"));
+    assert_eq!(session_state.active_provider_run_id(), None);
+    assert!(session_state.active_prompt().is_none());
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("run should remain queryable")
+            .state(),
+        ProviderRunState::Ended
+    );
+    assert!(!app.pty().has_process(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn opencode_launch_requires_explicit_port_override() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .expect("opencode env lock should not be poisoned");
+    let fixture_path = create_opencode_fixture_script(10);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::remove_var("ARROBA_OPENCODE_PORT");
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let error = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect_err("missing OpenCode port override should fail");
+
+    match error {
+        arroba_daemon::DaemonError::InvalidConfig { field, message } => {
+            assert_eq!(field, "ARROBA_OPENCODE_PORT");
+            assert_eq!(
+                message,
+                "must be set to an explicit OpenCode server TCP port"
+            );
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(session_state.active_provider_run_id().is_none());
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn missing_opencode_session_status_surfaces_error_without_completing_prompt() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .expect("opencode env lock should not be poisoned");
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.set_omit_session_status(true);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "prompt with missing session status\n",
+        )
+        .expect("prompt should start");
+
+    let error = app
+        .pump_provider_output(
+            session.id(),
+            run.id(),
+            app.attachments().list_session_attachment_ids(session.id()),
+        )
+        .expect_err("missing session status should surface as an error");
+
+    match error {
+        arroba_daemon::DaemonError::ProviderProtocol {
+            provider_run_id,
+            operation,
+            ..
+        } => {
+            assert_eq!(provider_run_id, run.id());
+            assert_eq!(operation, "session_status");
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.active_provider_run_id(), Some(run.id()));
+    assert!(session_state.active_prompt().is_some());
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("run should remain queryable")
+            .state(),
+        ProviderRunState::Running
+    );
+    assert!(app.pty().has_process(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() {
     let socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
         "cli-smoke-{}-{}.sock",
@@ -370,11 +662,13 @@ fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() 
             .as_nanos()
     ));
     let _ = fs::remove_file(&socket_path);
-    let fixture_path = create_opencode_fixture_script(1);
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_secs(1));
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_arroba-daemon"))
         .env("ARROBA_DAEMON_SOCKET", &socket_path)
         .env("ARROBA_OPENCODE_BIN", &fixture_path)
+        .env("ARROBA_OPENCODE_PORT", mock_server.port().to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -385,6 +679,7 @@ fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() 
     let mut cli = Command::new(env!("CARGO_BIN_EXE_arroba-cli"))
         .env("ARROBA_DAEMON_SOCKET", &socket_path)
         .env("ARROBA_OPENCODE_BIN", &fixture_path)
+        .env("ARROBA_OPENCODE_PORT", mock_server.port().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -400,14 +695,16 @@ fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() 
 
     let output = cli.wait_with_output().expect("cli should exit");
     let _ = daemon.kill();
-    let _ = daemon.wait();
+    let daemon_output = daemon.wait_with_output().expect("daemon should exit");
     let _ = fs::remove_file(&socket_path);
     let _ = fs::remove_file(&fixture_path);
+    mock_server.stop();
 
     assert!(
         output.status.success(),
-        "cli stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "cli stderr: {}\ndaemon stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&daemon_output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -486,6 +783,328 @@ fn wait_for_socket(path: &Path) {
     }
 }
 
+fn collect_terminal_output_until<F>(app: &mut DaemonApp, session_id: &str, done: F) -> String
+where
+    F: Fn(&str, &arroba_daemon::session::RuntimeSession) -> bool,
+{
+    let timeout_ms = output_timeout_ms().max(4_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut output = Vec::new();
+
+    loop {
+        let records = app
+            .pump_terminal_output(session_id)
+            .expect("terminal output should fan out");
+        for record in records {
+            output.extend(record.bytes);
+        }
+
+        let output_text = String::from_utf8_lossy(&output).into_owned();
+        let session = app
+            .sessions()
+            .get_session(session_id)
+            .expect("session should still exist");
+        if done(&output_text, &session) {
+            return output_text;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for terminal output after {timeout_ms}ms: {output_text}"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn collect_provider_output_until<F>(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    recipient_attachment_ids: Vec<String>,
+    done: F,
+) -> String
+where
+    F: Fn(&str, &DaemonApp) -> bool,
+{
+    let timeout_ms = output_timeout_ms().max(4_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut output = Vec::new();
+
+    loop {
+        let records = app
+            .pump_provider_output(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+            )
+            .expect("provider output should fan out");
+        for record in records {
+            output.extend(record.bytes);
+        }
+
+        let output_text = String::from_utf8_lossy(&output).into_owned();
+        if done(&output_text, app) {
+            return output_text;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for provider output after {timeout_ms}ms: {output_text}"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+struct MockOpenCodeServer {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    state: Arc<Mutex<MockOpenCodeState>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct MockOpenCodeState {
+    response_delay: Duration,
+    omit_session_status: bool,
+    status: String,
+    session_id: String,
+    messages: Vec<Value>,
+    next_message_number: u64,
+}
+
+impl MockOpenCodeServer {
+    fn start(response_delay: Duration) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("mock server should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("mock server should become non-blocking");
+        let port = listener
+            .local_addr()
+            .expect("mock server should have local addr")
+            .port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let state = Arc::new(Mutex::new(MockOpenCodeState {
+            response_delay,
+            omit_session_status: false,
+            status: "idle".to_string(),
+            session_id: "mock-session-1".to_string(),
+            messages: Vec::new(),
+            next_message_number: 0,
+        }));
+        let state_for_thread = state.clone();
+        let thread = thread::spawn(move || {
+            while !stop_flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        handle_mock_opencode_request(&mut stream, &state_for_thread);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            port,
+            stop,
+            state,
+            thread: Some(thread),
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn set_omit_session_status(&self, omit_session_status: bool) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .omit_session_status = omit_session_status;
+    }
+
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn handle_mock_opencode_request(
+    stream: &mut std::net::TcpStream,
+    state: &Arc<Mutex<MockOpenCodeState>>,
+) {
+    let request = read_http_request(stream);
+    let Some(request) = request else {
+        return;
+    };
+
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/health") => json!({ "healthy": true, "version": "test" }),
+        ("POST", "/session") => {
+            let session_id = state
+                .lock()
+                .expect("mock state should not be poisoned")
+                .session_id
+                .clone();
+            json!({ "id": session_id })
+        }
+        ("GET", "/session/status") => {
+            let state = state.lock().expect("mock state should not be poisoned");
+            if state.omit_session_status {
+                json!({})
+            } else {
+                json!({
+                    state.session_id.clone(): {
+                        "type": state.status,
+                    }
+                })
+            }
+        }
+        ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
+            let state = state.lock().expect("mock state should not be poisoned");
+            Value::Array(state.messages.clone())
+        }
+        ("POST", path) if path.starts_with("/session/") && path.ends_with("/message") => {
+            let payload: Value =
+                serde_json::from_slice(&request.body).expect("prompt body should parse");
+            let prompt = payload["parts"][0]["text"]
+                .as_str()
+                .expect("prompt should include a text part")
+                .trim_end_matches('\n')
+                .to_string();
+            schedule_mock_response(state.clone(), prompt);
+            json!({ "accepted": true })
+        }
+        ("POST", path) if path.starts_with("/session/") && path.ends_with("/abort") => {
+            let mut state = state.lock().expect("mock state should not be poisoned");
+            state.status = "idle".to_string();
+            json!(true)
+        }
+        _ => {
+            write_http_response(stream, 404, json!({ "error": "not found" }));
+            return;
+        }
+    };
+
+    write_http_response(stream, 200, response);
+}
+
+fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) {
+    {
+        let mut state = state.lock().expect("mock state should not be poisoned");
+        state.status = "busy".to_string();
+    }
+
+    thread::spawn(move || {
+        let response_delay = state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .response_delay;
+        thread::sleep(response_delay);
+
+        let mut state = state.lock().expect("mock state should not be poisoned");
+        state.next_message_number += 1;
+        let message_id = format!("assistant-message-{}", state.next_message_number);
+        let part_id = format!("assistant-part-{}", state.next_message_number);
+        state.messages.push(json!({
+            "info": {
+                "id": message_id,
+                "role": "assistant",
+                "time": {
+                    "completed": 1,
+                }
+            },
+            "parts": [
+                {
+                    "id": part_id,
+                    "type": "text",
+                    "text": format!("fixture response: {prompt}\n"),
+                }
+            ]
+        }));
+        state.status = "idle".to_string();
+    });
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> Option<HttpRequest> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("mock request stream should accept timeout");
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let header_end;
+    loop {
+        let size = stream.read(&mut chunk).ok()?;
+        if size == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&chunk[..size]);
+        if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            header_end = index + 4;
+            break;
+        }
+    }
+
+    let header_text = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let mut lines = header_text.lines();
+    let request_line = lines.next()?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next()?.to_string();
+    let path = request_parts.next()?.to_string();
+    let content_length = lines
+        .find_map(|line| {
+            let mut parts = line.splitn(2, ':');
+            let name = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            (name.eq_ignore_ascii_case("content-length")).then_some(value)
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let mut body = buffer[header_end..].to_vec();
+    while body.len() < content_length {
+        let size = stream.read(&mut chunk).ok()?;
+        if size == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..size]);
+    }
+
+    Some(HttpRequest { method, path, body })
+}
+
+fn write_http_response(stream: &mut std::net::TcpStream, status: u16, body: Value) {
+    let body = serde_json::to_vec(&body).expect("mock response should encode");
+    let status_text = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("mock response header should write");
+    stream
+        .write_all(&body)
+        .expect("mock response body should write");
+    let _ = stream.flush();
+}
+
 fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "arroba-opencode-fixture-{}-{}.sh",
@@ -509,9 +1128,7 @@ fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
 }
 
 fn fixture_script_contents(delay_seconds: u64) -> String {
-    format!(
-        "#!/bin/sh\nprintf 'fixture opencode ready\\n'\nif IFS= read -r line; then\n  sleep {delay_seconds}\n  printf 'fixture response: %s\\n' \"$line\"\nfi\n"
-    )
+    format!("#!/bin/sh\nsleep {delay_seconds}\n")
 }
 
 fn output_timeout_ms() -> u64 {

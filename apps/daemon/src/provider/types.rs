@@ -65,6 +65,7 @@ pub struct ProviderLaunchResult {
     pub pty_program: String,
     pub pty_args: Vec<String>,
     pub working_directory: Option<PathBuf>,
+    pub structured_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +82,7 @@ pub struct RuntimeProviderRun {
     pty_program: String,
     pty_args: Vec<String>,
     working_directory: Option<PathBuf>,
+    structured_endpoint: Option<String>,
 }
 
 impl RuntimeProviderRun {
@@ -102,6 +104,7 @@ impl RuntimeProviderRun {
             pty_program: launch_result.pty_program,
             pty_args: launch_result.pty_args,
             working_directory: launch_result.working_directory,
+            structured_endpoint: launch_result.structured_endpoint,
         }
     }
 
@@ -140,6 +143,9 @@ impl RuntimeProviderRun {
     }
     pub fn working_directory(&self) -> Option<&PathBuf> {
         self.working_directory.as_ref()
+    }
+    pub fn structured_endpoint(&self) -> Option<&str> {
+        self.structured_endpoint.as_deref()
     }
 
     pub fn mark_running(&mut self) {

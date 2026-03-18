@@ -183,10 +183,11 @@ Current M2 runtime note:
 - the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
 - the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
 
-OpenCode-specific next-step note:
+OpenCode current runtime note:
 
-- the current M2 baseline still uses PTY-backed OpenCode prompt/output flow
-- the next OpenCode adapter revision should switch to provider-native session and event APIs while preserving the same daemon-owned local request/response surface for Arroba clients
+- the daemon already routes OpenCode prompt submit and output polling through the provider-native local HTTP session APIs
+- PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
+- SSE/event-stream subscription remains the next OpenCode adapter revision, while preserving the same daemon-owned local request/response surface for Arroba clients
 
 ## 4.2 Planned Command-Dispatch Surface
 

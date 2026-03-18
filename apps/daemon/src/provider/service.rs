@@ -213,6 +213,39 @@ impl ProviderProcessService {
         Ok(terminated_runs)
     }
 
+    pub fn mark_run_ended(
+        &mut self,
+        sessions: &mut SessionService,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let active_run_id = sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
+        let run_snapshot = self.get_run(run_id)?;
+
+        if run_snapshot.session_id() != session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: session_id.to_string(),
+                provider_run_id: run_id.to_string(),
+            });
+        }
+
+        if run_snapshot.state() == ProviderRunState::Ended {
+            return Ok(run_snapshot);
+        }
+
+        let run = self.get_run_mut(run_id)?;
+        run.mark_ended();
+
+        if active_run_id.as_deref() == Some(run_id) {
+            sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(run.clone())
+    }
+
     fn get_run_mut(&mut self, run_id: &str) -> Result<&mut RuntimeProviderRun, DaemonError> {
         self.runs
             .get_mut(run_id)

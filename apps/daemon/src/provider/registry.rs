@@ -1,5 +1,5 @@
 use super::{
-    resolve_opencode_executable, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    plan_opencode_launch, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -66,6 +66,7 @@ impl ProviderAdapter for DevStubAdapter {
             pty_program: "/bin/sh".to_string(),
             pty_args: vec!["-lc".to_string(), "cat".to_string()],
             working_directory: request.working_directory.clone(),
+            structured_endpoint: None,
         })
     }
 
@@ -91,25 +92,11 @@ impl ProviderAdapter for OpenCodeAdapter {
     }
 
     fn launch(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
-        let executable = resolve_opencode_executable()?;
-        let mut pty_args = Vec::new();
-
-        if !request.model.trim().is_empty() && request.model != "default" {
-            pty_args.push("--model".to_string());
-            pty_args.push(request.model.clone());
-        }
-
-        if let Some(working_directory) = request.working_directory.as_ref() {
-            pty_args.push(working_directory.display().to_string());
-        }
-
-        Ok(ProviderLaunchResult {
-            process_label: format!("opencode:{}:{}", request.provider, request.model),
-            pty_target: Some(format!("opencode-pty:{}", request.session_id)),
-            pty_program: executable.display().to_string(),
-            pty_args,
-            working_directory: request.working_directory.clone(),
-        })
+        let mut launch = plan_opencode_launch()?;
+        launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
+        launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
+        launch.working_directory = request.working_directory.clone();
+        Ok(launch)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -147,6 +134,7 @@ impl ProviderAdapter for FailingPtyAdapter {
             pty_program: "/definitely/not/a/real/provider".to_string(),
             pty_args: Vec::new(),
             working_directory: request.working_directory.clone(),
+            structured_endpoint: None,
         })
     }
 
@@ -170,8 +158,9 @@ mod tests {
             "arroba-opencode-adapter-test-{}",
             std::process::id()
         ));
-        fs::write(&executable, "#!/bin/sh\ncat\n").expect("fixture executable should exist");
+        fs::write(&executable, "#!/bin/sh\nsleep 60\n").expect("fixture executable should exist");
         std::env::set_var("ARROBA_OPENCODE_BIN", &executable);
+        std::env::set_var("ARROBA_OPENCODE_PORT", "43112");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -188,6 +177,7 @@ mod tests {
             .expect("opencode launch should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
         let _ = fs::remove_file(&executable);
 
         assert_eq!(launch_result.pty_program, executable.display().to_string());
@@ -195,10 +185,16 @@ mod tests {
         assert_eq!(
             launch_result.pty_args,
             vec![
-                "--model".to_string(),
-                "anthropic/claude-sonnet-4".to_string(),
-                "/tmp".to_string()
+                "serve".to_string(),
+                "--hostname".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                "43112".to_string()
             ]
+        );
+        assert_eq!(
+            launch_result.structured_endpoint.as_deref(),
+            Some("http://127.0.0.1:43112")
         );
     }
 }

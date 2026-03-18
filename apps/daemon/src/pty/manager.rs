@@ -28,11 +28,18 @@ pub struct PtyOutputChunk {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PtyProcessState {
+    Running,
+    Exited,
+}
+
 struct PtyProcess {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
+    exited: bool,
 }
 
 impl PtyManager {
@@ -127,6 +134,7 @@ impl PtyManager {
                 master: pair.master,
                 writer,
                 output_rx,
+                exited: false,
             },
         );
 
@@ -200,6 +208,36 @@ impl PtyManager {
         Ok(chunks)
     }
 
+    pub fn poll_process_state(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<PtyProcessState, DaemonError> {
+        let process = self.processes.get_mut(provider_run_id).ok_or_else(|| {
+            DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            }
+        })?;
+
+        if process.exited {
+            return Ok(PtyProcessState::Exited);
+        }
+
+        let status = process
+            .child
+            .try_wait()
+            .map_err(|error| DaemonError::PtyCleanup {
+                provider_run_id: provider_run_id.to_string(),
+                message: error.to_string(),
+            })?;
+
+        if status.is_some() {
+            process.exited = true;
+            Ok(PtyProcessState::Exited)
+        } else {
+            Ok(PtyProcessState::Running)
+        }
+    }
+
     pub fn has_process(&self, provider_run_id: &str) -> bool {
         self.processes.contains_key(provider_run_id)
     }
@@ -270,6 +308,7 @@ mod tests {
                 pty_program: "/bin/sh".to_string(),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
                 working_directory: None,
+                structured_endpoint: None,
             },
         )
     }
