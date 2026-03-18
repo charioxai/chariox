@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -20,16 +24,55 @@ pub struct OpenCodeSessionSnapshot {
     pub messages: Vec<OpenCodeMessage>,
 }
 
+#[derive(Debug)]
+pub struct OpenCodeEventSubscription {
+    pub receiver: Receiver<OpenCodeEvent>,
+    stop: Arc<AtomicBool>,
+}
+
+impl OpenCodeEventSubscription {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenCodeEvent {
+    MessageUpdated {
+        info: OpenCodeMessageInfo,
+    },
+    MessagePartDelta {
+        session_id: String,
+        message_id: String,
+        part_id: String,
+        field: String,
+        delta: String,
+    },
+    MessagePartUpdated {
+        part: OpenCodePart,
+    },
+    SessionError {
+        session_id: String,
+        message: String,
+    },
+    SessionStatus {
+        session_id: String,
+        kind: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct OpenCodeMessage {
     pub info: OpenCodeMessageInfo,
     #[serde(default)]
-    pub parts: Vec<OpenCodeMessagePart>,
+    pub parts: Vec<OpenCodePart>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct OpenCodeMessageInfo {
     pub id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
     pub role: String,
     #[serde(default)]
     pub time: OpenCodeMessageTime,
@@ -42,12 +85,24 @@ pub struct OpenCodeMessageTime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct OpenCodeMessagePart {
+pub struct OpenCodePart {
     pub id: String,
+    #[serde(rename = "sessionID", default)]
+    pub session_id: String,
+    #[serde(rename = "messageID", default)]
+    pub message_id: String,
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub time: Option<OpenCodePartTime>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OpenCodePartTime {
+    #[serde(default)]
+    pub end: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +119,51 @@ struct OpenCodeSessionCreated {
 struct OpenCodeSessionStatus {
     #[serde(rename = "type")]
     kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawOpenCodeEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    properties: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeMessageUpdatedEvent {
+    info: OpenCodeMessageInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeMessagePartDeltaEvent {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(rename = "messageID")]
+    message_id: String,
+    #[serde(rename = "partID")]
+    part_id: String,
+    field: String,
+    delta: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeMessagePartUpdatedEvent {
+    part: OpenCodePart,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeSessionErrorEvent {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(default)]
+    error: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeSessionStatusEvent {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    status: OpenCodeSessionStatus,
 }
 
 impl OpenCodeClient {
@@ -156,6 +256,89 @@ impl OpenCodeClient {
         Ok(OpenCodeSessionSnapshot { status, messages })
     }
 
+    pub fn subscribe_events(&self) -> Result<OpenCodeEventSubscription, DaemonError> {
+        let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
+            self.protocol_error(
+                "base_url_parse",
+                format!("unsupported OpenCode base URL `{}`", self.base_url),
+            )
+        })?;
+        let mut stream = TcpStream::connect(address)
+            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
+
+        let request = format!(
+            "GET /event HTTP/1.1\r\nHost: {address}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .and_then(|_| stream.flush())
+            .map_err(|error| self.protocol_error("event_subscribe", error.to_string()))?;
+        let status_code = read_http_headers(&mut stream)
+            .map_err(|error| self.protocol_error("event_subscribe", error))?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                "event_subscribe",
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let provider_run_id = self.provider_run_id.clone();
+
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut data_lines = Vec::new();
+
+            loop {
+                if stop_for_thread.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let line = line.trim_end_matches(['\r', '\n']);
+                        if line.is_empty() {
+                            if data_lines.is_empty() {
+                                continue;
+                            }
+
+                            let payload = data_lines.join("\n");
+                            data_lines.clear();
+                            if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
+                                if tx.send(event).is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if let Some(data) = line.strip_prefix("data:") {
+                            data_lines.push(data.trim_start().to_string());
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(OpenCodeEventSubscription { receiver: rx, stop })
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -240,12 +423,100 @@ impl OpenCodeClient {
 fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
         ("GET", "/health") => "health",
+        ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
         _ if method == "GET" && path.ends_with("/message") => "session_messages",
         _ => "opencode_http",
+    }
+}
+
+fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<OpenCodeEvent> {
+    let raw: RawOpenCodeEvent = serde_json::from_str(payload).ok()?;
+    match raw.kind.as_str() {
+        "server.connected" | "server.heartbeat" => None,
+        "message.updated" => {
+            let properties: OpenCodeMessageUpdatedEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            Some(OpenCodeEvent::MessageUpdated {
+                info: properties.info,
+            })
+        }
+        "message.part.delta" => {
+            let properties: OpenCodeMessagePartDeltaEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            Some(OpenCodeEvent::MessagePartDelta {
+                session_id: properties.session_id,
+                message_id: properties.message_id,
+                part_id: properties.part_id,
+                field: properties.field,
+                delta: properties.delta,
+            })
+        }
+        "message.part.updated" => {
+            let properties: OpenCodeMessagePartUpdatedEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            Some(OpenCodeEvent::MessagePartUpdated {
+                part: properties.part,
+            })
+        }
+        "session.status" => {
+            let properties: OpenCodeSessionStatusEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            Some(OpenCodeEvent::SessionStatus {
+                session_id: properties.session_id,
+                kind: properties.status.kind,
+            })
+        }
+        "session.error" => {
+            let properties: OpenCodeSessionErrorEvent =
+                serde_json::from_value(raw.properties).ok()?;
+            Some(OpenCodeEvent::SessionError {
+                session_id: properties.session_id,
+                message: session_error_message(properties.error, provider_run_id),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn session_error_message(error: serde_json::Value, provider_run_id: &str) -> String {
+    error
+        .get("data")
+        .and_then(|value| value.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| error.get("message").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!("OpenCode reported an unknown session error for `{provider_run_id}`")
+        })
+}
+
+fn read_http_headers(stream: &mut TcpStream) -> Result<u16, String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if size == 0 {
+            return Err("connection closed before response header".to_string());
+        }
+        buffer.extend_from_slice(&chunk[..size]);
+        if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            let header_end = index + 4;
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+            let status_code = header_text
+                .lines()
+                .next()
+                .ok_or_else(|| "missing HTTP status line".to_string())?
+                .split_whitespace()
+                .nth(1)
+                .ok_or_else(|| "missing HTTP status code".to_string())?
+                .parse::<u16>()
+                .map_err(|error| error.to_string())?;
+            return Ok(status_code);
+        }
     }
 }
 

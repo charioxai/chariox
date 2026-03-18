@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
+use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::session::SessionService;
 
 use super::{
-    LaunchProviderRequest, OpenCodeClient, OpenCodeMessage, OpenCodeSessionSnapshot,
+    LaunchProviderRequest, OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription,
     ProviderRegistry, ProviderRunState, RuntimeProviderRun,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProviderProcessService {
     registry: ProviderRegistry,
     opencode_runs: BTreeMap<String, OpenCodeRunState>,
@@ -19,15 +20,23 @@ pub struct ProviderProcessService {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
-    pub status: String,
     pub text_deltas: Vec<Vec<u8>>,
+    pub prompt_completed: bool,
+    pub notices: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+struct OpenCodeEventDrainResult {
+    text_deltas: Vec<Vec<u8>>,
+    prompt_completed: bool,
+    notices: Vec<String>,
+}
+
+#[derive(Debug)]
 struct OpenCodeRunState {
     base_url: String,
     session_id: String,
     emitted_text_offsets: BTreeMap<String, usize>,
+    event_subscription: OpenCodeEventSubscription,
 }
 
 impl ProviderProcessService {
@@ -251,19 +260,23 @@ impl ProviderProcessService {
         let client = OpenCodeClient::new(run.id(), &base_url)?;
         client.wait_until_healthy(Duration::from_secs(5))?;
         let session_id = client.create_session()?;
+        let event_subscription = client.subscribe_events()?;
         self.opencode_runs.insert(
             run.id().to_string(),
             OpenCodeRunState {
                 base_url,
                 session_id,
                 emitted_text_offsets: BTreeMap::new(),
+                event_subscription,
             },
         );
         Ok(())
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
-        self.opencode_runs.remove(provider_run_id);
+        if let Some(state) = self.opencode_runs.remove(provider_run_id) {
+            state.event_subscription.stop();
+        }
     }
 
     pub fn abort_structured_runtime(&self, provider_run_id: &str) -> Result<bool, DaemonError> {
@@ -315,12 +328,12 @@ impl ProviderProcessService {
             return Ok(None);
         }
 
-        let snapshot = self.opencode_snapshot(provider_run_id)?;
-        let text_deltas = self.render_opencode_text_deltas(provider_run_id, &snapshot.messages)?;
+        let drain = self.drain_opencode_events(provider_run_id)?;
 
         Ok(Some(OpenCodePollResult {
-            status: snapshot.status,
-            text_deltas,
+            text_deltas: drain.text_deltas,
+            prompt_completed: drain.prompt_completed,
+            notices: drain.notices,
         }))
     }
 
@@ -384,26 +397,10 @@ impl ProviderProcessService {
         format!("provider-run-{}", self.next_run_number)
     }
 
-    fn opencode_snapshot(
-        &self,
-        provider_run_id: &str,
-    ) -> Result<OpenCodeSessionSnapshot, DaemonError> {
-        let state = self.opencode_runs.get(provider_run_id).ok_or_else(|| {
-            DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "opencode_session_missing",
-                message: "no OpenCode session is bound to this provider run".to_string(),
-            }
-        })?;
-        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-        client.snapshot(&state.session_id)
-    }
-
-    fn render_opencode_text_deltas(
+    fn drain_opencode_events(
         &mut self,
         provider_run_id: &str,
-        messages: &[OpenCodeMessage],
-    ) -> Result<Vec<Vec<u8>>, DaemonError> {
+    ) -> Result<OpenCodeEventDrainResult, DaemonError> {
         let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
             DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
@@ -413,28 +410,76 @@ impl ProviderProcessService {
         })?;
 
         let mut deltas = Vec::new();
-        for message in messages
-            .iter()
-            .filter(|message| message.info.role == "assistant")
-        {
-            for part in message.parts.iter().filter(|part| part.kind == "text") {
-                if part.text.is_empty() {
-                    continue;
+        let mut prompt_completed = false;
+        let mut notices = Vec::new();
+
+        loop {
+            match state.event_subscription.receiver.try_recv() {
+                Ok(OpenCodeEvent::MessageUpdated { info }) => {
+                    if info.session_id == state.session_id
+                        && info.role == "assistant"
+                        && info.time.completed.is_some()
+                    {
+                        prompt_completed = true;
+                    }
                 }
-                let emitted = state
-                    .emitted_text_offsets
-                    .entry(part.id.clone())
-                    .or_insert(0);
-                let start = (*emitted).min(part.text.len());
-                if start == part.text.len() {
-                    continue;
+                Ok(OpenCodeEvent::MessagePartDelta {
+                    session_id,
+                    part_id,
+                    field,
+                    delta,
+                    ..
+                }) => {
+                    if session_id != state.session_id || field != "text" || delta.is_empty() {
+                        continue;
+                    }
+                    let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
+                    *emitted += delta.len();
+                    deltas.push(delta.into_bytes());
                 }
-                deltas.push(part.text.as_bytes()[start..].to_vec());
-                *emitted = part.text.len();
+                Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
+                    if part.session_id != state.session_id
+                        || part.kind != "text"
+                        || part.text.is_empty()
+                    {
+                        continue;
+                    }
+                    let emitted = state
+                        .emitted_text_offsets
+                        .entry(part.id.clone())
+                        .or_insert(0);
+                    let start = (*emitted).min(part.text.len());
+                    if start == part.text.len() {
+                        continue;
+                    }
+                    deltas.push(part.text.as_bytes()[start..].to_vec());
+                    *emitted = part.text.len();
+                }
+                Ok(OpenCodeEvent::SessionError {
+                    session_id,
+                    message,
+                }) => {
+                    if session_id == state.session_id {
+                        notices.push(message);
+                    }
+                }
+                Ok(OpenCodeEvent::SessionStatus { .. }) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    return Err(DaemonError::ProviderProtocol {
+                        provider_run_id: provider_run_id.to_string(),
+                        operation: "event_stream",
+                        message: "OpenCode event stream disconnected".to_string(),
+                    });
+                }
             }
         }
 
-        Ok(deltas)
+        Ok(OpenCodeEventDrainResult {
+            text_deltas: deltas,
+            prompt_completed,
+            notices,
+        })
     }
 }
 

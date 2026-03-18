@@ -695,7 +695,15 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        let should_complete_prompt = self.is_structured_prompt_idle(session_id, &poll_result);
+        for notice in &poll_result.notices {
+            self.terminal.record_notice(
+                session_id,
+                Some(provider_run_id),
+                recipient_attachment_ids.clone(),
+                notice.clone(),
+            );
+        }
+        let prompt_completed = poll_result.prompt_completed;
         let records = self.render_opencode_output(
             session_id,
             provider_run_id,
@@ -706,7 +714,13 @@ impl DaemonApp {
         if exited {
             return Ok(records);
         }
-        if should_complete_prompt {
+        if prompt_completed
+            && self
+                .sessions
+                .get_session(session_id)?
+                .active_prompt()
+                .is_some()
+        {
             let _ = self.complete_active_prompt(session_id)?;
         }
         Ok(records)
@@ -735,19 +749,6 @@ impl DaemonApp {
                 )
             })
             .collect()
-    }
-
-    fn is_structured_prompt_idle(
-        &self,
-        session_id: &str,
-        poll_result: &OpenCodePollResult,
-    ) -> bool {
-        poll_result.status == "idle"
-            && self
-                .sessions
-                .get_session(session_id)
-                .map(|session| session.active_prompt().is_some())
-                .unwrap_or(false)
     }
 
     fn ensure_attachment_can_run_capability(

@@ -345,8 +345,7 @@ Target runtime flow:
 - daemon waits for the local OpenCode server health endpoint
 - daemon creates or binds an OpenCode session for the Arroba provider run
 - daemon submits prompts through the OpenCode session API
-- daemon currently polls the OpenCode session/message APIs for structured output
-- daemon will later subscribe to the OpenCode SSE event stream
+- daemon subscribes to the OpenCode SSE event stream
 - daemon maps OpenCode session/message events into Arroba prompt lifecycle, notices, and client-facing output
 
 Target signal mapping:
@@ -354,10 +353,10 @@ Target signal mapping:
 - prompt submit: OpenCode session prompt API
 - `/agent ...`: OpenCode command list plus session command API
 - turn abort: OpenCode session abort API
-- turn busy/idle: OpenCode session status responses today, session status events once SSE is in place
-- incremental text: OpenCode message snapshots today, message-part delta events once SSE is in place
+- turn busy/idle: OpenCode session status events
+- incremental text: OpenCode message-part delta and part-update events
 - assistant completion: OpenCode assistant message updates with completion timestamps
-- provider errors: OpenCode protocol errors today, session error events once SSE is in place
+- provider errors: OpenCode session error events plus adapter protocol errors when the event/session transport itself fails
 
 Implication:
 
@@ -529,7 +528,7 @@ Current M2 runtime note:
 ### 10.6.1 OpenCode Integration Strategy
 
 - M2 baseline: PTY-launched OpenCode wrapper path
-- next OpenCode step: daemon-launched `opencode serve` plus local HTTP/SSE adapter
+- current M3 direction: daemon-launched `opencode serve` plus local HTTP/SSE adapter
 - adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
 
 ### 10.7 Governance

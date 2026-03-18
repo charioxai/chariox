@@ -185,9 +185,10 @@ Current M2 runtime note:
 
 OpenCode current runtime note:
 
-- the daemon already routes OpenCode prompt submit and output polling through the provider-native local HTTP session APIs
+- the daemon already routes OpenCode prompt submit through the provider-native local HTTP session APIs
+- the daemon already consumes OpenCode output and completion through the provider event stream
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
-- SSE/event-stream subscription remains the next OpenCode adapter revision, while preserving the same daemon-owned local request/response surface for Arroba clients
+- the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 
 ## 4.2 Planned Command-Dispatch Surface
 

@@ -42,7 +42,7 @@ Exit criteria:
 - [x] The daemon provider model now has a structured-endpoint field for provider runs.
 - [x] The OpenCode launch path now plans `opencode serve` with a daemon-known local endpoint.
 - [x] A first OpenCode HTTP client exists in the daemon for health check, session creation, prompt submission, abort, and session polling.
-- [x] The provider layer now owns OpenCode runtime state for provider endpoint/session binding and structured text polling.
+- [x] The provider layer now owns OpenCode runtime state for provider endpoint/session binding and structured event-driven output.
 - [x] Runtime tests now have a mock OpenCode HTTP server fixture path for the structured adapter migration.
 - [x] Unexpected provider exit now removes leaked PTY runtime state instead of only marking the run ended.
 - [x] Missing OpenCode session status now surfaces as a provider error instead of being treated as an implicit `idle` turn completion.
@@ -62,11 +62,11 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 ## 4.2 OpenCode Prompt and Output Path
 
 - [x] Route OpenCode prompt submission through provider session APIs instead of PTY writes.
-- [x] Start deriving OpenCode terminal output from structured session/message polling.
+- [x] Start deriving OpenCode terminal output from structured provider-native APIs.
 - [x] Stop treating missing OpenCode session state as an implicit idle turn.
-- [ ] Replace polling-based message snapshots with OpenCode SSE event ingestion.
-- [ ] Map OpenCode `session.status` and assistant completion timestamps into the canonical Arroba prompt lifecycle.
-- [ ] Remove OpenCode dependence on idle-timeout prompt completion heuristics.
+- [x] Replace polling-based message snapshots with OpenCode SSE event ingestion.
+- [x] Map OpenCode `session.status` and assistant completion timestamps into the canonical Arroba prompt lifecycle.
+- [x] Remove OpenCode dependence on idle-timeout prompt completion heuristics.
 - [ ] Surface OpenCode `session.error` and tool lifecycle events as daemon notices or richer client-facing output.
 - [ ] Add explicit Arroba stop/cancel behavior mapped to OpenCode `session.abort`.
 
@@ -98,7 +98,7 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 - [ ] Add integration tests for health-check, session-create, prompt-submit, and structured output polling.
 - [ ] Add integration tests for OpenCode abort, server death, and failed initialization cleanup.
 Current state: session-teardown abort coverage, server-death cleanup, and missing-session regressions are covered; failed-initialization cleanup still needs direct tests.
-- [ ] Add integration coverage for SSE-based event ingestion once implemented.
+- [x] Add integration coverage for SSE-based event ingestion once implemented.
 - [ ] Keep existing daemon tests passing while the OpenCode adapter migrates away from PTY-driven prompt delivery.
 
 ## 6. Suggested execution order

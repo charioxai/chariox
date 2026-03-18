@@ -8,6 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -623,7 +624,7 @@ fn opencode_launch_requires_explicit_port_override() {
 }
 
 #[test]
-fn missing_opencode_session_status_surfaces_error_without_completing_prompt() {
+fn opencode_event_stream_does_not_depend_on_session_status_polling() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
         .expect("opencode env lock should not be poisoned");
@@ -663,36 +664,34 @@ fn missing_opencode_session_status_surfaces_error_without_completing_prompt() {
         .submit_prompt(
             session.id(),
             attachment.id(),
-            "prompt with missing session status\n",
+            "prompt without session status polling\n",
         )
         .expect("prompt should start");
 
-    let error = app
-        .pump_provider_output(
-            session.id(),
-            run.id(),
-            app.attachments().list_session_attachment_ids(session.id()),
-        )
-        .expect_err("missing session status should surface as an error");
-
-    match error {
-        arroba_daemon::DaemonError::ProviderProtocol {
-            provider_run_id,
-            operation,
-            ..
-        } => {
-            assert_eq!(provider_run_id, run.id());
-            assert_eq!(operation, "session_status");
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: prompt without session status polling")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
 
     let session_state = app
         .sessions()
         .get_session(session.id())
         .expect("session should still exist");
+    assert!(output.contains("fixture response: prompt without session status polling"));
     assert_eq!(session_state.active_provider_run_id(), Some(run.id()));
-    assert!(session_state.active_prompt().is_some());
+    assert!(session_state.active_prompt().is_none());
     assert_eq!(
         app.providers()
             .get_run(run.id())
@@ -927,9 +926,9 @@ struct MockOpenCodeServer {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-#[derive(Debug)]
 struct MockOpenCodeState {
     abort_count: u64,
+    event_subscribers: Vec<mpsc::Sender<String>>,
     response_delay: Duration,
     omit_session_status: bool,
     status: String,
@@ -952,6 +951,7 @@ impl MockOpenCodeServer {
         let stop_flag = stop.clone();
         let state = Arc::new(Mutex::new(MockOpenCodeState {
             abort_count: 0,
+            event_subscribers: Vec::new(),
             response_delay,
             omit_session_status: false,
             status: "idle".to_string(),
@@ -960,11 +960,20 @@ impl MockOpenCodeServer {
             next_message_number: 0,
         }));
         let state_for_thread = state.clone();
+        let stop_for_thread_loop = stop_flag.clone();
         let thread = thread::spawn(move || {
             while !stop_flag.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        handle_mock_opencode_request(&mut stream, &state_for_thread);
+                    Ok((stream, _)) => {
+                        let state_for_connection = state_for_thread.clone();
+                        let stop_for_connection = stop_for_thread_loop.clone();
+                        thread::spawn(move || {
+                            handle_mock_opencode_request(
+                                stream,
+                                &state_for_connection,
+                                &stop_for_connection,
+                            );
+                        });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
@@ -1010,13 +1019,19 @@ impl MockOpenCodeServer {
 }
 
 fn handle_mock_opencode_request(
-    stream: &mut std::net::TcpStream,
+    mut stream: std::net::TcpStream,
     state: &Arc<Mutex<MockOpenCodeState>>,
+    stop: &Arc<AtomicBool>,
 ) {
-    let request = read_http_request(stream);
+    let request = read_http_request(&mut stream);
     let Some(request) = request else {
         return;
     };
+
+    if request.method == "GET" && request.path == "/event" {
+        handle_mock_opencode_event_stream(stream, state, stop);
+        return;
+    }
 
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json!({ "healthy": true, "version": "test" }),
@@ -1059,21 +1074,105 @@ fn handle_mock_opencode_request(
             let mut state = state.lock().expect("mock state should not be poisoned");
             state.abort_count += 1;
             state.status = "idle".to_string();
+            let session_id = state.session_id.clone();
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "session.status",
+                    "properties": {
+                        "sessionID": session_id,
+                        "status": {
+                            "type": "idle"
+                        }
+                    }
+                }),
+            );
             json!(true)
         }
         _ => {
-            write_http_response(stream, 404, json!({ "error": "not found" }));
+            write_http_response(&mut stream, 404, json!({ "error": "not found" }));
             return;
         }
     };
 
-    write_http_response(stream, 200, response);
+    write_http_response(&mut stream, 200, response);
+}
+
+fn handle_mock_opencode_event_stream(
+    mut stream: std::net::TcpStream,
+    state: &Arc<Mutex<MockOpenCodeState>>,
+    stop: &Arc<AtomicBool>,
+) {
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut state = state.lock().expect("mock state should not be poisoned");
+        state.event_subscribers.push(tx);
+    }
+
+    write_sse_headers(&mut stream);
+    if write_sse_event(
+        &mut stream,
+        &json!({
+            "type": "server.connected",
+            "properties": {}
+        })
+        .to_string(),
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    while !stop.load(Ordering::SeqCst) {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(payload) => {
+                if write_sse_event(&mut stream, &payload).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn publish_mock_event(state: &mut MockOpenCodeState, payload: Value) {
+    let payload = payload.to_string();
+    state
+        .event_subscribers
+        .retain(|subscriber| subscriber.send(payload.clone()).is_ok());
+}
+
+fn write_sse_headers(stream: &mut std::net::TcpStream) {
+    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+    stream
+        .write_all(response.as_bytes())
+        .expect("mock SSE headers should write");
+    let _ = stream.flush();
+}
+
+fn write_sse_event(stream: &mut std::net::TcpStream, payload: &str) -> std::io::Result<()> {
+    stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
+    stream.flush()
 }
 
 fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) {
     {
         let mut state = state.lock().expect("mock state should not be poisoned");
         state.status = "busy".to_string();
+        let session_id = state.session_id.clone();
+        publish_mock_event(
+            &mut state,
+            json!({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": session_id,
+                    "status": {
+                        "type": "busy"
+                    }
+                }
+            }),
+        );
     }
 
     thread::spawn(move || {
@@ -1087,9 +1186,12 @@ fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) 
         state.next_message_number += 1;
         let message_id = format!("assistant-message-{}", state.next_message_number);
         let part_id = format!("assistant-part-{}", state.next_message_number);
+        let session_id = state.session_id.clone();
+        let response_text = format!("fixture response: {prompt}\n");
         state.messages.push(json!({
             "info": {
-                "id": message_id,
+                "id": message_id.clone(),
+                "sessionID": session_id.clone(),
                 "role": "assistant",
                 "time": {
                     "completed": 1,
@@ -1097,13 +1199,59 @@ fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) 
             },
             "parts": [
                 {
-                    "id": part_id,
+                    "id": part_id.clone(),
+                    "sessionID": session_id.clone(),
+                    "messageID": message_id.clone(),
                     "type": "text",
-                    "text": format!("fixture response: {prompt}\n"),
+                    "text": response_text.clone(),
+                    "time": {
+                        "end": 1
+                    }
                 }
             ]
         }));
         state.status = "idle".to_string();
+        publish_mock_event(
+            &mut state,
+            json!({
+                "type": "message.part.delta",
+                "properties": {
+                    "sessionID": session_id.clone(),
+                    "messageID": message_id.clone(),
+                    "partID": part_id.clone(),
+                    "field": "text",
+                    "delta": response_text.clone(),
+                }
+            }),
+        );
+        publish_mock_event(
+            &mut state,
+            json!({
+                "type": "message.updated",
+                "properties": {
+                    "info": {
+                        "id": message_id.clone(),
+                        "sessionID": session_id.clone(),
+                        "role": "assistant",
+                        "time": {
+                            "completed": 1
+                        }
+                    }
+                }
+            }),
+        );
+        publish_mock_event(
+            &mut state,
+            json!({
+                "type": "session.status",
+                "properties": {
+                    "sessionID": session_id,
+                    "status": {
+                        "type": "idle"
+                    }
+                }
+            }),
+        );
     });
 }
 
