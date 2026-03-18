@@ -157,6 +157,7 @@ Minimum request set:
 - `session.notice.poll`
 - `prompt.submit`
 - `prompt.complete`
+- `prompt.cancel`
 - `session.config.update`
 - `terminal.output.poll`
 - `terminal.resize`
@@ -171,9 +172,15 @@ Minimum response/result shapes:
 - notice polling returns structured daemon notices scoped to the requesting attachment within the session
 - prompt submission returns structured prompt status (`started` or `queued`) plus canonical session state
 - prompt completion returns structured completion details and the next started prompt when relevant
+- prompt cancellation returns the updated prompt state; for provider-backed turns the daemon advances queued work only after the provider confirms the stop
 - config update returns canonical session config state, version, and updated session state
 - terminal output polling returns structured terminal-output fan-out records
 - end-session returns structured final session metadata
+
+Local cancellation policy:
+
+- any currently attached client in a session may request cancellation of that session's active prompt
+- cancellation is session-scoped rather than attachment-owned because the active provider turn is shared session state
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
 
@@ -187,6 +194,7 @@ OpenCode current runtime note:
 
 - the daemon already routes OpenCode prompt submit through the provider-native local HTTP session APIs
 - the daemon already consumes OpenCode output and completion through the provider event stream
+- active-turn cancellation is routed through the OpenCode abort API and reconciled from provider events before queued prompts advance
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 

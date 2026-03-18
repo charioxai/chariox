@@ -36,7 +36,9 @@ pub enum SessionExecutionMode {
 pub enum PromptStatus {
     Queued,
     Running,
+    Cancelling,
     Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +166,12 @@ pub enum PromptSubmissionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptCompletion {
     pub completed: PromptQueueItem,
+    pub started_next: Option<PromptQueueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptCancellation {
+    pub prompt: PromptQueueItem,
     pub started_next: Option<PromptQueueItem>,
 }
 
@@ -363,6 +371,33 @@ impl RuntimeSession {
         completed.set_status(PromptStatus::Completed);
         self.refresh_scheduler_state();
         Some(completed)
+    }
+
+    pub fn cancel_active_prompt_only(&mut self) -> Option<PromptQueueItem> {
+        let mut cancelled = self.active_prompt.take()?;
+        cancelled.set_status(PromptStatus::Cancelled);
+        self.refresh_scheduler_state();
+        Some(cancelled)
+    }
+
+    pub fn begin_cancelling_active_prompt(&mut self) -> Option<PromptQueueItem> {
+        self.active_prompt
+            .as_mut()?
+            .set_status(PromptStatus::Cancelling);
+        self.refresh_scheduler_state();
+        self.active_prompt.clone()
+    }
+
+    pub fn finalize_active_prompt_cancellation(&mut self) -> Option<PromptQueueItem> {
+        let active = self.active_prompt.as_ref()?;
+        if active.status() != PromptStatus::Cancelling {
+            return None;
+        }
+
+        let mut cancelled = self.active_prompt.take()?;
+        cancelled.set_status(PromptStatus::Cancelled);
+        self.refresh_scheduler_state();
+        Some(cancelled)
     }
 
     pub fn peek_next_queued_prompt(&self) -> Option<PromptQueueItem> {

@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::local::{
-    AttachToSessionRequest, DetachFromSessionRequest, GetSessionStateRequest,
-    LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, LocalIpcClient,
-    PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
+    AttachToSessionRequest, CancelActivePromptRequest, DetachFromSessionRequest,
+    GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LocalIpcClient, PumpTerminalOutputRequest, ResizeTerminalRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonConfig, DaemonError};
@@ -104,6 +104,15 @@ fn main() -> Result<(), DaemonError> {
         }
         if line.trim() == "/exit" {
             break;
+        }
+        if line.trim() == "/stop" {
+            let _ = client.send(&LocalDaemonRequest::CancelActivePrompt(
+                CancelActivePromptRequest {
+                    session_id: session_id.clone(),
+                    attachment_id: attachment.id().to_string(),
+                },
+            ))?;
+            continue;
         }
         if line.trim().is_empty() {
             continue;
@@ -208,7 +217,7 @@ where
 
 fn print_usage() {
     println!(
-        "usage: arroba-cli [--socket PATH] [--session ID] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--workspace PATH] [--worktree PATH]"
+        "usage: arroba-cli [--socket PATH] [--session ID] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--workspace PATH] [--worktree PATH]\n\ncommands:\n  /stop   request cancellation of the active provider turn\n  /exit   exit the CLI"
     );
 }
 

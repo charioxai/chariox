@@ -174,11 +174,42 @@ impl SessionService {
     pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,
-        prompt_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "cancel prompt")?;
-        let _ = session.clear_active_prompt_if(prompt_id);
-        Ok(session.clone())
+        let cancelled =
+            session
+                .cancel_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), cancelled))
+    }
+
+    pub fn begin_cancelling_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "begin cancelling prompt")?;
+        let prompt = session.begin_cancelling_active_prompt().ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            }
+        })?;
+        Ok((session.clone(), prompt))
+    }
+
+    pub fn finalize_active_prompt_cancellation(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "finalize prompt cancellation")?;
+        let prompt = session
+            .finalize_active_prompt_cancellation()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        Ok((session.clone(), prompt))
     }
 
     pub fn complete_active_prompt(

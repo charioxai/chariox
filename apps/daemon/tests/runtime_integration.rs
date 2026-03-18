@@ -20,7 +20,9 @@ use arroba_daemon::local::{
     UpdateSessionConfigRequest,
 };
 use arroba_daemon::provider::{LaunchProviderRequest, ProviderRunState};
-use arroba_daemon::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionStatus};
+use arroba_daemon::session::{
+    CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+};
 use arroba_daemon::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
 
@@ -638,6 +640,106 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         .notice_records()
         .iter()
         .any(|record| record.message.contains("fixture prompt failure")));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_advancing_queue() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "first prompt should cancel\n",
+        )
+        .expect("first prompt should start");
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "second prompt after cancel\n",
+        )
+        .expect("second prompt should queue");
+
+    let cancellation = app
+        .cancel_active_prompt(session.id(), attachment.id())
+        .expect("active prompt should cancel");
+    assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
+    assert!(cancellation.started_next.is_none());
+    assert_eq!(mock_server.abort_count(), 1);
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should still exist")
+            .active_prompt()
+            .expect("active prompt should still exist")
+            .status(),
+        PromptStatus::Cancelling
+    );
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: second prompt after cancel")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+
+    assert!(output.contains("fixture response: second prompt after cancel"));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);

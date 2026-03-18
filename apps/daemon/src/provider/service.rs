@@ -22,12 +22,14 @@ pub struct ProviderProcessService {
 pub struct OpenCodePollResult {
     pub text_deltas: Vec<Vec<u8>>,
     pub prompt_completed: bool,
+    pub provider_idle: bool,
     pub notices: Vec<String>,
 }
 
 struct OpenCodeEventDrainResult {
     text_deltas: Vec<Vec<u8>>,
     prompt_completed: bool,
+    provider_idle: bool,
     notices: Vec<String>,
 }
 
@@ -333,6 +335,7 @@ impl ProviderProcessService {
         Ok(Some(OpenCodePollResult {
             text_deltas: drain.text_deltas,
             prompt_completed: drain.prompt_completed,
+            provider_idle: drain.provider_idle,
             notices: drain.notices,
         }))
     }
@@ -411,6 +414,7 @@ impl ProviderProcessService {
 
         let mut deltas = Vec::new();
         let mut prompt_completed = false;
+        let mut provider_idle = false;
         let mut notices = Vec::new();
 
         loop {
@@ -464,13 +468,20 @@ impl ProviderProcessService {
                         prompt_completed = true;
                     }
                 }
-                Ok(OpenCodeEvent::SessionStatus { .. }) => {}
+                Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
+                    if session_id == state.session_id && kind == "idle" {
+                        provider_idle = true;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                     state.event_subscription = client.subscribe_events()?;
                     if let Ok(snapshot) = client.snapshot(&state.session_id) {
                         deltas.extend(render_snapshot_text_deltas(state, &snapshot.messages));
+                        if snapshot.status == "idle" {
+                            provider_idle = true;
+                        }
                         if snapshot.messages.iter().any(|message| {
                             message.info.session_id == state.session_id
                                 && message.info.role == "assistant"
@@ -486,6 +497,7 @@ impl ProviderProcessService {
         Ok(OpenCodeEventDrainResult {
             text_deltas: deltas,
             prompt_completed,
+            provider_idle,
             notices,
         })
     }

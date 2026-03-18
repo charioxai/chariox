@@ -68,7 +68,7 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 - [x] Map OpenCode `session.status` and assistant completion timestamps into the canonical Arroba prompt lifecycle.
 - [x] Remove OpenCode dependence on idle-timeout prompt completion heuristics.
 - [ ] Surface OpenCode `session.error` and tool lifecycle events as daemon notices or richer client-facing output.
-- [ ] Add explicit Arroba stop/cancel behavior mapped to OpenCode `session.abort`.
+- [x] Add explicit Arroba stop/cancel behavior mapped to OpenCode `session.abort`, with queue advancement deferred until provider confirmation.
 
 ## 4.3 Slash Commands and OpenCode Discovery
 

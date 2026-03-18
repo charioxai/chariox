@@ -130,6 +130,11 @@ export ARROBA_OPENCODE_PORT=43111
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
 ```
 
+Current local CLI controls:
+
+- `/stop` requests cancellation of the active provider turn; queued work advances only after the provider confirms the stop
+- `/exit` detaches or ends the local session and exits the CLI
+
 Optional executable override:
 
 ```bash

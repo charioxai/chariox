@@ -18,8 +18,8 @@ use crate::provider::{
 };
 use crate::pty::PtyManager;
 use crate::session::{
-    PromptCompletion, PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionService,
-    SessionStatus,
+    PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
+    SessionConfigState, SessionService, SessionStatus,
 };
 use crate::terminal::{TerminalOutputRecord, TerminalStreamService};
 
@@ -397,7 +397,7 @@ impl DaemonApp {
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                 ) {
-                    let _ = self.sessions.cancel_active_prompt(session_id, prompt.id());
+                    let _ = self.sessions.cancel_active_prompt(session_id);
                     self.clear_prompt_activity(session_id);
                     return Err(error);
                 }
@@ -442,6 +442,59 @@ impl DaemonApp {
         Ok(PromptCompletion {
             completed,
             started_next,
+        })
+    }
+
+    pub fn cancel_active_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<PromptCancellation, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let active_prompt = self
+            .sessions
+            .get_session(session_id)?
+            .active_prompt()
+            .cloned()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active_prompt.status() == PromptStatus::Cancelling {
+            return Ok(PromptCancellation {
+                prompt: active_prompt,
+                started_next: None,
+            });
+        }
+        let provider_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
+
+        if !self.providers.abort_structured_runtime(&provider_run_id)? {
+            self.send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
+        }
+
+        let (_session, prompt) = self.sessions.begin_cancelling_active_prompt(session_id)?;
+        self.note_prompt_settlement_requested(session_id);
+        self.terminal.record_notice(
+            session_id,
+            Some(&provider_run_id),
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
+                active_prompt.id(),
+                provider_run.id()
+            ),
+        );
+
+        Ok(PromptCancellation {
+            prompt,
+            started_next: None,
         })
     }
 
@@ -704,6 +757,7 @@ impl DaemonApp {
             );
         }
         let prompt_completed = poll_result.prompt_completed;
+        let provider_idle = poll_result.provider_idle;
         let records = self.render_opencode_output(
             session_id,
             provider_run_id,
@@ -714,13 +768,16 @@ impl DaemonApp {
         if exited {
             return Ok(records);
         }
-        if prompt_completed
-            && self
-                .sessions
-                .get_session(session_id)?
-                .active_prompt()
-                .is_some()
-        {
+        let active_prompt_status = self
+            .sessions
+            .get_session(session_id)?
+            .active_prompt()
+            .map(|prompt| prompt.status());
+        if active_prompt_status == Some(PromptStatus::Cancelling) {
+            if provider_idle || prompt_completed {
+                let _ = self.finalize_active_prompt_cancellation(session_id)?;
+            }
+        } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
         }
         Ok(records)
@@ -851,6 +908,15 @@ impl DaemonApp {
         self.prompt_activity.remove(session_id);
     }
 
+    fn note_prompt_settlement_requested(&mut self, session_id: &str) {
+        self.prompt_activity
+            .entry(session_id.to_string())
+            .and_modify(|state| state.last_output_at = Some(Instant::now()))
+            .or_insert(ActivePromptState {
+                last_output_at: Some(Instant::now()),
+            });
+    }
+
     fn maybe_complete_active_prompt(&mut self, session_id: &str) -> Result<(), DaemonError> {
         let should_complete = self
             .prompt_activity
@@ -873,7 +939,17 @@ impl DaemonApp {
             return Ok(());
         }
 
-        let _ = self.complete_active_prompt(session_id)?;
+        if self
+            .sessions
+            .get_session(session_id)?
+            .active_prompt()
+            .map(|prompt| prompt.status())
+            == Some(PromptStatus::Cancelling)
+        {
+            let _ = self.finalize_active_prompt_cancellation(session_id)?;
+        } else {
+            let _ = self.complete_active_prompt(session_id)?;
+        }
         Ok(())
     }
 
@@ -904,7 +980,18 @@ impl DaemonApp {
         let _ = self.pty.remove_process(provider_run_id)?;
 
         if had_active_prompt {
-            let _ = self.sessions.complete_active_prompt_only(session_id)?;
+            let active_prompt_status = self
+                .sessions
+                .get_session(session_id)?
+                .active_prompt()
+                .map(|prompt| prompt.status());
+            if active_prompt_status == Some(PromptStatus::Cancelling) {
+                let _ = self
+                    .sessions
+                    .finalize_active_prompt_cancellation(session_id)?;
+            } else {
+                let _ = self.sessions.complete_active_prompt_only(session_id)?;
+            }
             self.clear_prompt_activity(session_id);
         }
         self.providers.clear_runtime(provider_run_id);
@@ -926,6 +1013,31 @@ impl DaemonApp {
         );
 
         Ok(true)
+    }
+
+    fn finalize_active_prompt_cancellation(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PromptCancellation, DaemonError> {
+        let (_session, prompt) = self
+            .sessions
+            .finalize_active_prompt_cancellation(session_id)?;
+        self.clear_prompt_activity(session_id);
+        let started_next = if self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .is_some()
+        {
+            self.advance_next_queued_prompt(session_id)?
+        } else {
+            None
+        };
+
+        Ok(PromptCancellation {
+            prompt,
+            started_next,
+        })
     }
 
     pub fn startup_message(&self) -> String {

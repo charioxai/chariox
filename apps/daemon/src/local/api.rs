@@ -12,8 +12,8 @@ use crate::capability::{
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
-    CreateSessionRequest, PromptCompletion, PromptSubmissionOutcome, RuntimeSession,
-    SessionConfigState,
+    CreateSessionRequest, PromptCancellation, PromptCompletion, PromptSubmissionOutcome,
+    RuntimeSession, SessionConfigState,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -48,6 +48,12 @@ pub struct SubmitPromptRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletePromptRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelActivePromptRequest {
+    pub session_id: String,
+    pub attachment_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +156,7 @@ pub enum LocalDaemonRequest {
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
     CompletePrompt(CompletePromptRequest),
+    CancelActivePrompt(CancelActivePromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
@@ -189,6 +196,9 @@ pub enum LocalDaemonResponse {
     },
     PromptCompleted {
         completion: PromptCompletion,
+    },
+    PromptCancelled {
+        cancellation: PromptCancellation,
     },
     SessionConfigUpdated {
         config: SessionConfigState,
@@ -286,6 +296,12 @@ impl DaemonApp {
             LocalDaemonRequest::CompletePrompt(request) => {
                 Ok(LocalDaemonResponse::PromptCompleted {
                     completion: self.complete_active_prompt(&request.session_id)?,
+                })
+            }
+            LocalDaemonRequest::CancelActivePrompt(request) => {
+                Ok(LocalDaemonResponse::PromptCancelled {
+                    cancellation: self
+                        .cancel_active_prompt(&request.session_id, &request.attachment_id)?,
                 })
             }
             LocalDaemonRequest::UpdateSessionConfig(request) => {
@@ -390,12 +406,13 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
-        AttachToSessionRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
-        DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest,
-        GetSessionStateRequest, InspectGitCapabilityRequest, LaunchProviderRunRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RunShellCapabilityRequest,
-        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
+        CompletePromptRequest, DetachFromSessionRequest, EditFileCapabilityRequest,
+        EndSessionRequest, GetSessionStateRequest, InspectGitCapabilityRequest,
+        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+        PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+        RunShellCapabilityRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -668,6 +685,87 @@ mod tests {
                 assert!(completion.started_next.is_some())
             }
             _ => panic!("unexpected completion response"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_can_cancel_an_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-a".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let _provider_run = match app
+            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                },
+            ))
+            .expect("provider launch should succeed")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                prompt: "first prompt\n".to_string(),
+            }))
+            .expect("first prompt should start");
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                prompt: "second prompt\n".to_string(),
+            }))
+            .expect("second prompt should queue");
+
+        let response = app
+            .handle_local_request(LocalDaemonRequest::CancelActivePrompt(
+                CancelActivePromptRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                },
+            ))
+            .expect("cancel should succeed");
+
+        match response {
+            LocalDaemonResponse::PromptCancelled { cancellation } => {
+                assert_eq!(
+                    cancellation.prompt.status(),
+                    crate::session::PromptStatus::Cancelling
+                );
+                assert!(cancellation.started_next.is_none());
+            }
+            _ => panic!("unexpected local response"),
         }
     }
 
