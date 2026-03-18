@@ -17,7 +17,7 @@ It is intentionally transport-agnostic at the message level (WebSocket recommend
 
 ## 2. Design Principles
 
-- preserve native PTY behavior for provider interaction
+- preserve native provider interaction semantics, using PTY passthrough where required and structured local provider protocols where they are stronger and officially supported
 - reserve `/...` as the Arroba command namespace
 - keep structured control surface intentionally small
 - isolate capability/control errors from terminal stream
@@ -25,7 +25,7 @@ It is intentionally transport-agnostic at the message level (WebSocket recommend
 
 ## 3. Protocol Lanes
 
-## 3.1 Terminal Lane (Unstructured PTY Stream)
+## 3.1 Terminal Lane (Provider Output Stream)
 
 Purpose:
 
@@ -36,12 +36,19 @@ Semantics:
 
 - byte-stream-like behavior
 - no requirement for structured parse by Arroba for ordinary non-command traffic
+- for providers with structured event streams, Arroba MAY render provider output into the client terminal without treating PTY bytes as the source of truth for turn lifecycle
 
 Suggested events:
 
 - `terminal.input`
 - `terminal.output`
 - `terminal.resize`
+
+OpenCode-specific note:
+
+- OpenCode should graduate from PTY-polled `terminal.output` to adapter-fed output derived from its local event stream
+- incremental assistant text should come from provider message-part delta events
+- terminal rendering remains daemon-owned even when the source is a structured provider event stream
 
 ## 3.2 Capability Lane (Structured Daemon Actions)
 
@@ -95,6 +102,13 @@ Canonical operations in v1:
 These operations are not typed by users into ordinary terminal traffic.
 
 Arroba MAY route `/agent ...` invocations into the control lane after resolving the active provider command catalog.
+
+OpenCode-specific structured adapter contract:
+
+- prompt submit maps to the provider session prompt operation
+- `/agent ...` command invoke maps to the provider session command operation
+- turn abort maps to the provider session abort operation
+- provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -169,6 +183,11 @@ Current M2 runtime note:
 - the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
 - the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
 
+OpenCode-specific next-step note:
+
+- the current M2 baseline still uses PTY-backed OpenCode prompt/output flow
+- the next OpenCode adapter revision should switch to provider-native session and event APIs while preserving the same daemon-owned local request/response surface for Arroba clients
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
@@ -180,6 +199,7 @@ Planned request types:
 - `agent.command.list`
 - `agent.command.invoke`
 - `provider.auth.status.get`
+- `provider.event.subscribe`
 - `extension.install`
 - `extension.list`
 - `extension.bind`
@@ -195,6 +215,12 @@ Planned command metadata fields:
 - `provider_version`
 - `catalog_version`
 - optional `warning`
+
+OpenCode adapter metadata additions:
+
+- optional `provider_session_id`
+- optional `provider_event_capabilities`
+- optional `provider_command_source` (`catalog` | `provider_api` | `custom_files` | `merged`)
 
 Planned provider auth status fields:
 

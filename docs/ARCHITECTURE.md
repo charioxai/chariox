@@ -69,6 +69,7 @@ Arroba remote terminals MUST be architected as multi-surface, multi-transport cl
 - Full terminal clients MUST integrate through PTY streaming interfaces.
 - Constrained clients and messaging adapters MUST integrate through structured control/state APIs.
 - Non-terminal clients MUST NOT parse terminal text as their primary integration contract.
+- Providers MAY also expose structured local session/event APIs; when they do, the daemon MAY use those APIs as the source of truth while still rendering a terminal-like experience to full terminal clients.
 
 4. Client capability levels
 - Every new feature MUST declare the minimum required client capability level.
@@ -309,6 +310,7 @@ Required rules:
 - Must preserve provider-native semantics.
 - Must not be transformed into structured command traffic by default.
 - Must not be used as the source of truth for prompt queue ordering or session config state.
+- For providers with stable structured local protocols, daemon-rendered output derived from provider events is acceptable and preferred over PTY-idle heuristics.
 
 ### 5.2 Capability Lane
 
@@ -332,6 +334,34 @@ Canonical control operations in v1:
 Provider authentication is not part of the control lane in v1; adapters probe and report auth state, but login itself remains a provider-native local CLI flow on the host machine.
 
 Provider-facing extension projection is also adapter-owned: the daemon resolves the authoritative extension bindings, and the adapter materializes the provider-specific runtime view.
+
+### 5.3.1 OpenCode Structured Adapter Target
+
+OpenCode should be treated as the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
+
+Target runtime flow:
+
+- daemon launches `opencode serve` in the assigned worktree or workspace context
+- daemon waits for the local OpenCode server health endpoint
+- daemon creates or binds an OpenCode session for the Arroba provider run
+- daemon submits prompts through the OpenCode session API
+- daemon subscribes to the OpenCode SSE event stream
+- daemon maps OpenCode session/message events into Arroba prompt lifecycle, notices, and client-facing output
+
+Target signal mapping:
+
+- prompt submit: OpenCode session prompt API
+- `/agent ...`: OpenCode command list plus session command API
+- turn abort: OpenCode session abort API
+- turn busy/idle: OpenCode session status events
+- incremental text: OpenCode message-part delta events
+- assistant completion: OpenCode assistant message updates with completion timestamps
+- provider errors: OpenCode session error events
+
+Implication:
+
+- PTY process exit remains a provider-run liveness signal
+- PTY idleness is not the completion signal for OpenCode once the structured adapter path exists
 
 ### 5.4 Workflow Lane Semantics
 
@@ -494,6 +524,12 @@ Current M2 runtime note:
 
 - the Unix-socket local transport is now implemented for the daemon + local CLI baseline
 - Windows local transport remains a later follow-up
+
+### 10.6.1 OpenCode Integration Strategy
+
+- M2 baseline: PTY-launched OpenCode wrapper path
+- next OpenCode step: daemon-launched `opencode serve` plus local HTTP/SSE adapter
+- adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
 
 ### 10.7 Governance
 

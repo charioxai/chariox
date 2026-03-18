@@ -101,6 +101,7 @@ Status:
 
 Outcomes:
 
+- upgrade OpenCode from the M2 PTY bootstrap path to a structured local server/session/event adapter
 - shell command capability
 - directory tree + file view/edit capabilities
 - screenshot capture capability
@@ -115,6 +116,7 @@ Exit criteria:
 - capability failures remain isolated from the terminal lane
 - multiple supported providers can run through the same daemon-managed local CLI model
 - local slash-command UX is usable enough to drive capabilities without a web surface
+- OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
 
 ## M4 - Multi-Agent Workflow Runtime
 

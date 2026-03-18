@@ -29,6 +29,7 @@ Exit criteria:
 - Prefer one real end-to-end path over broader but partial feature coverage.
 - Reuse the existing daemon runtime and local request/response surface wherever possible instead of redesigning prompt/output flow.
 - Keep the first provider integration PTY-first and wrapper-style.
+- Treat that PTY-first OpenCode path as a bootstrap only, not the long-term adapter target.
 - Defer slash-command UX, broader capability work, workflows, and relay/web concerns until the local OpenCode path is solid.
 - Treat the existing local harness as a prototype to replace with real daemon transport and a real CLI app.
 
@@ -179,3 +180,8 @@ Recommended additional Rust checks:
 cargo fmt --manifest-path apps/daemon/Cargo.toml --check
 cargo clippy --manifest-path apps/daemon/Cargo.toml --all-targets --all-features -- -D warnings
 ```
+
+Historical note:
+
+- M2 intentionally shipped a PTY-launched OpenCode path to establish the daemon + CLI baseline quickly.
+- OpenCode-specific structured session/event integration is now the next planned refinement and belongs to M3 rather than to the historical M2 closure criteria.

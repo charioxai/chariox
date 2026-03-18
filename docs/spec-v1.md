@@ -44,6 +44,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 ## 4. Core Principles
 
 - Provider-native PTY first: provider terminal behavior must remain intact for ordinary non-command traffic.
+- Prefer the strongest provider-native contract: when a provider exposes a stable local structured protocol, Arroba should prefer that protocol over PTY-derived heuristics for prompt lifecycle, output ordering, and command discovery.
 - Slash-command ownership: Arroba owns `/...` command parsing and completion.
 - Daemon-centered runtime: the daemon is the source of truth for live session state.
 - Local-first execution: sessions run on the user's machine.
@@ -149,6 +150,12 @@ Transmission requirement:
 
 Arroba must not require ordinary non-command terminal traffic to be parsed into structured commands.
 
+Provider-specific note:
+
+- some providers MAY expose a richer local session/event API in addition to PTY traffic
+- when that API is stable and supported by the adapter, Arroba MAY derive provider output, turn lifecycle, and command discovery from that structured surface instead of from PTY silence or screen scraping
+- OpenCode is the first planned provider-specific use of this model
+
 ### 6.2 Capability Lane
 
 The capability lane is used for daemon-owned Arroba commands invoked through the slash-command dispatcher.
@@ -182,6 +189,13 @@ In v1, the canonical control surface contains three operations:
 
 The control lane may also carry `/agent ...` command invocations after Arroba resolves the active provider command catalog and target adapter behavior.
 
+OpenCode-specific v1.1 target:
+
+- OpenCode should use its local server/session/event protocol as the primary adapter contract
+- prompt submission should map to OpenCode session operations rather than PTY writes
+- turn completion should map to OpenCode session/message lifecycle signals rather than daemon idle timers
+- PTY integration remains the fallback path for providers that do not expose a comparable structured surface
+
 ### 6.4 Slash Command System
 
 Arroba owns the slash-command namespace.
@@ -192,6 +206,11 @@ Required rules:
 - `/agent ...` is the provider-specific namespace exposed by the active Arroba adapter.
 - command completion is daemon-managed and may depend on session, provider, and attachment context.
 - ordinary non-command input continues to flow through the terminal lane unchanged.
+
+OpenCode-specific note:
+
+- OpenCode command discovery SHOULD use machine-readable provider surfaces before falling back to shipped Arroba catalogs
+- this includes provider-exposed command, agent, and skill listing where available
 
 Provider command discovery policy:
 
@@ -433,6 +452,7 @@ Scheduler/runtime boundary rule:
 
 - the daemon MUST own explicit scheduler state for session work such as `idle`, `runnable`, `running`, and `waiting`
 - queue advancement and prompt completion semantics MUST remain daemon-owned runtime decisions, even when a client triggers the completion action through a structured API
+- for providers with structured turn lifecycle signals, the daemon SHOULD drive prompt completion from adapter-reported provider state rather than PTY output quiet windows
 
 Config behavior:
 
@@ -554,6 +574,12 @@ Outputs:
 ### 8.3 Degradation Rule
 
 If a provider adapter does not implement `attach_file`, `request_memory_update`, and/or `request_compaction_summary`, the session still functions normally through PTY passthrough.
+
+Provider-specific structured adapter note:
+
+- some adapters MAY expose richer provider-owned operations beyond the canonical v1 control trio when Arroba needs them for correctness
+- OpenCode is expected to use provider-specific session operations for prompt submit, command invoke, turn abort, and event subscription
+- those richer provider-specific operations remain adapter-internal and do not change Arroba's provider-agnostic user-facing model
 
 In that case Arroba must:
 
