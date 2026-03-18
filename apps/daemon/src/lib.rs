@@ -331,18 +331,32 @@ mod tests {
 
     #[test]
     fn shell_command_capability_runs_through_daemon_app() {
+        let worktree_root = std::env::temp_dir().join("arroba-shell-app-test");
+        std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let session = app
             .sessions_mut()
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .create_session(CreateSessionRequest::new(
+                "workspace-1",
+                worktree_root.display().to_string(),
+            ))
             .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-shell",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
 
         let result = app
             .run_shell_command(crate::capability::RunShellCommandRequest::new(
                 session.id(),
+                attachment.id(),
                 "/bin/sh",
                 vec!["-lc".to_string(), "printf shell-app".to_string()],
+                worktree_root,
                 None,
             ))
             .expect("shell capability should succeed");
