@@ -23,3 +23,7 @@ path = "src/main.rs"
 [[bin]]
 name = "arroba-cli"
 path = "src/bin/arroba-cli.rs"
+
+[[bin]]
+name = "arroba-cli-rust"
+path = "src/bin/arroba-cli-rust.rs"

@@ -86,13 +86,20 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
 
     use crate::DaemonError;
 
     use super::{plan_opencode_launch, resolve_opencode_executable};
 
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     #[test]
     fn resolves_override_path_for_tests() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
         let path = std::env::temp_dir().join(format!(
             "arroba-opencode-resolve-test-{}",
             std::process::id()
@@ -109,6 +116,7 @@ mod tests {
 
     #[test]
     fn plans_opencode_serve_launch() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
         let path = std::env::temp_dir().join(format!(
             "arroba-opencode-resolve-test-{}-serve",
             std::process::id()
@@ -142,6 +150,7 @@ mod tests {
 
     #[test]
     fn requires_explicit_opencode_port_override() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
         let previous_bin = std::env::var_os("ARROBA_OPENCODE_BIN");
         let path = std::env::temp_dir().join(format!(
             "arroba-opencode-resolve-test-{}-missing-port",

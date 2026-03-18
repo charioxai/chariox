@@ -1,5 +1,6 @@
 mod stream;
 
 pub use stream::{
-    RuntimeNoticeRecord, TerminalInputRecord, TerminalOutputRecord, TerminalStreamService,
+    RuntimeNoticeRecord, TerminalInputRecord, TerminalOutputKind, TerminalOutputRecord,
+    TerminalStreamService,
 };

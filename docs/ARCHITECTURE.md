@@ -136,6 +136,7 @@ Responsibilities:
 Current M2 runtime note:
 
 - the local CLI is now a real daemon client over local IPC, not only a harness/test surface
+- the primary local CLI implementation is now a TypeScript OpenTUI client; the previous Rust-only CLI remains available temporarily as a compatibility fallback
 - local client-daemon communication currently uses a Unix-socket transport on Unix-like systems
 
 ### 3.2 Machine

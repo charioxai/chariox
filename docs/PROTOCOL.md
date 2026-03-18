@@ -188,6 +188,7 @@ Current M2 runtime note:
 
 - the local daemon transport is a daemon-owned Unix-socket IPC path on Unix-like systems
 - the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
+- the primary local CLI implementation is now a TypeScript OpenTUI client; the Rust wrapper and legacy Rust CLI continue to exercise the same daemon-owned request/response contract
 - the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
 
 OpenCode current runtime note:

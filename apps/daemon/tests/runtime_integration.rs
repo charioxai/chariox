@@ -1009,7 +1009,7 @@ fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() 
 
     wait_for_socket(&socket_path);
 
-    let mut cli = Command::new(env!("CARGO_BIN_EXE_arroba-cli"))
+    let mut cli = Command::new(env!("CARGO_BIN_EXE_arroba-cli-rust"))
         .env("ARROBA_DAEMON_SOCKET", &socket_path)
         .env("ARROBA_OPENCODE_BIN", &fixture_path)
         .env("ARROBA_OPENCODE_PORT", mock_server.port().to_string())

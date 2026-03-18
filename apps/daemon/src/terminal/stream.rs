@@ -9,9 +9,17 @@ pub struct TerminalInputRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalOutputKind {
+    ProviderOutput,
+    PromptEcho,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalOutputRecord {
     pub session_id: String,
     pub provider_run_id: String,
+    pub kind: TerminalOutputKind,
     pub recipient_attachment_ids: Vec<String>,
     pub pending_recipient_attachment_ids: Vec<String>,
     pub bytes: Vec<u8>,
@@ -57,12 +65,14 @@ impl TerminalStreamService {
         &mut self,
         session_id: &str,
         provider_run_id: &str,
+        kind: TerminalOutputKind,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = TerminalOutputRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
+            kind,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
@@ -162,7 +172,7 @@ impl TerminalStreamService {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalStreamService;
+    use super::{TerminalOutputKind, TerminalStreamService};
 
     #[test]
     fn records_terminal_input_and_fans_out_output() {
@@ -172,6 +182,7 @@ mod tests {
         let output = terminal.fan_out_output(
             "session-1",
             "provider-run-1",
+            TerminalOutputKind::ProviderOutput,
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
             b"listing\n",
         );
@@ -185,6 +196,7 @@ mod tests {
         assert_eq!(terminal.input_records().len(), 1);
         assert_eq!(terminal.output_records().len(), 1);
         assert_eq!(terminal.notice_records().len(), 1);
+        assert_eq!(output.kind, TerminalOutputKind::ProviderOutput);
         assert_eq!(output.recipient_attachment_ids.len(), 2);
         assert_eq!(output.pending_recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
@@ -198,6 +210,7 @@ mod tests {
         terminal.fan_out_output(
             "session-1",
             "provider-run-1",
+            TerminalOutputKind::PromptEcho,
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
             b"hello\n",
         );

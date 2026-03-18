@@ -21,7 +21,7 @@ use crate::session::{
     PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     SessionConfigState, SessionService, SessionStatus,
 };
-use crate::terminal::{TerminalOutputRecord, TerminalStreamService};
+use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -694,6 +694,7 @@ impl DaemonApp {
                 self.terminal.fan_out_output(
                     session_id,
                     provider_run_id,
+                    TerminalOutputKind::ProviderOutput,
                     recipient_attachment_ids.clone(),
                     &chunk.bytes,
                 )
@@ -843,6 +844,7 @@ impl DaemonApp {
                 self.terminal.fan_out_output(
                     session_id,
                     provider_run_id,
+                    TerminalOutputKind::ProviderOutput,
                     recipient_attachment_ids.clone(),
                     &delta,
                 )
@@ -868,6 +870,7 @@ impl DaemonApp {
         self.terminal.fan_out_output(
             session_id,
             provider_run_id,
+            TerminalOutputKind::PromptEcho,
             recipient_attachment_ids,
             &bytes,
         );

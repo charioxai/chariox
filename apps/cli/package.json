@@ -1,0 +1,23 @@
+{
+  "name": "@arroba/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run lint",
+    "start": "bun dist/index.js",
+    "dev": "pnpm run build && bun dist/index.js"
+  },
+  "dependencies": {
+    "@opentui/core": "0.1.87",
+    "@opentui/solid": "0.1.87",
+    "solid-js": "^1.9.9"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/preset-typescript": "^7.27.1",
+    "babel-preset-solid": "^1.9.9"
+  }
+}
