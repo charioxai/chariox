@@ -106,11 +106,40 @@ pub enum DaemonError {
         working_directory: String,
         worktree_root: String,
     },
-    #[error("attachment `{attachment_id}` is not allowed to run shell commands in session `{session_id}`")]
+    #[error("attachment `{attachment_id}` is not allowed to use capability `{capability}` in session `{session_id}`")]
     AttachmentCapabilityDenied {
         session_id: String,
         attachment_id: String,
+        capability: &'static str,
     },
+    #[error("path `{path}` is outside session `{session_id}` worktree `{worktree_root}`")]
+    PathOutsideWorktree {
+        session_id: String,
+        path: String,
+        worktree_root: String,
+    },
+    #[error("failed to inspect filesystem for session `{session_id}` at `{path}`: {message}")]
+    FilesystemCapabilityFailed {
+        session_id: String,
+        path: String,
+        message: String,
+    },
+    #[error("failed to update file for session `{session_id}` at `{path}`: {message}")]
+    FileEditFailed {
+        session_id: String,
+        path: String,
+        message: String,
+    },
+    #[error(
+        "git inspection failed for session `{session_id}` in `{working_directory}`: {message}"
+    )]
+    GitCapabilityFailed {
+        session_id: String,
+        working_directory: String,
+        message: String,
+    },
+    #[error("screenshot capture failed for session `{session_id}`: {message}")]
+    ScreenshotCapabilityFailed { session_id: String, message: String },
     #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]
     LocalHarnessTimeout { session_id: String, timeout_ms: u64 },
 }

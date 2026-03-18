@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
-use crate::capability::{RunShellCommandRequest, RunShellCommandResult};
+use crate::capability::{
+    CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
+    ReadFileResult, RunShellCommandRequest, RunShellCommandResult,
+};
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
@@ -92,6 +95,42 @@ pub struct RunShellCapabilityRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadDirectoryTreeCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub path: Option<PathBuf>,
+    pub max_depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadFileCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditFileCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub path: PathBuf,
+    pub contents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectGitCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub working_directory: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureScreenshotCapabilityRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -105,6 +144,11 @@ pub enum LocalDaemonRequest {
     ResizeTerminal(ResizeTerminalRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     RunShellCommand(RunShellCapabilityRequest),
+    ReadDirectoryTree(ReadDirectoryTreeCapabilityRequest),
+    ReadFile(ReadFileCapabilityRequest),
+    EditFile(EditFileCapabilityRequest),
+    InspectGit(InspectGitCapabilityRequest),
+    CaptureScreenshot(CaptureScreenshotCapabilityRequest),
     EndSession(EndSessionRequest),
 }
 
@@ -150,6 +194,21 @@ pub enum LocalDaemonResponse {
     ShellCommandCompleted {
         result: RunShellCommandResult,
     },
+    DirectoryTreeRead {
+        result: ReadDirectoryTreeResult,
+    },
+    FileRead {
+        result: ReadFileResult,
+    },
+    FileEdited {
+        result: EditFileResult,
+    },
+    GitInspected {
+        result: InspectGitResult,
+    },
+    ScreenshotCaptured {
+        result: CaptureScreenshotResult,
+    },
     SessionEnded {
         session: RuntimeSession,
     },
@@ -193,6 +252,8 @@ impl DaemonApp {
                 session: self.sessions().get_session(&request.session_id)?,
             }),
             LocalDaemonRequest::PollRuntimeNotices(request) => {
+                let _ =
+                    self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
                 Ok(LocalDaemonResponse::RuntimeNotices {
                     notices: self
                         .terminal_mut()
@@ -252,6 +313,43 @@ impl DaemonApp {
                     )?,
                 })
             }
+            LocalDaemonRequest::ReadDirectoryTree(request) => {
+                Ok(LocalDaemonResponse::DirectoryTreeRead {
+                    result: self.read_directory_tree(
+                        &request.session_id,
+                        &request.attachment_id,
+                        request.path,
+                        request.max_depth,
+                    )?,
+                })
+            }
+            LocalDaemonRequest::ReadFile(request) => Ok(LocalDaemonResponse::FileRead {
+                result: self.read_file(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.path,
+                )?,
+            }),
+            LocalDaemonRequest::EditFile(request) => Ok(LocalDaemonResponse::FileEdited {
+                result: self.edit_file(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.path,
+                    request.contents,
+                )?,
+            }),
+            LocalDaemonRequest::InspectGit(request) => Ok(LocalDaemonResponse::GitInspected {
+                result: self.inspect_git(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.working_directory,
+                )?,
+            }),
+            LocalDaemonRequest::CaptureScreenshot(request) => {
+                Ok(LocalDaemonResponse::ScreenshotCaptured {
+                    result: self.capture_screenshot(&request.session_id, &request.attachment_id)?,
+                })
+            }
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
                 session: self.end_session(&request.session_id)?,
             }),
@@ -268,10 +366,12 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
-        AttachToSessionRequest, CompletePromptRequest, DetachFromSessionRequest, EndSessionRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        PollRuntimeNoticesRequest, RunShellCapabilityRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        AttachToSessionRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
+        DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest,
+        GetSessionStateRequest, InspectGitCapabilityRequest, LaunchProviderRunRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RunShellCapabilityRequest,
+        SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -645,6 +745,206 @@ mod tests {
                 assert_eq!(session_id, session.id());
             }
             other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
+        let worktree_root = std::env::temp_dir().join("arroba-file-local-api-denied-test");
+        let _ = std::fs::remove_dir_all(&worktree_root);
+        std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
+        std::fs::write(worktree_root.join("notes.txt"), "hello").expect("file should exist");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-automation".to_string(),
+                    capability_level: ClientCapabilityLevel::AutomationOnly,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let error = app
+            .handle_local_request(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                path: worktree_root.join("notes.txt"),
+            }))
+            .expect_err("automation-only attachment should not read files");
+
+        match error {
+            DaemonError::AttachmentCapabilityDenied { session_id, .. } => {
+                assert_eq!(session_id, session.id());
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_reads_directory_tree_file_and_git_status() {
+        let worktree_root = std::env::temp_dir().join("arroba-capability-local-api-test");
+        let _ = std::fs::remove_dir_all(&worktree_root);
+        std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
+        std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
+        std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&worktree_root)
+            .output()
+            .expect("git init should work");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-capability".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let tree = app
+            .handle_local_request(LocalDaemonRequest::ReadDirectoryTree(
+                ReadDirectoryTreeCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                    path: None,
+                    max_depth: 2,
+                },
+            ))
+            .expect("tree read should succeed");
+        let file = app
+            .handle_local_request(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                path: worktree_root.join("src/lib.rs"),
+            }))
+            .expect("file read should succeed");
+        let edit = app
+            .handle_local_request(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                path: worktree_root.join("src/lib.rs"),
+                contents: "after".to_string(),
+            }))
+            .expect("file edit should succeed");
+        let git = app
+            .handle_local_request(LocalDaemonRequest::InspectGit(
+                InspectGitCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                    working_directory: None,
+                },
+            ))
+            .expect("git inspect should succeed");
+
+        match tree {
+            LocalDaemonResponse::DirectoryTreeRead { result } => {
+                assert!(result
+                    .entries
+                    .iter()
+                    .any(|entry| entry.relative_path == "README.md"));
+            }
+            _ => panic!("unexpected tree response"),
+        }
+        match file {
+            LocalDaemonResponse::FileRead { result } => assert_eq!(result.contents, "before"),
+            _ => panic!("unexpected file response"),
+        }
+        match edit {
+            LocalDaemonResponse::FileEdited { result } => {
+                assert_eq!(result.bytes_written, 5);
+                assert_eq!(result.old_size, 6);
+                assert_eq!(result.new_size, 5);
+                assert!(result.changed);
+            }
+            _ => panic!("unexpected edit response"),
+        }
+        match git {
+            LocalDaemonResponse::GitInspected { result } => assert!(result.status.contains("main")),
+            _ => panic!("unexpected git response"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_returns_structured_screenshot_unavailable_result() {
+        std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new(
+                    "workspace-1",
+                    std::env::temp_dir().display().to_string(),
+                ),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-screenshot".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let response = app
+            .handle_local_request(LocalDaemonRequest::CaptureScreenshot(
+                CaptureScreenshotCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                },
+            ))
+            .expect("screenshot request should succeed with unavailable result");
+        std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
+
+        match response {
+            LocalDaemonResponse::ScreenshotCaptured { result } => {
+                assert_eq!(
+                    result.status,
+                    crate::capability::ScreenshotStatus::Unavailable
+                );
+            }
+            _ => panic!("unexpected screenshot response"),
         }
     }
 }

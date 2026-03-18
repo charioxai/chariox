@@ -173,3 +173,15 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added timeout bounds and worktree-boundary validation to the shell capability so long-running or escaped commands do not silently bypass daemon safety expectations.
 - Added attachment-aware authorization for shell execution through the local daemon API.
 - Tightened prompt lifecycle UX by emitting notices when queued prompts are dropped because an attachment detached.
+
+### M2 filesystem and git capability update
+
+- Added structured directory tree capability support scoped to the session worktree.
+- Added file read and file edit capabilities with structured results and worktree-boundary validation.
+- Added structured git/worktree inspection capability for branch and status reporting.
+- Exposed the new capabilities through the local daemon API and added daemon/local API tests for each baseline capability.
+
+### M2 screenshot baseline update
+
+- Added a screenshot capability contract and local runtime baseline with structured unavailable fallback when no capture backend is available.
+- Exposed screenshot capture through the local daemon API and added daemon/local API tests for the baseline unavailable path.

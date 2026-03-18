@@ -1,7 +1,14 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::attachment::{AttachRequest, AttachmentService, RuntimeAttachment};
-use crate::capability::{RunShellCommandRequest, RunShellCommandResult, ShellCommandService};
+use crate::capability::{
+    CaptureScreenshotRequest, CaptureScreenshotResult, DirectoryTreeService, EditFileRequest,
+    EditFileResult, FileCapabilityService, GitCapabilityService, InspectGitRequest,
+    InspectGitResult, ReadDirectoryTreeRequest, ReadDirectoryTreeResult, ReadFileRequest,
+    ReadFileResult, RunShellCommandRequest, RunShellCommandResult, ScreenshotCapabilityService,
+    ShellCommandService,
+};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
@@ -16,6 +23,10 @@ pub struct DaemonApp {
     config: DaemonConfig,
     attachments: AttachmentService,
     capabilities: ShellCommandService,
+    directory_tree: DirectoryTreeService,
+    file_capabilities: FileCapabilityService,
+    git_capabilities: GitCapabilityService,
+    screenshot_capabilities: ScreenshotCapabilityService,
     pty: PtyManager,
     providers: ProviderProcessService,
     sessions: SessionService,
@@ -29,6 +40,10 @@ impl DaemonApp {
         Ok(Self {
             attachments: AttachmentService::new(),
             capabilities: ShellCommandService::new(),
+            directory_tree: DirectoryTreeService::new(),
+            file_capabilities: FileCapabilityService::new(),
+            git_capabilities: GitCapabilityService::new(),
+            screenshot_capabilities: ScreenshotCapabilityService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             sessions: SessionService::new(&config),
@@ -143,21 +158,102 @@ impl DaemonApp {
         let session = self.sessions.get_session(&request.session_id)?;
         let attachment =
             self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-
-        if !matches!(
-            attachment.capability_level(),
-            crate::attachment::ClientCapabilityLevel::FullTerminal
-                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
-        ) {
-            return Err(DaemonError::AttachmentCapabilityDenied {
-                session_id: request.session_id,
-                attachment_id: request.attachment_id,
-            });
-        }
+        self.ensure_attachment_can_run_capability(&request.session_id, &attachment)?;
 
         let mut request = request;
         request.worktree_root = std::path::PathBuf::from(session.worktree_id());
         self.capabilities.run(request)
+    }
+
+    pub fn read_directory_tree(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        path: Option<PathBuf>,
+        max_depth: usize,
+    ) -> Result<ReadDirectoryTreeResult, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.directory_tree.read_tree(ReadDirectoryTreeRequest::new(
+            session_id,
+            attachment_id,
+            PathBuf::from(session.worktree_id()),
+            path,
+            max_depth,
+        ))
+    }
+
+    pub fn read_file(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        path: PathBuf,
+    ) -> Result<ReadFileResult, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.file_capabilities.read_file(ReadFileRequest::new(
+            session_id,
+            attachment_id,
+            PathBuf::from(session.worktree_id()),
+            path,
+        ))
+    }
+
+    pub fn edit_file(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        path: PathBuf,
+        contents: String,
+    ) -> Result<EditFileResult, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.file_capabilities.edit_file(EditFileRequest::new(
+            session_id,
+            attachment_id,
+            PathBuf::from(session.worktree_id()),
+            path,
+            contents,
+        ))
+    }
+
+    pub fn inspect_git(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        working_directory: Option<PathBuf>,
+    ) -> Result<InspectGitResult, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.git_capabilities.inspect(InspectGitRequest::new(
+            session_id,
+            attachment_id,
+            PathBuf::from(session.worktree_id()),
+            working_directory,
+        ))
+    }
+
+    pub fn capture_screenshot(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<CaptureScreenshotResult, DaemonError> {
+        let _session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment)?;
+        self.screenshot_capabilities
+            .capture(CaptureScreenshotRequest::new(
+                session_id,
+                attachment_id,
+                std::env::temp_dir()
+                    .join("arroba-session-artifacts")
+                    .join(session_id)
+                    .join("screenshots"),
+            ))
     }
 
     pub fn launch_provider(
@@ -431,7 +527,7 @@ impl DaemonApp {
             .collect())
     }
 
-    fn ensure_attachment_in_session(
+    pub(crate) fn ensure_attachment_in_session(
         &self,
         session_id: &str,
         attachment_id: &str,
@@ -469,6 +565,26 @@ impl DaemonApp {
             .into_iter()
             .filter(|attachment_id| attachment_id != source_attachment_id)
             .collect()
+    }
+
+    fn ensure_attachment_can_run_capability(
+        &self,
+        session_id: &str,
+        attachment: &RuntimeAttachment,
+    ) -> Result<(), DaemonError> {
+        if matches!(
+            attachment.capability_level(),
+            crate::attachment::ClientCapabilityLevel::FullTerminal
+                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+        ) {
+            Ok(())
+        } else {
+            Err(DaemonError::AttachmentCapabilityDenied {
+                session_id: session_id.to_string(),
+                attachment_id: attachment.id().to_string(),
+                capability: "daemon_capability",
+            })
+        }
     }
 
     fn advance_next_queued_prompt(

@@ -365,6 +365,106 @@ mod tests {
         assert_eq!(result.stdout, "shell-app");
     }
 
+    #[test]
+    fn directory_tree_file_and_git_capabilities_run_through_daemon_app() {
+        let worktree_root = std::env::temp_dir().join("arroba-daemon-app-capability-test");
+        let _ = std::fs::remove_dir_all(&worktree_root);
+        std::fs::create_dir_all(worktree_root.join("src")).expect("worktree dir should exist");
+        std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
+        std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&worktree_root)
+            .output()
+            .expect("git init should work");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-1",
+                worktree_root.display().to_string(),
+            ))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-capability",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let tree = app
+            .read_directory_tree(session.id(), attachment.id(), None, 2)
+            .expect("tree read should succeed");
+        let file = app
+            .read_file(
+                session.id(),
+                attachment.id(),
+                worktree_root.join("src/lib.rs"),
+            )
+            .expect("file read should succeed");
+        let edit = app
+            .edit_file(
+                session.id(),
+                attachment.id(),
+                worktree_root.join("src/lib.rs"),
+                "after".to_string(),
+            )
+            .expect("file edit should succeed");
+        let git = app
+            .inspect_git(session.id(), attachment.id(), None)
+            .expect("git inspect should succeed");
+
+        assert!(tree
+            .entries
+            .iter()
+            .any(|entry| entry.relative_path == "README.md"));
+        assert_eq!(file.contents, "before");
+        assert_eq!(edit.bytes_written, 5);
+        assert_eq!(edit.old_size, 6);
+        assert_eq!(edit.new_size, 5);
+        assert!(edit.changed);
+        assert_eq!(
+            std::fs::read_to_string(worktree_root.join("src/lib.rs")).expect("file readable"),
+            "after"
+        );
+        assert!(git.status.contains("main"));
+    }
+
+    #[test]
+    fn screenshot_capability_returns_structured_unavailable_result() {
+        std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                "workspace-1",
+                std::env::temp_dir().display().to_string(),
+            ))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-screenshot",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let result = app
+            .capture_screenshot(session.id(), attachment.id())
+            .expect("screenshot request should return structured result");
+        std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
+
+        assert_eq!(
+            result.status,
+            crate::capability::ScreenshotStatus::Unavailable
+        );
+        assert!(result.artifact_path.is_none());
+    }
+
     fn wait_for_terminal_output(
         app: &mut DaemonApp,
         session_id: &str,

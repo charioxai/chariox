@@ -15,14 +15,12 @@ A lightweight, repo-native task board so contributors and future agents can cont
 ## In Progress
 
 - [ ] **M2-001** Expand daemon capability surface beyond runtime baseline
-  - Note: Started with a daemon-owned shell command capability plus local API exposure; continue with richer file/git/transfer/screenshot behavior.
+  - Note: Added shell, directory tree, file read/edit, git inspection, and screenshot capability baselines with local API exposure; continue with transfer/schedule work.
 
 ## Backlog
 
-- [ ] **M2-003** Add directory tree and file view/edit capability baselines
-  - Note: Extend the new capability layer with structured filesystem inspection and edit flows.
-- [ ] **M2-004** Add git/worktree inspection, transfer, and schedule baselines
-  - Note: Build on the capability layer with git/worktree, file transfer, and schedule execution surfaces.
+- [ ] **M2-004** Add screenshot, transfer, and schedule baselines
+  - Note: Build on the capability layer with screenshot capture, file transfer, and schedule execution surfaces.
 
 ## Done
 

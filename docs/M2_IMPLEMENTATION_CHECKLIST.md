@@ -69,25 +69,26 @@ apps/daemon/src/
 
 ## 4.2 Directory tree capability
 
-- [ ] Add a structured directory tree/snapshot capability.
-- [ ] Keep output deterministic and suitable for terminal clients and future workflow handoffs.
-- [ ] Add tests for scoped tree generation and ignored-path behavior when introduced.
+- [x] Add a structured directory tree/snapshot capability.
+- [x] Keep output deterministic and suitable for terminal clients and future workflow handoffs.
+- [x] Add tests for scoped tree generation and ignored-path behavior when introduced.
 
 ## 4.3 File view/edit capabilities
 
-- [ ] Add read-only file view capability with structured text output.
-- [ ] Add daemon-owned file edit capability with change reporting.
+- [x] Add read-only file view capability with structured text output.
+- [x] Add daemon-owned file edit capability with change reporting.
 - [ ] Add tests for large-file chunking or bounded output once behavior is concrete.
+  - Note: current file edit result reports created/changed and old/new size, but bounded read output is still pending.
 
 ## 4.4 Git/worktree inspection capability
 
-- [ ] Add git/worktree status inspection capability.
-- [ ] Surface branch, dirty state, and relevant worktree metadata through structured responses.
-- [ ] Keep the runtime compatible with future isolated workflow branches and worktree assignments.
+- [x] Add git/worktree status inspection capability.
+- [x] Surface branch, dirty state, and relevant worktree metadata through structured responses.
+- [x] Keep the runtime compatible with future isolated workflow branches and worktree assignments.
 
 ## 4.5 Screenshot capability
 
-- [ ] Add a screenshot capture capability contract and local runtime baseline.
+- [x] Add a screenshot capture capability contract and local runtime baseline.
 - [ ] Ensure produced artifacts are session-associated and discoverable.
 
 ## 4.6 File transfer and attach-transferred workflow

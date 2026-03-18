@@ -162,6 +162,11 @@ Once M2 capability work begins, the local daemon API MAY expose structured capab
 Current baseline capability request:
 
 - `capability.shell.run`
+- `capability.tree.read`
+- `capability.file.read`
+- `capability.file.edit`
+- `capability.git.inspect`
+- `capability.screenshot.capture`
 
 Minimum shell request fields:
 
@@ -184,6 +189,9 @@ Minimum shell response fields:
 
 Capability failures MUST remain structured and MUST NOT corrupt PTY/session runtime state.
 Shell capability requests MUST be validated against the requesting attachment and the session worktree boundary before execution.
+
+Tree/file/git capability requests MUST remain scoped to the session worktree boundary and return structured results rather than raw transcript fragments.
+Screenshot capture MUST write only into daemon-chosen session artifact locations.
 
 ## 5.1 `attach_file`
 
