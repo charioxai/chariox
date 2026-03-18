@@ -59,10 +59,13 @@ apps/daemon/src/
 - [x] Capture stdout, stderr, exit status, and execution metadata.
 - [x] Support explicit working directory selection compatible with current session/worktree state.
 - [x] Isolate shell-command failure from provider PTY lifecycle.
+- [x] Enforce timeout bounds for shell commands.
+- [x] Scope shell execution to the session worktree and validate the requesting attachment.
 - [x] Add tests for:
   - successful command execution
   - non-zero exit status
   - working-directory scoping
+  - timeout handling
 
 ## 4.2 Directory tree capability
 
@@ -103,21 +106,21 @@ apps/daemon/src/
 
 - [x] Extend the local daemon API for implemented capabilities.
 - [x] Keep protocol docs aligned with every new capability request/response shape.
-- [ ] Ensure capability APIs remain future-compatible with workflow-node execution.
+- [x] Ensure capability APIs remain future-compatible with workflow-node execution.
 
 ## 4.9 Testing and verification
 
 - [x] Add Rust unit tests for each implemented capability service.
 - [x] Add integration tests covering capability execution through the daemon API.
-- [ ] Ensure JS workspace verification still passes after M2 changes.
-- [ ] Keep daemon formatting, tests, and clippy clean.
+- [x] Ensure JS workspace verification still passes after M2 changes.
+- [x] Keep daemon formatting, tests, and clippy clean.
 
 ## 4.10 Documentation updates required in the same PR set
 
-- [ ] Update `docs/PROTOCOL.md` for each new capability contract.
-- [ ] Update `docs/ARCHITECTURE.md` if capability ownership/responsibilities become more concrete.
-- [ ] Update `docs/CONTRIBUTING.md` with any new verification commands.
-- [ ] Update `agents/AGENTS.md`, `README.md`, `docs/ops/TASKS.md`, and `docs/ops/PROGRESS_LOG.md` as M2 work lands.
+- [x] Update `docs/PROTOCOL.md` for each new capability contract.
+- [x] Update `docs/ARCHITECTURE.md` if capability ownership/responsibilities become more concrete.
+- [x] Update `docs/CONTRIBUTING.md` with any new verification commands.
+- [x] Update `agents/AGENTS.md`, `README.md`, `docs/ops/TASKS.md`, and `docs/ops/PROGRESS_LOG.md` as M2 work lands.
 
 ## 5. Suggested execution order
 

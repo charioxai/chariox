@@ -166,9 +166,11 @@ Current baseline capability request:
 Minimum shell request fields:
 
 - `session_id`
+- `attachment_id`
 - `command`
 - `args`
 - optional `working_directory`
+- optional `timeout_ms`
 
 Minimum shell response fields:
 
@@ -181,6 +183,7 @@ Minimum shell response fields:
 - `stderr`
 
 Capability failures MUST remain structured and MUST NOT corrupt PTY/session runtime state.
+Shell capability requests MUST be validated against the requesting attachment and the session worktree boundary before execution.
 
 ## 5.1 `attach_file`
 

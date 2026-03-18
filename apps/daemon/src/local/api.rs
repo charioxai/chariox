@@ -84,9 +84,11 @@ pub struct EndSessionRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunShellCapabilityRequest {
     pub session_id: String,
+    pub attachment_id: String,
     pub command: String,
     pub args: Vec<String>,
     pub working_directory: Option<PathBuf>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,12 +239,17 @@ impl DaemonApp {
             }
             LocalDaemonRequest::RunShellCommand(request) => {
                 Ok(LocalDaemonResponse::ShellCommandCompleted {
-                    result: self.run_shell_command(RunShellCommandRequest::new(
-                        request.session_id,
-                        request.command,
-                        request.args,
-                        request.working_directory,
-                    ))?,
+                    result: self.run_shell_command(
+                        RunShellCommandRequest::new(
+                            request.session_id,
+                            request.attachment_id,
+                            request.command,
+                            request.args,
+                            PathBuf::new(),
+                            request.working_directory,
+                        )
+                        .with_timeout_ms(request.timeout_ms.unwrap_or(5_000)),
+                    )?,
                 })
             }
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
@@ -542,15 +549,30 @@ mod tests {
 
     #[test]
     fn local_request_api_runs_shell_command_capability() {
+        let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-test");
+        std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let session = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-1", "worktree-1"),
+                CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
             ))
             .expect("session create should succeed")
         {
             LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-shell".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
             _ => panic!("unexpected local response"),
         };
 
@@ -558,9 +580,11 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::RunShellCommand(
                 RunShellCapabilityRequest {
                     session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
                     command: "/bin/sh".to_string(),
                     args: vec!["-lc".to_string(), "printf capability".to_string()],
                     working_directory: None,
+                    timeout_ms: None,
                 },
             ))
             .expect("shell capability should succeed");
@@ -571,6 +595,56 @@ mod tests {
                 assert_eq!(result.stdout, "capability");
             }
             _ => panic!("unexpected shell response"),
+        }
+    }
+
+    #[test]
+    fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
+        let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-denied-test");
+        std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-automation".to_string(),
+                    capability_level: ClientCapabilityLevel::AutomationOnly,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let error = app
+            .handle_local_request(LocalDaemonRequest::RunShellCommand(
+                RunShellCapabilityRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                    command: "/bin/sh".to_string(),
+                    args: vec!["-lc".to_string(), "printf denied".to_string()],
+                    working_directory: None,
+                    timeout_ms: None,
+                },
+            ))
+            .expect_err("automation-only attachment should not run shell commands");
+
+        match error {
+            DaemonError::AttachmentCapabilityDenied { session_id, .. } => {
+                assert_eq!(session_id, session.id());
+            }
+            other => panic!("unexpected error: {other}"),
         }
     }
 }

@@ -165,6 +165,7 @@ Responsibilities:
 - context transfer package generation
 - scheduler execution, failure propagation, retry hooks, and resource-limit enforcement
 - reusable capability services with structured request/response contracts (starting with shell command execution)
+- capability authorization and scoping checks tied to session attachments and worktree boundaries
 
 ### 3.4 Server
 

@@ -94,6 +94,23 @@ pub enum DaemonError {
         command: String,
         message: String,
     },
+    #[error("shell command `{command}` timed out for session `{session_id}` after {timeout_ms}ms")]
+    ShellCommandTimedOut {
+        session_id: String,
+        command: String,
+        timeout_ms: u64,
+    },
+    #[error("shell command working directory `{working_directory}` is outside session `{session_id}` worktree `{worktree_root}`")]
+    ShellCommandOutsideWorktree {
+        session_id: String,
+        working_directory: String,
+        worktree_root: String,
+    },
+    #[error("attachment `{attachment_id}` is not allowed to run shell commands in session `{session_id}`")]
+    AttachmentCapabilityDenied {
+        session_id: String,
+        attachment_id: String,
+    },
     #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]
     LocalHarnessTimeout { session_id: String, timeout_ms: u64 },
 }

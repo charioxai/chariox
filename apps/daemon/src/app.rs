@@ -90,7 +90,29 @@ impl DaemonApp {
             .attachments
             .detach_with_effect(&mut self.sessions, attachment_id)?;
 
+        if effect.removed_queued_prompt_count > 0 {
+            self.terminal.record_notice(
+                attachment.session_id(),
+                None,
+                self.attachments
+                    .list_session_attachment_ids(attachment.session_id()),
+                format!(
+                    "Removed {} queued prompt(s) from detached attachment `{}`.",
+                    effect.removed_queued_prompt_count, attachment_id
+                ),
+            );
+        }
+
         if effect.removed_active_prompt {
+            self.terminal.record_notice(
+                attachment.session_id(),
+                None,
+                self.attachments.list_session_attachment_ids(attachment.session_id()),
+                format!(
+                    "Removed the active prompt from detached attachment `{}` and advanced the queue.",
+                    attachment_id
+                ),
+            );
             let _ = self.advance_next_queued_prompt(attachment.session_id())?;
         }
 
@@ -118,7 +140,23 @@ impl DaemonApp {
         &self,
         request: RunShellCommandRequest,
     ) -> Result<RunShellCommandResult, DaemonError> {
-        let _ = self.sessions.get_session(&request.session_id)?;
+        let session = self.sessions.get_session(&request.session_id)?;
+        let attachment =
+            self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+
+        if !matches!(
+            attachment.capability_level(),
+            crate::attachment::ClientCapabilityLevel::FullTerminal
+                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+        ) {
+            return Err(DaemonError::AttachmentCapabilityDenied {
+                session_id: request.session_id,
+                attachment_id: request.attachment_id,
+            });
+        }
+
+        let mut request = request;
+        request.worktree_root = std::path::PathBuf::from(session.worktree_id());
         self.capabilities.run(request)
     }
 

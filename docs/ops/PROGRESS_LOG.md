@@ -167,3 +167,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a new `capability` module in the daemon runtime and implemented a structured shell command capability service.
 - Exposed shell command execution through the local daemon API with structured stdout/stderr/exit-code results.
 - Added daemon tests and local API tests covering successful shell execution, non-zero exits, and working-directory scoping.
+
+### M2 shell hardening update
+
+- Added timeout bounds and worktree-boundary validation to the shell capability so long-running or escaped commands do not silently bypass daemon safety expectations.
+- Added attachment-aware authorization for shell execution through the local daemon API.
+- Tightened prompt lifecycle UX by emitting notices when queued prompts are dropped because an attachment detached.
