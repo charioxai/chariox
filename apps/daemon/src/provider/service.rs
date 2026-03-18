@@ -1,21 +1,40 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::session::SessionService;
 
-use super::{LaunchProviderRequest, ProviderRegistry, ProviderRunState, RuntimeProviderRun};
+use super::{
+    LaunchProviderRequest, OpenCodeClient, OpenCodeMessage, OpenCodeSessionSnapshot,
+    ProviderRegistry, ProviderRunState, RuntimeProviderRun,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProviderProcessService {
     registry: ProviderRegistry,
+    opencode_runs: BTreeMap<String, OpenCodeRunState>,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodePollResult {
+    pub status: String,
+    pub text_deltas: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeRunState {
+    base_url: String,
+    session_id: String,
+    emitted_text_offsets: BTreeMap<String, usize>,
 }
 
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
             registry: ProviderRegistry::new(),
+            opencode_runs: BTreeMap::new(),
             runs: BTreeMap::new(),
             next_run_number: 0,
         }
@@ -170,17 +189,20 @@ impl ProviderProcessService {
             });
         }
 
+        let _ = self.abort_structured_runtime(run_id);
         let adapter = self.adapter_for(run_snapshot.adapter_key())?;
         adapter.terminate(&run_snapshot);
 
         let run = self.get_run_mut(run_id)?;
         run.mark_ended();
+        let run = run.clone();
 
         if active_run_id.as_deref() == Some(run_id) {
             sessions.set_active_provider_run(session_id, None)?;
         }
+        self.clear_runtime(run_id);
 
-        Ok(run.clone())
+        Ok(run)
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
@@ -213,6 +235,95 @@ impl ProviderProcessService {
         Ok(terminated_runs)
     }
 
+    pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        if run.adapter_key() != "opencode" {
+            return Ok(());
+        }
+
+        let base_url = run
+            .structured_endpoint()
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_endpoint_missing",
+                message: "opencode run did not expose a structured endpoint".to_string(),
+            })?
+            .to_string();
+        let client = OpenCodeClient::new(run.id(), &base_url)?;
+        client.wait_until_healthy(Duration::from_secs(5))?;
+        let session_id = client.create_session()?;
+        self.opencode_runs.insert(
+            run.id().to_string(),
+            OpenCodeRunState {
+                base_url,
+                session_id,
+                emitted_text_offsets: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn clear_runtime(&mut self, provider_run_id: &str) {
+        self.opencode_runs.remove(provider_run_id);
+    }
+
+    pub fn abort_structured_runtime(&self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() != "opencode" {
+            return Ok(false);
+        }
+
+        let state = self.opencode_runs.get(provider_run_id).ok_or_else(|| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            }
+        })?;
+        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+        client.abort_session(&state.session_id)?;
+        Ok(true)
+    }
+
+    pub fn submit_structured_prompt(
+        &self,
+        run: &RuntimeProviderRun,
+        prompt: &str,
+    ) -> Result<bool, DaemonError> {
+        if run.adapter_key() != "opencode" {
+            return Ok(false);
+        }
+
+        let state =
+            self.opencode_runs
+                .get(run.id())
+                .ok_or_else(|| DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "opencode_session_missing",
+                    message: "no OpenCode session is bound to this provider run".to_string(),
+                })?;
+        let client = OpenCodeClient::new(run.id(), &state.base_url)?;
+        client.submit_prompt(&state.session_id, prompt, Some(run.model()))?;
+        Ok(true)
+    }
+
+    pub fn poll_structured_output(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<OpenCodePollResult>, DaemonError> {
+        let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() != "opencode" {
+            return Ok(None);
+        }
+
+        let snapshot = self.opencode_snapshot(provider_run_id)?;
+        let text_deltas = self.render_opencode_text_deltas(provider_run_id, &snapshot.messages)?;
+
+        Ok(Some(OpenCodePollResult {
+            status: snapshot.status,
+            text_deltas,
+        }))
+    }
+
     pub fn mark_run_ended(
         &mut self,
         sessions: &mut SessionService,
@@ -233,17 +344,20 @@ impl ProviderProcessService {
         }
 
         if run_snapshot.state() == ProviderRunState::Ended {
+            self.clear_runtime(run_id);
             return Ok(run_snapshot);
         }
 
         let run = self.get_run_mut(run_id)?;
         run.mark_ended();
+        let run = run.clone();
 
         if active_run_id.as_deref() == Some(run_id) {
             sessions.set_active_provider_run(session_id, None)?;
         }
+        self.clear_runtime(run_id);
 
-        Ok(run.clone())
+        Ok(run)
     }
 
     fn get_run_mut(&mut self, run_id: &str) -> Result<&mut RuntimeProviderRun, DaemonError> {
@@ -268,6 +382,59 @@ impl ProviderProcessService {
     fn next_run_id(&mut self) -> String {
         self.next_run_number += 1;
         format!("provider-run-{}", self.next_run_number)
+    }
+
+    fn opencode_snapshot(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<OpenCodeSessionSnapshot, DaemonError> {
+        let state = self.opencode_runs.get(provider_run_id).ok_or_else(|| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            }
+        })?;
+        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+        client.snapshot(&state.session_id)
+    }
+
+    fn render_opencode_text_deltas(
+        &mut self,
+        provider_run_id: &str,
+        messages: &[OpenCodeMessage],
+    ) -> Result<Vec<Vec<u8>>, DaemonError> {
+        let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            }
+        })?;
+
+        let mut deltas = Vec::new();
+        for message in messages
+            .iter()
+            .filter(|message| message.info.role == "assistant")
+        {
+            for part in message.parts.iter().filter(|part| part.kind == "text") {
+                if part.text.is_empty() {
+                    continue;
+                }
+                let emitted = state
+                    .emitted_text_offsets
+                    .entry(part.id.clone())
+                    .or_insert(0);
+                let start = (*emitted).min(part.text.len());
+                if start == part.text.len() {
+                    continue;
+                }
+                deltas.push(part.text.as_bytes()[start..].to_vec());
+                *emitted = part.text.len();
+            }
+        }
+
+        Ok(deltas)
     }
 }
 

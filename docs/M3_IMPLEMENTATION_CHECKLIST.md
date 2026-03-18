@@ -42,7 +42,7 @@ Exit criteria:
 - [x] The daemon provider model now has a structured-endpoint field for provider runs.
 - [x] The OpenCode launch path now plans `opencode serve` with a daemon-known local endpoint.
 - [x] A first OpenCode HTTP client exists in the daemon for health check, session creation, prompt submission, abort, and session polling.
-- [x] The daemon app has initial OpenCode runtime state for provider endpoint/session binding and structured text polling.
+- [x] The provider layer now owns OpenCode runtime state for provider endpoint/session binding and structured text polling.
 - [x] Runtime tests now have a mock OpenCode HTTP server fixture path for the structured adapter migration.
 - [x] Unexpected provider exit now removes leaked PTY runtime state instead of only marking the run ended.
 - [x] Missing OpenCode session status now surfaces as a provider error instead of being treated as an implicit `idle` turn completion.
@@ -55,9 +55,9 @@ Exit criteria:
 - [x] Add provider-run metadata for structured endpoints.
 - [x] Launch OpenCode in headless server mode with a daemon-known local endpoint.
 - [x] Wait for provider health and create an OpenCode session during provider-run initialization.
-- [ ] Persist structured provider session metadata in a provider-owned runtime layer instead of only in `DaemonApp`.
+- [x] Persist structured provider session metadata in a provider-owned runtime layer instead of only in `DaemonApp`.
 - [ ] Add cleanup guarantees for OpenCode session/runtime state on provider termination, daemon shutdown, and failed initialization.
-Current state: failed initialization and unexpected provider exit now remove PTY/runtime state; daemon-shutdown cleanup still needs explicit coverage.
+Current state: failed initialization, normal session teardown, and unexpected provider exit now clean up PTY/runtime state; daemon-shutdown cleanup still needs explicit coverage.
 
 ## 4.2 OpenCode Prompt and Output Path
 
@@ -97,7 +97,7 @@ Current state: failed initialization and unexpected provider exit now remove PTY
 - [ ] Add unit tests for the OpenCode structured client and adapter state transitions.
 - [ ] Add integration tests for health-check, session-create, prompt-submit, and structured output polling.
 - [ ] Add integration tests for OpenCode abort, server death, and failed initialization cleanup.
-Current state: server death cleanup and missing-session regressions are covered; abort and failed-initialization cleanup still need direct tests.
+Current state: session-teardown abort coverage, server-death cleanup, and missing-session regressions are covered; failed-initialization cleanup still needs direct tests.
 - [ ] Add integration coverage for SSE-based event ingestion once implemented.
 - [ ] Keep existing daemon tests passing while the OpenCode adapter migrates away from PTY-driven prompt delivery.
 

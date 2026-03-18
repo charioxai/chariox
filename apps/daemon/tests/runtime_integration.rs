@@ -500,6 +500,71 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
 }
 
 #[test]
+fn end_session_aborts_active_opencode_session_before_cleanup() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .expect("opencode env lock should not be poisoned");
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let _attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let ended = app
+        .end_session(session.id())
+        .expect("session should end cleanly");
+
+    assert_eq!(ended.status(), SessionStatus::Ended);
+    assert_eq!(mock_server.abort_count(), 1);
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("run should remain queryable")
+            .state(),
+        ProviderRunState::Ended
+    );
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn opencode_launch_requires_explicit_port_override() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -864,6 +929,7 @@ struct MockOpenCodeServer {
 
 #[derive(Debug)]
 struct MockOpenCodeState {
+    abort_count: u64,
     response_delay: Duration,
     omit_session_status: bool,
     status: String,
@@ -885,6 +951,7 @@ impl MockOpenCodeServer {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = stop.clone();
         let state = Arc::new(Mutex::new(MockOpenCodeState {
+            abort_count: 0,
             response_delay,
             omit_session_status: false,
             status: "idle".to_string(),
@@ -924,6 +991,13 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .omit_session_status = omit_session_status;
+    }
+
+    fn abort_count(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .abort_count
     }
 
     fn stop(mut self) {
@@ -983,6 +1057,7 @@ fn handle_mock_opencode_request(
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/abort") => {
             let mut state = state.lock().expect("mock state should not be poisoned");
+            state.abort_count += 1;
             state.status = "idle".to_string();
             json!(true)
         }

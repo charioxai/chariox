@@ -104,6 +104,38 @@ The Prisma schema is the initial persistence model for the same core entities de
 pnpm install
 ```
 
+### Run The Local OpenCode Baseline
+
+The current local runtime is two processes:
+
+- `arroba-daemon`
+- `arroba-cli`
+
+OpenCode setup currently requires:
+
+- `opencode` installed locally and reachable on `PATH`, or `ARROBA_OPENCODE_BIN` set to the executable path
+- `ARROBA_OPENCODE_PORT` set to an explicit local TCP port for `opencode serve`
+
+Example:
+
+```bash
+export ARROBA_OPENCODE_PORT=43111
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon
+```
+
+Then in another terminal:
+
+```bash
+export ARROBA_OPENCODE_PORT=43111
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+```
+
+Optional executable override:
+
+```bash
+export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
+```
+
 ### Verification Commands
 
 Run the current repository verification set from the repository root:
