@@ -132,6 +132,7 @@ Responsibilities:
 - render Arroba slash-command completion, help, warnings, and command results
 - upload files and display artifacts
 - expose daemon-owned queue/config/session metadata
+- emit client-process debug logs into the shared Arroba log root using the daemon/client correlation fields
 
 Current M2 runtime note:
 
@@ -180,6 +181,41 @@ Responsibilities:
 - provider version probing, built-in command-catalog selection, and custom-command discovery when supported
 - extension registry, binding resolution, and provider-view materialization
 - MCP runtime lifecycle management
+- daemon-owned runtime log-root management and log correlation metadata for local processes
+
+### 3.3.1 Observability and Debug Logging Baseline
+
+Arroba should treat debug logging as a shared local-runtime subsystem rather than as ad hoc per-process stderr output.
+
+Required baseline rules:
+
+- There should be one machine-local Arroba log root per OS user account.
+- The daemon should own discovery of that root and expose or propagate it to local Arroba-managed processes.
+- Each process should write its own append-only structured log file under that shared root instead of multiple processes appending to one shared file directly.
+- Structured log records should include enough correlation metadata to reconstruct one session/provider-run/client flow across processes.
+
+Minimum correlation fields:
+
+- timestamp
+- level
+- component
+- process kind
+- pid
+- session id when known
+- provider run id when known
+- attachment id or client id when known
+- request id or trace id when known
+
+Recommended layout:
+
+- one root such as `XDG_STATE_HOME/arroba/logs` or a daemon-configured equivalent
+- per-process files grouped by date and process role
+- session/provider-run correlation handled in record fields rather than by requiring one file per session
+
+Default privacy posture:
+
+- metadata, warnings, errors, lifecycle events, and structured diagnostics should be loggable by default
+- prompt content, provider output, and other user-generated content should be treated as debug-only capture and should not be enabled silently
 
 ### 3.4 Server
 

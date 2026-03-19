@@ -214,3 +214,15 @@ Chronological notes to preserve execution context between contributors/agents.
 - Promoted `apps/cli` to the primary local CLI implementation using TypeScript + OpenTUI.
 - Kept `arroba-cli` as a Rust compatibility launcher that builds and starts the TypeScript client.
 - Retained the previous Rust-only CLI as `arroba-cli-rust`, but marked it as phased out rather than the default local client surface.
+
+### TypeScript CLI hardening update
+
+- Added retry/backoff policy for transient local IPC polling failures in the TypeScript CLI instead of treating the first poll error as immediately fatal.
+- Changed TypeScript CLI exit semantics so cleanup failures remain visible and require a second explicit exit attempt before forcing shutdown.
+- Added initial TypeScript CLI behavior tests around retry/exit policy helpers and updated the roadmap/checklist so M3 now explicitly calls out TypeScript CLI hardening before slash-command expansion.
+
+### M3 observability priority update
+
+- Raised a project-wide logging/debugging system ahead of the remaining M3 tasks after the TypeScript CLI migration.
+- Documented the intended baseline as one shared machine-local log root with per-process structured log files and shared session/provider/client correlation fields.
+- Marked privacy policy, retention, and content-capture scope as explicit design decisions to resolve before implementation.

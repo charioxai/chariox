@@ -66,7 +66,13 @@ impl ProviderProcessService {
             .map(str::to_owned);
 
         if let Some(active_run_id) = active_run_id.as_deref() {
-            self.park_run(sessions, &request.session_id, active_run_id)?;
+            let active_run = self.get_run(active_run_id)?;
+            if active_run.state() == ProviderRunState::Ended {
+                sessions.set_active_provider_run(&request.session_id, None)?;
+                self.clear_runtime(active_run_id);
+            } else {
+                self.park_run(sessions, &request.session_id, active_run_id)?;
+            }
         }
 
         let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
@@ -642,5 +648,36 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn launches_new_run_when_session_points_at_ended_active_run() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+
+        let first = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("first run should launch");
+        providers
+            .get_run_mut(first.id())
+            .expect("first run should exist")
+            .mark_ended();
+
+        let second = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "opus"))
+            .expect("second run should launch even if active run is stale and ended");
+        let session = sessions
+            .get_session(session.id())
+            .expect("session should exist");
+        let first = providers
+            .get_run(first.id())
+            .expect("first run should still exist");
+
+        assert_eq!(first.state(), ProviderRunState::Ended);
+        assert_eq!(second.state(), ProviderRunState::Running);
+        assert_eq!(session.active_provider_run_id(), Some(second.id()));
     }
 }

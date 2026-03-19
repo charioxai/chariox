@@ -52,6 +52,8 @@ Exit criteria:
 - [x] Unexpected provider exit now removes leaked PTY runtime state instead of only marking the run ended.
 - [x] Missing OpenCode session status now surfaces as a provider error instead of being treated as an implicit `idle` turn completion.
 - [x] OpenCode startup no longer bind-allocates a free local port; the daemon now requires an explicit configured port to avoid the selection race.
+- [x] The TypeScript CLI now retries transient IPC polling failures instead of treating the first poll error as immediately fatal.
+- [x] The TypeScript CLI now keeps exit-cleanup failures visible instead of immediately exiting successfully and hiding them.
 
 ## 4. Workstreams
 
@@ -75,14 +77,45 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 - [ ] Surface OpenCode `session.error` and tool lifecycle events as daemon notices or richer client-facing output.
 - [x] Add explicit Arroba stop/cancel behavior mapped to OpenCode `session.abort`, with queue advancement deferred until provider confirmation.
 
-## 4.3 Slash Commands and OpenCode Discovery
+## 4.3 Project-Wide Logging and Debugging
+
+- [ ] Define one daemon-owned machine-local log root for Arroba runtime processes.
+- [ ] Use structured log records with shared correlation fields:
+  - timestamp
+  - level
+  - component
+  - process kind
+  - pid
+  - session id
+  - provider run id
+  - attachment id/client id when applicable
+  - request id / trace id when applicable
+- [ ] Write logs per process under the shared log root instead of forcing all processes to contend for one file.
+- [ ] Cover at least:
+  - daemon
+  - TypeScript CLI
+  - future server process
+  - future provider-side helper processes when Arroba launches them directly
+- [ ] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
+- [ ] Define default privacy policy for logs:
+  - metadata/error logs by default
+  - prompt/output content capture only with explicit opt-in or debug mode
+- [ ] Document log location, rotation/retention policy, and env vars for local debugging.
+
+## 4.4 TypeScript CLI Hardening
+
+- [ ] Surface OpenCode `session.error` and tool lifecycle events as richer TypeScript CLI transcript/status output instead of plain notices only.
+- [ ] Add TypeScript CLI integration-level tests for bootstrap, transcript rendering, polling recovery, and exit cleanup.
+- [ ] Keep the TypeScript client and the Rust launcher aligned on help text, env vars, and expected local startup flow.
+
+## 4.5 Slash Commands and OpenCode Discovery
 
 - [ ] Add daemon-owned slash-command dispatch to the local CLI path.
 - [ ] Prefer OpenCode machine-readable command discovery over catalog-only fallback.
 - [ ] Integrate OpenCode agent and skill discovery into `/agent` completion state.
 - [ ] Keep shipped Arroba catalogs as compatibility fallback when provider APIs are unavailable or unsupported.
 
-## 4.4 Capability Surface on the New Path
+## 4.6 Capability Surface on the New Path
 
 - [ ] Wire shell capability through slash-command dispatch.
 - [ ] Wire directory tree and file view/edit capabilities through slash-command dispatch.
@@ -91,7 +124,7 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 - [ ] Wire file transfer and attach-transferred flows through slash-command dispatch.
 - [ ] Add CLI rendering for capability results distinct from provider output.
 
-## 4.5 Additional Providers
+## 4.7 Additional Providers
 
 - [ ] Add Claude Code provider support using the same daemon-owned local CLI model.
 - [ ] Add Codex provider support using the same daemon-owned local CLI model.
@@ -99,7 +132,8 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 
 ## 5. Testing and Verification
 
-- [ ] Add dedicated TypeScript CLI behavior tests for bootstrap, transcript rendering, polling/recovery, and exit cleanup.
+- [x] Add initial TypeScript CLI behavior tests for retry and exit-cleanup policy helpers.
+- [ ] Add broader TypeScript CLI behavior tests for bootstrap, transcript rendering, polling/recovery, and exit cleanup at the UI integration level.
 - [ ] Add unit tests for the OpenCode structured client and adapter state transitions.
 - [ ] Add integration tests for health-check, session-create, prompt-submit, and structured output polling.
 - [ ] Add integration tests for OpenCode abort, server death, and failed initialization cleanup.
@@ -112,9 +146,11 @@ Current state: session-teardown abort coverage, server-death cleanup, and missin
 1. OpenCode structured runtime bootstrap
 2. prompt submit and structured output path
 3. prompt lifecycle completion from provider signals
-4. slash-command dispatch
-5. capability wiring
-6. additional providers
+4. project-wide logging/debugging foundation
+5. TypeScript CLI hardening and richer event rendering
+6. slash-command dispatch
+7. capability wiring
+8. additional providers
 
 ## 7. Verification commands for claiming meaningful M3 progress
 

@@ -98,10 +98,16 @@ Exit criteria:
 Status:
 
 - next implementation priority after M2 closure
+- currently in the OpenCode stabilization, TypeScript CLI hardening, and observability-plumbing phase
+- immediate next focus is a project-wide logging/debugging system shared across daemon and local client processes
+- after that, continue with the TypeScript CLI path: richer OpenCode event rendering and broader client-side tests
+- slash-command dispatch and capability wiring follow after that client/runtime path is solid
 
 Outcomes:
 
 - upgrade OpenCode from the M2 PTY bootstrap path to a structured local server/session/event adapter
+- add a project-wide logging/debugging system with one machine-local log root and correlated logs across daemon and client processes
+- harden the primary TypeScript local CLI after the Rust-to-TypeScript client migration
 - shell command capability
 - directory tree + file view/edit capabilities
 - screenshot capture capability
@@ -192,6 +198,7 @@ Exit criteria:
 
 ## 4. Cross-Cutting Workstreams
 
+- Project-wide observability and debugging pipeline
 - Provider compatibility matrix and adapter conformance
 - Extension compatibility matrix and projection rules per provider
 - UX quality for slash-command completion, status, and transfer transparency

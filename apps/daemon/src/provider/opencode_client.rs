@@ -130,6 +130,11 @@ struct RawOpenCodeEvent {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawOpenCodeEventEnvelope {
+    payload: RawOpenCodeEvent,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenCodeMessageUpdatedEvent {
     info: OpenCodeMessageInfo,
 }
@@ -490,7 +495,10 @@ fn preview_response_body(body: &[u8]) -> String {
 }
 
 fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<OpenCodeEvent> {
-    let raw: RawOpenCodeEvent = serde_json::from_str(payload).ok()?;
+    let raw = serde_json::from_str::<RawOpenCodeEventEnvelope>(payload)
+        .map(|envelope| envelope.payload)
+        .or_else(|_| serde_json::from_str::<RawOpenCodeEvent>(payload))
+        .ok()?;
     match raw.kind.as_str() {
         "server.connected" | "server.heartbeat" => None,
         "message.updated" => {
@@ -664,11 +672,13 @@ mod tests {
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request);
             let payload = serde_json::json!({
-                "type": "session.error",
-                "properties": {
-                    "sessionID": "session-1",
-                    "error": {
-                        "message": "bundled first event"
+                "payload": {
+                    "type": "session.error",
+                    "properties": {
+                        "sessionID": "session-1",
+                        "error": {
+                            "message": "bundled first event"
+                        }
                     }
                 }
             })
@@ -705,5 +715,42 @@ mod tests {
 
         subscription.stop();
         let _ = server.join();
+    }
+
+    #[test]
+    fn parses_wrapped_sse_event_payloads() {
+        let payload = serde_json::json!({
+            "payload": {
+                "type": "message.part.delta",
+                "properties": {
+                    "sessionID": "session-1",
+                    "messageID": "message-1",
+                    "partID": "part-1",
+                    "field": "text",
+                    "delta": "hello"
+                }
+            }
+        })
+        .to_string();
+
+        let event = super::parse_sse_event(&payload, "provider-run-1")
+            .expect("wrapped payload should parse");
+
+        match event {
+            OpenCodeEvent::MessagePartDelta {
+                session_id,
+                message_id,
+                part_id,
+                field,
+                delta,
+            } => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(message_id, "message-1");
+                assert_eq!(part_id, "part-1");
+                assert_eq!(field, "text");
+                assert_eq!(delta, "hello");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

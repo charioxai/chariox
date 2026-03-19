@@ -17,7 +17,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
 ## Backlog
 
 - [ ] **M3-001** Expand local capability surface after OpenCode baseline
-  - Note: Continue with slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces after the end-to-end OpenCode path is stable.
+  - Note: First add project-wide logging/debugging, then harden the TypeScript CLI and richer OpenCode event rendering, then continue with slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces.
 - [ ] **M3-002** Add Claude Code and Codex provider support
   - Note: Reuse the same daemon-managed local CLI model after OpenCode is proven.
 - [ ] **M4-001** Add local multi-agent workflow runtime

@@ -1028,6 +1028,14 @@ impl DaemonApp {
     ) -> Result<bool, DaemonError> {
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            if self
+                .sessions
+                .get_session(session_id)?
+                .active_provider_run_id()
+                == Some(provider_run_id)
+            {
+                self.sessions.set_active_provider_run(session_id, None)?;
+            }
             let _ = self.pty.remove_process(provider_run_id)?;
             self.providers.clear_runtime(provider_run_id);
             return Ok(true);
