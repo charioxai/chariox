@@ -226,3 +226,11 @@ Chronological notes to preserve execution context between contributors/agents.
 - Raised a project-wide logging/debugging system ahead of the remaining M3 tasks after the TypeScript CLI migration.
 - Documented the intended baseline as one shared machine-local log root with per-process structured log files and shared session/provider/client correlation fields.
 - Marked privacy policy, retention, and content-capture scope as explicit design decisions to resolve before implementation.
+
+### M3 logging foundation update
+
+- Added a shared NDJSON logging baseline for the daemon, the Rust `arroba-cli` launcher, and the primary TypeScript CLI.
+- Standardized log-root resolution around `ARROBA_LOG_DIR`, `XDG_STATE_HOME/arroba/logs`, `~/.local/state/arroba/logs`, then `./.arroba/logs`.
+- Added built-in local log inspection through `arroba-cli logs`.
+- Removed the previous ad hoc CLI debug-file hook and daemon IPC debug stderr hook in favor of the shared logger.
+- Updated contributor and agent guidance so future debug work must extend the shared logging system instead of introducing separate mechanisms.

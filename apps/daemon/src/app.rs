@@ -112,7 +112,21 @@ impl DaemonApp {
     }
 
     pub fn attach(&mut self, request: AttachRequest) -> Result<RuntimeAttachment, DaemonError> {
-        self.attachments.attach(&mut self.sessions, request)
+        let session_id = request.session_id.clone();
+        let client_id = request.client_id.clone();
+        let capability_level = format!("{:?}", request.capability_level);
+        let attachment = self.attachments.attach(&mut self.sessions, request)?;
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "attachment joined session",
+            serde_json::json!({
+                "session_id": session_id,
+                "attachment_id": attachment.id(),
+                "client_id": client_id,
+                "capability_level": capability_level,
+            }),
+        );
+        Ok(attachment)
     }
 
     pub fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
@@ -146,6 +160,18 @@ impl DaemonApp {
             let _ = self.advance_next_queued_prompt(attachment.session_id())?;
         }
 
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "attachment left session",
+            serde_json::json!({
+                "session_id": attachment.session_id(),
+                "attachment_id": attachment.id(),
+                "removed_queued_prompts": effect.removed_queued_prompt_count,
+                "removed_active_prompt": effect.removed_active_prompt,
+                "remaining_attachment_ids": self.attachments.list_session_attachment_ids(attachment.session_id()),
+            }),
+        );
+
         Ok(attachment)
     }
 
@@ -156,15 +182,29 @@ impl DaemonApp {
             return self.sessions.end_session(session_id);
         }
 
-        self.attachments.remove_session_attachments(session_id);
+        let removed_attachments = self.attachments.remove_session_attachments(session_id);
         let terminated_runs = self
             .providers
             .terminate_session_runs(&mut self.sessions, session_id)?;
+        let terminated_run_ids = terminated_runs
+            .iter()
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
         for run in terminated_runs {
             self.pty.remove_process(run.id())?;
         }
         self.prompt_activity.remove(session_id);
-        self.sessions.end_session(session_id)
+        let ended = self.sessions.end_session(session_id)?;
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session ended",
+            serde_json::json!({
+                "session_id": session_id,
+                "removed_attachment_ids": removed_attachments.iter().map(|attachment| attachment.id().to_string()).collect::<Vec<_>>(),
+                "terminated_provider_run_ids": terminated_run_ids,
+            }),
+        );
+        Ok(ended)
     }
 
     pub fn run_shell_command(
@@ -296,9 +336,14 @@ impl DaemonApp {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        eprintln!(
-            "[arroba][daemon] launching provider adapter={} provider={} session={}",
-            request.adapter_key, request.provider, request.session_id
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "launching provider run",
+            serde_json::json!({
+                "adapter_key": request.adapter_key.clone(),
+                "provider": request.provider.clone(),
+                "session_id": request.session_id.clone(),
+            }),
         );
         if request.adapter_key == "opencode" && request.working_directory.is_none() {
             request.working_directory = Some(PathBuf::from(
@@ -316,16 +361,24 @@ impl DaemonApp {
             .attachments
             .list_session_attachment_ids(&request.session_id);
         let run = self.providers.launch_run(&mut self.sessions, request)?;
-        eprintln!(
-            "[arroba][daemon] spawned provider run {} for session {}",
-            run.id(),
-            run.session_id()
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "spawned provider run metadata",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+                "provider": run.provider(),
+            }),
         );
         if let Err(error) = self.pty.spawn_for_run(&run) {
-            eprintln!(
-                "[arroba][daemon] PTY spawn failed for provider run {}: {}",
-                run.id(),
-                error
+            crate::logging::error_with_fields(
+                "daemon.app",
+                "PTY spawn failed for provider run",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "session_id": run.session_id(),
+                    "error": error.to_string(),
+                }),
             );
             let _ = self
                 .providers
@@ -364,15 +417,23 @@ impl DaemonApp {
             }
             return Err(error);
         }
-        eprintln!(
-            "[arroba][daemon] initializing runtime for provider run {}",
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "initializing provider runtime",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+            }),
         );
         if let Err(error) = self.providers.initialize_runtime(&run) {
-            eprintln!(
-                "[arroba][daemon] runtime initialization failed for provider run {}: {}",
-                run.id(),
-                error
+            crate::logging::error_with_fields(
+                "daemon.app",
+                "provider runtime initialization failed",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "session_id": run.session_id(),
+                    "error": error.to_string(),
+                }),
             );
             let _ = self.pty.remove_process(run.id());
             self.providers.clear_runtime(run.id());
@@ -388,9 +449,13 @@ impl DaemonApp {
             }
             return Err(error);
         }
-        eprintln!(
-            "[arroba][daemon] provider run {} initialized successfully",
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "provider runtime initialized successfully",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+            }),
         );
         Ok(run)
     }

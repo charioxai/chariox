@@ -4,6 +4,7 @@ pub mod capability;
 pub mod config;
 pub mod error;
 pub mod local;
+pub mod logging;
 pub mod provider;
 pub mod pty;
 pub mod session;

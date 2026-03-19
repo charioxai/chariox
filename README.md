@@ -93,6 +93,8 @@ The Prisma schema is the initial persistence model for the same core entities de
 - `docs/spec-v1.md`: the product specification for Arroba v1
 - `docs/ARCHITECTURE.md`: implementation-oriented architecture view
 - `docs/PROTOCOL.md`: protocol lanes and structured message contracts
+- `docs/RUNNING_LOCAL.md`: how to run the current local daemon + CLI path
+- `docs/LOGGING.md`: shared logging setup, configuration, and inspection
 - `docs/ROADMAP.md`: milestone plan
 - `docs/CONTRIBUTING.md`: contributor workflow and testing expectations
 - `docs/M0_IMPLEMENTATION_CHECKLIST.md`: M0 definition of done and execution checklist
@@ -116,6 +118,8 @@ pnpm install
 ```
 
 ### Run The Local OpenCode Baseline
+
+For a fuller local-runtime guide, see [RUNNING_LOCAL.md](/Users/miguel/arroba/docs/RUNNING_LOCAL.md).
 
 The current local runtime is two processes:
 
@@ -177,6 +181,54 @@ Optional Bun override:
 
 ```bash
 export BUN_BIN=/absolute/path/to/bun
+```
+
+### Logging And Debugging
+
+For the full logging guide, see [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md).
+
+Arroba now uses one machine-local shared log root for runtime processes instead of ad hoc debug files.
+
+Default log root resolution:
+
+- `ARROBA_LOG_DIR`, if set
+- `XDG_STATE_HOME/arroba/logs`
+- `~/.local/state/arroba/logs`
+- `./.arroba/logs` as a final fallback
+
+Current process coverage:
+
+- `arroba-daemon`
+- the Rust `arroba-cli` launcher
+- the primary TypeScript CLI process in `apps/cli`
+- the Fastify server process in `apps/server`
+
+Current defaults:
+
+- log format: NDJSON, one JSON record per line
+- retention: roughly 7 days and 200 MB total per log root
+- privacy: metadata, lifecycle, warnings, and errors by default; prompt/provider content should only be captured via explicit debug-oriented changes
+
+Useful env vars:
+
+```bash
+export ARROBA_LOG_DIR=/absolute/path/to/arroba-logs
+export ARROBA_LOG_LEVEL=debug
+```
+
+Inspect logs directly:
+
+```bash
+tail -f ~/.local/state/arroba/logs/*.ndjson
+jq 'select(.session_id=="session-1")' ~/.local/state/arroba/logs/*.ndjson
+```
+
+Or use the built-in viewer:
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --session session-1
+pnpm --filter @arroba/cli run dev -- logs --process-kind daemon --level error
 ```
 
 ### Verification Commands

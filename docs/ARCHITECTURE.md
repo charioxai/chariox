@@ -212,6 +212,14 @@ Recommended layout:
 - per-process files grouped by date and process role
 - session/provider-run correlation handled in record fields rather than by requiring one file per session
 
+Current local baseline:
+
+- `ARROBA_LOG_DIR` overrides the log root when set
+- otherwise Arroba resolves `XDG_STATE_HOME/arroba/logs`, then `~/.local/state/arroba/logs`, then a local `./.arroba/logs` fallback
+- the daemon, the Rust `arroba-cli` launcher, and the TypeScript CLI all write per-process NDJSON log files under that root
+- the local Fastify server now uses the same root and record shape
+- local inspection can happen either with standard tools (`tail`, `jq`) or through the built-in `arroba-cli logs` command
+
 Default privacy posture:
 
 - metadata, warnings, errors, lifecycle events, and structured diagnostics should be loggable by default

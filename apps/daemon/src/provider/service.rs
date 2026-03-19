@@ -266,27 +266,39 @@ impl ProviderProcessService {
             })?
             .to_string();
         let client = OpenCodeClient::new(run.id(), &base_url)?;
-        eprintln!(
-            "[arroba][daemon][opencode] waiting for health at {} for run {}",
-            base_url,
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.provider.opencode",
+            "waiting for opencode health",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "base_url": base_url.clone(),
+            }),
         );
         client.wait_until_healthy(Duration::from_secs(30))?;
-        eprintln!(
-            "[arroba][daemon][opencode] healthy at {} for run {}",
-            base_url,
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.provider.opencode",
+            "opencode became healthy",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "base_url": base_url.clone(),
+            }),
         );
         let session_id = client.create_session()?;
-        eprintln!(
-            "[arroba][daemon][opencode] created OpenCode session {} for run {}",
-            session_id,
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.provider.opencode",
+            "created opencode session",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "provider_session_id": session_id.clone(),
+            }),
         );
         let event_subscription = client.subscribe_events()?;
-        eprintln!(
-            "[arroba][daemon][opencode] subscribed to events for run {}",
-            run.id()
+        crate::logging::info_with_fields(
+            "daemon.provider.opencode",
+            "subscribed to opencode events",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+            }),
         );
         self.opencode_runs.insert(
             run.id().to_string(),

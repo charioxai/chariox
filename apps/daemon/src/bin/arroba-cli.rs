@@ -3,10 +3,18 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
+    let _ = arroba_daemon::logging::init_process_logger("cli-launcher");
     match run() {
-        Ok(code) => code,
+        Ok(code) => {
+            arroba_daemon::logging::info("cli.launcher", "TypeScript CLI exited");
+            code
+        }
         Err(message) => {
-            eprintln!("{message}");
+            arroba_daemon::logging::error_with_fields(
+                "cli.launcher",
+                "TypeScript CLI launcher failed",
+                serde_json::json!({ "error": message }),
+            );
             ExitCode::from(1)
         }
     }
@@ -20,6 +28,14 @@ fn run() -> Result<ExitCode, String> {
     let cli_dir = workspace_root.join("apps/cli");
 
     let bun = env::var("BUN_BIN").unwrap_or_else(|_| "bun".to_string());
+    arroba_daemon::logging::info_with_fields(
+        "cli.launcher",
+        "launching TypeScript CLI",
+        serde_json::json!({
+            "workspace_root": workspace_root.display().to_string(),
+            "bun_bin": bun.clone(),
+        }),
+    );
 
     ensure_bun_available(&bun)?;
     ensure_cli_built(&workspace_root, &bun)?;
@@ -45,17 +61,17 @@ fn ensure_bun_available(bun: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .status()
         .map_err(|_| {
-            format!(
-                "Arroba's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
-            )
+            "Arroba's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
+                .to_string()
         })?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(format!(
+        Err(
             "Arroba's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
-        ))
+                .to_string(),
+        )
     }
 }
 

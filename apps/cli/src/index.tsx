@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import { homedir } from "node:os"
@@ -9,7 +8,9 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
-import { LocalIpcClient, LocalIpcError } from "./ipc.js"
+import { LocalIpcClient } from "./ipc.js"
+import { createProcessLogger, type ArrobaLogger } from "./logging.js"
+import { runLogViewer } from "./logs.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   describeCliError,
@@ -84,31 +85,43 @@ type BootstrapState = {
   options: CliOptions
 }
 
-const DEBUG_ENABLED = process.env.ARROBA_CLI_DEBUG === "1"
-const DEBUG_LOG_PATH = process.env.ARROBA_CLI_DEBUG_LOG ?? path.join(process.cwd(), ".arroba-cli-debug.log")
+const OPEN_CONSOLE_ON_ERROR = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
+let processLogger: ArrobaLogger | null = null
 
-function recordDebug(message: string) {
-  if (!DEBUG_ENABLED) {
-    return
-  }
-
-  try {
-    appendFileSync(DEBUG_LOG_PATH, `${new Date().toISOString()} ${message}\n`, "utf8")
-  } catch {}
+function getLogger(component: string, fields: Record<string, unknown> = {}) {
+  return processLogger?.child(component, fields) ?? null
 }
 
 async function main() {
-  recordDebug(`main start argv=${JSON.stringify(process.argv.slice(2))}`)
-  const options = parseArgs(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  if (argv[0] === "logs") {
+    await runLogViewer(argv.slice(1))
+    return
+  }
+
+  processLogger = createProcessLogger("cli")
+  getLogger("cli.main")?.info("starting cli process", { argv })
+  const options = parseArgs(argv)
   const socketPath = options.socketPath ?? defaultSocketPath()
   const client = new LocalIpcClient(socketPath)
   const workspace = options.workspace ?? process.cwd()
   const worktree = options.worktree ?? workspace
-  recordDebug(`bootstrap start socket=${socketPath} workspace=${workspace} worktree=${worktree}`)
+  getLogger("cli.main")?.info("bootstrapping cli session", {
+    socket_path: socketPath,
+    workspace_id: workspace,
+    worktree_id: worktree,
+    client_id: options.clientId,
+  })
   const bootstrap = await bootstrapSession(client, options, workspace, worktree)
-  recordDebug(`bootstrap ok session=${bootstrap.session.id} attachment=${bootstrap.attachment.id}`)
+  getLogger("cli.main")?.info("bootstrapped cli session", {
+    session_id: bootstrap.session.id,
+    attachment_id: bootstrap.attachment.id,
+    created_session: bootstrap.createdSession,
+  })
   await maybeResize(client, bootstrap.session.id)
-  recordDebug(`initial resize ok session=${bootstrap.session.id}`)
+  getLogger("cli.main")?.debug("sent initial resize", {
+    session_id: bootstrap.session.id,
+  })
 
   render(
     () => <ArrobaCliApp bootstrap={bootstrap} />, 
@@ -117,14 +130,19 @@ async function main() {
       gatherStats: false,
       exitOnCtrlC: false,
       autoFocus: true,
-      openConsoleOnError: DEBUG_ENABLED,
+      openConsoleOnError: OPEN_CONSOLE_ON_ERROR,
     },
   )
-  recordDebug("render mounted")
+  getLogger("cli.main")?.info("render mounted")
 }
 
 function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const { client, session, attachment, createdSession, options } = props.bootstrap
+  const appLogger = getLogger("cli.app", {
+    session_id: session.id,
+    attachment_id: attachment.id,
+    client_id: options.clientId,
+  })
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const [sessionState, setSessionState] = createSignal(session)
@@ -158,7 +176,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntryCounter(nextId)
     setEntries(entries.length, { id: nextId, ...entry })
     renderTranscript()
-    recordDebug(`appendEntry role=${entry.role} id=${nextId} total=${entries.length + 1} chars=${entry.text.length}`)
+    appLogger?.debug("appended transcript entry", {
+      role: entry.role,
+      entry_id: nextId,
+      total_entries: entries.length + 1,
+      chars: entry.text.length,
+    })
   }
 
   const appendUserPrompt = (text: string) => {
@@ -194,11 +217,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     )
     renderTranscript()
     if (merged) {
-      recordDebug(`assistantChunk merged chars=${normalized.length} total=${entries.length}`)
+      appLogger?.debug("merged assistant chunk", {
+        chars: normalized.length,
+        total_entries: entries.length,
+      })
       return
     }
     setEntryCounter((value) => value + 1)
-    recordDebug(`assistantChunk newEntry id=${entryCounter() + 1} chars=${normalized.length} total=${entries.length + 1}`)
+    appLogger?.debug("created assistant transcript entry", {
+      entry_id: entryCounter() + 1,
+      chars: normalized.length,
+      total_entries: entries.length + 1,
+    })
   }
 
   const renderTranscript = () => {
@@ -223,12 +253,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const requestExit = async () => {
     if (closing && exitCleanupFailed) {
+      appLogger?.warn("forcing cli exit after prior cleanup failure")
       process.exit(1)
     }
     if (closing) {
       return
     }
     closing = true
+    appLogger?.info("requested cli exit", {
+      created_session: createdSession,
+    })
     try {
       if (createdSession) {
         await client.send(endSessionRequest(sessionState().id))
@@ -240,6 +274,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const decision = getExitCleanupDecision(error, exitCleanupFailed)
       exitCleanupFailed = true
       closing = false
+      appLogger?.warn("exit cleanup failed", {
+        error: formatError(error),
+        will_exit: decision.exit,
+      })
       appendNotice(decision.message, "warning")
       setStatusLine(decision.message)
       if (decision.exit) {
@@ -247,6 +285,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
+    appLogger?.info("cli exit cleanup completed")
     process.exit(0)
   }
 
@@ -268,8 +307,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (trimmed === "/stop") {
       try {
         await client.send(cancelActivePromptRequest(sessionState().id, attachment.id))
+        appLogger?.info("requested active prompt cancellation")
         setStatusLine("Cancellation requested.")
       } catch (error) {
+        appLogger?.error("active prompt cancellation failed", {
+          error: formatError(error),
+        })
         setFatalError(formatError(error))
       } finally {
         promptInput.clear()
@@ -279,15 +322,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const prompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
     try {
-      recordDebug(`submitPrompt start chars=${prompt.length}`)
-      const response = await submitPromptWithRecovery(client, sessionState().id, attachment.id, prompt, options)
+      appLogger?.info("submitting prompt", {
+        chars: prompt.length,
+      })
+      const response = await submitPromptWithRecovery(client, sessionState().id, attachment.id, prompt, options, appLogger)
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
       setSessionState(payload.session)
       appendUserPrompt(prompt)
       const outcomeName = firstVariantName(payload.outcome)
-      recordDebug(
-        `submitPrompt ok outcome=${outcomeName} active=${payload.session.active_prompt?.id ?? "none"} queued=${payload.session.queued_prompts.length}`,
-      )
+      appLogger?.info("prompt submitted", {
+        outcome: outcomeName,
+        active_prompt_id: payload.session.active_prompt?.id ?? null,
+        queued_prompts: payload.session.queued_prompts.length,
+      })
       setStatusLine(
         outcomeName === "Queued"
           ? `Prompt queued behind ${payload.session.active_prompt?.id ?? "the active turn"}.`
@@ -295,7 +342,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       promptInput.clear()
     } catch (error) {
-      recordDebug(`submitPrompt error=${formatError(error)}`)
+      appLogger?.error("prompt submission failed", {
+        error: formatError(error),
+      })
       setFatalError(formatError(error))
     }
   }
@@ -319,6 +368,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const markPollerDegraded = (operation: string, message: string) => {
       const wasHealthy = degradedPollers.size === 0
       degradedPollers.add(operation)
+      appLogger?.warn("poller entered degraded mode", {
+        operation,
+        degraded_pollers: [...degradedPollers],
+      })
       setStatusLine(message)
       if (wasHealthy) {
         appendNotice(message, "warning")
@@ -330,6 +383,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       const wasDegraded = degradedPollers.delete(operation)
+      if (wasDegraded) {
+        appLogger?.info("poller recovered", {
+          operation,
+          degraded_pollers: [...degradedPollers],
+          prior_failures: failureCount,
+        })
+      }
       if (wasDegraded && degradedPollers.size === 0) {
         setStatusLine(DEFAULT_CONNECTED_STATUS)
         appendNotice("Reconnected to the Arroba daemon.")
@@ -353,13 +413,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             break
           }
           consecutiveFailures += 1
-          recordDebug(`${operation} error=${formatError(error)} attempt=${consecutiveFailures}`)
+          appLogger?.warn("poll operation failed", {
+            operation,
+            error: formatError(error),
+            attempt: consecutiveFailures,
+          })
           const decision = getPollRecoveryDecision(operation, error, consecutiveFailures)
           if (decision.retry) {
             markPollerDegraded(operation, decision.message)
             await sleep(decision.delayMs)
             continue
           }
+          appLogger?.error("poll operation became fatal", {
+            operation,
+            error: formatError(error),
+          })
           setFatalError(formatError(error))
           break
         }
@@ -374,9 +442,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         )
         const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
         if (payload.records.length > 0) {
-          recordDebug(
-            `pumpTerminalOutput records=${payload.records.length} kinds=${payload.records.map((record) => record.kind).join(",")}`,
-          )
+          appLogger?.debug("received terminal output records", {
+            record_count: payload.records.length,
+            kinds: payload.records.map((record) => record.kind),
+          })
         }
         for (const record of payload.records) {
           const text = Buffer.from(record.bytes).toString("utf8")
@@ -396,7 +465,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         )
         const payload = expectVariant<{ notices: RuntimeNoticeRecord[] }>(response, "RuntimeNotices")
         if (payload.notices.length > 0) {
-          recordDebug(`pollRuntimeNotices notices=${payload.notices.length}`)
+          appLogger?.debug("received runtime notices", {
+            notice_count: payload.notices.length,
+          })
         }
         for (const notice of payload.notices) {
           appendNotice(notice.message)
@@ -554,6 +625,7 @@ async function submitPromptWithRecovery(
   attachmentId: string,
   prompt: string,
   options: CliOptions,
+  logger?: ArrobaLogger | null,
 ): Promise<Record<string, unknown>> {
   try {
     return await client.send<Record<string, unknown>>(
@@ -564,12 +636,17 @@ async function submitPromptWithRecovery(
       throw error
     }
 
-    recordDebug(`submitPrompt recoverableError=${formatError(error)}`)
+    logger?.warn("prompt submission hit recoverable provider error", {
+      error: formatError(error),
+      session_id: sessionId,
+    })
     await client.send<Record<string, unknown>>(
       launchProviderRunRequest(sessionId, options.accountProfile, options.model),
     )
     await maybeResize(client, sessionId)
-    recordDebug(`submitPrompt relaunchedProvider session=${sessionId}`)
+    logger?.info("relaunched provider after recoverable prompt failure", {
+      session_id: sessionId,
+    })
     return client.send<Record<string, unknown>>(
       submitPromptRequest(sessionId, attachmentId, prompt),
     )
@@ -951,11 +1028,14 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--socket PATH] [--session ID] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--workspace PATH] [--worktree PATH]\n\ncommands:\n  /stop   request cancellation of the active provider turn\n  /exit   exit the CLI\n",
+    "usage: arroba-cli [--socket PATH] [--session ID] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop   request cancellation of the active provider turn\n  /exit   exit the CLI\n",
   )
 }
 
 void main().catch((error) => {
+  getLogger("cli.main")?.error("cli process failed", {
+    error: formatError(error),
+  })
   process.stderr.write(`${formatError(error)}\n`)
   process.exit(1)
 })

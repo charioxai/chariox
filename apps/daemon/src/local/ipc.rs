@@ -7,7 +7,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,6 @@ use super::{LocalDaemonRequest, LocalDaemonResponse};
 
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IPC_FRAME_BYTES: usize = 1024 * 1024;
-static IPC_DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct LocalIpcClient {
@@ -91,11 +89,14 @@ pub fn send_local_ipc_request(
     socket_path: &Path,
     request: &LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    ipc_debug(format!(
-        "[arroba][cli][ipc] connecting to {} for {}",
-        socket_path.display(),
-        request_label(request)
-    ));
+    crate::logging::debug_with_fields(
+        "daemon.ipc.client",
+        "connecting to local socket",
+        serde_json::json!({
+            "socket_path": socket_path.display().to_string(),
+            "request": request_label(request),
+        }),
+    );
     let mut stream =
         StdUnixStream::connect(socket_path).map_err(|error| DaemonError::LocalTransport {
             operation: "connect local socket",
@@ -120,18 +121,24 @@ pub fn send_local_ipc_request(
             message: error.to_string(),
         })?;
 
-    ipc_debug(format!(
-        "[arroba][cli][ipc] waiting for daemon response to {}",
-        request_label(request)
-    ));
+    crate::logging::debug_with_fields(
+        "daemon.ipc.client",
+        "waiting for daemon response",
+        serde_json::json!({
+            "request": request_label(request),
+        }),
+    );
 
     let response_bytes = read_sync_frame(&mut stream)?;
     let envelope = decode_envelope(&response_bytes)?;
 
-    ipc_debug(format!(
-        "[arroba][cli][ipc] received daemon response to {}",
-        request_label(request)
-    ));
+    crate::logging::debug_with_fields(
+        "daemon.ipc.client",
+        "received daemon response",
+        serde_json::json!({
+            "request": request_label(request),
+        }),
+    );
 
     match (envelope.response, envelope.error) {
         (Some(response), None) => Ok(response),
@@ -150,14 +157,17 @@ async fn handle_connection(
     app: Arc<Mutex<DaemonApp>>,
     mut stream: tokio::net::UnixStream,
 ) -> Result<(), DaemonError> {
-    ipc_debug("[arroba][daemon][ipc] accepted local connection".to_string());
+    crate::logging::debug("daemon.ipc.server", "accepted local connection");
     let request_bytes = match read_async_frame(&mut stream).await {
         Ok(bytes) => bytes,
         Err(error) => {
-            ipc_debug(format!(
-                "[arroba][daemon][ipc] failed reading request frame: {}",
-                error
-            ));
+            crate::logging::warn_with_fields(
+                "daemon.ipc.server",
+                "failed reading request frame",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
             let response = encode_envelope(IpcResponseEnvelope {
                 response: None,
                 error: Some(error.to_string()),
@@ -168,24 +178,33 @@ async fn handle_connection(
 
     let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
         Ok(request) => {
-            ipc_debug(format!(
-                "[arroba][daemon][ipc] handling {}",
-                request_label(&request)
-            ));
+            crate::logging::debug_with_fields(
+                "daemon.ipc.server",
+                "handling local request",
+                serde_json::json!({
+                    "request": request_label(&request),
+                }),
+            );
             let response = {
                 let mut app = app.lock().await;
                 app.handle_local_request(request)
             };
             match response {
                 Ok(response) => {
-                    ipc_debug("[arroba][daemon][ipc] request completed successfully".to_string());
+                    crate::logging::debug("daemon.ipc.server", "request completed successfully");
                     IpcResponseEnvelope {
                         response: Some(response),
                         error: None,
                     }
                 }
                 Err(error) => {
-                    ipc_debug(format!("[arroba][daemon][ipc] request failed: {}", error));
+                    crate::logging::warn_with_fields(
+                        "daemon.ipc.server",
+                        "local request failed",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
                     IpcResponseEnvelope {
                         response: None,
                         error: Some(error.to_string()),
@@ -194,7 +213,13 @@ async fn handle_connection(
             }
         }
         Err(error) => {
-            ipc_debug(format!("[arroba][daemon][ipc] invalid request payload: {}", error));
+            crate::logging::warn_with_fields(
+                "daemon.ipc.server",
+                "invalid local request payload",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
             IpcResponseEnvelope {
                 response: None,
                 error: Some(format!("invalid local request: {error}")),
@@ -229,16 +254,6 @@ fn request_label(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "CaptureScreenshot",
         LocalDaemonRequest::StoreTransferredFile(_) => "StoreTransferredFile",
         LocalDaemonRequest::EndSession(_) => "EndSession",
-    }
-}
-
-fn ipc_debug(message: String) {
-    if *IPC_DEBUG_ENABLED.get_or_init(|| {
-        std::env::var("ARROBA_DEBUG_IPC")
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    }) {
-        eprintln!("{message}");
     }
 }
 

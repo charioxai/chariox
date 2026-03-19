@@ -79,8 +79,9 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 
 ## 4.3 Project-Wide Logging and Debugging
 
-- [ ] Define one daemon-owned machine-local log root for Arroba runtime processes.
-- [ ] Use structured log records with shared correlation fields:
+- [x] Define one daemon-owned machine-local log root for Arroba runtime processes.
+Current state: `ARROBA_LOG_DIR` overrides the default; otherwise Arroba uses `XDG_STATE_HOME/arroba/logs`, then `~/.local/state/arroba/logs`, then `./.arroba/logs`.
+- [x] Use structured log records with shared correlation fields:
   - timestamp
   - level
   - component
@@ -90,17 +91,20 @@ Current state: failed initialization, normal session teardown, and unexpected pr
   - provider run id
   - attachment id/client id when applicable
   - request id / trace id when applicable
-- [ ] Write logs per process under the shared log root instead of forcing all processes to contend for one file.
+- [x] Write logs per process under the shared log root instead of forcing all processes to contend for one file.
 - [ ] Cover at least:
   - daemon
   - TypeScript CLI
-  - future server process
+  - server process
   - future provider-side helper processes when Arroba launches them directly
+Current state: daemon, Rust CLI launcher, TypeScript CLI, and server are on the shared logger; provider-side helper processes remain pending.
 - [ ] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
-- [ ] Define default privacy policy for logs:
+- [x] Define default privacy policy for logs:
   - metadata/error logs by default
   - prompt/output content capture only with explicit opt-in or debug mode
-- [ ] Document log location, rotation/retention policy, and env vars for local debugging.
+- [x] Document log location, rotation/retention policy, and env vars for local debugging.
+- [x] Add an early built-in local log viewer command.
+Current state: `arroba-cli logs` can filter/follow the shared NDJSON logs by process kind, component, session, provider run, client, and level.
 
 ## 4.4 TypeScript CLI Hardening
 

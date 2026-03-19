@@ -4,8 +4,17 @@ use arroba_daemon::{DaemonApp, DaemonConfig};
 // process, and signal-handling work all need a shared async execution model.
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), arroba_daemon::DaemonError> {
+    if let Ok(log_path) = arroba_daemon::logging::init_process_logger("daemon") {
+        arroba_daemon::logging::info_with_fields(
+            "daemon.main",
+            "daemon process starting",
+            serde_json::json!({
+                "log_path": log_path.display().to_string(),
+            }),
+        );
+    }
     let app = DaemonApp::bootstrap(DaemonConfig::load_from_env())?;
 
-    println!("{}", app.startup_message());
+    arroba_daemon::logging::info("daemon.main", app.startup_message());
     app.run().await
 }

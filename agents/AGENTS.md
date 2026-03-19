@@ -43,6 +43,12 @@ This document summarizes the current architectural decisions and constraints so 
    - Provider-native subagents are not separately orchestrated by Arroba.
    - MCP runtime ownership belongs to the daemon, not to provider CLIs.
 
+8. Shared logging only
+   - Arroba runtime diagnostics must use the shared Arroba logging system.
+   - Do not add ad hoc debug env vars, temporary file-append loggers, or committed `eprintln!`/`console.log` debugging paths as separate mechanisms.
+   - Logs should go under the shared machine-local Arroba log root with structured correlation fields so daemon and client activity can be inspected together.
+   - Default logs should be metadata-first; prompt/output content is opt-in debug material, not default logging.
+
 ## Daemon-First, API-First, Multi-Client Rule
 
 Arroba is daemon-first, API-first, and multi-client by design.

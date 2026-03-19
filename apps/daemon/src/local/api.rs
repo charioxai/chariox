@@ -252,9 +252,20 @@ impl DaemonApp {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
-            LocalDaemonRequest::CreateSession(request) => Ok(LocalDaemonResponse::SessionCreated {
-                session: self.sessions_mut().create_session(request)?,
-            }),
+            LocalDaemonRequest::CreateSession(request) => {
+                let session = self.sessions_mut().create_session(request)?;
+                crate::logging::info_with_fields(
+                    "daemon.session",
+                    "session created",
+                    serde_json::json!({
+                        "session_id": session.id(),
+                        "workspace_id": session.workspace_id(),
+                        "worktree_id": session.worktree_id(),
+                        "execution_mode": format!("{:?}", session.execution_mode()),
+                    }),
+                );
+                Ok(LocalDaemonResponse::SessionCreated { session })
+            }
             LocalDaemonRequest::AttachToSession(request) => {
                 Ok(LocalDaemonResponse::SessionAttached {
                     attachment: self.attach(AttachRequest::new(
