@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextRenderable, type KeyBinding, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { createMemo, createSignal, onCleanup } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
 import { LocalIpcClient } from "./ipc.js"
@@ -51,7 +51,7 @@ type RuntimeNoticeRecord = {
 }
 
 type TerminalOutputRecord = {
-  kind: "provider_output" | "prompt_echo"
+  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_status"
   bytes: number[]
 }
 
@@ -62,7 +62,7 @@ type PromptSubmittedPayload = {
 
 type TranscriptEntry = {
   id: number
-  role: "user" | "assistant" | "notice"
+  role: "user" | "assistant" | "reasoning" | "tool" | "status" | "notice"
   text: string
   emphasis?: "muted" | "warning" | "error"
 }
@@ -123,7 +123,7 @@ async function main() {
     session_id: bootstrap.session.id,
   })
 
-  render(
+  await render(
     () => <ArrobaCliApp bootstrap={bootstrap} />, 
     {
       targetFps: 60,
@@ -193,7 +193,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appendEntry({ role: "notice", text, emphasis })
   }
 
-  const appendAssistantChunk = (chunk: string) => {
+  const appendProviderChunk = (role: TranscriptEntry["role"], chunk: string) => {
     const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     if (!normalized) {
       return
@@ -203,28 +203,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntries(
       produce((draft) => {
         const last = draft.at(-1)
-        if (last?.role === "assistant") {
+        if (last?.role === role && (role === "assistant" || role === "reasoning")) {
           last.text += normalized
           merged = true
           return
         }
         draft.push({
           id: entryCounter() + 1,
-          role: "assistant",
+          role,
           text: normalized,
         })
       }),
     )
     renderTranscript()
     if (merged) {
-      appLogger?.debug("merged assistant chunk", {
+      appLogger?.debug("merged provider chunk", {
+        role,
         chars: normalized.length,
         total_entries: entries.length,
       })
       return
     }
     setEntryCounter((value) => value + 1)
-    appLogger?.debug("created assistant transcript entry", {
+    appLogger?.debug("created provider transcript entry", {
+      role,
       entry_id: entryCounter() + 1,
       chars: normalized.length,
       total_entries: entries.length + 1,
@@ -254,7 +256,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const requestExit = async () => {
     if (closing && exitCleanupFailed) {
       appLogger?.warn("forcing cli exit after prior cleanup failure")
-      process.exit(1)
+      await restoreTerminalAndExit(1)
+      return
     }
     if (closing) {
       return
@@ -281,18 +284,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       appendNotice(decision.message, "warning")
       setStatusLine(decision.message)
       if (decision.exit) {
-        process.exit(decision.exitCode)
+        await restoreTerminalAndExit(decision.exitCode)
       }
       return
     }
     appLogger?.info("cli exit cleanup completed")
-    process.exit(0)
+    await restoreTerminalAndExit(0)
+  }
+
+  const restoreTerminalAndExit = async (exitCode: number) => {
+    try {
+      renderer.disableKittyKeyboard()
+    } catch {}
+    try {
+      renderer.disableStdoutInterception()
+    } catch {}
+    try {
+      if (!renderer.isDestroyed) {
+        renderer.destroy()
+      }
+    } catch (error) {
+      appLogger?.warn("renderer destroy failed during exit", {
+        error: formatError(error),
+      })
+    }
+    await sleep(25)
+    process.exit(exitCode)
   }
 
   const submitPrompt = async () => {
     if (!promptInput) {
       return
     }
+
+    ensureBackgroundPollersStarted()
 
     const rawPrompt = promptInput.plainText
     const trimmed = rawPrompt.trim()
@@ -356,144 +381,153 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   })
 
-  onMount(() => {
-    promptInput?.focus()
-    renderTranscript()
+  let pollersStarted = false
+  const onResize = () => {
+    void maybeResize(client, sessionState().id)
+  }
 
-    const onResize = () => {
-      void maybeResize(client, sessionState().id)
+  const markPollerDegraded = (operation: string, message: string) => {
+    const wasHealthy = degradedPollers.size === 0
+    degradedPollers.add(operation)
+    appLogger?.warn("poller entered degraded mode", {
+      operation,
+      degraded_pollers: [...degradedPollers],
+    })
+    setStatusLine(message)
+    if (wasHealthy) {
+      appendNotice(message, "warning")
     }
-    process.stdout.on("resize", onResize)
+  }
 
-    const markPollerDegraded = (operation: string, message: string) => {
-      const wasHealthy = degradedPollers.size === 0
-      degradedPollers.add(operation)
-      appLogger?.warn("poller entered degraded mode", {
+  const markPollerRecovered = (operation: string, failureCount: number) => {
+    if (failureCount === 0) {
+      return
+    }
+    const wasDegraded = degradedPollers.delete(operation)
+    if (wasDegraded) {
+      appLogger?.info("poller recovered", {
         operation,
         degraded_pollers: [...degradedPollers],
+        prior_failures: failureCount,
       })
-      setStatusLine(message)
-      if (wasHealthy) {
-        appendNotice(message, "warning")
-      }
     }
-
-    const markPollerRecovered = (operation: string, failureCount: number) => {
-      if (failureCount === 0) {
-        return
-      }
-      const wasDegraded = degradedPollers.delete(operation)
-      if (wasDegraded) {
-        appLogger?.info("poller recovered", {
-          operation,
-          degraded_pollers: [...degradedPollers],
-          prior_failures: failureCount,
-        })
-      }
-      if (wasDegraded && degradedPollers.size === 0) {
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-        appendNotice("Reconnected to the Arroba daemon.")
-      }
+    if (wasDegraded && degradedPollers.size === 0) {
+      setStatusLine(DEFAULT_CONNECTED_STATUS)
+      appendNotice("Reconnected to the Arroba daemon.")
     }
+  }
 
-    const runPollingLoop = async (
-      operation: string,
-      intervalMs: number,
-      task: () => Promise<void>,
-    ) => {
-      let consecutiveFailures = 0
+  const runPollingLoop = async (
+    operation: string,
+    intervalMs: number,
+    task: () => Promise<void>,
+  ) => {
+    let consecutiveFailures = 0
 
-      while (!closing) {
-        try {
-          await task()
-          markPollerRecovered(operation, consecutiveFailures)
-          consecutiveFailures = 0
-        } catch (error) {
-          if (closing) {
-            break
-          }
-          consecutiveFailures += 1
-          appLogger?.warn("poll operation failed", {
-            operation,
-            error: formatError(error),
-            attempt: consecutiveFailures,
-          })
-          const decision = getPollRecoveryDecision(operation, error, consecutiveFailures)
-          if (decision.retry) {
-            markPollerDegraded(operation, decision.message)
-            await sleep(decision.delayMs)
-            continue
-          }
-          appLogger?.error("poll operation became fatal", {
-            operation,
-            error: formatError(error),
-          })
-          setFatalError(formatError(error))
+    while (!closing) {
+      try {
+        await task()
+        markPollerRecovered(operation, consecutiveFailures)
+        consecutiveFailures = 0
+      } catch (error) {
+        if (closing) {
           break
         }
-        await sleep(intervalMs)
+        consecutiveFailures += 1
+        appLogger?.warn("poll operation failed", {
+          operation,
+          error: formatError(error),
+          attempt: consecutiveFailures,
+        })
+        const decision = getPollRecoveryDecision(operation, error, consecutiveFailures)
+        if (decision.retry) {
+          markPollerDegraded(operation, decision.message)
+          await sleep(decision.delayMs)
+          continue
+        }
+        appLogger?.error("poll operation became fatal", {
+          operation,
+          error: formatError(error),
+        })
+        setFatalError(formatError(error))
+        break
       }
+      await sleep(intervalMs)
     }
+  }
 
-    const pollOutput = async () => {
-      await runPollingLoop("polling terminal output", 50, async () => {
-        const response = await client.send<Record<string, unknown>>(
-          pumpTerminalOutputRequest(sessionState().id, attachment.id),
-        )
-        const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
-        if (payload.records.length > 0) {
-          appLogger?.debug("received terminal output records", {
-            record_count: payload.records.length,
-            kinds: payload.records.map((record) => record.kind),
-          })
-        }
-        for (const record of payload.records) {
-          const text = Buffer.from(record.bytes).toString("utf8")
-          if (record.kind === "prompt_echo") {
+  const pollOutput = async () => {
+    await runPollingLoop("polling terminal output", 50, async () => {
+      const response = await client.send<Record<string, unknown>>(
+        pumpTerminalOutputRequest(sessionState().id, attachment.id),
+      )
+      const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
+      for (const record of payload.records) {
+        const text = Buffer.from(record.bytes).toString("utf8")
+        switch (record.kind) {
+          case "prompt_echo":
             appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
-          } else {
-            appendAssistantChunk(text)
-          }
+            break
+          case "provider_reasoning":
+            appendProviderChunk("reasoning", text)
+            break
+          case "provider_tool":
+            appendProviderChunk("tool", text)
+            break
+          case "provider_status":
+            appendProviderChunk("status", text)
+            break
+          default:
+            appendProviderChunk("assistant", text)
+            break
         }
-      })
-    }
+      }
+    })
+  }
 
-    const pollNotices = async () => {
-      await runPollingLoop("polling runtime notices", 150, async () => {
-        const response = await client.send<Record<string, unknown>>(
-          pollRuntimeNoticesRequest(sessionState().id, attachment.id),
-        )
-        const payload = expectVariant<{ notices: RuntimeNoticeRecord[] }>(response, "RuntimeNotices")
-        if (payload.notices.length > 0) {
-          appLogger?.debug("received runtime notices", {
-            notice_count: payload.notices.length,
-          })
-        }
-        for (const notice of payload.notices) {
-          appendNotice(notice.message)
-        }
-      })
-    }
+  const pollNotices = async () => {
+    await runPollingLoop("polling runtime notices", 150, async () => {
+      const response = await client.send<Record<string, unknown>>(
+        pollRuntimeNoticesRequest(sessionState().id, attachment.id),
+      )
+      const payload = expectVariant<{ notices: RuntimeNoticeRecord[] }>(response, "RuntimeNotices")
+      for (const notice of payload.notices) {
+        appendNotice(notice.message)
+      }
+    })
+  }
 
-    const pollSessionState = async () => {
-      await runPollingLoop("polling session state", 250, async () => {
-        const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
-        const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-        setSessionState(payload.session)
-        if (!payload.session.active_prompt) {
-          setSubmitting(false)
-        }
-      })
-    }
+  const pollSessionState = async () => {
+    await runPollingLoop("polling session state", 250, async () => {
+      const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
+      const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
+      setSessionState(payload.session)
+      if (!payload.session.active_prompt) {
+        setSubmitting(false)
+      }
+    })
+  }
 
+  const ensureBackgroundPollersStarted = () => {
+    if (pollersStarted) {
+      return
+    }
+    if (!promptInput || !transcriptScrollbox) {
+      return
+    }
+    pollersStarted = true
+    promptInput?.focus()
+    renderTranscript()
+    process.stdout.on("resize", onResize)
+    appLogger?.info("starting background pollers")
     void pollOutput()
     void pollNotices()
     void pollSessionState()
+  }
 
-    onCleanup(() => {
-      closing = true
-      process.stdout.off("resize", onResize)
-    })
+  onCleanup(() => {
+    closing = true
+    process.stdout.off("resize", onResize)
   })
 
   return (
@@ -549,6 +583,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         <scrollbox
           ref={(value) => {
             transcriptScrollbox = value
+            ensureBackgroundPollersStarted()
           }}
           flexGrow={1}
           stickyScroll={true}
@@ -596,6 +631,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           <textarea
             ref={(value) => {
               promptInput = value
+              ensureBackgroundPollersStarted()
             }}
             placeholder="Ask Arroba to do work in this session"
             textColor={theme.text}
@@ -664,7 +700,9 @@ function buildTranscriptEntryRenderable(renderer: ReturnType<typeof useRenderer>
     flexDirection: "column",
   })
   const accent = transcriptAccent(entry)
-  const bodyColor = entry.role === "assistant" ? theme.backgroundPanel : theme.backgroundElement
+  const bodyColor = entry.role === "assistant" || entry.role === "reasoning"
+    ? theme.backgroundPanel
+    : theme.backgroundElement
 
   wrapper.add(
     new TextRenderable(renderer, {
@@ -715,6 +753,15 @@ function transcriptAccent(entry: TranscriptEntry) {
   if (entry.role === "user") {
     return theme.primary
   }
+  if (entry.role === "reasoning") {
+    return theme.accent
+  }
+  if (entry.role === "tool") {
+    return theme.secondary
+  }
+  if (entry.role === "status") {
+    return theme.info
+  }
   if (entry.role === "notice") {
     return entry.emphasis === "error"
       ? theme.error
@@ -729,6 +776,15 @@ function transcriptLabel(entry: TranscriptEntry) {
   if (entry.role === "user") {
     return "Prompt"
   }
+  if (entry.role === "reasoning") {
+    return "Thinking"
+  }
+  if (entry.role === "tool") {
+    return "Tool"
+  }
+  if (entry.role === "status") {
+    return "Status"
+  }
   if (entry.role === "notice") {
     return "Notice"
   }
@@ -738,6 +794,15 @@ function transcriptLabel(entry: TranscriptEntry) {
 function transcriptTextColor(entry: TranscriptEntry) {
   if (entry.role === "user") {
     return theme.primary
+  }
+  if (entry.role === "reasoning") {
+    return theme.textMuted
+  }
+  if (entry.role === "tool") {
+    return theme.secondary
+  }
+  if (entry.role === "status") {
+    return theme.info
   }
   if (entry.role === "notice") {
     return entry.emphasis === "error"

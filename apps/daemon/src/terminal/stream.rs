@@ -13,6 +13,9 @@ pub struct TerminalInputRecord {
 pub enum TerminalOutputKind {
     ProviderOutput,
     PromptEcho,
+    ProviderReasoning,
+    ProviderTool,
+    ProviderStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

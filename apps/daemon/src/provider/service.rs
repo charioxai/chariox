@@ -3,6 +3,7 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use crate::error::DaemonError;
+use crate::provider::opencode_client::OpenCodePart;
 use crate::session::SessionService;
 
 use super::{
@@ -21,6 +22,9 @@ pub struct ProviderProcessService {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
     pub text_deltas: Vec<Vec<u8>>,
+    pub reasoning_deltas: Vec<Vec<u8>>,
+    pub tool_updates: Vec<Vec<u8>>,
+    pub status_updates: Vec<Vec<u8>>,
     pub prompt_completed: bool,
     pub provider_idle: bool,
     pub notices: Vec<String>,
@@ -28,6 +32,9 @@ pub struct OpenCodePollResult {
 
 struct OpenCodeEventDrainResult {
     text_deltas: Vec<Vec<u8>>,
+    reasoning_deltas: Vec<Vec<u8>>,
+    tool_updates: Vec<Vec<u8>>,
+    status_updates: Vec<Vec<u8>>,
     prompt_completed: bool,
     provider_idle: bool,
     notices: Vec<String>,
@@ -38,7 +45,13 @@ struct OpenCodeRunState {
     base_url: String,
     session_id: String,
     emitted_text_offsets: BTreeMap<String, usize>,
+    emitted_tool_summaries: BTreeMap<String, String>,
+    buffered_text_deltas: BTreeMap<String, Vec<String>>,
+    message_roles: BTreeMap<String, String>,
+    part_kinds: BTreeMap<String, String>,
+    part_message_ids: BTreeMap<String, String>,
     event_subscription: OpenCodeEventSubscription,
+    last_status_kind: Option<String>,
 }
 
 impl ProviderProcessService {
@@ -306,7 +319,13 @@ impl ProviderProcessService {
                 base_url,
                 session_id,
                 emitted_text_offsets: BTreeMap::new(),
+                emitted_tool_summaries: BTreeMap::new(),
+                buffered_text_deltas: BTreeMap::new(),
+                message_roles: BTreeMap::new(),
+                part_kinds: BTreeMap::new(),
+                part_message_ids: BTreeMap::new(),
                 event_subscription,
+                last_status_kind: None,
             },
         );
         Ok(())
@@ -371,6 +390,9 @@ impl ProviderProcessService {
 
         Ok(Some(OpenCodePollResult {
             text_deltas: drain.text_deltas,
+            reasoning_deltas: drain.reasoning_deltas,
+            tool_updates: drain.tool_updates,
+            status_updates: drain.status_updates,
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
             notices: drain.notices,
@@ -450,6 +472,9 @@ impl ProviderProcessService {
         })?;
 
         let mut deltas = Vec::new();
+        let mut reasoning_deltas = Vec::new();
+        let mut tool_updates = Vec::new();
+        let mut status_updates = Vec::new();
         let mut prompt_completed = false;
         let mut provider_idle = false;
         let mut notices = Vec::new();
@@ -457,6 +482,9 @@ impl ProviderProcessService {
         loop {
             match state.event_subscription.receiver.try_recv() {
                 Ok(OpenCodeEvent::MessageUpdated { info }) => {
+                    state
+                        .message_roles
+                        .insert(info.id.clone(), info.role.clone());
                     if info.session_id == state.session_id
                         && info.role == "assistant"
                         && info.time.completed.is_some()
@@ -466,6 +494,7 @@ impl ProviderProcessService {
                 }
                 Ok(OpenCodeEvent::MessagePartDelta {
                     session_id,
+                    message_id,
                     part_id,
                     field,
                     delta,
@@ -474,27 +503,123 @@ impl ProviderProcessService {
                     if session_id != state.session_id || field != "text" || delta.is_empty() {
                         continue;
                     }
-                    let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
-                    *emitted += delta.len();
-                    deltas.push(delta.into_bytes());
+                    state
+                        .part_message_ids
+                        .insert(part_id.clone(), message_id.clone());
+                    if !state.message_roles.contains_key(&message_id) {
+                        refresh_opencode_message_metadata(state, provider_run_id)?;
+                    }
+                    let Some(role) = state.message_roles.get(&message_id).map(String::as_str)
+                    else {
+                        state
+                            .buffered_text_deltas
+                            .entry(part_id)
+                            .or_default()
+                            .push(delta);
+                        continue;
+                    };
+                    if role != "assistant" {
+                        continue;
+                    }
+                    match state.part_kinds.get(&part_id).map(String::as_str) {
+                        Some("reasoning") => {
+                            let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
+                            *emitted += delta.len();
+                            reasoning_deltas.push(delta.into_bytes());
+                        }
+                        Some("text") => {
+                            let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
+                            *emitted += delta.len();
+                            deltas.push(delta.into_bytes());
+                        }
+                        Some(_) => {}
+                        None => {
+                            state
+                                .buffered_text_deltas
+                                .entry(part_id)
+                                .or_default()
+                                .push(delta);
+                        }
+                    }
                 }
                 Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
-                    if part.session_id != state.session_id
-                        || part.kind != "text"
-                        || part.text.is_empty()
-                    {
+                    if part.session_id != state.session_id {
                         continue;
                     }
-                    let emitted = state
-                        .emitted_text_offsets
-                        .entry(part.id.clone())
-                        .or_insert(0);
-                    let start = (*emitted).min(part.text.len());
-                    if start == part.text.len() {
-                        continue;
+                    state
+                        .part_message_ids
+                        .insert(part.id.clone(), part.message_id.clone());
+                    state.part_kinds.insert(part.id.clone(), part.kind.clone());
+                    if !state.message_roles.contains_key(&part.message_id) {
+                        refresh_opencode_message_metadata(state, provider_run_id)?;
                     }
-                    deltas.push(part.text.as_bytes()[start..].to_vec());
-                    *emitted = part.text.len();
+                    let role = state
+                        .message_roles
+                        .get(&part.message_id)
+                        .map(String::as_str);
+                    if let Some(buffered_deltas) = state.buffered_text_deltas.remove(&part.id) {
+                        for delta in buffered_deltas {
+                            if role != Some("assistant") {
+                                continue;
+                            }
+                            let emitted = state
+                                .emitted_text_offsets
+                                .entry(part.id.clone())
+                                .or_insert(0);
+                            *emitted += delta.len();
+                            match part.kind.as_str() {
+                                "reasoning" => reasoning_deltas.push(delta.into_bytes()),
+                                "text" => deltas.push(delta.into_bytes()),
+                                _ => {}
+                            }
+                        }
+                    }
+                    match part.kind.as_str() {
+                        "text" => {
+                            if role != Some("assistant") || part.text.is_empty() {
+                                continue;
+                            }
+                            let emitted = state
+                                .emitted_text_offsets
+                                .entry(part.id.clone())
+                                .or_insert(0);
+                            let start = (*emitted).min(part.text.len());
+                            if start == part.text.len() {
+                                continue;
+                            }
+                            deltas.push(part.text.as_bytes()[start..].to_vec());
+                            *emitted = part.text.len();
+                        }
+                        "reasoning" => {
+                            if role != Some("assistant") || part.text.is_empty() {
+                                continue;
+                            }
+                            let emitted = state
+                                .emitted_text_offsets
+                                .entry(part.id.clone())
+                                .or_insert(0);
+                            let start = (*emitted).min(part.text.len());
+                            if start == part.text.len() {
+                                continue;
+                            }
+                            reasoning_deltas.push(part.text.as_bytes()[start..].to_vec());
+                            *emitted = part.text.len();
+                        }
+                        "tool" => {
+                            if role != Some("assistant") {
+                                continue;
+                            }
+                            let summary = summarize_tool_part(&part);
+                            let previous = state.emitted_tool_summaries.get(&part.id);
+                            if previous.map(String::as_str) != Some(summary.as_str()) {
+                                state
+                                    .emitted_tool_summaries
+                                    .insert(part.id.clone(), summary.clone());
+                                tool_updates.push(summary.into_bytes());
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 Ok(OpenCodeEvent::SessionError {
                     session_id,
@@ -506,8 +631,14 @@ impl ProviderProcessService {
                     }
                 }
                 Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
-                    if session_id == state.session_id && kind == "idle" {
-                        provider_idle = true;
+                    if session_id == state.session_id {
+                        if kind == "idle" {
+                            provider_idle = true;
+                        }
+                        if state.last_status_kind.as_deref() != Some(kind.as_str()) {
+                            state.last_status_kind = Some(kind.clone());
+                            status_updates.push(format_session_status(&kind).into_bytes());
+                        }
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -515,7 +646,12 @@ impl ProviderProcessService {
                     let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                     state.event_subscription = client.subscribe_events()?;
                     if let Ok(snapshot) = client.snapshot(&state.session_id) {
-                        deltas.extend(render_snapshot_text_deltas(state, &snapshot.messages));
+                        record_snapshot_message_metadata(state, &snapshot.messages);
+                        let snapshot_deltas =
+                            render_snapshot_text_deltas(state, &snapshot.messages);
+                        deltas.extend(snapshot_deltas.text_deltas);
+                        reasoning_deltas.extend(snapshot_deltas.reasoning_deltas);
+                        tool_updates.extend(snapshot_deltas.tool_updates);
                         if snapshot.status == "idle" {
                             provider_idle = true;
                         }
@@ -533,6 +669,9 @@ impl ProviderProcessService {
 
         Ok(OpenCodeEventDrainResult {
             text_deltas: deltas,
+            reasoning_deltas,
+            tool_updates,
+            status_updates,
             prompt_completed,
             provider_idle,
             notices,
@@ -540,32 +679,112 @@ impl ProviderProcessService {
     }
 }
 
+struct SnapshotRenderResult {
+    text_deltas: Vec<Vec<u8>>,
+    reasoning_deltas: Vec<Vec<u8>>,
+    tool_updates: Vec<Vec<u8>>,
+}
+
+fn refresh_opencode_message_metadata(
+    state: &mut OpenCodeRunState,
+    provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+    if let Ok(messages) = client.messages(&state.session_id) {
+        record_snapshot_message_metadata(state, &messages);
+    }
+    Ok(())
+}
+
+fn record_snapshot_message_metadata(state: &mut OpenCodeRunState, messages: &[OpenCodeMessage]) {
+    for message in messages {
+        state
+            .message_roles
+            .insert(message.info.id.clone(), message.info.role.clone());
+        for part in &message.parts {
+            state
+                .part_message_ids
+                .insert(part.id.clone(), part.message_id.clone());
+            state.part_kinds.insert(part.id.clone(), part.kind.clone());
+        }
+    }
+}
+
 fn render_snapshot_text_deltas(
     state: &mut OpenCodeRunState,
     messages: &[OpenCodeMessage],
-) -> Vec<Vec<u8>> {
-    let mut deltas = Vec::new();
+) -> SnapshotRenderResult {
+    let mut text_deltas = Vec::new();
+    let mut reasoning_deltas = Vec::new();
+    let mut tool_updates = Vec::new();
     for message in messages
         .iter()
         .filter(|message| message.info.role == "assistant")
     {
-        for part in message.parts.iter().filter(|part| part.kind == "text") {
-            if part.text.is_empty() {
-                continue;
+        for part in &message.parts {
+            match part.kind.as_str() {
+                "text" | "reasoning" => {
+                    if part.text.is_empty() {
+                        continue;
+                    }
+                    let emitted = state
+                        .emitted_text_offsets
+                        .entry(part.id.clone())
+                        .or_insert(0);
+                    let start = (*emitted).min(part.text.len());
+                    if start == part.text.len() {
+                        continue;
+                    }
+                    let bytes = part.text.as_bytes()[start..].to_vec();
+                    if part.kind == "reasoning" {
+                        reasoning_deltas.push(bytes);
+                    } else {
+                        text_deltas.push(bytes);
+                    }
+                    *emitted = part.text.len();
+                }
+                "tool" => {
+                    let summary = summarize_tool_part(part);
+                    let previous = state.emitted_tool_summaries.get(&part.id);
+                    if previous.map(String::as_str) != Some(summary.as_str()) {
+                        state
+                            .emitted_tool_summaries
+                            .insert(part.id.clone(), summary.clone());
+                        tool_updates.push(summary.into_bytes());
+                    }
+                }
+                _ => {}
             }
-            let emitted = state
-                .emitted_text_offsets
-                .entry(part.id.clone())
-                .or_insert(0);
-            let start = (*emitted).min(part.text.len());
-            if start == part.text.len() {
-                continue;
-            }
-            deltas.push(part.text.as_bytes()[start..].to_vec());
-            *emitted = part.text.len();
         }
     }
-    deltas
+    SnapshotRenderResult {
+        text_deltas,
+        reasoning_deltas,
+        tool_updates,
+    }
+}
+
+fn summarize_tool_part(part: &OpenCodePart) -> String {
+    let tool_name = if part.tool.is_empty() {
+        "tool"
+    } else {
+        part.tool.as_str()
+    };
+    let status = part
+        .state
+        .as_ref()
+        .map(|state| state.status.as_str())
+        .filter(|status: &&str| !status.is_empty())
+        .unwrap_or("updated");
+    format!("{tool_name} [{status}]")
+}
+
+fn format_session_status(kind: &str) -> String {
+    match kind {
+        "busy" => "OpenCode is thinking...".to_string(),
+        "idle" => "OpenCode is idle.".to_string(),
+        other => format!("OpenCode status: {other}"),
+    }
 }
 
 impl Default for ProviderProcessService {

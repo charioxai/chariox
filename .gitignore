@@ -2,6 +2,9 @@
 node_modules/
 .pnpm-store/
 
+# arroba
+.arroba/
+
 # Build artifacts
 dist/
 coverage/
@@ -18,3 +21,4 @@ coverage/
 # Other
 happy-main/
 opencode-dev/
+codex-main/

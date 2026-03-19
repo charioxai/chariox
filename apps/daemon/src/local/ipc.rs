@@ -89,14 +89,6 @@ pub fn send_local_ipc_request(
     socket_path: &Path,
     request: &LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    crate::logging::debug_with_fields(
-        "daemon.ipc.client",
-        "connecting to local socket",
-        serde_json::json!({
-            "socket_path": socket_path.display().to_string(),
-            "request": request_label(request),
-        }),
-    );
     let mut stream =
         StdUnixStream::connect(socket_path).map_err(|error| DaemonError::LocalTransport {
             operation: "connect local socket",
@@ -121,24 +113,8 @@ pub fn send_local_ipc_request(
             message: error.to_string(),
         })?;
 
-    crate::logging::debug_with_fields(
-        "daemon.ipc.client",
-        "waiting for daemon response",
-        serde_json::json!({
-            "request": request_label(request),
-        }),
-    );
-
     let response_bytes = read_sync_frame(&mut stream)?;
     let envelope = decode_envelope(&response_bytes)?;
-
-    crate::logging::debug_with_fields(
-        "daemon.ipc.client",
-        "received daemon response",
-        serde_json::json!({
-            "request": request_label(request),
-        }),
-    );
 
     match (envelope.response, envelope.error) {
         (Some(response), None) => Ok(response),
@@ -157,7 +133,6 @@ async fn handle_connection(
     app: Arc<Mutex<DaemonApp>>,
     mut stream: tokio::net::UnixStream,
 ) -> Result<(), DaemonError> {
-    crate::logging::debug("daemon.ipc.server", "accepted local connection");
     let request_bytes = match read_async_frame(&mut stream).await {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -178,25 +153,15 @@ async fn handle_connection(
 
     let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
         Ok(request) => {
-            crate::logging::debug_with_fields(
-                "daemon.ipc.server",
-                "handling local request",
-                serde_json::json!({
-                    "request": request_label(&request),
-                }),
-            );
             let response = {
                 let mut app = app.lock().await;
                 app.handle_local_request(request)
             };
             match response {
-                Ok(response) => {
-                    crate::logging::debug("daemon.ipc.server", "request completed successfully");
-                    IpcResponseEnvelope {
-                        response: Some(response),
-                        error: None,
-                    }
-                }
+                Ok(response) => IpcResponseEnvelope {
+                    response: Some(response),
+                    error: None,
+                },
                 Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.ipc.server",
@@ -229,32 +194,6 @@ async fn handle_connection(
 
     let response_bytes = encode_envelope(envelope)?;
     write_async_frame(&mut stream, &response_bytes).await
-}
-
-fn request_label(request: &LocalDaemonRequest) -> &'static str {
-    match request {
-        LocalDaemonRequest::CreateSession(_) => "CreateSession",
-        LocalDaemonRequest::AttachToSession(_) => "AttachToSession",
-        LocalDaemonRequest::DetachFromSession(_) => "DetachFromSession",
-        LocalDaemonRequest::LaunchProviderRun(_) => "LaunchProviderRun",
-        LocalDaemonRequest::ListSessions(_) => "ListSessions",
-        LocalDaemonRequest::GetSessionState(_) => "GetSessionState",
-        LocalDaemonRequest::PollRuntimeNotices(_) => "PollRuntimeNotices",
-        LocalDaemonRequest::SubmitPrompt(_) => "SubmitPrompt",
-        LocalDaemonRequest::CompletePrompt(_) => "CompletePrompt",
-        LocalDaemonRequest::CancelActivePrompt(_) => "CancelActivePrompt",
-        LocalDaemonRequest::UpdateSessionConfig(_) => "UpdateSessionConfig",
-        LocalDaemonRequest::ResizeTerminal(_) => "ResizeTerminal",
-        LocalDaemonRequest::PumpTerminalOutput(_) => "PumpTerminalOutput",
-        LocalDaemonRequest::RunShellCommand(_) => "RunShellCommand",
-        LocalDaemonRequest::InspectGit(_) => "InspectGit",
-        LocalDaemonRequest::ReadFile(_) => "ReadFile",
-        LocalDaemonRequest::ReadDirectoryTree(_) => "ReadDirectoryTree",
-        LocalDaemonRequest::EditFile(_) => "EditFile",
-        LocalDaemonRequest::CaptureScreenshot(_) => "CaptureScreenshot",
-        LocalDaemonRequest::StoreTransferredFile(_) => "StoreTransferredFile",
-        LocalDaemonRequest::EndSession(_) => "EndSession",
-    }
 }
 
 fn prepare_socket_path(socket_path: &Path) -> Result<(), DaemonError> {

@@ -96,7 +96,19 @@ pub struct OpenCodePart {
     #[serde(default)]
     pub text: String,
     #[serde(default)]
+    pub tool: String,
+    #[serde(default)]
+    pub state: Option<OpenCodeToolState>,
+    #[serde(default)]
     pub time: Option<OpenCodePartTime>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeToolState {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub raw: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -255,10 +267,13 @@ impl OpenCodeClient {
                 )
             })?;
 
-        let messages: Vec<OpenCodeMessage> =
-            self.send_json_request("GET", &format!("/session/{session_id}/message"), None)?;
+        let messages = self.messages(session_id)?;
 
         Ok(OpenCodeSessionSnapshot { status, messages })
+    }
+
+    pub fn messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {
+        self.send_json_request("GET", &format!("/session/{session_id}/message"), None)
     }
 
     pub fn subscribe_events(&self) -> Result<OpenCodeEventSubscription, DaemonError> {

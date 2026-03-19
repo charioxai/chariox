@@ -845,7 +845,12 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        let _ = self.pty.drain_output(provider_run_id)?;
+        if let Err(error) = self.pty.drain_output(provider_run_id) {
+            if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
+                return Ok(Vec::new());
+            }
+            return Err(error);
+        }
         let poll_result = match self.providers.poll_structured_output(provider_run_id) {
             Ok(Some(poll_result)) => poll_result,
             Ok(None) => return Ok(Vec::new()),
@@ -905,11 +910,30 @@ impl DaemonApp {
         poll_result
             .text_deltas
             .into_iter()
-            .map(|delta| {
+            .map(|delta| (TerminalOutputKind::ProviderOutput, delta))
+            .chain(
+                poll_result
+                    .reasoning_deltas
+                    .into_iter()
+                    .map(|delta| (TerminalOutputKind::ProviderReasoning, delta)),
+            )
+            .chain(
+                poll_result
+                    .tool_updates
+                    .into_iter()
+                    .map(|delta| (TerminalOutputKind::ProviderTool, delta)),
+            )
+            .chain(
+                poll_result
+                    .status_updates
+                    .into_iter()
+                    .map(|delta| (TerminalOutputKind::ProviderStatus, delta)),
+            )
+            .map(|(kind, delta)| {
                 self.terminal.fan_out_output(
                     session_id,
                     provider_run_id,
-                    TerminalOutputKind::ProviderOutput,
+                    kind,
                     recipient_attachment_ids.clone(),
                     &delta,
                 )

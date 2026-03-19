@@ -164,7 +164,23 @@ arroba-cli logs --follow
 ```
 
 ```bash
-arroba-cli logs --session session-1
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs
+```
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
+```
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --process-kind daemon
+```
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --level error
+```
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --session session-1
 ```
 
 ```bash
