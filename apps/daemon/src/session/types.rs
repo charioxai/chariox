@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -225,6 +226,7 @@ pub struct RuntimeSession {
     worktree_id: String,
     host_machine_id: String,
     host_daemon_id: String,
+    created_at_ms: u64,
     execution_mode: SessionExecutionMode,
     status: SessionStatus,
     active_provider_run_id: Option<String>,
@@ -253,6 +255,7 @@ impl RuntimeSession {
             worktree_id: worktree_id.clone(),
             host_machine_id: host_machine_id.into(),
             host_daemon_id: host_daemon_id.into(),
+            created_at_ms: unix_epoch_ms(),
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             active_provider_run_id: None,
@@ -284,6 +287,9 @@ impl RuntimeSession {
     }
     pub fn host_daemon_id(&self) -> &str {
         &self.host_daemon_id
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
     }
     pub fn status(&self) -> SessionStatus {
         self.status
@@ -462,6 +468,7 @@ impl RuntimeSession {
             (SessionStatus::Created, SessionStatus::Ended) => true,
             (SessionStatus::Active, SessionStatus::Ended) => true,
             (SessionStatus::Parked, SessionStatus::Ended) => true,
+            (SessionStatus::Ended, SessionStatus::Parked) => true,
             _ => false,
         };
 
@@ -495,4 +502,11 @@ impl RuntimeSession {
             SchedulerState::Runnable
         };
     }
+}
+
+fn unix_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

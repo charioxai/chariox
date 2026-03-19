@@ -86,7 +86,17 @@ impl SessionService {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<RuntimeSession, DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "attach")?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        if session.status() == SessionStatus::Ended {
+            let _ = session.transition_to(SessionStatus::Parked);
+        }
+
         session.add_attachment(attachment_id);
         Ok(session.clone())
     }

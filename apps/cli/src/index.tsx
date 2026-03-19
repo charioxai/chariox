@@ -1,11 +1,12 @@
 import path from "node:path"
 import process from "node:process"
 import { homedir } from "node:os"
+import { setInterval as startInterval } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextRenderable, type KeyBinding, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, parseKeypress, type KeyBinding, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, onCleanup } from "solid-js"
+import { createSignal, onCleanup } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
 import { LocalIpcClient } from "./ipc.js"
@@ -16,7 +17,16 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
+  shouldEndSessionOnCliExit,
 } from "./runtime.js"
+import {
+  formatToolTranscriptUpdate,
+  mergeToolTranscriptUpdate,
+  parseToolTranscriptUpdate,
+  splitInlineCodeSpans,
+  shouldRenderProviderStatus,
+  type ToolTranscriptUpdate,
+} from "./transcript.js"
 import { EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -24,12 +34,16 @@ const PROMPT_KEYBINDINGS = [
   { name: "return", meta: true, action: "newline" },
 ] satisfies KeyBinding[]
 
+const BOOTSTRAP_HISTORY_LIMIT = 200
+const BOOTSTRAP_HISTORY_MAX_CHARS = 250_000
+
 type RuntimeSession = {
   id: string
   workspace_id: string
   worktree_id: string
   status: string
   active_provider_run_id: string | null
+  attachment_ids: string[]
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
 }
@@ -60,11 +74,23 @@ type PromptSubmittedPayload = {
   session: RuntimeSession
 }
 
+type SessionHistoryEntry = {
+  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_status" | "notice"
+  text: string
+}
+
 type TranscriptEntry = {
   id: number
   role: "user" | "assistant" | "reasoning" | "tool" | "status" | "notice"
   text: string
+  mergeKey?: string
   emphasis?: "muted" | "warning" | "error"
+}
+
+type TranscriptEntryRenderable = {
+  entry: TranscriptEntry
+  wrapper: BoxRenderable
+  text: TextRenderable
 }
 
 type CliOptions = {
@@ -82,8 +108,11 @@ type BootstrapState = {
   session: RuntimeSession
   attachment: RuntimeAttachment
   createdSession: boolean
+  historyEntries: TranscriptEntry[]
   options: CliOptions
 }
+
+type SessionStatusMode = "idle" | "working" | "disconnected"
 
 const OPEN_CONSOLE_ON_ERROR = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 let processLogger: ArrobaLogger | null = null
@@ -119,16 +148,15 @@ async function main() {
     created_session: bootstrap.createdSession,
   })
   await maybeResize(client, bootstrap.session.id)
-  getLogger("cli.main")?.debug("sent initial resize", {
-    session_id: bootstrap.session.id,
-  })
-
   await render(
     () => <ArrobaCliApp bootstrap={bootstrap} />, 
     {
       targetFps: 60,
       gatherStats: false,
       exitOnCtrlC: false,
+      useMouse: true,
+      enableMouseMovement: false,
+      useAlternateScreen: true,
       autoFocus: true,
       openConsoleOnError: OPEN_CONSOLE_ON_ERROR,
     },
@@ -145,21 +173,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
+  const initialEntries = props.bootstrap.historyEntries
   const [sessionState, setSessionState] = createSignal(session)
-  const [entries, setEntries] = createStore<TranscriptEntry[]>([])
+  const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
-  const [entryCounter, setEntryCounter] = createSignal(0)
+  const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
+  const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
+  const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
+  const [working, setWorking] = createSignal(Boolean(session.active_prompt) || session.queued_prompts.length > 0)
   let promptInput: TextareaRenderable | undefined
   let transcriptScrollbox: ScrollBoxRenderable | undefined
+  let headerMetaBox: BoxRenderable | undefined
+  let promptStateBox: BoxRenderable | undefined
+  let statusIndicatorBox: BoxRenderable | undefined
+  let footerSummaryBox: BoxRenderable | undefined
   let closing = false
   let exitCleanupFailed = false
   const degradedPollers = new Set<string>()
+  const tools = new Map<string, ToolTranscriptUpdate>()
+  const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
+  let emptyTranscriptRenderable: BoxRenderable | undefined
 
-  const queueDepth = createMemo(() => sessionState().queued_prompts.length)
-  const activePrompt = createMemo(() => sessionState().active_prompt)
-  const footerHint = createMemo(() => {
+  const queueDepth = () => sessionState().queued_prompts.length
+  const connectedClientCount = () => sessionState().attachment_ids.length
+  const activePrompt = () => sessionState().active_prompt
+  const sessionStatusMode = (): SessionStatusMode => {
+    if (daemonDisconnected()) {
+      return "disconnected"
+    }
+    if (working() || activePrompt() || submitting() || queueDepth() > 0) {
+      return "working"
+    }
+    return "idle"
+  }
+  const footerHint = () => {
     if (fatalError()) {
       return fatalError()!
     }
@@ -169,71 +218,243 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         : `Processing ${activePrompt()!.id}.`
     }
     return statusLine()
-  })
+  }
 
   const appendEntry = (entry: Omit<TranscriptEntry, "id">) => {
     const nextId = entryCounter() + 1
+    const nextEntry: TranscriptEntry = { id: nextId, ...entry }
     setEntryCounter(nextId)
-    setEntries(entries.length, { id: nextId, ...entry })
-    renderTranscript()
-    appLogger?.debug("appended transcript entry", {
-      role: entry.role,
-      entry_id: nextId,
-      total_entries: entries.length + 1,
-      chars: entry.text.length,
-    })
+    setEntries(entries.length, nextEntry)
+    mountTranscriptEntry(nextEntry)
+  }
+
+  const scrollTranscriptToBottom = () => {
+    if (!transcriptScrollbox) {
+      return
+    }
+    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: transcriptScrollbox.scrollHeight })
+    transcriptScrollbox.requestRender()
   }
 
   const appendUserPrompt = (text: string) => {
     appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
     setSubmitting(true)
+    setWorking(true)
+    updateSessionChrome()
+    scrollTranscriptToBottom()
   }
 
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
     appendEntry({ role: "notice", text, emphasis })
+    updateSessionChrome()
   }
 
-  const appendProviderChunk = (role: TranscriptEntry["role"], chunk: string) => {
+  const applySessionState = (nextSession: RuntimeSession) => {
+    setSessionState(nextSession)
+    setWorking(Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0)
+    if (!nextSession.active_prompt) {
+      setSubmitting(false)
+    }
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+
+  const applyProviderActivity = (active: boolean) => {
+    setWorking(active)
+    if (!active) {
+      setSubmitting(false)
+    }
+    updateSessionChrome()
+  }
+
+  const appendProviderChunk = (role: TranscriptEntry["role"], chunk: string, mergeKey?: string) => {
     const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     if (!normalized) {
       return
     }
+    setWorking(true)
     setSubmitting(false)
-    let merged = false
+    let mergedEntryId: number | undefined
+    let mergedText: string | undefined
+    let nextEntry: TranscriptEntry | undefined
+    const nextId = entryCounter() + 1
     setEntries(
       produce((draft) => {
+        if (mergeKey) {
+          let existing: TranscriptEntry | undefined
+          for (let index = draft.length - 1; index >= 0; index -= 1) {
+            const candidate = draft[index]
+            if (candidate?.role === role && candidate.mergeKey === mergeKey) {
+              existing = candidate
+              break
+            }
+          }
+          if (existing) {
+            existing.text = normalized
+            mergedEntryId = existing.id
+            mergedText = existing.text
+            return
+          }
+        }
         const last = draft.at(-1)
         if (last?.role === role && (role === "assistant" || role === "reasoning")) {
           last.text += normalized
-          merged = true
+          mergedEntryId = last.id
+          mergedText = last.text
           return
         }
-        draft.push({
-          id: entryCounter() + 1,
+        nextEntry = {
+          id: nextId,
           role,
           text: normalized,
-        })
+        }
+        if (mergeKey) {
+          nextEntry.mergeKey = mergeKey
+        }
+        draft.push(nextEntry)
       }),
     )
-    renderTranscript()
-    if (merged) {
-      appLogger?.debug("merged provider chunk", {
-        role,
-        chars: normalized.length,
-        total_entries: entries.length,
-      })
+    if (mergedEntryId !== undefined && mergedText !== undefined) {
+      updateTranscriptEntry(mergedEntryId, mergedText)
       return
     }
-    setEntryCounter((value) => value + 1)
-    appLogger?.debug("created provider transcript entry", {
-      role,
-      entry_id: entryCounter() + 1,
-      chars: normalized.length,
-      total_entries: entries.length + 1,
-    })
+    if (!nextEntry) {
+      return
+    }
+    setEntryCounter(nextId)
+    mountTranscriptEntry(nextEntry)
   }
 
-  const renderTranscript = () => {
+  const appendToolUpdate = (chunk: string) => {
+    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    if (!normalized) {
+      return
+    }
+    setWorking(true)
+    updateSessionChrome()
+    const parsed = parseToolTranscriptUpdate(normalized)
+    if (parsed) {
+      const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
+      tools.set(parsed.id, merged)
+      appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id)
+      return
+    }
+    appendProviderChunk("tool", normalized)
+  }
+
+  const renderStatusIndicator = () => {
+    if (!statusIndicatorBox) {
+      return
+    }
+
+    for (const child of [...statusIndicatorBox.getChildren()]) {
+      statusIndicatorBox.remove(child.id)
+    }
+
+    statusIndicatorBox.add(new TextRenderable(renderer, { content: "[", fg: theme.textMuted }))
+
+    const mode = sessionStatusMode()
+    const label = mode === "working" ? "WORKING" : mode === "disconnected" ? "DISCONNECTED" : "IDLE"
+    for (const [index, character] of [...label].entries()) {
+      let fg = theme.success
+      if (mode === "disconnected") {
+        fg = theme.error
+      } else if (mode === "working") {
+        const distance = reflectedDistance(index, label.length, workingAnimationFrame())
+        fg = distance === 0 ? theme.primary : distance === 1 ? theme.warning : theme.secondary
+      }
+      statusIndicatorBox.add(
+        new TextRenderable(renderer, {
+          content: character,
+          fg,
+          attributes: mode === "working" ? TextAttributes.BOLD : TextAttributes.NONE,
+        }),
+      )
+    }
+
+    statusIndicatorBox.add(new TextRenderable(renderer, { content: "]", fg: theme.textMuted }))
+    statusIndicatorBox.requestRender()
+  }
+
+  const replaceBoxText = (
+    box: BoxRenderable | undefined,
+    parts: Array<{ content: string; fg: (typeof theme)[keyof typeof theme]; attributes?: number }>,
+  ) => {
+    if (!box) {
+      return
+    }
+    for (const child of [...box.getChildren()]) {
+      box.remove(child.id)
+    }
+    for (const part of parts) {
+      box.add(
+        new TextRenderable(renderer, {
+          content: part.content,
+          fg: part.fg,
+          attributes: part.attributes ?? TextAttributes.NONE,
+        }),
+      )
+    }
+    box.requestRender()
+  }
+
+  const updateSessionChrome = () => {
+    replaceBoxText(headerMetaBox, [
+      {
+        content: `${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected`,
+        fg: connectedClientCount() > 1 ? theme.info : theme.textMuted,
+      },
+      {
+        content: sessionState().active_provider_run_id ?? "starting provider",
+        fg: theme.textMuted,
+      },
+    ])
+    replaceBoxText(promptStateBox, [
+      {
+        content: fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
+        fg: fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
+      },
+    ])
+    replaceBoxText(footerSummaryBox, [
+      {
+        content: `Session ${sessionState().id} • ${queueDepth()} queued • Enter sends • Meta+Enter adds newline • Ctrl+C or /exit to leave`,
+        fg: theme.textMuted,
+      },
+    ])
+    renderStatusIndicator()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+
+  const mountTranscriptEntry = (entry: TranscriptEntry, requestRender = true) => {
+    if (!transcriptScrollbox) {
+      return
+    }
+
+    if (emptyTranscriptRenderable) {
+      transcriptScrollbox.remove(emptyTranscriptRenderable.id)
+      emptyTranscriptRenderable = undefined
+    }
+
+    const renderable = buildTranscriptEntryRenderable(renderer, entry)
+    transcriptRenderables.set(entry.id, renderable)
+    transcriptScrollbox.add(renderable.wrapper)
+    if (requestRender) {
+      transcriptScrollbox.requestRender()
+    }
+  }
+
+  const updateTranscriptEntry = (entryId: number, text: string) => {
+    const renderable = transcriptRenderables.get(entryId)
+    if (!renderable) {
+      rebuildTranscript()
+      return
+    }
+    renderable.entry.text = text
+    applyTranscriptTextContent(renderable.text, renderable.entry)
+    transcriptScrollbox?.requestRender()
+  }
+
+  const rebuildTranscript = () => {
     if (!transcriptScrollbox) {
       return
     }
@@ -241,12 +462,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     for (const child of [...transcriptScrollbox.getChildren()]) {
       transcriptScrollbox.remove(child.id)
     }
+    transcriptRenderables.clear()
+    emptyTranscriptRenderable = undefined
 
     if (entries.length === 0) {
-      transcriptScrollbox.add(buildEmptyTranscriptRenderable(renderer))
+      emptyTranscriptRenderable = buildEmptyTranscriptRenderable(renderer)
+      transcriptScrollbox.add(emptyTranscriptRenderable)
     } else {
       for (const entry of entries) {
-        transcriptScrollbox.add(buildTranscriptEntryRenderable(renderer, entry))
+        mountTranscriptEntry(entry, false)
       }
     }
 
@@ -267,7 +491,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       created_session: createdSession,
     })
     try {
-      if (createdSession) {
+      if (shouldEndSessionOnCliExit(createdSession, connectedClientCount())) {
         await client.send(endSessionRequest(sessionState().id))
       } else {
         await client.send(detachFromSessionRequest(attachment.id))
@@ -334,11 +558,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await client.send(cancelActivePromptRequest(sessionState().id, attachment.id))
         appLogger?.info("requested active prompt cancellation")
         setStatusLine("Cancellation requested.")
+        setWorking(true)
+        updateSessionChrome()
       } catch (error) {
         appLogger?.error("active prompt cancellation failed", {
           error: formatError(error),
         })
         setFatalError(formatError(error))
+        updateSessionChrome()
       } finally {
         promptInput.clear()
       }
@@ -352,8 +579,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       const response = await submitPromptWithRecovery(client, sessionState().id, attachment.id, prompt, options, appLogger)
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
-      setSessionState(payload.session)
+      applySessionState(payload.session)
       appendUserPrompt(prompt)
+      setWorking(true)
+      updateSessionChrome()
       const outcomeName = firstVariantName(payload.outcome)
       appLogger?.info("prompt submitted", {
         outcome: outcomeName,
@@ -365,12 +594,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           ? `Prompt queued behind ${payload.session.active_prompt?.id ?? "the active turn"}.`
           : "Prompt submitted.",
       )
+      updateSessionChrome()
       promptInput.clear()
     } catch (error) {
       appLogger?.error("prompt submission failed", {
         error: formatError(error),
       })
       setFatalError(formatError(error))
+      updateSessionChrome()
     }
   }
 
@@ -381,6 +612,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   })
 
+  const handleSigint = () => {
+    void requestExit()
+  }
+  const handleStdinData = (chunk: Buffer | string) => {
+    const event = parseKeypress(chunk, { useKittyKeyboard: true })
+    if (event?.ctrl && event.name === "c") {
+      void requestExit()
+    }
+  }
+  process.on("SIGINT", handleSigint)
+  process.stdin.on("data", handleStdinData)
+  onCleanup(() => {
+    process.off("SIGINT", handleSigint)
+    process.stdin.off("data", handleStdinData)
+  })
+
   let pollersStarted = false
   const onResize = () => {
     void maybeResize(client, sessionState().id)
@@ -389,11 +636,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const markPollerDegraded = (operation: string, message: string) => {
     const wasHealthy = degradedPollers.size === 0
     degradedPollers.add(operation)
+    setDaemonDisconnected(true)
     appLogger?.warn("poller entered degraded mode", {
       operation,
       degraded_pollers: [...degradedPollers],
     })
     setStatusLine(message)
+    updateSessionChrome()
     if (wasHealthy) {
       appendNotice(message, "warning")
     }
@@ -412,7 +661,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     }
     if (wasDegraded && degradedPollers.size === 0) {
+      setDaemonDisconnected(false)
       setStatusLine(DEFAULT_CONNECTED_STATUS)
+      updateSessionChrome()
       appendNotice("Reconnected to the Arroba daemon.")
     }
   }
@@ -449,7 +700,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           operation,
           error: formatError(error),
         })
+        if (error instanceof Error && /local transport/i.test(error.message)) {
+          setDaemonDisconnected(true)
+        }
         setFatalError(formatError(error))
+        updateSessionChrome()
         break
       }
       await sleep(intervalMs)
@@ -472,10 +727,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             appendProviderChunk("reasoning", text)
             break
           case "provider_tool":
-            appendProviderChunk("tool", text)
+            appendToolUpdate(text)
             break
           case "provider_status":
-            appendProviderChunk("status", text)
+            applyProviderActivity(!/^OpenCode is idle\.?$/i.test(text.trim()))
+            if (shouldRenderProviderStatus(text)) {
+              appendProviderChunk("status", text)
+            }
             break
           default:
             appendProviderChunk("assistant", text)
@@ -501,10 +759,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await runPollingLoop("polling session state", 250, async () => {
       const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-      setSessionState(payload.session)
-      if (!payload.session.active_prompt) {
-        setSubmitting(false)
-      }
+      applySessionState(payload.session)
     })
   }
 
@@ -517,7 +772,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     pollersStarted = true
     promptInput?.focus()
-    renderTranscript()
+    rebuildTranscript()
     process.stdout.on("resize", onResize)
     appLogger?.info("starting background pollers")
     void pollOutput()
@@ -528,6 +783,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   onCleanup(() => {
     closing = true
     process.stdout.off("resize", onResize)
+  })
+
+  const workingAnimation = startInterval(() => {
+    setWorkingAnimationFrame((value) => value + 1)
+    if (sessionStatusMode() === "working") {
+      updateSessionChrome()
+    }
+  }, 120)
+
+  onCleanup(() => {
+    clearInterval(workingAnimation)
   })
 
   return (
@@ -561,14 +827,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
               Session {sessionState().id} on {path.basename(sessionState().worktree_id) || sessionState().worktree_id}
             </text>
           </box>
-          <box flexDirection="column" alignItems="flex-end">
-            <text fg={activePrompt() ? theme.primary : theme.success}>
-              {activePrompt() ? "ACTIVE" : "IDLE"}
-            </text>
-            <text fg={theme.textMuted}>
-              {sessionState().active_provider_run_id ?? "starting provider"}
-            </text>
-          </box>
+          <box
+            ref={(value) => {
+              headerMetaBox = value
+              updateSessionChrome()
+            }}
+            flexDirection="column"
+            alignItems="flex-end"
+            justifyContent="center"
+          />
         </box>
       </box>
 
@@ -624,9 +891,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         >
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme.textMuted}>Prompt</text>
-            <text fg={fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted}>
-              {fatalError() ? "error" : submitting() ? "thinking" : footerHint()}
-            </text>
+            <box
+              ref={(value) => {
+                promptStateBox = value
+                updateSessionChrome()
+              }}
+              flexDirection="row"
+            />
           </box>
           <textarea
             ref={(value) => {
@@ -647,12 +918,108 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       </box>
 
       <box flexShrink={0} marginTop={1} paddingLeft={2} paddingRight={2}>
-        <text fg={theme.textMuted}>
-          Session {sessionState().id} • {queueDepth()} queued • Enter sends • Meta+Enter adds newline • Ctrl+C or /exit to leave
-        </text>
+        <box flexDirection="row" gap={1}>
+          <box
+            ref={(value) => {
+              statusIndicatorBox = value
+              updateSessionChrome()
+            }}
+            flexDirection="row"
+          />
+          <box
+            ref={(value) => {
+              footerSummaryBox = value
+              updateSessionChrome()
+            }}
+            flexDirection="row"
+          />
+        </box>
       </box>
     </box>
   )
+}
+
+function reflectedDistance(index: number, length: number, frame: number): number {
+  if (length <= 1) {
+    return 0
+  }
+
+  const span = length - 1
+  const cycle = span * 2
+  const position = frame % cycle
+  const highlight = position <= span ? position : cycle - position
+  return Math.abs(index - highlight)
+}
+
+function hydrateTranscriptEntries(historyEntries: SessionHistoryEntry[]): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = []
+  const tools = new Map<string, ToolTranscriptUpdate>()
+  let nextId = 0
+
+  const appendTranscriptEntry = (role: TranscriptEntry["role"], chunk: string, mergeKey?: string) => {
+    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    if (!normalized) {
+      return
+    }
+
+    if (mergeKey) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const candidate = entries[index]
+        if (candidate?.role === role && candidate.mergeKey === mergeKey) {
+          candidate.text = normalized
+          return
+        }
+      }
+    }
+
+    const last = entries.at(-1)
+    if (last?.role === role && (role === "assistant" || role === "reasoning")) {
+      last.text += normalized
+      return
+    }
+
+    nextId += 1
+    const nextEntry: TranscriptEntry = { id: nextId, role, text: normalized }
+    if (mergeKey) {
+      nextEntry.mergeKey = mergeKey
+    }
+    entries.push(nextEntry)
+  }
+
+  for (const entry of historyEntries) {
+    switch (entry.kind) {
+      case "user_prompt":
+        appendTranscriptEntry("user", trimSingleTrailingNewline(entry.text))
+        break
+      case "provider_reasoning":
+        appendTranscriptEntry("reasoning", entry.text)
+        break
+      case "provider_tool": {
+        const parsed = parseToolTranscriptUpdate(entry.text)
+        if (!parsed) {
+          appendTranscriptEntry("tool", entry.text)
+          break
+        }
+        const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
+        tools.set(parsed.id, merged)
+        appendTranscriptEntry("tool", formatToolTranscriptUpdate(merged), parsed.id)
+        break
+      }
+      case "provider_status":
+        if (shouldRenderProviderStatus(entry.text)) {
+          appendTranscriptEntry("status", entry.text)
+        }
+        break
+      case "notice":
+        appendTranscriptEntry("notice", entry.text)
+        break
+      default:
+        appendTranscriptEntry("assistant", entry.text)
+        break
+    }
+  }
+
+  return entries
 }
 
 async function submitPromptWithRecovery(
@@ -699,45 +1066,85 @@ function buildTranscriptEntryRenderable(renderer: ReturnType<typeof useRenderer>
     marginBottom: 1,
     flexDirection: "column",
   })
-  const accent = transcriptAccent(entry)
-  const bodyColor = entry.role === "assistant" || entry.role === "reasoning"
-    ? theme.backgroundPanel
-    : theme.backgroundElement
-
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: transcriptLabel(entry),
-      fg: theme.textMuted,
-    }),
-  )
-
-  const border = new BoxRenderable(renderer, {
-    border: ["left"],
-    customBorderChars: SplitBorder.customBorderChars,
-    borderColor: accent,
-  })
+  const bodyColor = transcriptBodyColor(entry)
   const body = new BoxRenderable(renderer, {
-    paddingLeft: 2,
-    paddingRight: 1,
-    paddingTop: 0,
-    paddingBottom: 0,
-    backgroundColor: bodyColor,
+    paddingLeft: 1,
+    paddingRight: 0,
+    paddingTop: 1,
+    paddingBottom: 1,
+    ...(bodyColor ? { backgroundColor: bodyColor } : {}),
   })
-  body.add(
-    new TextRenderable(renderer, {
-      content: entry.text,
-      fg: transcriptTextColor(entry),
-      wrapMode: "word",
-    }),
-  )
-  border.add(body)
-  wrapper.add(border)
-  return wrapper
+  const text = new TextRenderable(renderer, {
+    fg: transcriptTextColor(entry),
+    wrapMode: "word",
+  })
+  applyTranscriptTextContent(text, entry)
+  body.add(text)
+
+  if (transcriptUsesAccentBorder(entry)) {
+    const border = new BoxRenderable(renderer, {
+      border: ["left"],
+      customBorderChars: SplitBorder.customBorderChars,
+      borderColor: transcriptAccent(entry),
+    })
+    border.add(body)
+    wrapper.add(border)
+  } else {
+    wrapper.add(body)
+  }
+
+  return { entry, wrapper, text }
+}
+
+function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  text.clear()
+  if (entry.role === "tool") {
+    applyToolTranscriptTextContent(text, entry)
+    return
+  }
+  for (const span of splitInlineCodeSpans(entry.text)) {
+    text.add(
+      TextNodeRenderable.fromString(
+        span.text,
+        span.code
+          ? {
+              fg: transcriptInlineCodeColor(entry),
+              attributes: TextAttributes.BOLD,
+            }
+          : undefined,
+      ),
+    )
+  }
+}
+
+function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  const newlineIndex = entry.text.indexOf("\n")
+  const title = newlineIndex === -1 ? entry.text : entry.text.slice(0, newlineIndex)
+  const rest = newlineIndex === -1 ? "" : entry.text.slice(newlineIndex)
+
+  if (title) {
+    text.add(TextNodeRenderable.fromString(title, { fg: theme.secondary }))
+  }
+  for (const span of splitInlineCodeSpans(rest)) {
+    text.add(
+      TextNodeRenderable.fromString(
+        span.text,
+        span.code
+          ? {
+              fg: transcriptInlineCodeColor(entry),
+              attributes: TextAttributes.BOLD,
+            }
+          : {
+              fg: theme.text,
+            },
+      ),
+    )
+  }
 }
 
 function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
   const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 1,
+    marginBottom: 0,
   })
   wrapper.add(
     new TextRenderable(renderer, {
@@ -757,7 +1164,7 @@ function transcriptAccent(entry: TranscriptEntry) {
     return theme.accent
   }
   if (entry.role === "tool") {
-    return theme.secondary
+    return theme.text
   }
   if (entry.role === "status") {
     return theme.info
@@ -772,28 +1179,22 @@ function transcriptAccent(entry: TranscriptEntry) {
   return theme.borderSubtle
 }
 
-function transcriptLabel(entry: TranscriptEntry) {
-  if (entry.role === "user") {
-    return "Prompt"
-  }
-  if (entry.role === "reasoning") {
-    return "Thinking"
-  }
-  if (entry.role === "tool") {
-    return "Tool"
-  }
+function transcriptUsesAccentBorder(entry: TranscriptEntry) {
+  return entry.role !== "status"
+}
+
+function transcriptBodyColor(entry: TranscriptEntry) {
   if (entry.role === "status") {
-    return "Status"
+    return null
   }
-  if (entry.role === "notice") {
-    return "Notice"
-  }
-  return "Model"
+  return entry.role === "assistant" || entry.role === "reasoning"
+    ? theme.backgroundPanel
+    : theme.backgroundElement
 }
 
 function transcriptTextColor(entry: TranscriptEntry) {
   if (entry.role === "user") {
-    return theme.primary
+    return theme.text
   }
   if (entry.role === "reasoning") {
     return theme.textMuted
@@ -812,6 +1213,19 @@ function transcriptTextColor(entry: TranscriptEntry) {
         : theme.textMuted
   }
   return theme.text
+}
+
+function transcriptInlineCodeColor(entry: TranscriptEntry) {
+  if (entry.role === "tool" || entry.role === "status") {
+    return theme.primary
+  }
+  if (entry.role === "user") {
+    return theme.text
+  }
+  if (entry.role === "notice") {
+    return entry.emphasis === "error" ? theme.warning : theme.info
+  }
+  return theme.info
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -892,12 +1306,14 @@ async function bootstrapSession(
   if (!attachedSession.active_provider_run_id) {
     await launchProviderRun(client, session.id, options.accountProfile, options.model)
   }
+  const historyEntries = hydrateTranscriptEntries(await getSessionHistory(client, session.id))
 
   return {
     client,
     session: await getSessionState(client, session.id),
     attachment,
     createdSession,
+    historyEntries,
     options,
   }
 }
@@ -934,6 +1350,12 @@ async function getSessionState(client: LocalIpcClient, sessionId: string): Promi
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
   return payload.session
+}
+
+async function getSessionHistory(client: LocalIpcClient, sessionId: string): Promise<SessionHistoryEntry[]> {
+  const response = await client.send<Record<string, unknown>>(getSessionHistoryRequest(sessionId))
+  const payload = expectVariant<{ entries: SessionHistoryEntry[] }>(response, "SessionHistory")
+  return payload.entries
 }
 
 async function launchProviderRun(
@@ -1005,6 +1427,16 @@ function getSessionStateRequest(sessionId: string) {
   return {
     GetSessionState: {
       session_id: sessionId,
+    },
+  }
+}
+
+function getSessionHistoryRequest(sessionId: string) {
+  return {
+    GetSessionHistory: {
+      session_id: sessionId,
+      limit: BOOTSTRAP_HISTORY_LIMIT,
+      max_chars: BOOTSTRAP_HISTORY_MAX_CHARS,
     },
   }
 }

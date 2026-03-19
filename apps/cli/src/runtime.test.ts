@@ -8,6 +8,7 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
+  shouldEndSessionOnCliExit,
 } from "./runtime.js"
 
 test("describeCliError prefers structured error messages", () => {
@@ -17,7 +18,7 @@ test("describeCliError prefers structured error messages", () => {
   )
   assert.equal(describeCliError(new Error("boom")), "boom")
   assert.equal(describeCliError("plain"), "plain")
-  assert.equal(DEFAULT_CONNECTED_STATUS, "Connected to the Arroba daemon.")
+  assert.equal(DEFAULT_CONNECTED_STATUS, "")
 })
 
 test("poll recovery retries transient IPC failures with backoff", () => {
@@ -70,4 +71,10 @@ test("exit cleanup requires a second attempt before forcing exit", () => {
   assert.equal(second.exit, true)
   assert.equal(second.exitCode, 1)
   assert.match(second.message, /Forcing exit/)
+})
+
+test("cli exit detaches instead of ending the session", () => {
+  assert.equal(shouldEndSessionOnCliExit(true, 1), false)
+  assert.equal(shouldEndSessionOnCliExit(true, 3), false)
+  assert.equal(shouldEndSessionOnCliExit(false, 1), false)
 })

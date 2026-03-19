@@ -13,6 +13,7 @@ use crate::capability::{
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::provider::{
     LaunchProviderRequest, OpenCodePollResult, ProviderProcessService, RuntimeProviderRun,
 };
@@ -37,6 +38,7 @@ pub struct DaemonApp {
     prompt_activity: BTreeMap<String, ActivePromptState>,
     prompt_idle_timeout: Duration,
     sessions: SessionService,
+    history: SessionHistoryStore,
     terminal: TerminalStreamService,
 }
 
@@ -62,6 +64,7 @@ impl DaemonApp {
             prompt_activity: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             sessions: SessionService::new(&config),
+            history: SessionHistoryStore::new(config.session_history_root.clone())?,
             terminal: TerminalStreamService::new(),
             config,
         })
@@ -103,6 +106,44 @@ impl DaemonApp {
         &self.terminal
     }
 
+    pub fn session_history(&self, session_id: &str) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        self.history.load(&session)
+    }
+
+    pub fn session_history_tail(
+        &self,
+        session_id: &str,
+        limit: Option<usize>,
+        max_chars: Option<usize>,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        let mut entries = self.session_history(session_id)?;
+
+        if let Some(max_chars) = max_chars {
+            let mut total_chars = 0usize;
+            let mut start_index = entries.len();
+            for (index, entry) in entries.iter().enumerate().rev() {
+                total_chars += entry.text.chars().count();
+                start_index = index;
+                if total_chars >= max_chars {
+                    break;
+                }
+            }
+            if start_index > 0 {
+                entries = entries.split_off(start_index);
+            }
+        }
+
+        if let Some(limit) = limit {
+            if entries.len() > limit {
+                let start_index = entries.len() - limit;
+                entries = entries.split_off(start_index);
+            }
+        }
+
+        Ok(entries)
+    }
+
     pub(crate) fn terminal_mut(&mut self) -> &mut TerminalStreamService {
         &mut self.terminal
     }
@@ -135,7 +176,7 @@ impl DaemonApp {
             .detach_with_effect(&mut self.sessions, attachment_id)?;
 
         if effect.removed_queued_prompt_count > 0 {
-            self.terminal.record_notice(
+            self.record_notice(
                 attachment.session_id(),
                 None,
                 self.attachments
@@ -148,7 +189,7 @@ impl DaemonApp {
         }
 
         if effect.removed_active_prompt {
-            self.terminal.record_notice(
+            self.record_notice(
                 attachment.session_id(),
                 None,
                 self.attachments.list_session_attachment_ids(attachment.session_id()),
@@ -390,7 +431,7 @@ impl DaemonApp {
                     previous_active_run_id,
                 ) {
                     Ok(resumed_run) => {
-                        self.terminal.record_notice(
+                        self.record_notice(
                             run.session_id(),
                             Some(resumed_run.id()),
                             recipients,
@@ -402,7 +443,7 @@ impl DaemonApp {
                         );
                     }
                     Err(resume_error) => {
-                        self.terminal.record_notice(
+                        self.record_notice(
                             run.session_id(),
                             None,
                             recipients,
@@ -477,6 +518,8 @@ impl DaemonApp {
             })?
             .to_string();
 
+        self.append_user_prompt_history(session_id, attachment_id, prompt);
+
         let (_session, outcome) = self
             .sessions
             .submit_prompt(session_id, attachment_id, prompt)?;
@@ -508,7 +551,7 @@ impl DaemonApp {
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                 );
-                self.terminal.record_notice(
+                self.record_notice(
                     session_id,
                     Some(&provider_run_id),
                     self.other_attachment_ids(session_id, attachment_id),
@@ -585,7 +628,7 @@ impl DaemonApp {
 
         let (_session, prompt) = self.sessions.begin_cancelling_active_prompt(session_id)?;
         self.note_prompt_settlement_requested(session_id);
-        self.terminal.record_notice(
+        self.record_notice(
             session_id,
             Some(&provider_run_id),
             self.other_attachment_ids(session_id, attachment_id),
@@ -614,7 +657,7 @@ impl DaemonApp {
             self.sessions
                 .update_config(session_id, attachment_id, values, requires_idle)?;
 
-        self.terminal.record_notice(
+        self.record_notice(
             session_id,
             None,
             self.other_attachment_ids(session_id, attachment_id),
@@ -756,7 +799,7 @@ impl DaemonApp {
         Ok(chunks
             .into_iter()
             .map(|chunk| {
-                self.terminal.fan_out_output(
+                self.fan_out_output(
                     session_id,
                     provider_run_id,
                     TerminalOutputKind::ProviderOutput,
@@ -805,6 +848,95 @@ impl DaemonApp {
             .into_iter()
             .filter(|attachment_id| attachment_id != source_attachment_id)
             .collect()
+    }
+
+    fn append_user_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        prompt: &str,
+    ) {
+        self.append_history_entry(
+            session_id,
+            SessionHistoryEntry::user_prompt(session_id, source_attachment_id, prompt),
+        );
+    }
+
+    fn fan_out_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        kind: TerminalOutputKind,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let record = self.terminal.fan_out_output(
+            session_id,
+            provider_run_id,
+            kind.clone(),
+            recipient_attachment_ids,
+            bytes,
+        );
+        if kind != TerminalOutputKind::PromptEcho {
+            self.append_history_entry(
+                session_id,
+                SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    kind,
+                    String::from_utf8_lossy(bytes).into_owned(),
+                ),
+            );
+        }
+        record
+    }
+
+    fn record_notice(
+        &mut self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> crate::terminal::RuntimeNoticeRecord {
+        let message = message.into();
+        let record = self.terminal.record_notice(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            message.clone(),
+        );
+        self.append_history_entry(
+            session_id,
+            SessionHistoryEntry::notice(session_id, provider_run_id, message),
+        );
+        record
+    }
+
+    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let session = match self.sessions.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping history append because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.history.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     fn dispatch_prompt_to_provider(
@@ -862,7 +994,7 @@ impl DaemonApp {
             }
         };
         for notice in &poll_result.notices {
-            self.terminal.record_notice(
+            self.record_notice(
                 session_id,
                 Some(provider_run_id),
                 recipient_attachment_ids.clone(),
@@ -930,7 +1062,7 @@ impl DaemonApp {
                     .map(|delta| (TerminalOutputKind::ProviderStatus, delta)),
             )
             .map(|(kind, delta)| {
-                self.terminal.fan_out_output(
+                self.fan_out_output(
                     session_id,
                     provider_run_id,
                     kind,
@@ -956,7 +1088,7 @@ impl DaemonApp {
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }
-        self.terminal.fan_out_output(
+        self.fan_out_output(
             session_id,
             provider_run_id,
             TerminalOutputKind::PromptEcho,
@@ -1008,7 +1140,7 @@ impl DaemonApp {
             if let Err(error) =
                 self.ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
-                self.terminal.record_notice(
+                self.record_notice(
                     session_id,
                     Some(&provider_run_id),
                     self.attachments.list_session_attachment_ids(session_id),
@@ -1027,7 +1159,7 @@ impl DaemonApp {
                 next.source_attachment_id(),
                 next.prompt(),
             ) {
-                self.terminal.record_notice(
+                self.record_notice(
                     session_id,
                     Some(&provider_run_id),
                     self.attachments.list_session_attachment_ids(session_id),
@@ -1161,7 +1293,7 @@ impl DaemonApp {
         }
         self.providers.clear_runtime(provider_run_id);
 
-        self.terminal.record_notice(
+        self.record_notice(
             session_id,
             Some(provider_run_id),
             self.attachments.list_session_attachment_ids(session_id),

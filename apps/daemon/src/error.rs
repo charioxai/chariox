@@ -165,4 +165,10 @@ pub enum DaemonError {
     ScreenshotCapabilityFailed { session_id: String, message: String },
     #[error("local harness timed out waiting for terminal output for session `{session_id}` after {timeout_ms}ms")]
     LocalHarnessTimeout { session_id: String, timeout_ms: u64 },
+    #[error("session history failed for {session_id:?}: {operation}: {message}")]
+    SessionHistoryFailed {
+        session_id: Option<String>,
+        operation: &'static str,
+        message: String,
+    },
 }

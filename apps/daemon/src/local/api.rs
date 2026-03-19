@@ -10,6 +10,7 @@ use crate::capability::{
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
+use crate::history::SessionHistoryEntry;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
     CreateSessionRequest, PromptCancellation, PromptCompletion, PromptSubmissionOutcome,
@@ -71,6 +72,13 @@ pub struct GetSessionStateRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionHistoryRequest {
+    pub session_id: String,
+    pub limit: Option<usize>,
+    pub max_chars: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
@@ -158,6 +166,7 @@ pub enum LocalDaemonRequest {
     LaunchProviderRun(LaunchProviderRunRequest),
     ListSessions(ListSessionsRequest),
     GetSessionState(GetSessionStateRequest),
+    GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
     CompletePrompt(CompletePromptRequest),
@@ -194,6 +203,9 @@ pub enum LocalDaemonResponse {
     },
     SessionState {
         session: RuntimeSession,
+    },
+    SessionHistory {
+        entries: Vec<SessionHistoryEntry>,
     },
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,
@@ -297,6 +309,15 @@ impl DaemonApp {
             LocalDaemonRequest::GetSessionState(request) => Ok(LocalDaemonResponse::SessionState {
                 session: self.sessions().get_session(&request.session_id)?,
             }),
+            LocalDaemonRequest::GetSessionHistory(request) => {
+                Ok(LocalDaemonResponse::SessionHistory {
+                    entries: self.session_history_tail(
+                        &request.session_id,
+                        request.limit,
+                        request.max_chars,
+                    )?,
+                })
+            }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
                 let _ =
                     self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
@@ -491,6 +512,79 @@ mod tests {
         assert_eq!(detached.id(), attachment.id());
         assert_eq!(ended.id(), session.id());
         assert!(app.attachments().get_attachment(detached.id()).is_err());
+    }
+
+    #[test]
+    fn detaching_one_attachment_keeps_the_session_open_for_others() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let first = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("first attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let second = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-2".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("second attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let detached = match app
+            .handle_local_request(LocalDaemonRequest::DetachFromSession(
+                DetachFromSessionRequest {
+                    attachment_id: first.id().to_string(),
+                },
+            ))
+            .expect("detach should succeed")
+        {
+            LocalDaemonResponse::SessionDetached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let state = match app
+            .handle_local_request(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("state request should succeed")
+        {
+            LocalDaemonResponse::SessionState { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(detached.id(), first.id());
+        assert_eq!(state.status().to_string(), "created");
+        assert_eq!(state.attachment_ids().len(), 1);
+        assert!(state.has_attachment(second.id()));
+        assert!(app.attachments().get_attachment(second.id()).is_ok());
     }
 
     #[test]

@@ -108,6 +108,16 @@ pub struct OpenCodeToolState {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    pub input: serde_json::Value,
+    #[serde(default)]
+    pub output: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
     pub raw: String,
 }
 

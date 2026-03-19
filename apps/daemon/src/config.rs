@@ -10,6 +10,7 @@ pub struct DaemonConfig {
     pub host_machine_id: String,
     pub os_user: String,
     pub local_socket_path: PathBuf,
+    pub session_history_root: PathBuf,
 }
 
 impl DaemonConfig {
@@ -19,6 +20,9 @@ impl DaemonConfig {
             local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
+            session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(Self::default_session_history_root),
             daemon_id,
             host_machine_id: env::var("ARROBA_MACHINE_ID")
                 .unwrap_or_else(|_| "machine-local".to_string()),
@@ -36,6 +40,7 @@ impl DaemonConfig {
         let daemon_id = daemon_id.into();
         Self {
             local_socket_path: Self::default_local_socket_path(&daemon_id),
+            session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
             os_user: os_user.into(),
@@ -52,6 +57,11 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
+        config.session_history_root = std::env::temp_dir().join("arroba-tests").join(format!(
+            "session-history-{}-{}",
+            std::process::id(),
+            index
+        ));
         config
     }
 
@@ -60,8 +70,17 @@ impl DaemonConfig {
         self
     }
 
+    pub fn with_session_history_root(mut self, path: PathBuf) -> Self {
+        self.session_history_root = path;
+        self
+    }
+
     pub fn default_local_socket_path(daemon_id: &str) -> PathBuf {
         default_runtime_dir().join(format!("{daemon_id}.sock"))
+    }
+
+    pub fn default_session_history_root() -> PathBuf {
+        default_state_dir().join("sessions")
     }
 
     pub fn validate(&self) -> Result<(), DaemonError> {
@@ -74,8 +93,32 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        if self.session_history_root.as_os_str().is_empty() {
+            return Err(DaemonError::InvalidConfig {
+                field: "session_history_root",
+                message: "value must not be empty",
+            });
+        }
         Ok(())
     }
+}
+
+fn default_state_dir() -> PathBuf {
+    if let Some(state_dir) = env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return state_dir.join("arroba");
+    }
+
+    if let Some(home_dir) = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return home_dir.join(".local").join("state").join("arroba");
+    }
+
+    std::env::temp_dir().join("arroba")
 }
 
 fn default_runtime_dir() -> PathBuf {

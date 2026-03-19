@@ -81,6 +81,39 @@ What it does:
 - launches the `apps/cli` OpenTUI client through Bun
 - connects that client to the daemon over local IPC
 
+Common direct CLI options:
+
+- `--session ID`
+  - attach to a specific session such as `session-2`
+
+- `--socket PATH`
+  - connect to a specific daemon socket instead of the default derived path
+
+- `--client-id ID`
+  - override the attachment client id; default is `arroba-cli-<pid>`
+
+- `--model MODEL`
+  - select the provider model name used when the CLI launches a provider run; default is `default`
+
+- `--account-profile PROFILE`
+  - select the provider account profile used when the CLI launches a provider run; default is `default`
+
+- `--workspace PATH`
+  - override the logical workspace id; default is the current working directory
+
+- `--worktree PATH`
+  - override the logical worktree id; default is the workspace path
+
+Example:
+
+```bash
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
+  --workspace /path/to/repo \
+  --worktree /path/to/repo \
+  --model claude-sonnet-4 \
+  --account-profile default
+```
+
 ## 7. Running The TypeScript CLI Directly
 
 For direct CLI development:
@@ -128,15 +161,72 @@ Outside the TUI:
 
 - `arroba-cli logs ...` inspects the shared log root
 
+Current log viewer options:
+
+- `--follow`
+  - keep tailing appended records
+
+- `--process-kind KIND`
+  - filter by process kind such as `daemon`, `cli`, or `cli-launcher`
+
+- `--component NAME`
+  - filter by logger component name
+
+- `--session ID`
+  - filter by a specific session id
+
+- `--provider-run ID`
+  - filter by a specific provider run id
+
+- `--client-id ID`
+  - filter by a specific client id
+
+- `--level LEVEL`
+  - filter by `debug`, `info`, `warn`, `error`, or `off`
+
+- `--limit N`
+  - show only the newest `N` matching records before follow mode starts; default is `200`
+
 Example:
 
 ```bash
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
-## 11. Current Local Configuration
+## 11. Session Selection Behavior
 
-### 11.1 OpenCode
+By default, the CLI tries to reattach before it creates anything new.
+
+- If you pass `--session session-N`, the CLI uses that exact session id.
+- If you do not pass `--session`, the CLI lists sessions from the daemon and filters to sessions whose `workspace_id` and `worktree_id` match the effective CLI `--workspace` and `--worktree` values.
+- Ended sessions are excluded from auto-attach.
+- If multiple matching non-ended sessions exist, the CLI sorts them by the numeric session suffix and picks the newest one, so `session-12` wins over `session-2`.
+- If no matching non-ended session exists, the CLI creates a new session.
+
+Important consequences:
+
+- Running the CLI from different directories changes the default `workspace` and can change which session is selected.
+- Overriding `--workspace` or `--worktree` changes the session pool considered attachable.
+- Session ids are allocated monotonically by the daemon, so higher numbers are newer sessions, not random choices.
+
+Examples:
+
+```bash
+# Reattach to the newest open session for the current directory.
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+
+# Force attachment to a specific existing session.
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --session session-2
+
+# Use a custom workspace/worktree identity, which changes auto-attach behavior.
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
+  --workspace /tmp/demo-workspace \
+  --worktree /tmp/demo-workspace
+```
+
+## 12. Current Local Configuration
+
+### 12.1 OpenCode
 
 - `ARROBA_OPENCODE_PORT`
   - required today
@@ -153,7 +243,7 @@ export ARROBA_OPENCODE_PORT=43111
 export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
 ```
 
-### 11.2 Bun / CLI Launcher
+### 12.2 Bun / CLI Launcher
 
 - `BUN_BIN`
   - optional
@@ -165,7 +255,7 @@ Example:
 export BUN_BIN=/absolute/path/to/bun
 ```
 
-### 11.3 Daemon Socket
+### 12.3 Daemon Socket
 
 - `ARROBA_DAEMON_SOCKET`
   - optional
@@ -185,7 +275,7 @@ export ARROBA_DAEMON_SOCKET=/tmp/arroba-demo.sock
 
 Then run both the daemon and the CLI in shells that share that env var.
 
-### 11.4 Logging
+### 12.4 Logging
 
 - `ARROBA_LOG_DIR`
   - optional
@@ -197,7 +287,7 @@ Then run both the daemon and the CLI in shells that share that env var.
 
 See [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md) for the full logging guide.
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 ### The CLI cannot connect to the daemon
 
@@ -237,7 +327,7 @@ or inspect the shared NDJSON files directly:
 tail -f ~/.local/state/arroba/logs/*.ndjson
 ```
 
-## 13. Current Limitations
+## 14. Current Limitations
 
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.

@@ -54,6 +54,27 @@ struct OpenCodeRunState {
     last_status_kind: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ToolTranscriptUpdate {
+    id: String,
+    tool: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
+}
+
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
@@ -609,7 +630,7 @@ impl ProviderProcessService {
                             if role != Some("assistant") {
                                 continue;
                             }
-                            let summary = summarize_tool_part(&part);
+                            let summary = render_tool_transcript_update(&part);
                             let previous = state.emitted_tool_summaries.get(&part.id);
                             if previous.map(String::as_str) != Some(summary.as_str()) {
                                 state
@@ -637,7 +658,9 @@ impl ProviderProcessService {
                         }
                         if state.last_status_kind.as_deref() != Some(kind.as_str()) {
                             state.last_status_kind = Some(kind.clone());
-                            status_updates.push(format_session_status(&kind).into_bytes());
+                            if kind != "idle" {
+                                status_updates.push(format_session_status(&kind).into_bytes());
+                            }
                         }
                     }
                 }
@@ -744,7 +767,7 @@ fn render_snapshot_text_deltas(
                     *emitted = part.text.len();
                 }
                 "tool" => {
-                    let summary = summarize_tool_part(part);
+                    let summary = render_tool_transcript_update(part);
                     let previous = state.emitted_tool_summaries.get(&part.id);
                     if previous.map(String::as_str) != Some(summary.as_str()) {
                         state
@@ -764,7 +787,7 @@ fn render_snapshot_text_deltas(
     }
 }
 
-fn summarize_tool_part(part: &OpenCodePart) -> String {
+fn render_tool_transcript_update(part: &OpenCodePart) -> String {
     let tool_name = if part.tool.is_empty() {
         "tool"
     } else {
@@ -776,7 +799,86 @@ fn summarize_tool_part(part: &OpenCodePart) -> String {
         .map(|state| state.status.as_str())
         .filter(|status: &&str| !status.is_empty())
         .unwrap_or("updated");
-    format!("{tool_name} [{status}]")
+    let rendered_text = (!part.text.trim().is_empty()).then(|| part.text.trim().to_string());
+    let input = part.state.as_ref().and_then(|state| {
+        (!state.input.is_null() && !is_empty_json_value(&state.input)).then(|| state.input.clone())
+    });
+    let output = part
+        .state
+        .as_ref()
+        .and_then(|state| non_empty(state.output.as_str()).map(str::to_string))
+        .or_else(|| tool_metadata_field(part, &["output", "stdout"]));
+    let description = tool_metadata_field(part, &["description"]);
+    let title = part
+        .state
+        .as_ref()
+        .and_then(|state| non_empty(state.title.as_str()).map(str::to_string));
+    let error = part
+        .state
+        .as_ref()
+        .and_then(|state| non_empty(state.error.as_str()).map(str::to_string));
+    let raw = part
+        .state
+        .as_ref()
+        .and_then(|state| non_empty(state.raw.as_str()))
+        .map(render_tool_raw_detail)
+        .filter(|value| {
+            rendered_text.as_deref() != Some(value.as_str())
+                && output.as_deref() != Some(value.as_str())
+        });
+
+    serde_json::to_string(&ToolTranscriptUpdate {
+        id: part.id.clone(),
+        tool: tool_name.to_string(),
+        status: status.to_string(),
+        title,
+        description,
+        text: rendered_text,
+        input,
+        output,
+        error,
+        raw,
+    })
+    .unwrap_or_else(|_| {
+        format!(
+            "{{\"id\":{id:?},\"tool\":{tool:?},\"status\":{status:?}}}",
+            id = part.id,
+            tool = tool_name,
+            status = status,
+        )
+    })
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn is_empty_json_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(items) => items.is_empty(),
+        serde_json::Value::Object(items) => items.is_empty(),
+        _ => false,
+    }
+}
+
+fn tool_metadata_field(part: &OpenCodePart, keys: &[&str]) -> Option<String> {
+    let metadata = part.state.as_ref()?.metadata.as_object()?;
+    keys.iter().find_map(|key| {
+        metadata
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(non_empty)
+            .map(str::to_string)
+    })
+}
+
+fn render_tool_raw_detail(raw: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
+        Err(_) => raw.to_string(),
+    }
 }
 
 fn format_session_status(kind: &str) -> String {
@@ -795,10 +897,16 @@ impl Default for ProviderProcessService {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use crate::config::DaemonConfig;
+    use crate::provider::opencode_client::{OpenCodePart, OpenCodeToolState};
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
-    use super::{LaunchProviderRequest, ProviderProcessService, ProviderRunState};
+    use super::{
+        render_tool_transcript_update, LaunchProviderRequest, ProviderProcessService,
+        ProviderRunState, ToolTranscriptUpdate,
+    };
 
     fn sessions() -> SessionService {
         SessionService::new(&DaemonConfig::for_tests())
@@ -910,5 +1018,42 @@ mod tests {
         assert_eq!(first.state(), ProviderRunState::Ended);
         assert_eq!(second.state(), ProviderRunState::Running);
         assert_eq!(session.active_provider_run_id(), Some(second.id()));
+    }
+
+    #[test]
+    fn renders_structured_tool_update_with_input_and_output() {
+        let payload = render_tool_transcript_update(&OpenCodePart {
+            id: "part-1".to_string(),
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            kind: "tool".to_string(),
+            text: String::new(),
+            tool: "bash".to_string(),
+            state: Some(OpenCodeToolState {
+                status: "completed".to_string(),
+                input: json!({ "command": "git status" }),
+                output: String::new(),
+                title: String::new(),
+                metadata: json!({
+                    "output": "On branch main",
+                    "description": "Shows working tree status"
+                }),
+                error: String::new(),
+                raw: String::new(),
+            }),
+            time: None,
+        });
+
+        let parsed: ToolTranscriptUpdate =
+            serde_json::from_str(&payload).expect("tool payload should deserialize");
+        assert_eq!(parsed.id, "part-1");
+        assert_eq!(parsed.tool, "bash");
+        assert_eq!(parsed.status, "completed");
+        assert_eq!(
+            parsed.description.as_deref(),
+            Some("Shows working tree status")
+        );
+        assert_eq!(parsed.output.as_deref(), Some("On branch main"));
+        assert_eq!(parsed.input, Some(json!({ "command": "git status" })));
     }
 }

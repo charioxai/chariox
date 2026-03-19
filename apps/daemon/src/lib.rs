@@ -3,6 +3,7 @@ pub mod attachment;
 pub mod capability;
 pub mod config;
 pub mod error;
+pub mod history;
 pub mod local;
 pub mod logging;
 pub mod provider;
@@ -165,6 +166,58 @@ mod tests {
         assert!(app.terminal().notice_records()[0]
             .recipient_attachment_ids
             .contains(&first.id().to_string()));
+    }
+
+    #[test]
+    fn ended_sessions_reopen_on_attach_and_preserve_history() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let _run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider run should launch");
+
+        let _ = app
+            .submit_prompt(session.id(), attachment.id(), "restore me\n")
+            .expect("prompt should submit");
+        let _ = app.end_session(session.id()).expect("session should end");
+
+        let reopened = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-b",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("ended session should reopen on attach");
+        let reopened_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist after reopen");
+        let history = app
+            .session_history(session.id())
+            .expect("history should still load");
+
+        assert_eq!(reopened.session_id(), session.id());
+        assert_eq!(reopened_session.status(), super::session::SessionStatus::Parked);
+        assert_eq!(reopened_session.attachment_ids().len(), 1);
+        assert!(history.iter().any(|entry| entry.text.contains("restore me")));
     }
 
     #[test]

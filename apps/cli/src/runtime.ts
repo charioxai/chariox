@@ -1,6 +1,6 @@
 import { LocalIpcError } from "./ipc.js"
 
-export const DEFAULT_CONNECTED_STATUS = "Connected to the Arroba daemon."
+export const DEFAULT_CONNECTED_STATUS = ""
 export const MAX_TRANSIENT_POLL_FAILURES = 5
 const POLL_RETRY_BASE_MS = 250
 const POLL_RETRY_MAX_MS = 2_000
@@ -15,6 +15,10 @@ export type ExitCleanupDecision = {
   exit: boolean
   exitCode: number
   message: string
+}
+
+export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedClientCount: number): boolean {
+  return false
 }
 
 export function describeCliError(error: unknown): string {

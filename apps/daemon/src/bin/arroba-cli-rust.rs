@@ -137,19 +137,12 @@ fn main() -> Result<(), DaemonError> {
     let _ = output_thread.join();
     let _ = resize_thread.join();
 
-    if created_session {
-        let _ = client.send(&LocalDaemonRequest::EndSession(
-            arroba_daemon::local::EndSessionRequest {
-                session_id: session_id.clone(),
-            },
-        ));
-    } else {
-        let _ = client.send(&LocalDaemonRequest::DetachFromSession(
-            DetachFromSessionRequest {
-                attachment_id: attachment.id().to_string(),
-            },
-        ));
-    }
+    let _ = created_session;
+    let _ = client.send(&LocalDaemonRequest::DetachFromSession(
+        DetachFromSessionRequest {
+            attachment_id: attachment.id().to_string(),
+        },
+    ));
 
     Ok(())
 }

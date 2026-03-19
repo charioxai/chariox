@@ -193,7 +193,35 @@ async fn handle_connection(
     };
 
     let response_bytes = encode_envelope(envelope)?;
-    write_async_frame(&mut stream, &response_bytes).await
+    match write_async_frame(&mut stream, &response_bytes).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if matches!(
+                &error,
+                DaemonError::LocalTransport {
+                    operation,
+                    message,
+                } if *operation == "decode local frame" && message.contains("payload exceeded")
+            ) {
+                crate::logging::warn_with_fields(
+                    "daemon.ipc.server",
+                    "local response exceeded ipc frame limit",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                let fallback = encode_envelope(IpcResponseEnvelope {
+                    response: None,
+                    error: Some(
+                        "local response exceeded ipc frame limit; request a smaller payload"
+                            .to_string(),
+                    ),
+                })?;
+                return write_async_frame(&mut stream, &fallback).await;
+            }
+            Err(error)
+        }
+    }
 }
 
 fn prepare_socket_path(socket_path: &Path) -> Result<(), DaemonError> {
