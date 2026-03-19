@@ -8,6 +8,11 @@ M3 is in progress as of 2026-03-18.
 
 This checklist starts with the OpenCode structured-adapter upgrade that follows the M2 PTY bootstrap. Once that path is stable, M3 continues with daemon-owned slash commands, local capabilities, and additional providers.
 
+Client-surface note:
+
+- the primary local CLI surface for M3 is the TypeScript OpenTUI client in `apps/cli`
+- `arroba-cli-rust` remains available only as a phased-out comparison/fallback path and should not receive new feature work by default
+
 ## 1. Target M3 outcomes
 
 From `docs/ROADMAP.md`, M3 outcomes are:
@@ -94,6 +99,7 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 
 ## 5. Testing and Verification
 
+- [ ] Add dedicated TypeScript CLI behavior tests for bootstrap, transcript rendering, polling/recovery, and exit cleanup.
 - [ ] Add unit tests for the OpenCode structured client and adapter state transitions.
 - [ ] Add integration tests for health-check, session-create, prompt-submit, and structured output polling.
 - [ ] Add integration tests for OpenCode abort, server death, and failed initialization cleanup.

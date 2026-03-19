@@ -136,7 +136,9 @@ Responsibilities:
 Current M2 runtime note:
 
 - the local CLI is now a real daemon client over local IPC, not only a harness/test surface
-- the primary local CLI implementation is now a TypeScript OpenTUI client; the previous Rust-only CLI remains available temporarily as a compatibility fallback
+- the primary local CLI implementation is now a TypeScript OpenTUI client
+- `arroba-cli` currently exists as a Rust launcher for that TypeScript client
+- the previous Rust-only CLI remains available as `arroba-cli-rust`, but it is phased out and should be treated as a fallback/debugging surface rather than the primary implementation target
 - local client-daemon communication currently uses a Unix-socket transport on Unix-like systems
 
 ### 3.2 Machine

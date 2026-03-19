@@ -8,6 +8,7 @@ This document defines the implementation target for Arroba v1. It is more specif
 
 Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under **Implementation Choices (v1 baseline)**.
 Daemon v1 implementation language baseline is Rust.
+Current primary local CLI implementation baseline is TypeScript/OpenTUI, with the previous Rust-only CLI retained only as a phased-out compatibility fallback.
 
 ## 1. Product Definition
 

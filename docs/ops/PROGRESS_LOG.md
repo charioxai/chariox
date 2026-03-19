@@ -208,3 +208,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed M2 formally after landing the real local daemon IPC transport, minimal local CLI, real `opencode` adapter, and end-to-end delayed-output smoke coverage through the daemon.
 - Updated `README.md`, `docs/ROADMAP.md`, `docs/M2_IMPLEMENTATION_CHECKLIST.md`, `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, and `docs/ops/TASKS.md` so repository status now reflects M2 as complete and M3 as the next milestone.
 - Recorded shipped M2 implementation work against commit `727a97f`.
+
+### TypeScript CLI migration update
+
+- Promoted `apps/cli` to the primary local CLI implementation using TypeScript + OpenTUI.
+- Kept `arroba-cli` as a Rust compatibility launcher that builds and starts the TypeScript client.
+- Retained the previous Rust-only CLI as `arroba-cli-rust`, but marked it as phased out rather than the default local client surface.

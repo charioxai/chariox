@@ -6,7 +6,7 @@ Execution checklist for **M2 - End-to-End Local OpenCode Baseline**.
 
 M2 is complete as of 2026-03-18.
 
-This checklist translated the updated roadmap into concrete implementation work for the repository state after M1. The current runtime now includes a real local daemon IPC transport, a minimal local CLI, a real `opencode` adapter, and verified end-to-end prompt/output flow through the daemon.
+This checklist translated the updated roadmap into concrete implementation work for the repository state after M1. The current runtime now includes a real local daemon IPC transport, a primary TypeScript OpenTUI local CLI, a Rust launcher for that client, a phased-out legacy Rust CLI fallback, a real `opencode` adapter, and verified end-to-end prompt/output flow through the daemon.
 
 ## 1. Target M2 outcomes
 
@@ -49,12 +49,12 @@ apps/
         opencode.rs     # launch details for the opencode CLI
   cli/
     src/
-      main.rs           # local CLI entrypoint
-      client.rs         # request/response wrapper over daemon transport
-      ui.rs             # minimal terminal input/output loop
+      index.tsx         # local OpenTUI CLI entrypoint and UI
+      ipc.ts            # request/response wrapper over daemon transport
+      theme.ts          # terminal theme and border configuration
 ```
 
-Exact filenames may evolve, but M2 should converge on a shape close to that.
+Exact filenames may evolve, but M2 converged on this shape after the CLI migration from the first Rust implementation to the current TypeScript OpenTUI client.
 
 ## 4. Workstreams
 
@@ -185,3 +185,5 @@ Historical note:
 
 - M2 intentionally shipped a PTY-launched OpenCode path to establish the daemon + CLI baseline quickly.
 - OpenCode-specific structured session/event integration is now the next planned refinement and belongs to M3 rather than to the historical M2 closure criteria.
+- The first local CLI implementation for this milestone was Rust-only, but the repository has since migrated the primary client to `apps/cli` in TypeScript/OpenTUI.
+- `arroba-cli-rust` remains in the daemon crate as a phased-out fallback/reference path, while `arroba-cli` now launches the TypeScript client.

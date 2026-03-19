@@ -30,7 +30,7 @@ The current codebase provides:
 - a shared domain package for workflow-oriented core v1 entities
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
-- a Rust compatibility launcher for the TypeScript CLI plus the legacy Rust CLI binary retained as `arroba-cli-rust` during the migration
+- a Rust compatibility launcher for the TypeScript CLI plus the phased-out legacy Rust CLI binary retained as `arroba-cli-rust`
 - a local daemon smoke harness for managed-session flows
 - a Prisma schema aligned with workflow-oriented runtime entities
 - baseline CI for TypeScript and Rust checks
@@ -63,7 +63,7 @@ The daemon is the runtime authority in Arroba v1. It is responsible for hosting 
 
 The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. Broader capability work, more providers, workflows, relay/web support, and memory-oriented features follow in later milestones.
 
-The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper, while the previous Rust-only CLI remains available as `arroba-cli-rust` during the migration window.
+The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper. The previous Rust-only CLI still exists as `arroba-cli-rust`, but it is now phased out and should be treated only as a fallback/debugging path while the TypeScript client is hardened.
 
 ### `apps/cli`
 
@@ -149,12 +149,18 @@ export ARROBA_OPENCODE_PORT=43111
 pnpm --filter @arroba/cli run dev
 ```
 
-Legacy Rust CLI fallback during the migration:
+Phased-out legacy Rust CLI fallback:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli-rust
 ```
+
+Current migration status:
+
+- `apps/cli` is the primary local client implementation
+- `arroba-cli` is a compatibility launcher for that TypeScript client
+- `arroba-cli-rust` still exists, but new CLI work should target the TypeScript client unless a daemon-contract issue requires checking the legacy path
 
 Current local CLI controls:
 

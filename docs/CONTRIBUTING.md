@@ -37,6 +37,7 @@ Use `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, and `docs/PROTOCOL.md` for produc
 - Prefer strict typing and avoid `any` unless unavoidable and documented.
 - Keep UI behavior deterministic for terminal and overlay flows.
 - Isolate adapter/transport logic from rendering components.
+- Treat `apps/cli` as the primary local CLI surface. The Rust CLI fallback can be used for comparison/debugging, but new local-client feature work should target the TypeScript client unless the daemon contract itself is under investigation.
 
 ## 2.4 Protocol and Contracts
 
