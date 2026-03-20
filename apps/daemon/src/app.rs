@@ -13,7 +13,7 @@ use crate::capability::{
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryStore};
 use crate::provider::{
     LaunchProviderRequest, OpenCodePollResult, ProviderProcessService, RuntimeProviderRun,
 };
@@ -41,6 +41,8 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     terminal: TerminalStreamService,
 }
+
+const MIN_SESSION_HISTORY_USER_ROUNDS: usize = 4;
 
 #[derive(Debug, Clone)]
 struct ActivePromptState {
@@ -118,20 +120,30 @@ impl DaemonApp {
         max_chars: Option<usize>,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         let mut entries = self.session_history(session_id)?;
+        let mut start_index = 0usize;
 
         if let Some(max_chars) = max_chars {
             let mut total_chars = 0usize;
-            let mut start_index = entries.len();
+            let mut chars_start_index = entries.len();
             for (index, entry) in entries.iter().enumerate().rev() {
                 total_chars += entry.text.chars().count();
-                start_index = index;
+                chars_start_index = index;
                 if total_chars >= max_chars {
                     break;
                 }
             }
-            if start_index > 0 {
-                entries = entries.split_off(start_index);
-            }
+            start_index = chars_start_index;
+        }
+
+        let round_start_index = history_start_for_recent_user_rounds(&entries,
+            MIN_SESSION_HISTORY_USER_ROUNDS,
+        );
+        if round_start_index < start_index {
+            start_index = round_start_index;
+        }
+
+        if start_index > 0 {
+            entries = entries.split_off(start_index);
         }
 
         if let Some(limit) = limit {
@@ -1351,6 +1363,62 @@ impl DaemonApp {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await
+    }
+}
+
+fn history_start_for_recent_user_rounds(
+    entries: &[SessionHistoryEntry],
+    round_count: usize,
+) -> usize {
+    if round_count == 0 || entries.is_empty() {
+        return 0;
+    }
+
+    let mut seen_user_prompts = 0usize;
+    for (index, entry) in entries.iter().enumerate().rev() {
+        if entry.kind == SessionHistoryEntryKind::UserPrompt {
+            seen_user_prompts += 1;
+            if seen_user_prompts == round_count {
+                return index;
+            }
+        }
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_start_for_recent_user_rounds;
+    use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
+
+    #[test]
+    fn preserves_four_recent_user_rounds_when_trimming_history() {
+        let entries = vec![
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 1"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 1"),
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 2"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 2"),
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 3"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 3"),
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 4"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 4"),
+            history_entry(SessionHistoryEntryKind::UserPrompt, "prompt 5"),
+            history_entry(SessionHistoryEntryKind::ProviderOutput, "answer 5"),
+        ];
+
+        assert_eq!(history_start_for_recent_user_rounds(&entries, 4), 2);
+    }
+
+    fn history_entry(kind: SessionHistoryEntryKind, text: &str) -> SessionHistoryEntry {
+        SessionHistoryEntry {
+            session_id: "session-1".to_string(),
+            provider_run_id: Some("run-1".to_string()),
+            source_attachment_id: Some("attachment-1".to_string()),
+            kind,
+            text: text.to_string(),
+            timestamp_ms: 0,
+        }
     }
 }
 

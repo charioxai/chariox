@@ -1,14 +1,15 @@
 import path from "node:path"
 import process from "node:process"
 import { homedir } from "node:os"
-import { setInterval as startInterval } from "node:timers"
+import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, parseKeypress, type KeyBinding, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, parseKeypress, type KeyBinding, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, onCleanup } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 
+import { copyTextToClipboard } from "./clipboard.js"
 import { LocalIpcClient } from "./ipc.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
@@ -17,6 +18,7 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
+  reconcileWorkingStateFromSession,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 import {
@@ -31,6 +33,7 @@ import { EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 
 const PROMPT_KEYBINDINGS = [
   { name: "return", action: "submit" },
+  { name: "return", shift: true, action: "newline" },
   { name: "return", meta: true, action: "newline" },
 ] satisfies KeyBinding[]
 
@@ -114,6 +117,11 @@ type BootstrapState = {
 
 type SessionStatusMode = "idle" | "working" | "disconnected"
 
+type FooterFlash = {
+  message: string
+  tone: "info" | "error"
+}
+
 const OPEN_CONSOLE_ON_ERROR = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 let processLogger: ArrobaLogger | null = null
 
@@ -183,6 +191,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
   const [working, setWorking] = createSignal(Boolean(session.active_prompt) || session.queued_prompts.length > 0)
+  const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
+  let stopRequestInFlight = false
   let promptInput: TextareaRenderable | undefined
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   let headerMetaBox: BoxRenderable | undefined
@@ -195,10 +205,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const tools = new Map<string, ToolTranscriptUpdate>()
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
   let emptyTranscriptRenderable: BoxRenderable | undefined
+  let footerFlashTimeout: ReturnType<typeof startTimeout> | undefined
 
   const queueDepth = () => sessionState().queued_prompts.length
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => sessionState().active_prompt
+  const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const sessionStatusMode = (): SessionStatusMode => {
     if (daemonDisconnected()) {
       return "disconnected"
@@ -249,11 +261,44 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
+  const flashFooter = (message: string, tone: FooterFlash["tone"]) => {
+    if (footerFlashTimeout) {
+      clearTimeout(footerFlashTimeout)
+    }
+    setFooterFlash({ message, tone })
+    updateSessionChrome()
+    footerFlashTimeout = startTimeout(() => {
+      footerFlashTimeout = undefined
+      setFooterFlash(null)
+      updateSessionChrome()
+    }, 3_000)
+  }
+
+  const copySelection = () => {
+    const text = renderer.getSelection()?.getSelectedText()
+    renderer.clearSelection()
+    if (!text) {
+      return
+    }
+    void copyTextToClipboard(text, renderer)
+      .then(() => {
+        flashFooter("selection copied to clipboard", "info")
+      })
+      .catch((error) => {
+        appLogger?.warn("selection copy failed", {
+          error: formatError(error),
+        })
+        flashFooter("failed to copy selection", "error")
+      })
+  }
+
   const applySessionState = (nextSession: RuntimeSession) => {
+    const nextHasPromptWork = hasPromptWork(nextSession)
     setSessionState(nextSession)
-    setWorking(Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0)
+    setWorking(reconcileWorkingStateFromSession(working(), nextHasPromptWork))
     if (!nextSession.active_prompt) {
       setSubmitting(false)
+      stopRequestInFlight = false
     }
     updateSessionChrome()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
@@ -263,6 +308,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorking(active)
     if (!active) {
       setSubmitting(false)
+      if (!activePrompt() && statusLine() === "Cancellation requested.") {
+        setStatusLine(DEFAULT_CONNECTED_STATUS)
+      }
     }
     updateSessionChrome()
   }
@@ -417,9 +465,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ])
     replaceBoxText(footerSummaryBox, [
       {
-        content: `Session ${sessionState().id} • ${queueDepth()} queued • Enter sends • Meta+Enter adds newline • Ctrl+C or /exit to leave`,
+        content: `Session ${sessionState().id} • ${queueDepth()} queued${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""}`,
         fg: theme.textMuted,
       },
+      ...(footerFlash()
+        ? [{
+            content: ` • ${footerFlash()!.message}`,
+            fg: footerFlash()!.tone === "error" ? theme.error : theme.info,
+            attributes: TextAttributes.BOLD,
+          }]
+        : []),
     ])
     renderStatusIndicator()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
@@ -555,17 +610,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (trimmed === "/stop") {
       try {
-        await client.send(cancelActivePromptRequest(sessionState().id, attachment.id))
-        appLogger?.info("requested active prompt cancellation")
-        setStatusLine("Cancellation requested.")
-        setWorking(true)
-        updateSessionChrome()
-      } catch (error) {
-        appLogger?.error("active prompt cancellation failed", {
-          error: formatError(error),
-        })
-        setFatalError(formatError(error))
-        updateSessionChrome()
+        await requestPromptStop()
       } finally {
         promptInput.clear()
       }
@@ -605,20 +650,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const requestPromptStop = async () => {
+    if (stopRequestInFlight || !activePrompt()) {
+      return
+    }
+
+    stopRequestInFlight = true
+    try {
+      await client.send(cancelActivePromptRequest(sessionState().id, attachment.id))
+      appLogger?.info("requested active prompt cancellation")
+      setStatusLine("Cancellation requested.")
+      setWorking(true)
+      updateSessionChrome()
+    } catch (error) {
+      stopRequestInFlight = false
+      appLogger?.error("active prompt cancellation failed", {
+        error: formatError(error),
+      })
+      setFatalError(formatError(error))
+      updateSessionChrome()
+    }
+  }
+
   useKeyboard((event) => {
     if (event.ctrl && event.name === "c") {
       event.preventDefault()
-      void requestExit()
+      void requestPromptStop()
     }
   })
 
   const handleSigint = () => {
-    void requestExit()
+    void requestPromptStop()
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (event?.ctrl && event.name === "c") {
-      void requestExit()
+      void requestPromptStop()
     }
   }
   process.on("SIGINT", handleSigint)
@@ -785,6 +852,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     process.stdout.off("resize", onResize)
   })
 
+  onCleanup(() => {
+    if (footerFlashTimeout) {
+      clearTimeout(footerFlashTimeout)
+    }
+  })
+
   const workingAnimation = startInterval(() => {
     setWorkingAnimationFrame((value) => value + 1)
     if (sessionStatusMode() === "working") {
@@ -846,6 +919,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         border={["left", "right"]}
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.borderSubtle}
+        onMouseUp={(event) => {
+          if (event.button !== MouseButton.LEFT) {
+            return
+          }
+          startTimeout(() => {
+            copySelection()
+          }, 0)
+        }}
       >
         <scrollbox
           ref={(value) => {
@@ -1164,7 +1245,7 @@ function transcriptAccent(entry: TranscriptEntry) {
     return theme.accent
   }
   if (entry.role === "tool") {
-    return theme.text
+    return theme.secondary
   }
   if (entry.role === "status") {
     return theme.info

@@ -89,6 +89,21 @@ export function parseToolTranscriptUpdate(chunk: string): ToolTranscriptUpdate |
 }
 
 export function formatToolTranscriptUpdate(update: ToolTranscriptUpdate) {
+  const todos = formatTodoTranscriptUpdate(update)
+  if (todos) {
+    return todos
+  }
+
+  const readResult = formatReadTranscriptUpdate(update)
+  if (readResult) {
+    return readResult
+  }
+
+  const grepResult = formatGrepTranscriptUpdate(update)
+  if (grepResult) {
+    return grepResult
+  }
+
   const sections: string[] = []
   const tool = nonEmpty(update.tool) ?? "tool"
   const status = nonEmpty(update.status)
@@ -178,4 +193,223 @@ function renderInput(input: unknown) {
     return null
   }
   return JSON.stringify(input, null, 2)
+}
+
+type TodoItem = {
+  content?: unknown
+  status?: unknown
+}
+
+type ReadInput = {
+  filePath?: unknown
+  offset?: unknown
+  limit?: unknown
+}
+
+type GrepInput = {
+  pattern?: unknown
+  path?: unknown
+}
+
+function formatTodoTranscriptUpdate(update: ToolTranscriptUpdate) {
+  if (update.tool !== "todowrite") {
+    return null
+  }
+
+  const todos = readTodos(update.input) ?? readTodos(update.output) ?? readTodos(update.raw)
+  if (!todos) {
+    return null
+  }
+
+  const remaining = todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled").length
+  const lines = [`Todos: ${remaining} ${remaining === 1 ? "todo" : "todos"} remaining`]
+
+  for (const todo of todos) {
+    const content = typeof todo.content === "string" ? todo.content.trim() : ""
+    if (!content) {
+      continue
+    }
+    lines.push(`${todo.status === "completed" ? "[✓]" : todo.status === "cancelled" ? "[-]" : "[ ]"} ${content}`)
+  }
+
+  return lines.join("\n")
+}
+
+function readTodos(value: unknown) {
+  if (value == null) {
+    return null
+  }
+  if (typeof value === "string") {
+    try {
+      return readTodos(JSON.parse(value))
+    } catch {
+      return null
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.filter(isTodoItem)
+  }
+  if (typeof value !== "object") {
+    return null
+  }
+  if (!("todos" in value)) {
+    return null
+  }
+  const todos = (value as { todos?: unknown }).todos
+  return Array.isArray(todos) ? todos.filter(isTodoItem) : null
+}
+
+function isTodoItem(value: unknown): value is TodoItem {
+  return Boolean(value) && typeof value === "object"
+}
+
+function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
+  if (update.tool !== "read") {
+    return null
+  }
+
+  const input = readReadInput(update.input)
+  const content = readReadContent(update.output) ?? readReadContent(update.raw)
+  if (!input?.filePath || !content) {
+    return null
+  }
+
+  const header = `read: ${input.filePath}${formatReadWindow(input)}`
+  return `${header}\n${collapseMiddleLines(content, 20)}`
+}
+
+function formatGrepTranscriptUpdate(update: ToolTranscriptUpdate) {
+  if (update.tool !== "grep") {
+    return null
+  }
+
+  const input = readGrepInput(update.input)
+  const output = typeof update.output === "string" ? trimTrailingNewlines(update.output) : null
+  if (!input || !output) {
+    return null
+  }
+
+  const parsed = parseGrepOutput(output, input.path)
+  if (!parsed) {
+    return null
+  }
+
+  return [`grep: ${input.pattern}${parsed.summary}`, ...parsed.lines].join("\n")
+}
+
+function readReadInput(input: unknown) {
+  if (!input || typeof input !== "object") {
+    return null
+  }
+
+  const value = input as ReadInput
+  const filePath = typeof value.filePath === "string" ? value.filePath.trim() : ""
+  if (!filePath) {
+    return null
+  }
+
+  const result: { filePath: string; offset?: number; limit?: number } = { filePath }
+  if (typeof value.offset === "number") {
+    result.offset = value.offset
+  }
+  if (typeof value.limit === "number") {
+    result.limit = value.limit
+  }
+
+  return result
+}
+
+function formatReadWindow(input: { offset?: number; limit?: number }) {
+  const parts: string[] = []
+  if (input.offset !== undefined) {
+    parts.push(`offset=${input.offset}`)
+  }
+  if (input.limit !== undefined) {
+    parts.push(`limit=${input.limit}`)
+  }
+  return parts.length > 0 ? ` [${parts.join(", ")}]` : ""
+}
+
+function readReadContent(value: unknown) {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const match = value.match(/<content>([\s\S]*?)<\/content>/)
+  if (!match) {
+    return null
+  }
+
+  return trimTrailingNewlines(match[1] ?? "")
+}
+
+function collapseMiddleLines(text: string, maxLines: number) {
+  const lines = text.split(/\r?\n/)
+  if (lines.length <= maxLines) {
+    return text
+  }
+
+  const headCount = Math.ceil(maxLines / 2)
+  const tailCount = Math.floor(maxLines / 2)
+  return [...lines.slice(0, headCount), "...", ...lines.slice(-tailCount)].join("\n")
+}
+
+function readGrepInput(input: unknown) {
+  if (!input || typeof input !== "object") {
+    return null
+  }
+
+  const value = input as GrepInput
+  const pattern = typeof value.pattern === "string" ? value.pattern.trim() : ""
+  if (!pattern) {
+    return null
+  }
+
+  const result: { pattern: string; path?: string } = { pattern }
+  if (typeof value.path === "string" && value.path.trim()) {
+    result.path = value.path.trim()
+  }
+  return result
+}
+
+function parseGrepOutput(output: string, rootPath?: string) {
+  const lines = output.split(/\r?\n/)
+  const summaryLine = lines[0]?.trim() ?? ""
+  const matchCount = Number(/^Found (\d+) matches?/.exec(summaryLine)?.[1] ?? "0")
+  const files = new Map<string, string[]>()
+  let currentFile: string | null = null
+
+  for (const line of lines.slice(1)) {
+    if (!line.trim()) {
+      continue
+    }
+    if (!line.startsWith("  ") && line.endsWith(":")) {
+      currentFile = line.slice(0, -1)
+      files.set(currentFile, [])
+      continue
+    }
+    if (currentFile) {
+      files.get(currentFile)?.push(line.trim())
+    }
+  }
+
+  if (files.size === 0) {
+    return null
+  }
+
+  const entries = [...files.entries()]
+  const totalMatches = matchCount > 0 ? matchCount : entries.reduce((sum, [, fileLines]) => sum + fileLines.length, 0)
+  const summary = entries.length === 1
+    ? ` in ${displayGrepPath(entries[0]![0], rootPath)} (${totalMatches} matches)`
+    : ` (${totalMatches} matches in ${entries.length} files)`
+  const renderedLines = entries.flatMap(([filePath, fileLines]) => [displayGrepPath(filePath, rootPath), ...fileLines])
+
+  return { summary, lines: renderedLines }
+}
+
+function displayGrepPath(filePath: string, rootPath?: string) {
+  if (rootPath && filePath.startsWith(`${rootPath}/`)) {
+    return filePath.slice(rootPath.length + 1)
+  }
+  return filePath
 }

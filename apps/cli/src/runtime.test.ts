@@ -8,6 +8,7 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
+  reconcileWorkingStateFromSession,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 
@@ -77,4 +78,11 @@ test("cli exit detaches instead of ending the session", () => {
   assert.equal(shouldEndSessionOnCliExit(true, 1), false)
   assert.equal(shouldEndSessionOnCliExit(true, 3), false)
   assert.equal(shouldEndSessionOnCliExit(false, 1), false)
+})
+
+test("session polling does not clear working state until provider reports idle", () => {
+  assert.equal(reconcileWorkingStateFromSession(true, false), true)
+  assert.equal(reconcileWorkingStateFromSession(true, true), true)
+  assert.equal(reconcileWorkingStateFromSession(false, true), true)
+  assert.equal(reconcileWorkingStateFromSession(false, false), false)
 })

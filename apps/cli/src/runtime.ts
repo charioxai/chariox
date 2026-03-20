@@ -17,6 +17,10 @@ export type ExitCleanupDecision = {
   message: string
 }
 
+export function reconcileWorkingStateFromSession(currentWorking: boolean, sessionHasPromptWork: boolean) {
+  return sessionHasPromptWork ? true : currentWorking
+}
+
 export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedClientCount: number): boolean {
   return false
 }

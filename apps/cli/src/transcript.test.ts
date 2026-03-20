@@ -54,6 +54,110 @@ test("formatToolTranscriptUpdate falls back to rendered input and errors", () =>
   )
 })
 
+test("formatToolTranscriptUpdate renders todos as a checklist", () => {
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-3",
+      tool: "todowrite",
+      status: "completed",
+      input: {
+        todos: [
+          {
+            content: "Remove temporary idle-status debug logs from CLI and daemon",
+            priority: "high",
+            status: "completed",
+          },
+          {
+            content: "Run CLI and daemon tests after log cleanup",
+            priority: "medium",
+            status: "pending",
+          },
+        ],
+      },
+    }),
+    [
+      "Todos: 1 todo remaining",
+      "[✓] Remove temporary idle-status debug logs from CLI and daemon",
+      "[ ] Run CLI and daemon tests after log cleanup",
+    ].join("\n"),
+  )
+})
+
+test("formatToolTranscriptUpdate renders read output with a compact header", () => {
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-4",
+      tool: "read",
+      status: "completed",
+      input: {
+        filePath: "apps/daemon/src/provider/service.rs",
+        offset: 480,
+        limit: 220,
+      },
+      output: [
+        "<path>/Users/miguel/arroba/apps/daemon/src/provider/service.rs</path>",
+        "<type>file</type>",
+        "<content>1: first",
+        "2: second",
+        "</content>",
+      ].join("\n"),
+    }),
+    [
+      "read: apps/daemon/src/provider/service.rs [offset=480, limit=220]",
+      "1: first",
+      "2: second",
+    ].join("\n"),
+  )
+})
+
+test("formatToolTranscriptUpdate collapses long read output in the middle", () => {
+  const content = Array.from({ length: 24 }, (_, index) => `${index + 1}: line ${index + 1}`).join("\n")
+
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-5",
+      tool: "read",
+      status: "completed",
+      input: {
+        filePath: "apps/cli/src/runtime.ts",
+      },
+      output: `<path>/Users/miguel/arroba/apps/cli/src/runtime.ts</path>\n<type>file</type>\n<content>${content}\n</content>`,
+    }),
+    [
+      "read: apps/cli/src/runtime.ts",
+      ...Array.from({ length: 10 }, (_, index) => `${index + 1}: line ${index + 1}`),
+      "...",
+      ...Array.from({ length: 10 }, (_, index) => `${index + 15}: line ${index + 15}`),
+    ].join("\n"),
+  )
+})
+
+test("formatToolTranscriptUpdate renders grep output with a compact header", () => {
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-6",
+      tool: "grep",
+      status: "completed",
+      input: {
+        pattern: "status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle",
+        path: "/Users/miguel/arroba",
+      },
+      output: [
+        "Found 13 matches",
+        "/Users/miguel/arroba/apps/daemon/src/provider/service.rs:",
+        "  Line 416:             status_updates.push(delta)",
+        "  Line 418:             provider_idle = true;",
+      ].join("\n"),
+    }),
+    [
+      "grep: status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle in apps/daemon/src/provider/service.rs (13 matches)",
+      "apps/daemon/src/provider/service.rs",
+      "Line 416:             status_updates.push(delta)",
+      "Line 418:             provider_idle = true;",
+    ].join("\n"),
+  )
+})
+
 test("mergeToolTranscriptUpdate keeps prior tool details across partial updates", () => {
   const merged = mergeToolTranscriptUpdate(
     {
