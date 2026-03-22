@@ -19,6 +19,15 @@ pub enum DaemonError {
     },
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
+    #[error("session alias `{alias}` is invalid: {message}")]
+    InvalidSessionAlias { alias: String, message: &'static str },
+    #[error("session alias `{alias}` is already in use for workspace `{workspace_id}`")]
+    SessionAliasConflict { workspace_id: String, alias: String },
+    #[error("session reference `{session_ref}` is ambiguous: {matches:?}")]
+    AmbiguousSessionRef {
+        session_ref: String,
+        matches: Vec<String>,
+    },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {
         session_id: String,

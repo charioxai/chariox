@@ -15,6 +15,7 @@ pub enum TerminalOutputKind {
     PromptEcho,
     ProviderReasoning,
     ProviderTool,
+    ProviderError,
     ProviderStatus,
 }
 

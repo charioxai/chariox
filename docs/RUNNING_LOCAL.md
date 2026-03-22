@@ -84,10 +84,19 @@ What it does:
 Common direct CLI options:
 
 - `--session ID`
-  - attach to a specific session such as `session-2`
+  - attach to a specific session ref by full id, unique id prefix, alias, or unique alias prefix
 
 - `--socket PATH`
   - connect to a specific daemon socket instead of the default derived path
+
+- `--create-session`
+  - force creation of a new session instead of auto-attach
+
+- `--alias NAME`
+  - set the alias for `--create-session`
+
+- `--delete-session REF`
+  - delete a session by id or alias and exit without entering the TUI
 
 - `--client-id ID`
   - override the attachment client id; default is `arroba-cli-<pid>`
@@ -155,7 +164,12 @@ cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
 Inside the CLI:
 
 - `/stop` requests cancellation of the active provider turn
-- `/exit` detaches or ends the local session and exits
+- `/exit` currently detaches and exits the CLI
+- in-session temporary commands:
+  - `/session create [alias]`
+  - `/session attach <ref>`
+  - `/session delete [ref]`
+- deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, and returns the user to an unattached shell
 
 Outside the TUI:
 
@@ -197,17 +211,27 @@ cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --foll
 
 By default, the CLI tries to reattach before it creates anything new.
 
-- If you pass `--session session-N`, the CLI uses that exact session id.
+- If you pass `--session REF`, the CLI resolves that session ref directly.
+- If you pass `--create-session`, the CLI always creates a new session before attaching.
+- If you pass `--delete-session REF`, the CLI deletes that session and exits without entering the TUI.
 - If you do not pass `--session`, the CLI lists sessions from the daemon and filters to sessions whose `workspace_id` and `worktree_id` match the effective CLI `--workspace` and `--worktree` values.
 - Ended sessions are excluded from auto-attach.
-- If multiple matching non-ended sessions exist, the CLI sorts them by the numeric session suffix and picks the newest one, so `session-12` wins over `session-2`.
+- If multiple matching non-ended sessions exist, the CLI sorts them by `created_at_ms` and picks the newest one.
 - If no matching non-ended session exists, the CLI creates a new session.
 
 Important consequences:
 
 - Running the CLI from different directories changes the default `workspace` and can change which session is selected.
 - Overriding `--workspace` or `--worktree` changes the session pool considered attachable.
-- Session ids are allocated monotonically by the daemon, so higher numbers are newer sessions, not random choices.
+- Session ids are 16-character lowercase hexadecimal values.
+- Sessions may also have an optional alias.
+- Users can refer to sessions by:
+  - full id
+  - unique id prefix
+  - alias
+  - unique alias prefix
+- Alias matching is workspace-scoped and normalized to lowercase.
+- Ambiguous references fail with an explicit error instead of picking one arbitrarily.
 
 Examples:
 
@@ -216,7 +240,13 @@ Examples:
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
 
 # Force attachment to a specific existing session.
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --session session-2
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --session 7f9c2a1b
+
+# Create a new named session explicitly.
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --create-session --alias main
+
+# Delete a session by alias without opening the TUI.
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- --delete-session main
 
 # Use a custom workspace/worktree identity, which changes auto-attach behavior.
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
@@ -226,7 +256,17 @@ cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
 
 ## 12. Current Local Configuration
 
-### 12.1 OpenCode
+### 12.1 Transcript Highlighting
+
+The TypeScript CLI now renders assistant/reasoning markdown more richly and syntax-highlights fenced code blocks in the terminal.
+
+Notes:
+
+- this uses OpenTUI's markdown/code rendering path, not LSP
+- some language parsers are downloaded on first use when a matching fenced language is displayed
+- if a parser is unavailable, the code block still renders as plain text
+
+### 12.2 OpenCode
 
 - `ARROBA_OPENCODE_PORT`
   - required today

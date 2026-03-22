@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct CreateSessionRequest {
     pub workspace_id: String,
     pub worktree_id: String,
+    pub alias: Option<String>,
 }
 
 impl CreateSessionRequest {
@@ -15,7 +16,13 @@ impl CreateSessionRequest {
         Self {
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.into(),
+            alias: None,
         }
+    }
+
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
     }
 }
 
@@ -222,6 +229,7 @@ impl RuntimeWorktreeAssignment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
+    alias: Option<String>,
     workspace_id: String,
     worktree_id: String,
     host_machine_id: String,
@@ -241,6 +249,7 @@ pub struct RuntimeSession {
 impl RuntimeSession {
     pub fn new(
         id: impl Into<String>,
+        alias: Option<String>,
         workspace_id: impl Into<String>,
         worktree_id: impl Into<String>,
         host_machine_id: impl Into<String>,
@@ -251,6 +260,7 @@ impl RuntimeSession {
 
         Self {
             id: id.clone(),
+            alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
             host_machine_id: host_machine_id.into(),
@@ -278,6 +288,9 @@ impl RuntimeSession {
     }
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
     }
     pub fn worktree_id(&self) -> &str {
         &self.worktree_id

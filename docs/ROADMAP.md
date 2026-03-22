@@ -98,8 +98,9 @@ Exit criteria:
 Status:
 
 - next implementation priority after M2 closure
-- currently in the OpenCode stabilization, TypeScript CLI hardening, and observability-plumbing phase
-- immediate next focus is a project-wide logging/debugging system shared across daemon and local client processes
+- currently in the OpenCode stabilization, TypeScript CLI hardening, and persistent-session-management phase
+- transcript code-highlighting is now part of this same M3 stabilization phase, using terminal-native markdown/code rendering rather than LSP semantic coloring
+- explicit persistent session management now exists: delete semantics, no-session CLI state, and session id/alias resolution are in the baseline
 - after that, continue with the TypeScript CLI path: richer OpenCode event rendering and broader client-side tests
 - slash-command dispatch and capability wiring follow after that client/runtime path is solid
 
@@ -107,6 +108,9 @@ Outcomes:
 
 - upgrade OpenCode from the M2 PTY bootstrap path to a structured local server/session/event adapter
 - add a project-wide logging/debugging system with one machine-local log root and correlated logs across daemon and client processes
+- add explicit persistent session management with daemon-owned delete semantics and a reusable unattached CLI state
+- add syntax-highlighted markdown/code rendering in the TypeScript CLI transcript for provider responses
+- replace numeric session ids with commit-like ids and optional aliases, including unique-prefix resolution
 - harden the primary TypeScript local CLI after the Rust-to-TypeScript client migration
 - shell command capability
 - directory tree + file view/edit capabilities
@@ -123,6 +127,7 @@ Exit criteria:
 - multiple supported providers can run through the same daemon-managed local CLI model
 - local slash-command UX is usable enough to drive capabilities without a web surface
 - OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
+- detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
 
 ## M4 - Multi-Agent Workflow Runtime
 

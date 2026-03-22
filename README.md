@@ -169,7 +169,10 @@ Current migration status:
 Current local CLI controls:
 
 - `/stop` requests cancellation of the active provider turn; queued work advances only after the provider confirms the stop
-- `/exit` detaches or ends the local session and exits the CLI
+- `/exit` detaches from the current session and exits the CLI
+- `/session create [alias]` creates and attaches to a new session
+- `/session attach <ref>` attaches to a session by full id, unique id prefix, alias, or unique alias prefix within the current workspace
+- `/session delete [ref]` deletes the current or referenced session; deleting the active session returns the CLI to its no-session landing state
 
 Optional executable override:
 

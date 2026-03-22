@@ -3,14 +3,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
-use crate::history::SessionHistoryEntry;
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
     CreateSessionRequest, PromptCancellation, PromptCompletion, PromptSubmissionOutcome,
@@ -71,13 +70,26 @@ pub struct GetSessionStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderRunRequest {
+    pub provider_run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveSessionRequest {
+    pub session_ref: String,
+    pub workspace_id: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryRequest {
     pub session_id: String,
-    pub limit: Option<usize>,
+    pub round_count: Option<usize>,
     pub max_chars: Option<usize>,
+    pub before_entry_index: Option<usize>,
+    pub before_entry_char_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +114,12 @@ pub struct PumpTerminalOutputRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndSessionRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteSessionRequest {
+    pub session_ref: String,
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +183,9 @@ pub enum LocalDaemonRequest {
     DetachFromSession(DetachFromSessionRequest),
     LaunchProviderRun(LaunchProviderRunRequest),
     ListSessions(ListSessionsRequest),
+    ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    GetProviderRun(GetProviderRunRequest),
     GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -182,6 +202,7 @@ pub enum LocalDaemonRequest {
     CaptureScreenshot(CaptureScreenshotCapabilityRequest),
     StoreTransferredFile(StoreTransferredFileCapabilityRequest),
     EndSession(EndSessionRequest),
+    DeleteSession(DeleteSessionRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,11 +222,18 @@ pub enum LocalDaemonResponse {
     SessionsListed {
         sessions: Vec<RuntimeSession>,
     },
+    SessionResolved {
+        session: RuntimeSession,
+    },
     SessionState {
         session: RuntimeSession,
     },
+    ProviderRun {
+        provider_run: RuntimeProviderRun,
+    },
     SessionHistory {
-        entries: Vec<SessionHistoryEntry>,
+        entries: Vec<SessionHistoryPageEntry>,
+        next_cursor: Option<SessionHistoryCursor>,
     },
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,
@@ -256,6 +284,9 @@ pub enum LocalDaemonResponse {
     SessionEnded {
         session: RuntimeSession,
     },
+    SessionDeleted {
+        session: RuntimeSession,
+    },
 }
 
 impl DaemonApp {
@@ -271,6 +302,7 @@ impl DaemonApp {
                     "session created",
                     serde_json::json!({
                         "session_id": session.id(),
+                        "session_alias": session.alias(),
                         "workspace_id": session.workspace_id(),
                         "worktree_id": session.worktree_id(),
                         "execution_mode": format!("{:?}", session.execution_mode()),
@@ -293,29 +325,66 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                Ok(LocalDaemonResponse::ProviderRunLaunched {
-                    provider_run: self.launch_provider(LaunchProviderRequest::new(
-                        request.session_id,
-                        request.adapter_key,
-                        request.provider,
-                        request.account_profile,
-                        request.model,
-                    ))?,
-                })
+                let provider_run = self.launch_provider(LaunchProviderRequest::new(
+                    request.session_id,
+                    request.adapter_key,
+                    request.provider,
+                    request.account_profile,
+                    request.model,
+                ))?;
+                crate::logging::debug_with_fields(
+                    "daemon.local_api",
+                    "returning launched provider run to client",
+                    serde_json::json!({
+                        "provider_run_id": provider_run.id(),
+                        "session_id": provider_run.session_id(),
+                        "provider": provider_run.provider(),
+                        "model": provider_run.model(),
+                        "state": provider_run.state().to_string(),
+                    }),
+                );
+                Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
             }
             LocalDaemonRequest::ListSessions(_) => Ok(LocalDaemonResponse::SessionsListed {
                 sessions: self.sessions().list_sessions(),
             }),
+            LocalDaemonRequest::ResolveSession(request) => {
+                Ok(LocalDaemonResponse::SessionResolved {
+                    session: self.resolve_session_ref(
+                        &request.session_ref,
+                        request.workspace_id.as_deref(),
+                    )?,
+                })
+            }
             LocalDaemonRequest::GetSessionState(request) => Ok(LocalDaemonResponse::SessionState {
                 session: self.sessions().get_session(&request.session_id)?,
             }),
+            LocalDaemonRequest::GetProviderRun(request) => {
+                let provider_run = self.providers().get_run(&request.provider_run_id)?;
+                crate::logging::debug_with_fields(
+                    "daemon.local_api",
+                    "returning provider run lookup to client",
+                    serde_json::json!({
+                        "provider_run_id": provider_run.id(),
+                        "session_id": provider_run.session_id(),
+                        "provider": provider_run.provider(),
+                        "model": provider_run.model(),
+                        "state": provider_run.state().to_string(),
+                    }),
+                );
+                Ok(LocalDaemonResponse::ProviderRun { provider_run })
+            }
             LocalDaemonRequest::GetSessionHistory(request) => {
+                let page = self.session_history_page(
+                    &request.session_id,
+                    request.round_count,
+                    request.max_chars,
+                    request.before_entry_index,
+                    request.before_entry_char_offset,
+                )?;
                 Ok(LocalDaemonResponse::SessionHistory {
-                    entries: self.session_history_tail(
-                        &request.session_id,
-                        request.limit,
-                        request.max_chars,
-                    )?,
+                    entries: page.entries,
+                    next_cursor: page.next_cursor,
                 })
             }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
@@ -437,6 +506,10 @@ impl DaemonApp {
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
                 session: self.end_session(&request.session_id)?,
             }),
+            LocalDaemonRequest::DeleteSession(request) => Ok(LocalDaemonResponse::SessionDeleted {
+                session: self
+                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
+            }),
         }
     }
 }
@@ -451,12 +524,12 @@ mod tests {
 
     use super::{
         AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
-        CompletePromptRequest, DetachFromSessionRequest, EditFileCapabilityRequest,
-        EndSessionRequest, GetSessionStateRequest, InspectGitCapabilityRequest,
-        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-        RunShellCapabilityRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        CompletePromptRequest, DeleteSessionRequest, DetachFromSessionRequest,
+        EditFileCapabilityRequest, EndSessionRequest, GetSessionStateRequest,
+        InspectGitCapabilityRequest, LaunchProviderRunRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
+        ReadFileCapabilityRequest, ResolveSessionRequest, RunShellCapabilityRequest,
+        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -512,6 +585,48 @@ mod tests {
         assert_eq!(detached.id(), attachment.id());
         assert_eq!(ended.id(), session.id());
         assert!(app.attachments().get_attachment(detached.id()).is_err());
+    }
+
+    #[test]
+    fn local_request_api_resolves_and_deletes_sessions_by_ref() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let resolved = match app
+            .handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+                session_ref: "mai".to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            }))
+            .expect("resolve should succeed")
+        {
+            LocalDaemonResponse::SessionResolved { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let deleted = match app
+            .handle_local_request(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: session.id()[..8].to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            }))
+            .expect("delete should succeed")
+        {
+            LocalDaemonResponse::SessionDeleted { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(resolved.id(), session.id());
+        assert_eq!(deleted.id(), session.id());
+        assert_eq!(deleted.alias(), Some("main"));
+        assert_eq!(deleted.status(), crate::session::SessionStatus::Ended);
     }
 
     #[test]

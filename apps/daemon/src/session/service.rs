@@ -30,8 +30,13 @@ impl SessionService {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<RuntimeSession, DaemonError> {
+        let alias = normalize_session_alias(request.alias)?;
+        if let Some(alias) = alias.as_deref() {
+            self.ensure_alias_available(&request.workspace_id, alias)?;
+        }
         let session = RuntimeSession::new(
             self.store.next_session_id(),
+            alias,
             request.workspace_id,
             request.worktree_id,
             self.host_machine_id.clone(),
@@ -52,6 +57,80 @@ impl SessionService {
 
     pub fn list_sessions(&self) -> Vec<RuntimeSession> {
         self.store.list()
+    }
+
+    pub fn resolve_session_ref(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let normalized_ref = session_ref.trim().to_lowercase();
+        if normalized_ref.is_empty() {
+            return Err(DaemonError::SessionNotFound {
+                session_id: normalized_ref,
+            });
+        }
+
+        let all_sessions = self.store.non_ended_sessions().cloned().collect::<Vec<_>>();
+        let workspace_sessions = all_sessions
+            .iter()
+            .filter(|session| workspace_id.is_none_or(|workspace| session.workspace_id() == workspace))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if let Some(session) = all_sessions.iter().find(|session| session.id() == normalized_ref) {
+            return Ok(session.clone());
+        }
+        if let Some(session) = workspace_sessions
+            .iter()
+            .find(|session| session.alias() == Some(normalized_ref.as_str()))
+        {
+            return Ok(session.clone());
+        }
+
+        let id_matches = all_sessions
+            .iter()
+            .filter(|session| session.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        if id_matches.len() > 1 {
+            return Err(DaemonError::AmbiguousSessionRef {
+                session_ref: normalized_ref,
+                matches: id_matches
+                    .into_iter()
+                    .map(|session| describe_session_match(&session))
+                    .collect(),
+            });
+        }
+
+        let alias_matches = workspace_sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Ok(alias_matches[0].clone());
+        }
+        if alias_matches.len() > 1 {
+            return Err(DaemonError::AmbiguousSessionRef {
+                session_ref: normalized_ref,
+                matches: alias_matches
+                    .into_iter()
+                    .map(|session| describe_session_match(&session))
+                    .collect(),
+            });
+        }
+
+        Err(DaemonError::SessionNotFound {
+            session_id: normalized_ref,
+        })
     }
 
     pub fn transition_session(
@@ -322,6 +401,22 @@ impl SessionService {
         self.store.active_session_count()
     }
 
+    fn ensure_alias_available(
+        &self,
+        workspace_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        if self.store.non_ended_sessions().any(|session| {
+            session.workspace_id() == workspace_id && session.alias() == Some(alias)
+        }) {
+            return Err(DaemonError::SessionAliasConflict {
+                workspace_id: workspace_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn get_session_mut_for_operation(
         &mut self,
         session_id: &str,
@@ -351,6 +446,36 @@ impl SessionService {
     }
 }
 
+fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {
+    let Some(alias) = alias else {
+        return Ok(None);
+    };
+    let normalized = alias.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonError::InvalidSessionAlias {
+            alias,
+            message: "alias cannot be empty",
+        });
+    }
+    if !normalized
+        .chars()
+        .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || matches!(char, '-' | '_'))
+    {
+        return Err(DaemonError::InvalidSessionAlias {
+            alias,
+            message: "alias must use lowercase letters, digits, `-`, or `_`",
+        });
+    }
+    Ok(Some(normalized))
+}
+
+fn describe_session_match(session: &RuntimeSession) -> String {
+    match session.alias() {
+        Some(alias) => format!("{} ({alias})", session.id()),
+        None => session.id().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -374,7 +499,9 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        assert_eq!(created.id(), "session-1");
+        assert_eq!(created.id().len(), 16);
+        assert!(created.id().chars().all(|char| char.is_ascii_hexdigit()));
+        assert_eq!(created.alias(), None);
         assert_eq!(created.workspace_id(), "workspace-1");
         assert_eq!(created.worktree_id(), "worktree-1");
         assert_eq!(created.host_machine_id(), "machine-test");
@@ -398,6 +525,66 @@ mod tests {
             .expect("lookup should succeed");
         assert_eq!(fetched, created);
         assert_eq!(service.list_sessions(), vec![created]);
+    }
+
+    #[test]
+    fn normalizes_aliases_and_resolves_ids_and_aliases() {
+        let mut service = SessionService::new(&test_config());
+        let created = service
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_alias(" Feature_Main "),
+            )
+            .expect("session should be created");
+
+        assert_eq!(created.alias(), Some("feature_main"));
+        assert_eq!(
+            service
+                .resolve_session_ref(created.id(), Some("workspace-1"))
+                .expect("full id should resolve")
+                .id(),
+            created.id()
+        );
+        assert_eq!(
+            service
+                .resolve_session_ref(&created.id()[..8], Some("workspace-1"))
+                .expect("id prefix should resolve")
+                .id(),
+            created.id()
+        );
+        assert_eq!(
+            service
+                .resolve_session_ref("feature_main", Some("workspace-1"))
+                .expect("alias should resolve")
+                .id(),
+            created.id()
+        );
+        assert_eq!(
+            service
+                .resolve_session_ref("feature", Some("workspace-1"))
+                .expect("alias prefix should resolve")
+                .id(),
+            created.id()
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_alias_in_same_workspace() {
+        let mut service = SessionService::new(&test_config());
+        service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"))
+            .expect("first session should be created");
+
+        let error = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-2").with_alias("MAIN"))
+            .expect_err("duplicate alias should be rejected");
+
+        match error {
+            DaemonError::SessionAliasConflict { workspace_id, alias } => {
+                assert_eq!(workspace_id, "workspace-1");
+                assert_eq!(alias, "main");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

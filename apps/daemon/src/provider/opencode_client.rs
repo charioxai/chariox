@@ -49,7 +49,7 @@ pub enum OpenCodeEvent {
         delta: String,
     },
     MessagePartUpdated {
-        part: OpenCodePart,
+        part: Box<OpenCodePart>,
     },
     SessionError {
         session_id: String,
@@ -74,8 +74,36 @@ pub struct OpenCodeMessageInfo {
     #[serde(rename = "sessionID")]
     pub session_id: String,
     pub role: String,
+    #[serde(rename = "providerID", default)]
+    pub provider_id: Option<String>,
+    #[serde(rename = "modelID", default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<OpenCodeSelectedModel>,
     #[serde(default)]
     pub time: OpenCodeMessageTime,
+}
+
+impl OpenCodeMessageInfo {
+    pub fn resolved_model(&self) -> Option<String> {
+        if let (Some(provider_id), Some(model_id)) =
+            (self.provider_id.as_deref(), self.model_id.as_deref())
+        {
+            return Some(format!("{provider_id}/{model_id}"));
+        }
+
+        self.model
+            .as_ref()
+            .map(|model| format!("{}/{}", model.provider_id, model.model_id))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeSelectedModel {
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(rename = "modelID")]
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -130,6 +158,12 @@ pub struct OpenCodePartTime {
 #[derive(Debug, Deserialize)]
 struct OpenCodeHealth {
     healthy: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeConfig {
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +256,22 @@ impl OpenCodeClient {
         let created: OpenCodeSessionCreated =
             self.send_json_request("POST", "/session", Some(&json!({})))?;
         Ok(created.id)
+    }
+
+    pub fn configured_model(&self) -> Result<Option<String>, DaemonError> {
+        let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
+            Ok(config) => config,
+            Err(DaemonError::ProviderProtocol {
+                operation: "opencode_http",
+                message,
+                ..
+            }) if message == "OpenCode returned HTTP 404" => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(config
+            .model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()))
     }
 
     pub fn submit_prompt(
@@ -548,7 +598,7 @@ fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<OpenCodeEvent
             let properties: OpenCodeMessagePartUpdatedEvent =
                 serde_json::from_value(raw.properties).ok()?;
             Some(OpenCodeEvent::MessagePartUpdated {
-                part: properties.part,
+                part: Box::new(properties.part),
             })
         }
         "session.status" => {
@@ -672,7 +722,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{parse_model, OpenCodeClient, OpenCodeEvent};
+    use super::{parse_model, OpenCodeClient, OpenCodeEvent, OpenCodeMessageInfo};
 
     #[test]
     fn parses_provider_model_ids() {
@@ -682,6 +732,34 @@ mod tests {
         );
         assert_eq!(parse_model(Some("default")), None);
         assert_eq!(parse_model(None), None);
+    }
+
+    #[test]
+    fn resolves_model_from_assistant_or_user_message_metadata() {
+        let assistant = serde_json::from_value::<OpenCodeMessageInfo>(serde_json::json!({
+            "id": "message-1",
+            "sessionID": "session-1",
+            "role": "assistant",
+            "providerID": "openai",
+            "modelID": "gpt-5.4"
+        }))
+        .expect("assistant info should parse");
+        assert_eq!(
+            assistant.resolved_model().as_deref(),
+            Some("openai/gpt-5.4")
+        );
+
+        let user = serde_json::from_value::<OpenCodeMessageInfo>(serde_json::json!({
+            "id": "message-2",
+            "sessionID": "session-1",
+            "role": "user",
+            "model": {
+                "providerID": "openai",
+                "modelID": "gpt-5.4"
+            }
+        }))
+        .expect("user info should parse");
+        assert_eq!(user.resolved_model().as_deref(), Some("openai/gpt-5.4"));
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub struct OpenCodePollResult {
     pub text_deltas: Vec<Vec<u8>>,
     pub reasoning_deltas: Vec<Vec<u8>>,
     pub tool_updates: Vec<Vec<u8>>,
+    pub error_updates: Vec<Vec<u8>>,
     pub status_updates: Vec<Vec<u8>>,
     pub prompt_completed: bool,
     pub provider_idle: bool,
@@ -34,6 +35,7 @@ struct OpenCodeEventDrainResult {
     text_deltas: Vec<Vec<u8>>,
     reasoning_deltas: Vec<Vec<u8>>,
     tool_updates: Vec<Vec<u8>>,
+    error_updates: Vec<Vec<u8>>,
     status_updates: Vec<Vec<u8>>,
     prompt_completed: bool,
     provider_idle: bool,
@@ -52,6 +54,7 @@ struct OpenCodeRunState {
     part_message_ids: BTreeMap<String, String>,
     event_subscription: OpenCodeEventSubscription,
     last_status_kind: Option<String>,
+    last_completed_assistant_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -317,6 +320,30 @@ impl ProviderProcessService {
                 "base_url": base_url.clone(),
             }),
         );
+        if run.model() == "default" {
+            let resolved = client.configured_model()?;
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode",
+                "checked opencode configured model",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "requested_model": run.model(),
+                    "resolved_model": resolved,
+                }),
+            );
+            if let Some(model) = resolved {
+                self.get_run_mut(run.id())?.set_model(model);
+            }
+        } else {
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode",
+                "skipped configured model lookup for explicit model",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "requested_model": run.model(),
+                }),
+            );
+        }
         let session_id = client.create_session()?;
         crate::logging::info_with_fields(
             "daemon.provider.opencode",
@@ -347,6 +374,7 @@ impl ProviderProcessService {
                 part_message_ids: BTreeMap::new(),
                 event_subscription,
                 last_status_kind: None,
+                last_completed_assistant_message_id: None,
             },
         );
         Ok(())
@@ -413,6 +441,7 @@ impl ProviderProcessService {
             text_deltas: drain.text_deltas,
             reasoning_deltas: drain.reasoning_deltas,
             tool_updates: drain.tool_updates,
+            error_updates: drain.error_updates,
             status_updates: drain.status_updates,
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
@@ -484,216 +513,282 @@ impl ProviderProcessService {
         &mut self,
         provider_run_id: &str,
     ) -> Result<OpenCodeEventDrainResult, DaemonError> {
-        let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
-            DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "opencode_session_missing",
-                message: "no OpenCode session is bound to this provider run".to_string(),
-            }
-        })?;
-
         let mut deltas = Vec::new();
         let mut reasoning_deltas = Vec::new();
         let mut tool_updates = Vec::new();
+        let mut error_updates = Vec::new();
         let mut status_updates = Vec::new();
         let mut prompt_completed = false;
         let mut provider_idle = false;
         let mut notices = Vec::new();
+        let mut resolved_model = None;
+        let mut resolved_model_source = None;
 
-        loop {
-            match state.event_subscription.receiver.try_recv() {
-                Ok(OpenCodeEvent::MessageUpdated { info }) => {
-                    state
-                        .message_roles
-                        .insert(info.id.clone(), info.role.clone());
-                    if info.session_id == state.session_id
-                        && info.role == "assistant"
-                        && info.time.completed.is_some()
-                    {
-                        prompt_completed = true;
-                    }
+        {
+            let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "opencode_session_missing",
+                    message: "no OpenCode session is bound to this provider run".to_string(),
                 }
-                Ok(OpenCodeEvent::MessagePartDelta {
-                    session_id,
-                    message_id,
-                    part_id,
-                    field,
-                    delta,
-                    ..
-                }) => {
-                    if session_id != state.session_id || field != "text" || delta.is_empty() {
-                        continue;
-                    }
-                    state
-                        .part_message_ids
-                        .insert(part_id.clone(), message_id.clone());
-                    if !state.message_roles.contains_key(&message_id) {
-                        refresh_opencode_message_metadata(state, provider_run_id)?;
-                    }
-                    let Some(role) = state.message_roles.get(&message_id).map(String::as_str)
-                    else {
+            })?;
+
+            loop {
+                match state.event_subscription.receiver.try_recv() {
+                    Ok(OpenCodeEvent::MessageUpdated { info }) => {
+                        if resolved_model.is_none() {
+                            resolved_model = info.resolved_model();
+                            if resolved_model.is_some() {
+                                resolved_model_source = Some("message.updated");
+                            }
+                        }
                         state
-                            .buffered_text_deltas
-                            .entry(part_id)
-                            .or_default()
-                            .push(delta);
-                        continue;
-                    };
-                    if role != "assistant" {
-                        continue;
+                            .message_roles
+                            .insert(info.id.clone(), info.role.clone());
+                        if info.session_id == state.session_id
+                            && info.role == "assistant"
+                            && info.time.completed.is_some()
+                            && state.last_completed_assistant_message_id.as_deref()
+                                != Some(info.id.as_str())
+                        {
+                            state.last_completed_assistant_message_id = Some(info.id.clone());
+                            prompt_completed = true;
+                        }
                     }
-                    match state.part_kinds.get(&part_id).map(String::as_str) {
-                        Some("reasoning") => {
-                            let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
-                            *emitted += delta.len();
-                            reasoning_deltas.push(delta.into_bytes());
+                    Ok(OpenCodeEvent::MessagePartDelta {
+                        session_id,
+                        message_id,
+                        part_id,
+                        field,
+                        delta,
+                        ..
+                    }) => {
+                        if session_id != state.session_id || field != "text" || delta.is_empty() {
+                            continue;
                         }
-                        Some("text") => {
-                            let emitted = state.emitted_text_offsets.entry(part_id).or_insert(0);
-                            *emitted += delta.len();
-                            deltas.push(delta.into_bytes());
+                        state
+                            .part_message_ids
+                            .insert(part_id.clone(), message_id.clone());
+                        if !state.message_roles.contains_key(&message_id) {
+                            refresh_opencode_message_metadata(state, provider_run_id)?;
                         }
-                        Some(_) => {}
-                        None => {
+                        let Some(role) = state.message_roles.get(&message_id).map(String::as_str)
+                        else {
                             state
                                 .buffered_text_deltas
                                 .entry(part_id)
                                 .or_default()
                                 .push(delta);
+                            continue;
+                        };
+                        if role != "assistant" {
+                            continue;
                         }
-                    }
-                }
-                Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
-                    if part.session_id != state.session_id {
-                        continue;
-                    }
-                    state
-                        .part_message_ids
-                        .insert(part.id.clone(), part.message_id.clone());
-                    state.part_kinds.insert(part.id.clone(), part.kind.clone());
-                    if !state.message_roles.contains_key(&part.message_id) {
-                        refresh_opencode_message_metadata(state, provider_run_id)?;
-                    }
-                    let role = state
-                        .message_roles
-                        .get(&part.message_id)
-                        .map(String::as_str);
-                    if let Some(buffered_deltas) = state.buffered_text_deltas.remove(&part.id) {
-                        for delta in buffered_deltas {
-                            if role != Some("assistant") {
-                                continue;
+                        match state.part_kinds.get(&part_id).map(String::as_str) {
+                            Some("reasoning") => {
+                                let emitted =
+                                    state.emitted_text_offsets.entry(part_id).or_insert(0);
+                                *emitted += delta.len();
+                                reasoning_deltas.push(delta.into_bytes());
                             }
-                            let emitted = state
-                                .emitted_text_offsets
-                                .entry(part.id.clone())
-                                .or_insert(0);
-                            *emitted += delta.len();
-                            match part.kind.as_str() {
-                                "reasoning" => reasoning_deltas.push(delta.into_bytes()),
-                                "text" => deltas.push(delta.into_bytes()),
-                                _ => {}
+                            Some("text") => {
+                                let emitted =
+                                    state.emitted_text_offsets.entry(part_id).or_insert(0);
+                                *emitted += delta.len();
+                                deltas.push(delta.into_bytes());
                             }
-                        }
-                    }
-                    match part.kind.as_str() {
-                        "text" => {
-                            if role != Some("assistant") || part.text.is_empty() {
-                                continue;
-                            }
-                            let emitted = state
-                                .emitted_text_offsets
-                                .entry(part.id.clone())
-                                .or_insert(0);
-                            let start = (*emitted).min(part.text.len());
-                            if start == part.text.len() {
-                                continue;
-                            }
-                            deltas.push(part.text.as_bytes()[start..].to_vec());
-                            *emitted = part.text.len();
-                        }
-                        "reasoning" => {
-                            if role != Some("assistant") || part.text.is_empty() {
-                                continue;
-                            }
-                            let emitted = state
-                                .emitted_text_offsets
-                                .entry(part.id.clone())
-                                .or_insert(0);
-                            let start = (*emitted).min(part.text.len());
-                            if start == part.text.len() {
-                                continue;
-                            }
-                            reasoning_deltas.push(part.text.as_bytes()[start..].to_vec());
-                            *emitted = part.text.len();
-                        }
-                        "tool" => {
-                            if role != Some("assistant") {
-                                continue;
-                            }
-                            let summary = render_tool_transcript_update(&part);
-                            let previous = state.emitted_tool_summaries.get(&part.id);
-                            if previous.map(String::as_str) != Some(summary.as_str()) {
+                            Some(_) => {}
+                            None => {
                                 state
-                                    .emitted_tool_summaries
-                                    .insert(part.id.clone(), summary.clone());
-                                tool_updates.push(summary.into_bytes());
+                                    .buffered_text_deltas
+                                    .entry(part_id)
+                                    .or_default()
+                                    .push(delta);
                             }
                         }
-                        _ => {}
                     }
-                }
-                Ok(OpenCodeEvent::SessionError {
-                    session_id,
-                    message,
-                }) => {
-                    if session_id == state.session_id {
-                        notices.push(message);
-                        prompt_completed = true;
-                    }
-                }
-                Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
-                    if session_id == state.session_id {
-                        if kind == "idle" {
-                            provider_idle = true;
+                    Ok(OpenCodeEvent::MessagePartUpdated { part }) => {
+                        let part = *part;
+                        if part.session_id != state.session_id {
+                            continue;
                         }
-                        if state.last_status_kind.as_deref() != Some(kind.as_str()) {
-                            state.last_status_kind = Some(kind.clone());
-                            if kind != "idle" {
+                        state
+                            .part_message_ids
+                            .insert(part.id.clone(), part.message_id.clone());
+                        state.part_kinds.insert(part.id.clone(), part.kind.clone());
+                        if !state.message_roles.contains_key(&part.message_id) {
+                            refresh_opencode_message_metadata(state, provider_run_id)?;
+                        }
+                        let role = state
+                            .message_roles
+                            .get(&part.message_id)
+                            .map(String::as_str);
+                        if let Some(buffered_deltas) = state.buffered_text_deltas.remove(&part.id) {
+                            for delta in buffered_deltas {
+                                if role != Some("assistant") {
+                                    continue;
+                                }
+                                let emitted = state
+                                    .emitted_text_offsets
+                                    .entry(part.id.clone())
+                                    .or_insert(0);
+                                *emitted += delta.len();
+                                match part.kind.as_str() {
+                                    "reasoning" => reasoning_deltas.push(delta.into_bytes()),
+                                    "text" => deltas.push(delta.into_bytes()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        match part.kind.as_str() {
+                            "text" => {
+                                if role != Some("assistant") || part.text.is_empty() {
+                                    continue;
+                                }
+                                let emitted = state
+                                    .emitted_text_offsets
+                                    .entry(part.id.clone())
+                                    .or_insert(0);
+                                let start = (*emitted).min(part.text.len());
+                                if start == part.text.len() {
+                                    continue;
+                                }
+                                deltas.push(part.text.as_bytes()[start..].to_vec());
+                                *emitted = part.text.len();
+                            }
+                            "reasoning" => {
+                                if role != Some("assistant") || part.text.is_empty() {
+                                    continue;
+                                }
+                                let emitted = state
+                                    .emitted_text_offsets
+                                    .entry(part.id.clone())
+                                    .or_insert(0);
+                                let start = (*emitted).min(part.text.len());
+                                if start == part.text.len() {
+                                    continue;
+                                }
+                                reasoning_deltas.push(part.text.as_bytes()[start..].to_vec());
+                                *emitted = part.text.len();
+                            }
+                            "tool" => {
+                                if role != Some("assistant") {
+                                    continue;
+                                }
+                                let summary = render_tool_transcript_update(&part);
+                                let previous = state.emitted_tool_summaries.get(&part.id);
+                                if previous.map(String::as_str) != Some(summary.as_str()) {
+                                    state
+                                        .emitted_tool_summaries
+                                        .insert(part.id.clone(), summary.clone());
+                                    tool_updates.push(summary.into_bytes());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(OpenCodeEvent::SessionError {
+                        session_id,
+                        message,
+                    }) => {
+                        if session_id == state.session_id {
+                            error_updates.push(
+                                render_session_error_transcript_update(&message).into_bytes(),
+                            );
+                            notices.push(message);
+                            prompt_completed = true;
+                        }
+                    }
+                    Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
+                        if session_id == state.session_id {
+                            if kind == "idle" {
+                                provider_idle = true;
+                            }
+                            if state.last_status_kind.as_deref() != Some(kind.as_str()) {
+                                state.last_status_kind = Some(kind.clone());
                                 status_updates.push(format_session_status(&kind).into_bytes());
                             }
                         }
                     }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-                    state.event_subscription = client.subscribe_events()?;
-                    if let Ok(snapshot) = client.snapshot(&state.session_id) {
-                        record_snapshot_message_metadata(state, &snapshot.messages);
-                        let snapshot_deltas =
-                            render_snapshot_text_deltas(state, &snapshot.messages);
-                        deltas.extend(snapshot_deltas.text_deltas);
-                        reasoning_deltas.extend(snapshot_deltas.reasoning_deltas);
-                        tool_updates.extend(snapshot_deltas.tool_updates);
-                        if snapshot.status == "idle" {
-                            provider_idle = true;
-                        }
-                        if snapshot.messages.iter().any(|message| {
-                            message.info.session_id == state.session_id
-                                && message.info.role == "assistant"
-                                && message.info.time.completed.is_some()
-                        }) {
-                            prompt_completed = true;
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                        state.event_subscription = client.subscribe_events()?;
+                        if let Ok(snapshot) = client.snapshot(&state.session_id) {
+                            if resolved_model.is_none() {
+                                resolved_model = snapshot
+                                    .messages
+                                    .iter()
+                                    .rev()
+                                    .find_map(|message| message.info.resolved_model());
+                                if resolved_model.is_some() {
+                                    resolved_model_source = Some("snapshot");
+                                }
+                            }
+                            record_snapshot_message_metadata(state, &snapshot.messages);
+                            let snapshot_deltas =
+                                render_snapshot_text_deltas(state, &snapshot.messages);
+                            deltas.extend(snapshot_deltas.text_deltas);
+                            reasoning_deltas.extend(snapshot_deltas.reasoning_deltas);
+                            tool_updates.extend(snapshot_deltas.tool_updates);
+                            if state.last_status_kind.as_deref() != Some(snapshot.status.as_str()) {
+                                state.last_status_kind = Some(snapshot.status.clone());
+                                status_updates
+                                    .push(format_session_status(&snapshot.status).into_bytes());
+                            }
+                            if snapshot.status == "idle" {
+                                provider_idle = true;
+                            }
+                            if snapshot.messages.iter().any(|message| {
+                                let is_new_completed = message.info.session_id == state.session_id
+                                    && message.info.role == "assistant"
+                                    && message.info.time.completed.is_some()
+                                    && state.last_completed_assistant_message_id.as_deref()
+                                        != Some(message.info.id.as_str());
+                                if is_new_completed {
+                                    state.last_completed_assistant_message_id =
+                                        Some(message.info.id.clone());
+                                }
+                                is_new_completed
+                            }) {
+                                prompt_completed = true;
+                            }
                         }
                     }
                 }
             }
         }
 
+        if let Some(model) = resolved_model {
+            let run = self.get_run_mut(provider_run_id)?;
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode",
+                "resolved provider run model from opencode metadata",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "previous_model": run.model(),
+                    "resolved_model": model,
+                    "source": resolved_model_source,
+                }),
+            );
+            if run.model() != model {
+                run.set_model(model);
+            }
+        } else {
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode",
+                "did not resolve provider run model from opencode metadata",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                }),
+            );
+        }
+
         Ok(OpenCodeEventDrainResult {
             text_deltas: deltas,
             reasoning_deltas,
             tool_updates,
+            error_updates,
             status_updates,
             prompt_completed,
             provider_idle,
@@ -847,6 +942,11 @@ fn render_tool_transcript_update(part: &OpenCodePart) -> String {
             status = status,
         )
     })
+}
+
+fn render_session_error_transcript_update(message: &str) -> String {
+    let message = non_empty(message).unwrap_or("OpenCode reported an unknown session error.");
+    format!("**OpenCode error**\n\n{message}")
 }
 
 fn non_empty(value: &str) -> Option<&str> {

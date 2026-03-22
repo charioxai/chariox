@@ -126,6 +126,11 @@ impl RuntimeProviderRun {
     pub fn model(&self) -> &str {
         &self.model
     }
+
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
+    }
+
     pub fn state(&self) -> ProviderRunState {
         self.state
     }

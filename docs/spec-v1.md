@@ -285,6 +285,57 @@ Sessions do not move across workspaces in v1.
 
 A session can be reassigned between its eligible agent machines over time, but only one machine hosts the active provider run at any moment.
 
+### 7.1.1 Session Lifecycle Semantics
+
+Arroba sessions are intended to be persistent by default.
+
+Required rules:
+
+- detaching a client MUST NOT delete the session
+- exiting a client SHOULD detach from the session rather than terminate it
+- sessions SHOULD remain attachable after the last client disconnects until the user explicitly deletes them
+- session deletion is an explicit user action and MUST NOT be implicit in ordinary client exit flows
+- deleting a session MUST tear down provider runs, prompt/runtime state, and live attachments for that session
+
+User-facing session operations in v1 SHOULD converge on:
+
+- create
+- list
+- attach
+- detach
+- delete
+
+The current daemon API still exposes an internal `end` operation, but the intended user-facing lifecycle is explicit session deletion rather than implicit session ending on CLI exit.
+
+Deleting the currently attached session is valid. The client should transition to an unattached "no session" state rather than being forced to terminate the entire CLI process.
+
+### 7.1.2 Session Identity and Aliases
+
+Session references should become user-friendly and resumable.
+
+Required rules:
+
+- each session MUST have a stable primary id
+- session ids SHOULD use short commit-like lowercase hexadecimal strings rather than `session-N` numeric labels
+- each session MAY have one optional human-readable alias
+- session references supplied by users MAY resolve by:
+  - full session id
+  - unique session-id prefix
+  - alias
+  - unique alias prefix
+- if a provided reference is ambiguous, the daemon/client MUST reject it and require disambiguation instead of guessing
+
+Recommended v1 default:
+
+- 16-character lowercase hexadecimal ids
+- exact alias match preferred over prefix match
+- prefix resolution allowed only when unambiguous
+
+Current implementation note:
+
+- the current local implementation now uses 16-character lowercase hexadecimal ids with optional aliases
+- alias matching is workspace-scoped and normalized to lowercase
+
 ### 7.2 Provider Run
 
 A provider run is one live native provider process.

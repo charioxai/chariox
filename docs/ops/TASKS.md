@@ -10,15 +10,13 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - Use IDs (`M0-001`, `M1-003`, etc.) so references stay stable.
 - Do not delete completed tasks; keep historical context.
 
-## Backlog
-
 ## In Progress
 
 ## Backlog
 
-- [ ] **M3-001** Expand local capability surface after OpenCode baseline
-  - Note: First add project-wide logging/debugging, then harden the TypeScript CLI and richer OpenCode event rendering, then continue with slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces.
-- [ ] **M3-002** Add Claude Code and Codex provider support
+- [ ] **M3-002** Expand local capability surface after OpenCode baseline
+  - Note: Continue with richer OpenCode event rendering and broader TypeScript CLI integration tests, then move into slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces.
+- [ ] **M3-003** Add Claude Code and Codex provider support
   - Note: Reuse the same daemon-managed local CLI model after OpenCode is proven.
 - [ ] **M4-001** Add local multi-agent workflow runtime
   - Note: Build daemon-owned workflow scheduling and worktree-safe multi-agent execution after the single-agent path is solid.
@@ -28,6 +26,13 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Defer control-lane-heavy features until after local runtime, provider support, and workflow foundations are working.
 
 ## Done
+
+- [x] **M3-CLI-001** Improve TypeScript CLI transcript rendering with markdown-aware output and syntax-highlighted fenced code blocks
+  - Note: Added markdown-aware assistant/reasoning rendering, parser bootstrap, fence-language normalization, and syntax-highlighted fenced code blocks without depending on LSP semantic coloring.
+  - Commit: _pending next commit_
+- [x] **M3-001** Implement persistent session management and no-session CLI state
+  - Note: Added explicit session deletion, resumable detached sessions, unattached landing state, and commit-like ids plus optional aliases.
+  - Commit: _pending next commit_
 
 - [x] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
   - Note: Shipped one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.

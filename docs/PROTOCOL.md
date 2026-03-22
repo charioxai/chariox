@@ -151,8 +151,10 @@ Minimum request set:
 
 - `session.create`
 - `session.list`
+- `session.resolve`
 - `session.attach`
 - `session.detach`
+- `session.delete`
 - `provider_run.launch`
 - `session.state.get`
 - `session.notice.poll`
@@ -167,6 +169,7 @@ Minimum request set:
 Minimum response/result shapes:
 
 - session creation returns structured session metadata
+- session resolution returns structured session metadata
 - attach/detach returns structured attachment metadata
 - provider launch returns structured provider-run metadata
 - session state reads return canonical queue and config state
@@ -175,8 +178,20 @@ Minimum response/result shapes:
 - prompt completion returns structured completion details and the next started prompt when relevant
 - prompt cancellation returns the updated prompt state; for provider-backed turns the daemon advances queued work only after the provider confirms the stop
 - config update returns canonical session config state, version, and updated session state
-- terminal output polling returns structured terminal-output fan-out records
+- terminal output polling returns structured terminal-output fan-out records, including distinct provider text, reasoning, tool, error, and status output kinds
 - end-session returns structured final session metadata
+
+Current session-management semantics:
+
+- user-facing clients should prefer `session.delete` over an implicit "end on exit" model
+- `session.resolve` and `session.delete` accept a `session_ref` that may be:
+  - full session id
+  - unique session-id prefix
+  - alias
+  - unique alias prefix
+- `session.create` accepts an optional alias
+- deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
+- if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Local cancellation policy:
 
@@ -193,6 +208,11 @@ Current M2 runtime note:
 - `arroba-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
 - the legacy Rust-only CLI remains available as `arroba-cli-rust`, but it is phased out and should not be the target for new client work unless the shared daemon contract needs comparison
 - the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
+
+Current session-lifecycle note:
+
+- the local implementation still exposes `session.end` as an internal/runtime operation, but the intended user-facing local client contract is persistent detached sessions plus explicit `session.delete`
+- the current local implementation now uses 16-character lowercase hexadecimal session ids with optional aliases and unique-prefix resolution
 
 OpenCode current runtime note:
 

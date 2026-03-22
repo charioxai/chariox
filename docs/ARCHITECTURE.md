@@ -132,6 +132,7 @@ Responsibilities:
 - render Arroba slash-command completion, help, warnings, and command results
 - upload files and display artifacts
 - expose daemon-owned queue/config/session metadata
+- support an unattached "no session" state so the client can remain open after session deletion or explicit detach
 - emit client-process debug logs into the shared Arroba log root using the daemon/client correlation fields
 
 Current M2 runtime note:
@@ -290,6 +291,35 @@ Current M1 runtime note:
 - the daemon now keeps explicit primary worktree assignment metadata for each session even in single-agent mode so later branch/worktree isolation can extend the same runtime shape
 
 The daemon MUST treat prompt scheduling and config state as structured runtime state, not terminal-local behavior.
+
+### 4.2.2 Persistent Session and Deletion Ownership
+
+Arroba session lifetime should be explicit and daemon-owned.
+
+Required rules:
+
+- the daemon MUST treat detach and delete as distinct operations
+- detaching the last client MUST NOT delete the session by default
+- idle sessions SHOULD remain discoverable and reattachable until explicit deletion
+- deleting a session MUST:
+  - terminate or clear active provider/runtime state
+  - invalidate further attach attempts
+  - notify attached clients that the session no longer exists
+- attached clients SHOULD transition to an unattached "no session" state when their current session is deleted, rather than being forced to terminate the whole client process
+
+Planned client behavior:
+
+- `/exit` detaches from the current session
+- explicit session deletion is handled through a dedicated session-management command or external control command
+- when the currently attached session is deleted, the client clears transcript/session chrome, renders an Arroba ASCII-art landing state, and returns to a reusable unattached shell state
+
+Current local baseline:
+
+- the TypeScript CLI now supports an unattached no-session state after explicit session deletion
+- temporary session-management commands exist ahead of the general slash-command system:
+  - `/session create [alias]`
+  - `/session attach <ref>`
+  - `/session delete [ref]`
 
 ### 4.3 Workflow Ownership
 

@@ -16,6 +16,7 @@ pub enum SessionHistoryEntryKind {
     ProviderOutput,
     ProviderReasoning,
     ProviderTool,
+    ProviderError,
     ProviderStatus,
     Notice,
 }
@@ -60,6 +61,7 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
                 TerminalOutputKind::ProviderReasoning => SessionHistoryEntryKind::ProviderReasoning,
                 TerminalOutputKind::ProviderTool => SessionHistoryEntryKind::ProviderTool,
+                TerminalOutputKind::ProviderError => SessionHistoryEntryKind::ProviderError,
                 TerminalOutputKind::ProviderStatus => SessionHistoryEntryKind::ProviderStatus,
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },

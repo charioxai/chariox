@@ -2,6 +2,14 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-03-22
+
+### CLI transcript highlighting update
+
+- Added `docs/CLI_TRANSCRIPT_HIGHLIGHTING_PLAN.md` to define transcript syntax highlighting as an M3 TypeScript CLI subphase separate from LSP.
+- Implemented markdown-aware assistant/reasoning transcript rendering in the TypeScript CLI.
+- Implemented syntax-highlighted fenced code blocks in the TypeScript CLI transcript using OpenTUI parser/code rendering infrastructure.
+
 ## 2026-03-16
 
 ### Context
@@ -225,6 +233,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Raised a project-wide logging/debugging system ahead of the remaining M3 tasks after the TypeScript CLI migration.
 - Documented the intended baseline as one shared machine-local log root with per-process structured log files and shared session/provider/client correlation fields.
+- Reprioritized the next M3 slice toward persistent session management: detached sessions should remain resumable, deletion should be explicit, the CLI should support a no-session state after deletion, and session references should move toward commit-like ids plus optional aliases.
 - Marked privacy policy, retention, and content-capture scope as explicit design decisions to resolve before implementation.
 
 ### M3 logging foundation update

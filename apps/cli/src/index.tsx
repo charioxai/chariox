@@ -4,15 +4,17 @@ import { homedir } from "node:os"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, MouseButton, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, parseKeypress, type KeyBinding, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, onCleanup } from "solid-js"
-import { createStore, produce } from "solid-js/store"
+import { createStore, produce, reconcile } from "solid-js/store"
 
 import { copyTextToClipboard } from "./clipboard.js"
+import { computePrependedHistoryScrollTop } from "./history-viewport.js"
 import { LocalIpcClient } from "./ipc.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
+import { formatPromptMetaLine } from "./prompt-meta.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   describeCliError,
@@ -23,13 +25,26 @@ import {
 } from "./runtime.js"
 import {
   formatToolTranscriptUpdate,
+  guessPathFenceLanguage,
   mergeToolTranscriptUpdate,
+  normalizeMarkdownFenceInfoStrings,
   parseToolTranscriptUpdate,
+  readApplyPatchFiles,
   splitInlineCodeSpans,
+  shouldRenderTranscriptAsMarkdown,
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
-import { EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
+import {
+  ARROBA_ASCII_ART,
+  SESSION_NEW_ERROR_HINT,
+  SESSION_NEW_FOOTER_HINT,
+  SESSION_NEW_HELP_TEXT,
+  SESSION_NEW_PLACEHOLDER,
+  formatSessionList,
+} from "./sessions.js"
+import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
+import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
   { name: "return", action: "submit" },
@@ -37,13 +52,19 @@ const PROMPT_KEYBINDINGS = [
   { name: "return", meta: true, action: "newline" },
 ] satisfies KeyBinding[]
 
-const BOOTSTRAP_HISTORY_LIMIT = 200
-const BOOTSTRAP_HISTORY_MAX_CHARS = 250_000
+const BOOTSTRAP_HISTORY_MAX_CHARS = 100_000
+const HISTORY_PAGE_ROUND_COUNT = 1
+const LIVE_TRANSCRIPT_LIMIT = 400
+const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
+const STATUS_LABEL_WIDTH = "DISCONNECTED".length
+const NO_SESSION_ID = "no-session"
 
 type RuntimeSession = {
   id: string
+  alias?: string | null
   workspace_id: string
   worktree_id: string
+  created_at_ms: number
   status: string
   active_provider_run_id: string | null
   attachment_ids: string[]
@@ -63,12 +84,22 @@ type RuntimeAttachment = {
   session_id: string
 }
 
+type RuntimeProviderRun = {
+  id: string
+  session_id: string
+  adapter_key: string
+  provider: string
+  account_profile: string
+  model: string
+  state: string
+}
+
 type RuntimeNoticeRecord = {
   message: string
 }
 
 type TerminalOutputRecord = {
-  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_status"
+  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   bytes: number[]
 }
 
@@ -77,42 +108,107 @@ type PromptSubmittedPayload = {
   session: RuntimeSession
 }
 
+type SessionHistoryPage = {
+  entries: SessionHistoryPageEntry[]
+  next_cursor: SessionHistoryCursor | null
+}
+
+type SessionHistoryCursor = {
+  before_entry_index: number
+  before_entry_char_offset: number | null
+}
+
+type SessionHistoryPageEntry = {
+  entry_index: number
+  fragment_start: number
+  fragment_end: number
+  total_chars: number
+  entry: SessionHistoryEntry
+}
+
 type SessionHistoryEntry = {
-  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_status" | "notice"
+  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   text: string
 }
 
 type TranscriptEntry = {
   id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "status" | "notice"
+  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice"
   text: string
+  sourceText?: string
   mergeKey?: string
   emphasis?: "muted" | "warning" | "error"
+  historyDeferred?: boolean
+  historyEntryIndex?: number
+  historyFragmentStart?: number
+  historyFragmentEnd?: number
+  historyTotalChars?: number
 }
 
 type TranscriptEntryRenderable = {
   entry: TranscriptEntry
   wrapper: BoxRenderable
-  text: TextRenderable
+  update: (entry: TranscriptEntry) => void
 }
 
 type CliOptions = {
   socketPath?: string
   sessionId?: string
+  createSession?: boolean
+  deleteSessionRef?: string
+  alias?: string
   clientId: string
   model: string
   accountProfile: string
+  effort: string
   workspace?: string
   worktree?: string
 }
 
+function shouldDeferHistoryEntry(entry: TranscriptEntry) {
+  return entry.historyFragmentStart !== undefined && entry.historyFragmentStart > 0
+}
+
+function applyHistoryDeferral(entry: TranscriptEntry) {
+  const deferred = shouldDeferHistoryEntry(entry)
+  if (deferred) {
+    entry.historyDeferred = true
+  } else {
+    delete entry.historyDeferred
+  }
+  return entry
+}
+
+function markDeferredHistoryEntries(items: TranscriptEntry[]) {
+  if (items.length === 0) {
+    return items
+  }
+  return items.map((entry, index) => {
+    if (index === 0) {
+      return applyHistoryDeferral({ ...entry })
+    }
+    if (!entry.historyDeferred) {
+      return entry
+    }
+    const next = { ...entry }
+    delete next.historyDeferred
+    return next
+  })
+}
+
 type BootstrapState = {
   client: LocalIpcClient
+  binding: SessionBinding | null
+  options: CliOptions
+}
+
+type SessionBinding = {
   session: RuntimeSession
   attachment: RuntimeAttachment
+  providerRun: RuntimeProviderRun | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
-  options: CliOptions
+  nextHistoryCursor: SessionHistoryCursor | null
 }
 
 type SessionStatusMode = "idle" | "working" | "disconnected"
@@ -124,6 +220,7 @@ type FooterFlash = {
 
 const OPEN_CONSOLE_ON_ERROR = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
 let processLogger: ArrobaLogger | null = null
+let transcriptParsersRegistered = false
 
 function getLogger(component: string, fields: Record<string, unknown> = {}) {
   return processLogger?.child(component, fields) ?? null
@@ -136,6 +233,7 @@ async function main() {
     return
   }
 
+  ensureTranscriptParsersRegistered()
   processLogger = createProcessLogger("cli")
   getLogger("cli.main")?.info("starting cli process", { argv })
   const options = parseArgs(argv)
@@ -143,6 +241,10 @@ async function main() {
   const client = new LocalIpcClient(socketPath)
   const workspace = options.workspace ?? process.cwd()
   const worktree = options.worktree ?? workspace
+  if (options.deleteSessionRef) {
+    await deleteSessionByRef(client, options.deleteSessionRef, workspace)
+    return
+  }
   getLogger("cli.main")?.info("bootstrapping cli session", {
     socket_path: socketPath,
     workspace_id: workspace,
@@ -150,12 +252,16 @@ async function main() {
     client_id: options.clientId,
   })
   const bootstrap = await bootstrapSession(client, options, workspace, worktree)
-  getLogger("cli.main")?.info("bootstrapped cli session", {
-    session_id: bootstrap.session.id,
-    attachment_id: bootstrap.attachment.id,
-    created_session: bootstrap.createdSession,
-  })
-  await maybeResize(client, bootstrap.session.id)
+  if (bootstrap.binding) {
+    getLogger("cli.main")?.info("bootstrapped cli session", {
+      session_id: bootstrap.binding.session.id,
+      attachment_id: bootstrap.binding.attachment.id,
+      created_session: bootstrap.binding.createdSession,
+    })
+    await maybeResize(client, bootstrap.binding.session.id)
+  } else {
+    getLogger("cli.main")?.info("starting cli without attached session")
+  }
   await render(
     () => <ArrobaCliApp bootstrap={bootstrap} />, 
     {
@@ -172,44 +278,101 @@ async function main() {
   getLogger("cli.main")?.info("render mounted")
 }
 
+function ensureTranscriptParsersRegistered() {
+  if (transcriptParsersRegistered) {
+    return
+  }
+  addDefaultParsers(parserConfig.parsers)
+  transcriptParsersRegistered = true
+}
+
 function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
-  const { client, session, attachment, createdSession, options } = props.bootstrap
+  const { client, options } = props.bootstrap
+  const initialBinding = props.bootstrap.binding
+  const initialSession = initialBinding?.session ?? buildDetachedSessionState(options)
   const appLogger = getLogger("cli.app", {
-    session_id: session.id,
-    attachment_id: attachment.id,
+    session_id: initialBinding?.session.id ?? null,
+    attachment_id: initialBinding?.attachment.id ?? null,
     client_id: options.clientId,
   })
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
-  const initialEntries = props.bootstrap.historyEntries
-  const [sessionState, setSessionState] = createSignal(session)
+  const initialEntries = initialBinding?.historyEntries ?? []
+  const [sessionState, setSessionState] = createSignal(initialSession)
+  const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
+  const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
+  const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
+  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(initialBinding?.nextHistoryCursor ?? null)
+  const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
-  const [working, setWorking] = createSignal(Boolean(session.active_prompt) || session.queued_prompts.length > 0)
+  const [working, setWorking] = createSignal(Boolean(initialSession.active_prompt) || initialSession.queued_prompts.length > 0)
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
   let stopRequestInFlight = false
   let promptInput: TextareaRenderable | undefined
   let transcriptScrollbox: ScrollBoxRenderable | undefined
-  let headerMetaBox: BoxRenderable | undefined
   let promptStateBox: BoxRenderable | undefined
   let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
+  let historyLoadingBox: BoxRenderable | undefined
+  let promptStateText: TextRenderable | undefined
+  let footerSummaryText: TextRenderable | undefined
+  let footerFlashText: TextRenderable | undefined
+  let historyLoadingText: TextRenderable | undefined
+  let statusOpenText: TextRenderable | undefined
+  let statusCloseText: TextRenderable | undefined
+  let statusLabelTexts: TextRenderable[] = []
   let closing = false
   let exitCleanupFailed = false
   const degradedPollers = new Set<string>()
   const tools = new Map<string, ToolTranscriptUpdate>()
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
+  const transcriptSyntax = createTranscriptSyntaxStyle()
   let emptyTranscriptRenderable: BoxRenderable | undefined
   let footerFlashTimeout: ReturnType<typeof startTimeout> | undefined
+  let lastTranscriptScrollTop = 0
+  let historyLoadGeneration = 0
+  let pendingHistoryScrollRestore = 0
+  let lastPromptMetaDebugKey = ""
 
+  const isAttached = () => attachmentState() !== null
   const queueDepth = () => sessionState().queued_prompts.length
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => sessionState().active_prompt
+  const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
+    appLogger?.debug(message, {
+      provider_run_id: run?.id ?? null,
+      provider: run?.provider ?? null,
+      provider_model: run?.model ?? null,
+      provider_state: run?.state ?? null,
+      ...fields,
+    })
+  }
+  const promptMetaLine = () => {
+    const run = providerRunState()
+    const provider = run?.provider ?? "opencode"
+    const model = run?.model ?? options.model
+    const effort = options.effort
+    const line = formatPromptMetaLine(provider, model, effort)
+    const key = JSON.stringify({ provider, model, effort, line, runId: run?.id ?? null, runState: run?.state ?? null })
+    if (key !== lastPromptMetaDebugKey) {
+      lastPromptMetaDebugKey = key
+      appLogger?.debug("prompt meta line updated", {
+        provider_run_id: run?.id ?? null,
+        provider_state: run?.state ?? null,
+        prompt_meta_provider: provider,
+        prompt_meta_model: model,
+        prompt_meta_effort: effort,
+        prompt_meta_line: line,
+      })
+    }
+    return line
+  }
   const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const sessionStatusMode = (): SessionStatusMode => {
     if (daemonDisconnected()) {
@@ -238,6 +401,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntryCounter(nextId)
     setEntries(entries.length, nextEntry)
     mountTranscriptEntry(nextEntry)
+    enforceTranscriptRetention()
   }
 
   const scrollTranscriptToBottom = () => {
@@ -259,6 +423,57 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
     appendEntry({ role: "notice", text, emphasis })
     updateSessionChrome()
+  }
+
+  const appendProviderError = (text: string) => {
+    const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+    if (!normalized) {
+      return
+    }
+    setWorking(false)
+    setSubmitting(false)
+    appendEntry({ role: "error", text: normalized, emphasis: "error" })
+    updateSessionChrome()
+    scrollTranscriptToBottom()
+  }
+
+  const removeTranscriptRenderable = (entryId: number) => {
+    const renderable = transcriptRenderables.get(entryId)
+    if (!renderable || !transcriptScrollbox) {
+      return
+    }
+    transcriptScrollbox.remove(renderable.wrapper.id)
+    renderable.wrapper.destroyRecursively()
+    transcriptRenderables.delete(entryId)
+  }
+
+  const enforceTranscriptRetention = () => {
+    const currentEntries = entries.slice()
+    let totalChars = currentEntries.reduce((sum, entry) => sum + entry.text.length, 0)
+    let removeCount = 0
+
+    while (
+      currentEntries.length - removeCount > LIVE_TRANSCRIPT_LIMIT
+      || (totalChars > LIVE_TRANSCRIPT_MAX_CHARS && removeCount < currentEntries.length - 1)
+    ) {
+      totalChars -= currentEntries[removeCount]?.text.length ?? 0
+      removeCount += 1
+    }
+
+    if (removeCount === 0) {
+      return
+    }
+
+    const removed = currentEntries.slice(0, removeCount)
+    const kept = currentEntries.slice(removeCount)
+    for (const entry of removed) {
+      removeTranscriptRenderable(entry.id)
+      if (entry.mergeKey) {
+        tools.delete(entry.mergeKey)
+      }
+    }
+    setEntries(reconcile(kept))
+    transcriptScrollbox?.requestRender()
   }
 
   const flashFooter = (message: string, tone: FooterFlash["tone"]) => {
@@ -315,8 +530,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
-  const appendProviderChunk = (role: TranscriptEntry["role"], chunk: string, mergeKey?: string) => {
+  const appendProviderChunk = (
+    role: TranscriptEntry["role"],
+    chunk: string,
+    mergeKey?: string,
+    sourceText?: string,
+  ) => {
     const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    const normalizedSource = sourceText?.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     if (!normalized) {
       return
     }
@@ -339,6 +560,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }
           if (existing) {
             existing.text = normalized
+            if (normalizedSource !== undefined) existing.sourceText = normalizedSource
             mergedEntryId = existing.id
             mergedText = existing.text
             return
@@ -359,11 +581,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (mergeKey) {
           nextEntry.mergeKey = mergeKey
         }
+        if (normalizedSource !== undefined) {
+          nextEntry.sourceText = normalizedSource
+        }
         draft.push(nextEntry)
       }),
     )
     if (mergedEntryId !== undefined && mergedText !== undefined) {
-      updateTranscriptEntry(mergedEntryId, mergedText)
+      updateTranscriptEntry(mergedEntryId, mergedText, normalizedSource)
+      enforceTranscriptRetention()
       return
     }
     if (!nextEntry) {
@@ -371,6 +597,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setEntryCounter(nextId)
     mountTranscriptEntry(nextEntry)
+    enforceTranscriptRetention()
   }
 
   const appendToolUpdate = (chunk: string) => {
@@ -384,26 +611,93 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (parsed) {
       const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
       tools.set(parsed.id, merged)
-      appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id)
+      appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id, JSON.stringify(merged))
       return
     }
-    appendProviderChunk("tool", normalized)
+    appendProviderChunk("tool", normalized, undefined, normalized)
+  }
+
+  const ensureChromeRenderables = () => {
+    if (promptStateBox && !promptStateText) {
+      promptStateText = new TextRenderable(renderer, { fg: theme.textMuted, wrapMode: "none" })
+      promptStateBox.add(promptStateText)
+    }
+    if (footerSummaryBox && !footerSummaryText) {
+      footerSummaryText = new TextRenderable(renderer, { fg: theme.textMuted, wrapMode: "none" })
+      footerFlashText = new TextRenderable(renderer, { fg: theme.info, wrapMode: "none" })
+      footerSummaryBox.add(footerSummaryText)
+      footerSummaryBox.add(footerFlashText)
+    }
+    if (statusIndicatorBox && !statusOpenText) {
+      statusOpenText = new TextRenderable(renderer, { content: "[", fg: theme.textMuted, wrapMode: "none" })
+      statusCloseText = new TextRenderable(renderer, { content: "]", fg: theme.textMuted, wrapMode: "none" })
+      statusIndicatorBox.add(statusOpenText)
+      statusLabelTexts = Array.from({ length: STATUS_LABEL_WIDTH }, () => {
+        const text = new TextRenderable(renderer, { wrapMode: "none" })
+        statusIndicatorBox!.add(text)
+        return text
+      })
+      statusIndicatorBox.add(statusCloseText)
+    }
+  }
+
+  const setTextRenderable = (
+    text: TextRenderable | undefined,
+    content: string,
+    fg: (typeof theme)[keyof typeof theme],
+    attributes = TextAttributes.NONE,
+  ) => {
+    if (!text) {
+      return
+    }
+    text.content = content
+    text.fg = fg
+    text.attributes = attributes
+  }
+
+  const renderHistoryLoadingIndicator = () => {
+    if (!historyLoadingBox) {
+      return
+    }
+    if (loadingHistory()) {
+      if (!historyLoadingText) {
+        historyLoadingText = new TextRenderable(renderer, {
+          content: "loading...",
+          fg: theme.textMuted,
+          wrapMode: "none",
+        })
+        historyLoadingBox.add(historyLoadingText)
+      }
+    } else if (historyLoadingText) {
+      historyLoadingBox.remove(historyLoadingText.id)
+      historyLoadingText.destroyRecursively()
+      historyLoadingText = undefined
+    }
+    historyLoadingBox.requestRender()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+
+  const setHistoryLoadingState = (next: boolean) => {
+    setLoadingHistory(next)
+    renderHistoryLoadingIndicator()
   }
 
   const renderStatusIndicator = () => {
-    if (!statusIndicatorBox) {
+    ensureChromeRenderables()
+    if (!isAttached()) {
+      setTextRenderable(statusOpenText, " ", theme.textMuted)
+      for (const text of statusLabelTexts) {
+        setTextRenderable(text, " ", theme.textMuted)
+      }
+      setTextRenderable(statusCloseText, " ", theme.textMuted)
+      statusIndicatorBox?.requestRender()
       return
     }
-
-    for (const child of [...statusIndicatorBox.getChildren()]) {
-      statusIndicatorBox.remove(child.id)
-    }
-
-    statusIndicatorBox.add(new TextRenderable(renderer, { content: "[", fg: theme.textMuted }))
-
     const mode = sessionStatusMode()
     const label = mode === "working" ? "WORKING" : mode === "disconnected" ? "DISCONNECTED" : "IDLE"
-    for (const [index, character] of [...label].entries()) {
+    setTextRenderable(statusOpenText, "[", theme.textMuted)
+    for (let index = 0; index < STATUS_LABEL_WIDTH; index += 1) {
+      const character = label[index] ?? " "
       let fg = theme.success
       if (mode === "disconnected") {
         fg = theme.error
@@ -411,71 +705,39 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const distance = reflectedDistance(index, label.length, workingAnimationFrame())
         fg = distance === 0 ? theme.primary : distance === 1 ? theme.warning : theme.secondary
       }
-      statusIndicatorBox.add(
-        new TextRenderable(renderer, {
-          content: character,
-          fg,
-          attributes: mode === "working" ? TextAttributes.BOLD : TextAttributes.NONE,
-        }),
+      setTextRenderable(
+        statusLabelTexts[index],
+        character,
+        fg,
+        mode === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE,
       )
     }
-
-    statusIndicatorBox.add(new TextRenderable(renderer, { content: "]", fg: theme.textMuted }))
-    statusIndicatorBox.requestRender()
-  }
-
-  const replaceBoxText = (
-    box: BoxRenderable | undefined,
-    parts: Array<{ content: string; fg: (typeof theme)[keyof typeof theme]; attributes?: number }>,
-  ) => {
-    if (!box) {
-      return
-    }
-    for (const child of [...box.getChildren()]) {
-      box.remove(child.id)
-    }
-    for (const part of parts) {
-      box.add(
-        new TextRenderable(renderer, {
-          content: part.content,
-          fg: part.fg,
-          attributes: part.attributes ?? TextAttributes.NONE,
-        }),
-      )
-    }
-    box.requestRender()
+    setTextRenderable(statusCloseText, "]", theme.textMuted)
+    statusIndicatorBox?.requestRender()
   }
 
   const updateSessionChrome = () => {
-    replaceBoxText(headerMetaBox, [
-      {
-        content: `${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected`,
-        fg: connectedClientCount() > 1 ? theme.info : theme.textMuted,
-      },
-      {
-        content: sessionState().active_provider_run_id ?? "starting provider",
-        fg: theme.textMuted,
-      },
-    ])
-    replaceBoxText(promptStateBox, [
-      {
-        content: fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
-        fg: fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
-      },
-    ])
-    replaceBoxText(footerSummaryBox, [
-      {
-        content: `Session ${sessionState().id} • ${queueDepth()} queued${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""}`,
-        fg: theme.textMuted,
-      },
-      ...(footerFlash()
-        ? [{
-            content: ` • ${footerFlash()!.message}`,
-            fg: footerFlash()!.tone === "error" ? theme.error : theme.info,
-            attributes: TextAttributes.BOLD,
-          }]
-        : []),
-    ])
+    ensureChromeRenderables()
+    setTextRenderable(
+      promptStateText,
+      fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
+      fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
+    )
+    promptStateBox?.requestRender()
+    setTextRenderable(
+      footerSummaryText,
+      isAttached()
+        ? `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected • ${sessionState().active_provider_run_id ?? "starting provider"}${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""}`
+        : SESSION_NEW_FOOTER_HINT,
+      theme.textMuted,
+    )
+    setTextRenderable(
+      footerFlashText,
+      footerFlash() ? ` • ${footerFlash()!.message}` : "",
+      footerFlash()?.tone === "error" ? theme.error : theme.info,
+      footerFlash() ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+    footerSummaryBox?.requestRender()
     renderStatusIndicator()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
@@ -487,10 +749,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     if (emptyTranscriptRenderable) {
       transcriptScrollbox.remove(emptyTranscriptRenderable.id)
+      emptyTranscriptRenderable.destroyRecursively()
       emptyTranscriptRenderable = undefined
     }
 
-    const renderable = buildTranscriptEntryRenderable(renderer, entry)
+    const renderable = buildTranscriptEntryRenderable(renderer, entry, transcriptSyntax)
     transcriptRenderables.set(entry.id, renderable)
     transcriptScrollbox.add(renderable.wrapper)
     if (requestRender) {
@@ -498,14 +761,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const updateTranscriptEntry = (entryId: number, text: string) => {
+  const updateTranscriptEntry = (entryId: number, text: string, sourceText?: string) => {
     const renderable = transcriptRenderables.get(entryId)
     if (!renderable) {
       rebuildTranscript()
       return
     }
     renderable.entry.text = text
-    applyTranscriptTextContent(renderable.text, renderable.entry)
+    if (sourceText !== undefined) {
+      renderable.entry.sourceText = sourceText
+    }
+    renderable.update(renderable.entry)
     transcriptScrollbox?.requestRender()
   }
 
@@ -516,20 +782,293 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     for (const child of [...transcriptScrollbox.getChildren()]) {
       transcriptScrollbox.remove(child.id)
+      child.destroyRecursively()
     }
     transcriptRenderables.clear()
     emptyTranscriptRenderable = undefined
 
     if (entries.length === 0) {
-      emptyTranscriptRenderable = buildEmptyTranscriptRenderable(renderer)
+      emptyTranscriptRenderable = isAttached()
+        ? buildEmptyTranscriptRenderable(renderer)
+        : buildNoSessionRenderable(renderer)
       transcriptScrollbox.add(emptyTranscriptRenderable)
     } else {
-      for (const entry of entries) {
+      for (const entry of entries.filter((candidate) => candidate && !candidate.historyDeferred)) {
         mountTranscriptEntry(entry, false)
       }
     }
 
     transcriptScrollbox.requestRender()
+  }
+
+  const replaceTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
+    const sanitizedEntries = nextEntries.filter(Boolean)
+    tools.clear()
+    setEntries(reconcile(sanitizedEntries))
+    setEntryCounter(sanitizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+    rebuildTranscript()
+    lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? 0
+  }
+
+  const mergeHistoryFragments = (older: TranscriptEntry, newer: TranscriptEntry): TranscriptEntry => {
+    const sourceText = (older.sourceText ?? older.text) + (newer.sourceText ?? newer.text)
+    const mergedBase: TranscriptEntry = {
+      ...newer,
+      text: newer.text,
+      sourceText,
+    }
+    if (older.historyFragmentStart !== undefined) mergedBase.historyFragmentStart = older.historyFragmentStart
+    if (newer.historyFragmentEnd !== undefined) mergedBase.historyFragmentEnd = newer.historyFragmentEnd
+    const totalChars = newer.historyTotalChars ?? older.historyTotalChars
+    if (totalChars !== undefined) mergedBase.historyTotalChars = totalChars
+    if (older.role !== "tool") {
+      return applyHistoryDeferral({
+        ...mergedBase,
+        text: older.text + newer.text,
+      })
+    }
+
+    const parsed = parseToolTranscriptUpdate(sourceText)
+    if (!parsed) {
+      const pending: TranscriptEntry = {
+        ...mergedBase,
+        text: sourceText,
+      }
+      delete pending.mergeKey
+      return {
+        ...applyHistoryDeferral(pending),
+      }
+    }
+
+    const merged = mergeToolTranscriptUpdate(null, parsed)
+    return applyHistoryDeferral({
+      ...mergedBase,
+      text: formatToolTranscriptUpdate(merged),
+      mergeKey: parsed.id,
+    })
+  }
+
+  const stitchPrependedHistory = (olderEntries: TranscriptEntry[], currentEntries: TranscriptEntry[]) => {
+    if (olderEntries.length === 0 || currentEntries.length === 0) {
+      return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
+    }
+
+    const tail = olderEntries.at(-1)
+    const head = currentEntries[0]
+    if (
+      tail?.historyEntryIndex === undefined
+      || head?.historyEntryIndex === undefined
+      || tail.historyEntryIndex !== head.historyEntryIndex
+      || tail.historyFragmentEnd !== head.historyFragmentStart
+    ) {
+      return markDeferredHistoryEntries([...olderEntries, ...currentEntries])
+    }
+
+    return markDeferredHistoryEntries([
+      ...olderEntries.slice(0, -1),
+      mergeHistoryFragments(tail, head),
+      ...currentEntries.slice(1),
+    ])
+  }
+
+  const prependTranscriptEntries = async (nextEntries: TranscriptEntry[]) => {
+    const sanitizedEntries = nextEntries.filter(Boolean)
+    if (sanitizedEntries.length === 0) {
+      return
+    }
+
+    const currentEntries = entries.filter(Boolean)
+    const previousScrollHeight = transcriptScrollbox?.scrollHeight ?? 0
+    const previousScrollTop = transcriptScrollbox?.scrollTop ?? 0
+    const previousViewportHeight = transcriptScrollbox?.height ?? 0
+    const nextCombinedEntries = stitchPrependedHistory(sanitizedEntries, currentEntries)
+    setEntries(reconcile(nextCombinedEntries))
+    setEntryCounter(nextCombinedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+    rebuildTranscript()
+    if (transcriptScrollbox) {
+      const scrollbox = transcriptScrollbox
+      const restoreToken = ++pendingHistoryScrollRestore
+      await new Promise<void>((resolve) => {
+        const restoreScroll = (remainingAttempts: number, lastHeight = -1, stableFrames = 0) => {
+          if (!transcriptScrollbox || scrollbox !== transcriptScrollbox || restoreToken !== pendingHistoryScrollRestore) {
+            pendingHistoryScrollRestore = 0
+            resolve()
+            return
+          }
+
+          const nextScrollTop = computePrependedHistoryScrollTop(
+            previousScrollTop,
+            previousScrollHeight,
+            scrollbox.scrollHeight,
+            previousViewportHeight,
+          )
+          scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
+          scrollbox.requestRender()
+          lastTranscriptScrollTop = scrollbox.scrollTop
+
+          const closeEnough = Math.abs(scrollbox.scrollTop - nextScrollTop) <= 1
+          const nextStableFrames = scrollbox.scrollHeight === lastHeight ? stableFrames + 1 : 0
+          if ((closeEnough && nextStableFrames >= 1) || remainingAttempts <= 1) {
+            pendingHistoryScrollRestore = 0
+            resolve()
+            return
+          }
+
+          startTimeout(() => restoreScroll(remainingAttempts - 1, scrollbox.scrollHeight, nextStableFrames), 16)
+        }
+
+        scrollbox.requestRender()
+        startTimeout(() => restoreScroll(10), 0)
+      })
+    }
+  }
+
+  const transitionToNoSession = (message = "No session attached.") => {
+    setAttachmentState(null)
+    setProviderRunState(null)
+    setCreatedSessionState(false)
+    setSessionState(buildDetachedSessionState(options))
+    historyLoadGeneration += 1
+    replaceTranscriptEntries([])
+    setSubmitting(false)
+    setWorking(false)
+    stopRequestInFlight = false
+    setFatalError(null)
+    setDaemonDisconnected(false)
+    setNextHistoryCursor(null)
+    setHistoryLoadingState(false)
+    setStatusLine(message)
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+
+  const detachCurrentAttachment = async () => {
+    const attachment = attachmentState()
+    if (!attachment) {
+      return
+    }
+    await client.send(detachFromSessionRequest(attachment.id))
+    setAttachmentState(null)
+  }
+
+  const attachBinding = async (session: RuntimeSession, createdSession: boolean) => {
+    const currentAttachment = attachmentState()
+    if (currentAttachment?.session_id === session.id) {
+      return
+    }
+    if (currentAttachment) {
+      await detachCurrentAttachment()
+    }
+    historyLoadGeneration += 1
+    const attachment = await attachToSession(client, session.id, options.clientId)
+    const attachedSession = await getSessionState(client, session.id)
+    if (!attachedSession.active_provider_run_id) {
+      const run = await launchProviderRun(client, session.id, options.accountProfile, options.model)
+      logProviderRunDebug("attached session launched provider run", run, {
+        session_id: session.id,
+        requested_model: options.model,
+      })
+      setProviderRunState(run)
+    } else {
+      const run = await tryGetProviderRun(client, attachedSession.active_provider_run_id, appLogger)
+      logProviderRunDebug("attached session loaded existing provider run", run, {
+        session_id: session.id,
+        requested_model: options.model,
+      })
+      setProviderRunState(run)
+    }
+    await maybeResize(client, session.id)
+    const historyPage = await getSessionHistory(client, session.id)
+    const historyEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), 0)
+    setAttachmentState(attachment)
+    setCreatedSessionState(createdSession)
+    setSessionState(await getSessionState(client, session.id))
+    setNextHistoryCursor(historyPage.next_cursor)
+    replaceTranscriptEntries(historyEntries)
+    setFatalError(null)
+    setDaemonDisconnected(false)
+    setSubmitting(false)
+    setWorking(hasPromptWork(sessionState()))
+    setStatusLine(DEFAULT_CONNECTED_STATUS)
+    updateSessionChrome()
+    promptInput?.focus()
+    scheduleShortViewportHistoryCheck()
+  }
+
+  const loadOlderHistoryPage = async () => {
+    if (!isAttached() || loadingHistory() || nextHistoryCursor() === null) {
+      return
+    }
+
+    setHistoryLoadingState(true)
+    const generation = historyLoadGeneration
+    const sessionId = sessionState().id
+    const cursor = nextHistoryCursor()
+    try {
+      const historyPage = await getSessionHistory(client, sessionId, cursor)
+      if (generation !== historyLoadGeneration || !isAttached() || sessionState().id !== sessionId) {
+        return
+      }
+      const hydratedEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), entryCounter())
+      await prependTranscriptEntries(hydratedEntries)
+      setNextHistoryCursor(historyPage.next_cursor)
+      scheduleShortViewportHistoryCheck()
+    } catch (error) {
+      appLogger?.warn("older history load failed", {
+        error: formatError(error),
+      })
+      flashFooter("failed to load older history", "error")
+    } finally {
+      setHistoryLoadingState(false)
+    }
+  }
+
+  const handleSessionCommand = async (commandLine: string) => {
+    const [_, action, ...args] = commandLine.trim().split(/\s+/)
+    const value = args.join(" ").trim()
+
+    switch (action) {
+      case "create":
+      case "new": {
+        const session = await createSession(client, options.workspace ?? process.cwd(), options.worktree ?? options.workspace ?? process.cwd(), value || undefined)
+        await attachBinding(session, true)
+        flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
+        return true
+      }
+      case "attach": {
+        if (!value) {
+          flashFooter("usage: /session attach <ref>", "error")
+          return true
+        }
+        const session = await resolveSession(client, value, options.workspace ?? process.cwd())
+        await attachBinding(session, false)
+        flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
+        return true
+      }
+      case "list":
+      case "ls": {
+        const sessions = await listSessions(client)
+        appendNotice(formatSessionList(sessions, sessionState().id))
+        flashFooter(`listed ${sessions.length} session${sessions.length === 1 ? "" : "s"}`, "info")
+        return true
+      }
+      case "delete": {
+        const sessionRef = value || (isAttached() ? sessionState().id : "")
+        if (!sessionRef) {
+          flashFooter("usage: /session delete <ref>", "error")
+          return true
+        }
+        const deleted = await deleteSessionByRef(client, sessionRef, options.workspace ?? process.cwd())
+        if (isAttached() && deleted.id === sessionState().id) {
+          transitionToNoSession(`Session ${deleted.alias ?? deleted.id} was deleted.`)
+        } else {
+          flashFooter(`deleted session ${deleted.alias ?? deleted.id}`, "info")
+        }
+        return true
+      }
+      default:
+        return false
+    }
   }
 
   const requestExit = async () => {
@@ -543,10 +1082,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     closing = true
     appLogger?.info("requested cli exit", {
-      created_session: createdSession,
+      created_session: createdSessionState(),
     })
     try {
-      if (shouldEndSessionOnCliExit(createdSession, connectedClientCount())) {
+      const attachment = attachmentState()
+      if (!attachment) {
+        exitCleanupFailed = false
+      } else if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
         await client.send(endSessionRequest(sessionState().id))
       } else {
         await client.send(detachFromSessionRequest(attachment.id))
@@ -608,6 +1150,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       await requestExit()
       return
     }
+    if (trimmed.startsWith("/session")) {
+      try {
+        const handled = await handleSessionCommand(trimmed)
+        if (!handled) {
+          flashFooter("unknown /session command", "error")
+        }
+      } catch (error) {
+        appLogger?.error("session command failed", {
+          command: trimmed,
+          error: formatError(error),
+        })
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+      }
+      return
+    }
     if (trimmed === "/stop") {
       try {
         await requestPromptStop()
@@ -616,12 +1175,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
+    if (!isAttached()) {
+      flashFooter(SESSION_NEW_ERROR_HINT, "error")
+      promptInput.clear()
+      return
+    }
 
     const prompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
     try {
       appLogger?.info("submitting prompt", {
         chars: prompt.length,
       })
+      const attachment = attachmentState()
+      if (!attachment) {
+        flashFooter("No session attached.", "error")
+        promptInput.clear()
+        return
+      }
       const response = await submitPromptWithRecovery(client, sessionState().id, attachment.id, prompt, options, appLogger)
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
       applySessionState(payload.session)
@@ -651,7 +1221,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const requestPromptStop = async () => {
-    if (stopRequestInFlight || !activePrompt()) {
+    const attachment = attachmentState()
+    if (stopRequestInFlight || !activePrompt() || !attachment) {
       return
     }
 
@@ -675,17 +1246,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   useKeyboard((event) => {
     if (event.ctrl && event.name === "c") {
       event.preventDefault()
-      void requestPromptStop()
+      void (activePrompt() ? requestPromptStop() : requestExit())
     }
   })
 
   const handleSigint = () => {
-    void requestPromptStop()
+    void (activePrompt() ? requestPromptStop() : requestExit())
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (event?.ctrl && event.name === "c") {
-      void requestPromptStop()
+      void (activePrompt() ? requestPromptStop() : requestExit())
     }
   }
   process.on("SIGINT", handleSigint)
@@ -697,7 +1268,41 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   let pollersStarted = false
   const onResize = () => {
-    void maybeResize(client, sessionState().id)
+    if (isAttached()) {
+      void maybeResize(client, sessionState().id)
+    }
+  }
+
+  const monitorTranscriptScroll = () => {
+    const scrollbox = transcriptScrollbox
+    if (!scrollbox) {
+      return
+    }
+    if (pendingHistoryScrollRestore > 0) {
+      return
+    }
+
+    const currentScrollTop = scrollbox.scrollTop
+    if (currentScrollTop === 0 && lastTranscriptScrollTop > 0 && nextHistoryCursor() !== null && !loadingHistory()) {
+      void loadOlderHistoryPage()
+    }
+    lastTranscriptScrollTop = currentScrollTop
+  }
+
+  const maybeLoadOlderHistoryForShortViewport = () => {
+    const scrollbox = transcriptScrollbox
+    if (!scrollbox || !isAttached() || loadingHistory() || nextHistoryCursor() === null) {
+      return
+    }
+    if (scrollbox.scrollTop === 0 && scrollbox.scrollHeight <= scrollbox.height) {
+      void loadOlderHistoryPage()
+    }
+  }
+
+  const scheduleShortViewportHistoryCheck = () => {
+    startTimeout(() => {
+      maybeLoadOlderHistoryForShortViewport()
+    }, 0)
   }
 
   const markPollerDegraded = (operation: string, message: string) => {
@@ -751,6 +1356,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (closing) {
           break
         }
+        if (isSessionUnavailableError(error)) {
+          appLogger?.info("session became unavailable; returning to unattached state", {
+            operation,
+            error: formatError(error),
+          })
+          transitionToNoSession("Current session is no longer available.")
+          consecutiveFailures = 0
+          continue
+        }
         consecutiveFailures += 1
         appLogger?.warn("poll operation failed", {
           operation,
@@ -780,6 +1394,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const pollOutput = async () => {
     await runPollingLoop("polling terminal output", 50, async () => {
+      const attachment = attachmentState()
+      if (!attachment) {
+        return
+      }
       const response = await client.send<Record<string, unknown>>(
         pumpTerminalOutputRequest(sessionState().id, attachment.id),
       )
@@ -796,10 +1414,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           case "provider_tool":
             appendToolUpdate(text)
             break
+          case "provider_error":
+            appendProviderError(text)
+            break
           case "provider_status":
             applyProviderActivity(!/^OpenCode is idle\.?$/i.test(text.trim()))
             if (shouldRenderProviderStatus(text)) {
-              appendProviderChunk("status", text)
+              appendProviderChunk("status", text, "__provider_status__")
             }
             break
           default:
@@ -812,6 +1433,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const pollNotices = async () => {
     await runPollingLoop("polling runtime notices", 150, async () => {
+      const attachment = attachmentState()
+      if (!attachment) {
+        return
+      }
       const response = await client.send<Record<string, unknown>>(
         pollRuntimeNoticesRequest(sessionState().id, attachment.id),
       )
@@ -824,9 +1449,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const pollSessionState = async () => {
     await runPollingLoop("polling session state", 250, async () => {
+      if (!isAttached()) {
+        return
+      }
       const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
       applySessionState(payload.session)
+      if (payload.session.active_provider_run_id) {
+        const activeRun = providerRunState()
+        if (
+          !activeRun
+          || activeRun.id !== payload.session.active_provider_run_id
+          || activeRun.model === "default"
+        ) {
+          const run = await tryGetProviderRun(client, payload.session.active_provider_run_id, appLogger)
+          logProviderRunDebug("session poll refreshed provider run", run, {
+            session_id: payload.session.id,
+            previous_provider_run_id: activeRun?.id ?? null,
+            previous_model: activeRun?.model ?? null,
+            refresh_reason: !activeRun
+              ? "missing_run"
+              : activeRun.id !== payload.session.active_provider_run_id
+                ? "run_changed"
+                : "model_default",
+          })
+          setProviderRunState(run)
+          updateSessionChrome()
+        }
+      } else if (providerRunState()) {
+        logProviderRunDebug("session poll cleared provider run", providerRunState(), {
+          session_id: payload.session.id,
+        })
+        setProviderRunState(null)
+        updateSessionChrome()
+      }
     })
   }
 
@@ -840,6 +1496,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     pollersStarted = true
     promptInput?.focus()
     rebuildTranscript()
+    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
     process.stdout.on("resize", onResize)
     appLogger?.info("starting background pollers")
     void pollOutput()
@@ -858,6 +1515,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   })
 
+  const transcriptScrollMonitor = startInterval(() => {
+    monitorTranscriptScroll()
+  }, 75)
+
+  onCleanup(() => {
+    clearInterval(transcriptScrollMonitor)
+  })
+
   const workingAnimation = startInterval(() => {
     setWorkingAnimationFrame((value) => value + 1)
     if (sessionStatusMode() === "working") {
@@ -874,47 +1539,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       width={dimensions().width}
       height={dimensions().height}
       flexDirection="column"
-      paddingTop={1}
       paddingBottom={1}
       paddingLeft={2}
       paddingRight={2}
       backgroundColor={theme.background}
     >
       <box
-        flexShrink={0}
-        paddingLeft={2}
-        paddingRight={2}
-        paddingTop={1}
-        paddingBottom={1}
-        backgroundColor={theme.backgroundPanel}
-        border={["left", "right"]}
-        customBorderChars={SplitBorder.customBorderChars}
-        borderColor={theme.borderSubtle}
-      >
-        <box flexDirection="row" justifyContent="space-between">
-          <box flexDirection="column" gap={0}>
-            <text attributes={TextAttributes.BOLD} fg={theme.text}>
-              Arroba CLI
-            </text>
-            <text fg={theme.textMuted}>
-              Session {sessionState().id} on {path.basename(sessionState().worktree_id) || sessionState().worktree_id}
-            </text>
-          </box>
-          <box
-            ref={(value) => {
-              headerMetaBox = value
-              updateSessionChrome()
-            }}
-            flexDirection="column"
-            alignItems="flex-end"
-            justifyContent="center"
-          />
-        </box>
-      </box>
-
-      <box
         flexGrow={1}
-        marginTop={1}
         backgroundColor={theme.backgroundPanel}
         border={["left", "right"]}
         customBorderChars={SplitBorder.customBorderChars}
@@ -928,6 +1559,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }, 0)
         }}
       >
+        <box
+          ref={(value) => {
+            historyLoadingBox = value
+            renderHistoryLoadingIndicator()
+          }}
+          flexShrink={0}
+          paddingLeft={2}
+          paddingRight={1}
+        />
         <scrollbox
           ref={(value) => {
             transcriptScrollbox = value
@@ -970,8 +1610,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flexDirection="column"
           gap={1}
         >
-          <box flexDirection="row" justifyContent="space-between">
-            <text fg={theme.textMuted}>Prompt</text>
+          <box flexDirection="row" justifyContent="flex-end">
             <box
               ref={(value) => {
                 promptStateBox = value
@@ -985,7 +1624,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
               promptInput = value
               ensureBackgroundPollersStarted()
             }}
-            placeholder="Ask Arroba to do work in this session"
+            placeholder={isAttached() ? "Ask Arroba to do work in this session" : SESSION_NEW_PLACEHOLDER}
             textColor={theme.text}
             focusedTextColor={theme.text}
             minHeight={1}
@@ -995,6 +1634,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
               void submitPrompt()
             }}
           />
+          <text fg={theme.textMuted}>
+            {promptMetaLine()}
+          </text>
         </box>
       </box>
 
@@ -1032,22 +1674,40 @@ function reflectedDistance(index: number, length: number, frame: number): number
   return Math.abs(index - highlight)
 }
 
-function hydrateTranscriptEntries(historyEntries: SessionHistoryEntry[]): TranscriptEntry[] {
+function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   const tools = new Map<string, ToolTranscriptUpdate>()
   let nextId = 0
 
-  const appendTranscriptEntry = (role: TranscriptEntry["role"], chunk: string, mergeKey?: string) => {
+  const appendTranscriptEntry = (
+    role: TranscriptEntry["role"],
+    chunk: string,
+    options: {
+      mergeKey?: string
+      sourceText?: string
+      emphasis?: TranscriptEntry["emphasis"]
+      historyEntryIndex?: number
+      historyFragmentStart?: number
+      historyFragmentEnd?: number
+      historyTotalChars?: number
+    } = {},
+  ) => {
     const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     if (!normalized) {
       return
     }
 
-    if (mergeKey) {
+    if (options.mergeKey) {
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const candidate = entries[index]
-        if (candidate?.role === role && candidate.mergeKey === mergeKey) {
+        if (candidate?.role === role && candidate.mergeKey === options.mergeKey) {
           candidate.text = normalized
+          if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
+          if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
+          if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
+          if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
+          if (options.historyFragmentEnd !== undefined) candidate.historyFragmentEnd = options.historyFragmentEnd
+          if (options.historyTotalChars !== undefined) candidate.historyTotalChars = options.historyTotalChars
           return
         }
       }
@@ -1061,46 +1721,81 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryEntry[]): Transc
 
     nextId += 1
     const nextEntry: TranscriptEntry = { id: nextId, role, text: normalized }
-    if (mergeKey) {
-      nextEntry.mergeKey = mergeKey
+    if (options.mergeKey) {
+      nextEntry.mergeKey = options.mergeKey
     }
+    if (options.sourceText !== undefined) nextEntry.sourceText = options.sourceText
+    if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
+    if (options.historyEntryIndex !== undefined) nextEntry.historyEntryIndex = options.historyEntryIndex
+    if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
+    if (options.historyFragmentEnd !== undefined) nextEntry.historyFragmentEnd = options.historyFragmentEnd
+    if (options.historyTotalChars !== undefined) nextEntry.historyTotalChars = options.historyTotalChars
     entries.push(nextEntry)
   }
 
-  for (const entry of historyEntries) {
-    switch (entry.kind) {
+  for (const pageEntry of historyEntries) {
+    const options = {
+      historyEntryIndex: pageEntry.entry_index,
+      historyFragmentStart: pageEntry.fragment_start,
+      historyFragmentEnd: pageEntry.fragment_end,
+      historyTotalChars: pageEntry.total_chars,
+    }
+    switch (pageEntry.entry.kind) {
       case "user_prompt":
-        appendTranscriptEntry("user", trimSingleTrailingNewline(entry.text))
+        appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), options)
         break
       case "provider_reasoning":
-        appendTranscriptEntry("reasoning", entry.text)
+        appendTranscriptEntry("reasoning", pageEntry.entry.text, options)
         break
       case "provider_tool": {
-        const parsed = parseToolTranscriptUpdate(entry.text)
+        const parsed = parseToolTranscriptUpdate(pageEntry.entry.text)
         if (!parsed) {
-          appendTranscriptEntry("tool", entry.text)
+          appendTranscriptEntry("tool", pageEntry.entry.text, {
+            ...options,
+            sourceText: pageEntry.entry.text,
+          })
           break
         }
         const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
         tools.set(parsed.id, merged)
-        appendTranscriptEntry("tool", formatToolTranscriptUpdate(merged), parsed.id)
+        appendTranscriptEntry("tool", formatToolTranscriptUpdate(merged), {
+          ...options,
+          mergeKey: parsed.id,
+          sourceText: pageEntry.entry.text,
+        })
         break
       }
+      case "provider_error":
+        appendTranscriptEntry("error", pageEntry.entry.text, {
+          ...options,
+          emphasis: "error",
+        })
+        break
       case "provider_status":
-        if (shouldRenderProviderStatus(entry.text)) {
-          appendTranscriptEntry("status", entry.text)
+        if (shouldRenderProviderStatus(pageEntry.entry.text)) {
+          appendTranscriptEntry("status", pageEntry.entry.text, {
+            ...options,
+            mergeKey: "__provider_status__",
+          })
         }
         break
       case "notice":
-        appendTranscriptEntry("notice", entry.text)
+        appendTranscriptEntry("notice", pageEntry.entry.text, options)
         break
       default:
-        appendTranscriptEntry("assistant", entry.text)
+        appendTranscriptEntry("assistant", pageEntry.entry.text, options)
         break
     }
   }
 
-  return entries
+  return markDeferredHistoryEntries(entries)
+}
+
+function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {
+  return entries.map((entry, index) => ({
+    ...entry,
+    id: startingId + index + 1,
+  }))
 }
 
 async function submitPromptWithRecovery(
@@ -1142,7 +1837,12 @@ function isRecoverableProviderError(error: unknown): boolean {
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
 }
 
-function buildTranscriptEntryRenderable(renderer: ReturnType<typeof useRenderer>, entry: TranscriptEntry) {
+function buildTranscriptEntryRenderable(
+  renderer: ReturnType<typeof useRenderer>,
+  entry: TranscriptEntry,
+  transcriptSyntax: SyntaxStyle,
+) {
+  const patch = readTranscriptApplyPatch(entry)
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 1,
     flexDirection: "column",
@@ -1155,12 +1855,53 @@ function buildTranscriptEntryRenderable(renderer: ReturnType<typeof useRenderer>
     paddingBottom: 1,
     ...(bodyColor ? { backgroundColor: bodyColor } : {}),
   })
-  const text = new TextRenderable(renderer, {
-    fg: transcriptTextColor(entry),
-    wrapMode: "word",
-  })
-  applyTranscriptTextContent(text, entry)
-  body.add(text)
+  let update: (nextEntry: TranscriptEntry) => void
+
+  if (patch) {
+    buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax)
+    update = (nextEntry) => {
+      for (const child of body.getChildren()) {
+        body.remove(child.id)
+        child.destroyRecursively()
+      }
+      const nextPatch = readTranscriptApplyPatch(nextEntry)
+      if (nextPatch) {
+        buildApplyPatchTranscriptContent(renderer, body, nextPatch, transcriptSyntax)
+        return
+      }
+      const markdown = new MarkdownRenderable(renderer, {
+        content: normalizeMarkdownFenceInfoStrings(nextEntry.text),
+        syntaxStyle: transcriptSyntax,
+        conceal: true,
+        concealCode: false,
+        streaming: true,
+      })
+      body.add(markdown)
+    }
+  } else if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
+    const markdown = new MarkdownRenderable(renderer, {
+      content: normalizeMarkdownFenceInfoStrings(entry.text),
+      syntaxStyle: transcriptSyntax,
+      conceal: true,
+      concealCode: false,
+      streaming: true,
+    })
+    body.add(markdown)
+    update = (nextEntry) => {
+      markdown.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
+      markdown.streaming = true
+    }
+  } else {
+    const text = new TextRenderable(renderer, {
+      fg: transcriptTextColor(entry),
+      wrapMode: "word",
+    })
+    applyTranscriptTextContent(text, entry)
+    body.add(text)
+    update = (nextEntry) => {
+      applyTranscriptTextContent(text, nextEntry)
+    }
+  }
 
   if (transcriptUsesAccentBorder(entry)) {
     const border = new BoxRenderable(renderer, {
@@ -1174,7 +1915,83 @@ function buildTranscriptEntryRenderable(renderer: ReturnType<typeof useRenderer>
     wrapper.add(body)
   }
 
-  return { entry, wrapper, text }
+  return { entry, wrapper, update }
+}
+
+function readTranscriptApplyPatch(entry: TranscriptEntry) {
+  const parsed = parseToolTranscriptUpdate(entry.sourceText ?? entry.text)
+  if (!parsed) {
+    return null
+  }
+  const files = readApplyPatchFiles(parsed)
+  return files.length > 0 ? files : null
+}
+
+function buildApplyPatchTranscriptContent(
+  renderer: ReturnType<typeof useRenderer>,
+  body: BoxRenderable,
+  files: ReturnType<typeof readApplyPatchFiles>,
+  transcriptSyntax: SyntaxStyle,
+) {
+  body.flexDirection = "column"
+  body.gap = 1
+  body.add(
+    new TextRenderable(renderer, {
+      content: `apply_patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
+      fg: theme.secondary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "word",
+    }),
+  )
+
+  for (const file of files) {
+    const block = new BoxRenderable(renderer, {
+      flexDirection: "column",
+      border: ["left"],
+      customBorderChars: SplitBorder.customBorderChars,
+      borderColor: theme.borderSubtle,
+      paddingLeft: 1,
+    })
+    block.add(
+      new TextRenderable(renderer, {
+        content: file.title,
+        fg: file.kind === "delete" ? theme.error : file.kind === "add" ? theme.success : theme.text,
+        attributes: TextAttributes.BOLD,
+        wrapMode: "word",
+      }),
+    )
+    if (file.diff) {
+      block.add(
+        new DiffRenderable(renderer, {
+          diff: file.diff,
+          view: "split",
+          filetype: guessPathFenceLanguage(file.filePath),
+          syntaxStyle: transcriptSyntax,
+          showLineNumbers: true,
+          wrapMode: "none",
+          fg: theme.text,
+          addedBg: RGBA.fromHex("#102616"),
+          removedBg: RGBA.fromHex("#2a1215"),
+          contextBg: theme.backgroundElement,
+          addedSignColor: theme.success,
+          removedSignColor: theme.error,
+          lineNumberFg: theme.textMuted,
+          lineNumberBg: theme.backgroundElement,
+          addedLineNumberBg: RGBA.fromHex("#16301d"),
+          removedLineNumberBg: RGBA.fromHex("#34191d"),
+        }),
+      )
+    } else {
+      block.add(
+        new TextRenderable(renderer, {
+          content: file.kind === "delete" ? "File deleted" : "No diff available",
+          fg: theme.textMuted,
+          wrapMode: "word",
+        }),
+      )
+    }
+    body.add(block)
+  }
 }
 
 function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
@@ -1237,6 +2054,33 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
   return wrapper
 }
 
+function buildNoSessionRenderable(renderer: ReturnType<typeof useRenderer>) {
+  const wrapper = new BoxRenderable(renderer, {
+    marginBottom: 0,
+    flexGrow: 1,
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 2,
+  })
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: ARROBA_ASCII_ART,
+      fg: theme.primary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    }),
+  )
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: `No session attached.\n\n${SESSION_NEW_HELP_TEXT}`,
+      fg: theme.textMuted,
+      wrapMode: "word",
+    }),
+  )
+  return wrapper
+}
+
 function transcriptAccent(entry: TranscriptEntry) {
   if (entry.role === "user") {
     return theme.primary
@@ -1246,6 +2090,9 @@ function transcriptAccent(entry: TranscriptEntry) {
   }
   if (entry.role === "tool") {
     return theme.secondary
+  }
+  if (entry.role === "error") {
+    return theme.error
   }
   if (entry.role === "status") {
     return theme.info
@@ -1260,6 +2107,31 @@ function transcriptAccent(entry: TranscriptEntry) {
   return theme.borderSubtle
 }
 
+function buildDetachedSessionState(options: CliOptions): RuntimeSession {
+  const workspace = options.workspace ?? process.cwd()
+  const worktree = options.worktree ?? workspace
+  return {
+    id: NO_SESSION_ID,
+    alias: null,
+    workspace_id: workspace,
+    worktree_id: worktree,
+    created_at_ms: Date.now(),
+    status: "Parked",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+  }
+}
+
+function isSessionUnavailableError(error: unknown): boolean {
+  const message = formatError(error)
+  return /session `[^`]+` was not found/i.test(message)
+    || /attachment `[^`]+` was not found/i.test(message)
+    || /does not belong to session/i.test(message)
+    || /cannot perform `[^`]+` while ended/i.test(message)
+}
+
 function transcriptUsesAccentBorder(entry: TranscriptEntry) {
   return entry.role !== "status"
 }
@@ -1267,6 +2139,9 @@ function transcriptUsesAccentBorder(entry: TranscriptEntry) {
 function transcriptBodyColor(entry: TranscriptEntry) {
   if (entry.role === "status") {
     return null
+  }
+  if (entry.role === "error") {
+    return theme.backgroundPanel
   }
   return entry.role === "assistant" || entry.role === "reasoning"
     ? theme.backgroundPanel
@@ -1283,6 +2158,9 @@ function transcriptTextColor(entry: TranscriptEntry) {
   if (entry.role === "tool") {
     return theme.secondary
   }
+  if (entry.role === "error") {
+    return theme.error
+  }
   if (entry.role === "status") {
     return theme.info
   }
@@ -1297,7 +2175,7 @@ function transcriptTextColor(entry: TranscriptEntry) {
 }
 
 function transcriptInlineCodeColor(entry: TranscriptEntry) {
-  if (entry.role === "tool" || entry.role === "status") {
+  if (entry.role === "tool" || entry.role === "status" || entry.role === "error") {
     return theme.primary
   }
   if (entry.role === "user") {
@@ -1314,6 +2192,7 @@ function parseArgs(args: string[]): CliOptions {
     clientId: `arroba-cli-${process.pid}`,
     model: "default",
     accountProfile: "default",
+    effort: "high",
   }
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1334,6 +2213,15 @@ function parseArgs(args: string[]): CliOptions {
       case "--session":
         options.sessionId = next()
         break
+      case "--create-session":
+        options.createSession = true
+        break
+      case "--delete-session":
+        options.deleteSessionRef = next()
+        break
+      case "--alias":
+        options.alias = next()
+        break
       case "--client-id":
         options.clientId = next()
         break
@@ -1342,6 +2230,9 @@ function parseArgs(args: string[]): CliOptions {
         break
       case "--account-profile":
         options.accountProfile = next()
+        break
+      case "--effort":
+        options.effort = next()
         break
       case "--workspace":
         options.workspace = path.resolve(next())
@@ -1358,6 +2249,16 @@ function parseArgs(args: string[]): CliOptions {
     }
   }
 
+  if (options.createSession && options.sessionId) {
+    throw new Error("--create-session cannot be used together with --session")
+  }
+  if (options.createSession && options.deleteSessionRef) {
+    throw new Error("--create-session cannot be used together with --delete-session")
+  }
+  if (options.alias && !options.createSession) {
+    throw new Error("--alias requires --create-session")
+  }
+
   return options
 }
 
@@ -1370,31 +2271,42 @@ async function bootstrapSession(
   let createdSession = false
   let session: RuntimeSession
 
-  if (options.sessionId) {
-    session = await getSessionState(client, options.sessionId)
+  if (options.createSession) {
+    session = await createSession(client, workspace, worktree, options.alias)
+    createdSession = true
+  } else if (options.sessionId) {
+    session = await resolveSession(client, options.sessionId, workspace)
   } else {
     const existing = await findAttachableSession(client, workspace, worktree)
     if (existing) {
       session = existing
     } else {
-      session = await createSession(client, workspace, worktree)
+      session = await createSession(client, workspace, worktree, options.alias)
       createdSession = true
     }
   }
 
   const attachment = await attachToSession(client, session.id, options.clientId)
   const attachedSession = await getSessionState(client, session.id)
+  let providerRun: RuntimeProviderRun | null = null
   if (!attachedSession.active_provider_run_id) {
-    await launchProviderRun(client, session.id, options.accountProfile, options.model)
+    providerRun = await launchProviderRun(client, session.id, options.accountProfile, options.model)
+  } else {
+    providerRun = await tryGetProviderRun(client, attachedSession.active_provider_run_id)
   }
-  const historyEntries = hydrateTranscriptEntries(await getSessionHistory(client, session.id))
+  const historyPage = await getSessionHistory(client, session.id)
+  const historyEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), 0)
 
   return {
     client,
-    session: await getSessionState(client, session.id),
-    attachment,
-    createdSession,
-    historyEntries,
+    binding: {
+      session: await getSessionState(client, session.id),
+      attachment,
+      providerRun,
+      createdSession,
+      historyEntries,
+      nextHistoryCursor: historyPage.next_cursor,
+    },
     options,
   }
 }
@@ -1404,16 +2316,32 @@ async function findAttachableSession(
   workspace: string,
   worktree: string,
 ): Promise<RuntimeSession | null> {
-  const response = await client.send<Record<string, unknown>>(listSessionsRequest())
-  const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
-  return payload.sessions
+  return (await listSessions(client))
     .filter((session) => session.workspace_id === workspace && session.worktree_id === worktree && session.status !== "Ended")
-    .sort((left, right) => sessionNumber(right.id) - sessionNumber(left.id))[0] ?? null
+    .sort((left, right) => right.created_at_ms - left.created_at_ms)[0] ?? null
 }
 
-async function createSession(client: LocalIpcClient, workspace: string, worktree: string): Promise<RuntimeSession> {
-  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree))
+async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
+  const response = await client.send<Record<string, unknown>>(listSessionsRequest())
+  const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
+  return payload.sessions.sort((left, right) => right.created_at_ms - left.created_at_ms)
+}
+
+async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
+  return payload.session
+}
+
+async function resolveSession(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved")
+  return payload.session
+}
+
+async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
   return payload.session
 }
 
@@ -1427,16 +2355,40 @@ async function attachToSession(
   return payload.attachment
 }
 
+async function getProviderRun(client: LocalIpcClient, providerRunId: string): Promise<RuntimeProviderRun> {
+  const response = await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId))
+  const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun")
+  return payload.provider_run
+}
+
+async function tryGetProviderRun(
+  client: LocalIpcClient,
+  providerRunId: string,
+  logger?: ArrobaLogger | null,
+): Promise<RuntimeProviderRun | null> {
+  try {
+    return await getProviderRun(client, providerRunId)
+  } catch (error) {
+    const message = formatError(error)
+    if (!/unknown variant `GetProviderRun`/i.test(message)) {
+      throw error
+    }
+    logger?.warn("daemon does not support provider run lookup", {
+      provider_run_id: providerRunId,
+    })
+    return null
+  }
+}
+
 async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
   return payload.session
 }
 
-async function getSessionHistory(client: LocalIpcClient, sessionId: string): Promise<SessionHistoryEntry[]> {
-  const response = await client.send<Record<string, unknown>>(getSessionHistoryRequest(sessionId))
-  const payload = expectVariant<{ entries: SessionHistoryEntry[] }>(response, "SessionHistory")
-  return payload.entries
+async function getSessionHistory(client: LocalIpcClient, sessionId: string, cursor?: SessionHistoryCursor | null): Promise<SessionHistoryPage> {
+  const response = await client.send<Record<string, unknown>>(getSessionHistoryRequest(sessionId, cursor))
+  return expectVariant<SessionHistoryPage>(response, "SessionHistory")
 }
 
 async function launchProviderRun(
@@ -1444,8 +2396,10 @@ async function launchProviderRun(
   sessionId: string,
   accountProfile: string,
   model: string,
-): Promise<void> {
-  await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, accountProfile, model))
+): Promise<RuntimeProviderRun> {
+  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, accountProfile, model))
+  const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
+  return payload.provider_run
 }
 
 async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<void> {
@@ -1465,17 +2419,27 @@ function defaultSocketPath(): string {
   return process.env.ARROBA_DAEMON_SOCKET ?? path.join(runtimeDir, `${daemonId}.sock`)
 }
 
-function createSessionRequest(workspaceId: string, worktreeId: string) {
+function createSessionRequest(workspaceId: string, worktreeId: string, alias?: string) {
   return {
     CreateSession: {
       workspace_id: workspaceId,
       worktree_id: worktreeId,
+      alias: alias ?? null,
     },
   }
 }
 
 function listSessionsRequest() {
   return { ListSessions: null }
+}
+
+function resolveSessionRequest(sessionRef: string, workspaceId?: string) {
+  return {
+    ResolveSession: {
+      session_ref: sessionRef,
+      workspace_id: workspaceId ?? null,
+    },
+  }
 }
 
 function attachToSessionRequest(sessionId: string, clientId: string) {
@@ -1504,6 +2468,15 @@ function endSessionRequest(sessionId: string) {
   }
 }
 
+function deleteSessionRequest(sessionRef: string, workspaceId?: string) {
+  return {
+    DeleteSession: {
+      session_ref: sessionRef,
+      workspace_id: workspaceId ?? null,
+    },
+  }
+}
+
 function getSessionStateRequest(sessionId: string) {
   return {
     GetSessionState: {
@@ -1512,12 +2485,22 @@ function getSessionStateRequest(sessionId: string) {
   }
 }
 
-function getSessionHistoryRequest(sessionId: string) {
+function getProviderRunRequest(providerRunId: string) {
+  return {
+    GetProviderRun: {
+      provider_run_id: providerRunId,
+    },
+  }
+}
+
+function getSessionHistoryRequest(sessionId: string, cursor?: SessionHistoryCursor | null) {
   return {
     GetSessionHistory: {
       session_id: sessionId,
-      limit: BOOTSTRAP_HISTORY_LIMIT,
+      round_count: HISTORY_PAGE_ROUND_COUNT,
       max_chars: BOOTSTRAP_HISTORY_MAX_CHARS,
+      before_entry_index: cursor?.before_entry_index ?? null,
+      before_entry_char_offset: cursor?.before_entry_char_offset ?? null,
     },
   }
 }
@@ -1592,10 +2575,6 @@ function firstVariantName(value: Record<string, unknown>): string {
   return Object.keys(value)[0] ?? "unknown"
 }
 
-function sessionNumber(sessionId: string): number {
-  return Number.parseInt(sessionId.replace(/^session-/, ""), 10) || 0
-}
-
 function trimSingleTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text
 }
@@ -1606,7 +2585,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--socket PATH] [--session ID] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop   request cancellation of the active provider turn\n  /exit   exit the CLI\n",
+    "usage: arroba-cli [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n",
   )
 }
 
