@@ -629,8 +629,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       footerSummaryBox.add(footerFlashText)
     }
     if (statusIndicatorBox && !statusOpenText) {
-      statusOpenText = new TextRenderable(renderer, { content: "[", fg: theme.textMuted, wrapMode: "none" })
-      statusCloseText = new TextRenderable(renderer, { content: "]", fg: theme.textMuted, wrapMode: "none" })
+      statusOpenText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
+      statusCloseText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
       statusIndicatorBox.add(statusOpenText)
       statusLabelTexts = Array.from({ length: STATUS_LABEL_WIDTH }, () => {
         const text = new TextRenderable(renderer, { wrapMode: "none" })
@@ -685,17 +685,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderStatusIndicator = () => {
     ensureChromeRenderables()
     if (!isAttached()) {
-      setTextRenderable(statusOpenText, " ", theme.textMuted)
+      setTextRenderable(statusOpenText, "", theme.textMuted)
       for (const text of statusLabelTexts) {
         setTextRenderable(text, " ", theme.textMuted)
       }
-      setTextRenderable(statusCloseText, " ", theme.textMuted)
+      setTextRenderable(statusCloseText, "", theme.textMuted)
       statusIndicatorBox?.requestRender()
       return
     }
     const mode = sessionStatusMode()
     const label = mode === "working" ? "WORKING" : mode === "disconnected" ? "DISCONNECTED" : "IDLE"
-    setTextRenderable(statusOpenText, "[", theme.textMuted)
+    setTextRenderable(statusOpenText, "", theme.textMuted)
     for (let index = 0; index < STATUS_LABEL_WIDTH; index += 1) {
       const character = label[index] ?? " "
       let fg = theme.success
@@ -712,7 +712,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         mode === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE,
       )
     }
-    setTextRenderable(statusCloseText, "]", theme.textMuted)
+    setTextRenderable(statusCloseText, "", theme.textMuted)
     statusIndicatorBox?.requestRender()
   }
 
