@@ -1,5 +1,5 @@
 export function formatPromptMetaLine(provider: string, model: string, effort: string) {
-  return [formatProvider(provider), formatModel(model), formatEffort(effort)].join(" • ")
+  return [formatProvider(provider), formatModel(model), formatEffort(effort)].filter(Boolean).join(" • ")
 }
 
 function formatProvider(provider: string) {
@@ -28,8 +28,8 @@ function formatModel(model: string) {
 
 function formatEffort(effort: string) {
   const normalized = effort.trim()
-  if (!normalized) {
-    return "High"
+  if (!normalized || normalized === "default") {
+    return ""
   }
   return formatKnownLabel(normalized)
 }

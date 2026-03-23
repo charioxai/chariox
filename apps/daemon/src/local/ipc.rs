@@ -460,6 +460,7 @@ mod tests {
                     provider: "dev-stub".to_string(),
                     account_profile: "default".to_string(),
                     model: "default".to_string(),
+                    variant: None,
                 },
             ))
             .expect("launch should succeed");

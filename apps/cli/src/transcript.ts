@@ -221,6 +221,8 @@ type WebFetchInput = {
   format?: unknown
 }
 
+const TOOL_BLOB_VISIBLE_LINES = 10
+
 export type ApplyPatchFile = {
   kind: "add" | "delete" | "update" | "move"
   filePath: string
@@ -284,7 +286,7 @@ function formatApplyPatchTranscriptUpdate(update: ToolTranscriptUpdate) {
   ].filter(Boolean)
 
   return [
-    `**apply_patch**${formatToolStatusBadge(nonEmpty(update.status))}`,
+    `**patch**${formatToolStatusBadge(nonEmpty(update.status))}`,
     `${files.length} ${files.length === 1 ? "file" : "files"}${parts.length ? ` · ${parts.join(", ")}` : ""}`,
     ...files.slice(0, 6).map((file: ApplyPatchFile) => `- ${file.title}`),
   ].join("\n")
@@ -482,7 +484,7 @@ function formatReadTranscriptUpdate(update: ToolTranscriptUpdate) {
   }
 
   const header = `**read**${formatToolStatusBadge(nonEmpty(update.status))}\n\`${input.filePath}${formatReadWindow(input)}\``
-  const body = collapseMiddleLines(content, 20)
+  const body = truncateToolBlob(content)
   const fence = codeFence(body)
   return `${header}\n\n${fence}${guessPathFenceLanguage(input.filePath)}\n${body}\n${fence}`
 }
@@ -526,8 +528,9 @@ function formatToolStatusBadge(status?: string | null) {
 }
 
 function renderLabeledCodeBlock(label: string, content: string, language = "text") {
-  const fence = codeFence(content)
-  return `**${label}**\n${fence}${language}\n${trimTrailingNewlines(content)}\n${fence}`
+  const body = truncateToolBlob(content)
+  const fence = codeFence(body)
+  return `**${label}**\n${fence}${language}\n${body}\n${fence}`
 }
 
 function renderToolBlock(update: ToolTranscriptUpdate, label: string, content: string) {
@@ -545,10 +548,11 @@ function renderToolBlock(update: ToolTranscriptUpdate, label: string, content: s
 }
 
 function renderPathCodeBlock(filePath: string, content: string, rootPath?: string) {
-  const fence = codeFence(content)
+  const body = truncateToolBlob(content)
+  const fence = codeFence(body)
   return [
     `\`${displayGrepPath(filePath, rootPath)}\``,
-    `${fence}${guessPathFenceLanguage(filePath)}\n${trimTrailingNewlines(content)}\n${fence}`,
+    `${fence}${guessPathFenceLanguage(filePath)}\n${body}\n${fence}`,
   ].join("\n")
 }
 
@@ -670,14 +674,18 @@ function readReadContent(value: unknown) {
   return trimTrailingNewlines(embedded.content)
 }
 
-function collapseMiddleLines(text: string, maxLines: number) {
+function truncateToolBlob(text: string) {
+  return collapseMiddleLines(text, TOOL_BLOB_VISIBLE_LINES)
+}
+
+function collapseMiddleLines(text: string, visibleLines: number) {
   const lines = text.split(/\r?\n/)
-  if (lines.length <= maxLines) {
-    return text
+  if (lines.length <= visibleLines * 2 + 1) {
+    return trimTrailingNewlines(text)
   }
 
-  const headCount = Math.ceil(maxLines / 2)
-  const tailCount = Math.floor(maxLines / 2)
+  const headCount = visibleLines
+  const tailCount = visibleLines
   return [...lines.slice(0, headCount), "...", ...lines.slice(-tailCount)].join("\n")
 }
 
@@ -738,7 +746,13 @@ function parseGrepOutput(output: string, input: { path?: string; include?: strin
   const summary = entries.length === 1
     ? ` in ${displayGrepPath(entries[0]![0], input.path)} (${totalMatches} matches)`
     : ` (${totalMatches} matches in ${entries.length} files)`
-  const blocks = entries.map(([filePath, fileLines]) => renderPathCodeBlock(filePath, fileLines.join("\n"), input.path))
+  const blocks = renderPathCodeBlockCollection(
+    entries.map(([filePath, fileLines]) => ({
+      filePath,
+      content: fileLines.join("\n"),
+      rootPath: input.path,
+    })),
+  )
 
   return { summary, blocks }
 }
@@ -754,6 +768,73 @@ function displayGrepPath(filePath: string, rootPath?: string) {
     return filePath.slice(rootPath.length + 1)
   }
   return filePath
+}
+
+type PathCodeBlock = {
+  filePath: string
+  content: string
+  rootPath?: string | undefined
+}
+
+function renderPathCodeBlockCollection(items: PathCodeBlock[]) {
+  if (items.length <= 1) {
+    return items.map((item) => renderPathCodeBlock(item.filePath, item.content, item.rootPath))
+  }
+
+  const totalLines = items.reduce((sum, item) => sum + countPathCodeBlockLines(item), 0)
+  if (totalLines <= TOOL_BLOB_VISIBLE_LINES * 2 + 1) {
+    return items.map((item) => renderPathCodeBlock(item.filePath, item.content, item.rootPath))
+  }
+
+  const head = takePathCodeBlockSide(items, TOOL_BLOB_VISIBLE_LINES, "head")
+  const tail = takePathCodeBlockSide(items, TOOL_BLOB_VISIBLE_LINES, "tail")
+  return [...head, "...", ...tail]
+}
+
+function takePathCodeBlockSide(items: PathCodeBlock[], budget: number, side: "head" | "tail") {
+  const ordered = side === "head" ? items : [...items].reverse()
+  const blocks: string[] = []
+  let remaining = budget
+
+  for (const item of ordered) {
+    if (remaining <= 0) {
+      break
+    }
+    const lineCount = countPathCodeBlockLines(item)
+    if (lineCount <= remaining) {
+      blocks.push(renderPathCodeBlock(item.filePath, item.content, item.rootPath))
+      remaining -= lineCount
+      continue
+    }
+    blocks.push(renderPartialPathCodeBlock(item, remaining, side))
+    remaining = 0
+  }
+
+  return side === "head" ? blocks : blocks.reverse()
+}
+
+function countPathCodeBlockLines(item: PathCodeBlock) {
+  const body = truncateToolBlob(item.content)
+  return 3 + body.split(/\r?\n/).length
+}
+
+function renderPartialPathCodeBlock(item: PathCodeBlock, budget: number, side: "head" | "tail") {
+  if (budget <= 1) {
+    return `\`${displayGrepPath(item.filePath, item.rootPath)}\``
+  }
+
+  const language = guessPathFenceLanguage(item.filePath)
+  const lines = truncateToolBlob(item.content).split(/\r?\n/)
+  const visible = Math.max(1, budget - 3)
+  const clipped = side === "head" ? lines.slice(0, visible) : lines.slice(-visible)
+  const body = clipped.join("\n")
+  const fence = codeFence(body)
+  return [
+    `\`${displayGrepPath(item.filePath, item.rootPath)}\``,
+    `${fence}${language}`,
+    body,
+    fence,
+  ].join("\n")
 }
 
 type EmbeddedFileBlock = {

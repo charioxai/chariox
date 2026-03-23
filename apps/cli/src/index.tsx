@@ -91,6 +91,7 @@ type RuntimeProviderRun = {
   provider: string
   account_profile: string
   model: string
+  variant: string | null
   state: string
 }
 
@@ -349,6 +350,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       provider_run_id: run?.id ?? null,
       provider: run?.provider ?? null,
       provider_model: run?.model ?? null,
+      provider_variant: run?.variant ?? null,
       provider_state: run?.state ?? null,
       ...fields,
     })
@@ -357,7 +359,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const run = providerRunState()
     const provider = run?.provider ?? "opencode"
     const model = run?.model ?? options.model
-    const effort = options.effort
+    const effort = run?.variant ?? options.effort
     const line = formatPromptMetaLine(provider, model, effort)
     const key = JSON.stringify({ provider, model, effort, line, runId: run?.id ?? null, runState: run?.state ?? null })
     if (key !== lastPromptMetaDebugKey) {
@@ -367,7 +369,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         provider_state: run?.state ?? null,
         prompt_meta_provider: provider,
         prompt_meta_model: model,
-        prompt_meta_effort: effort,
+        prompt_meta_variant: effort,
         prompt_meta_line: line,
       })
     }
@@ -767,9 +769,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rebuildTranscript()
       return
     }
+    const previousMode = transcriptRenderMode(renderable.entry)
     renderable.entry.text = text
     if (sourceText !== undefined) {
       renderable.entry.sourceText = sourceText
+    }
+    if (transcriptRenderMode(renderable.entry) !== previousMode) {
+      rebuildTranscript()
+      return
     }
     renderable.update(renderable.entry)
     transcriptScrollbox?.requestRender()
@@ -963,7 +970,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const attachment = await attachToSession(client, session.id, options.clientId)
     const attachedSession = await getSessionState(client, session.id)
     if (!attachedSession.active_provider_run_id) {
-      const run = await launchProviderRun(client, session.id, options.accountProfile, options.model)
+      const run = await launchProviderRun(client, session.id, options.accountProfile, options.model, options.effort)
       logProviderRunDebug("attached session launched provider run", run, {
         session_id: session.id,
         requested_model: options.model,
@@ -1461,17 +1468,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           !activeRun
           || activeRun.id !== payload.session.active_provider_run_id
           || activeRun.model === "default"
+          || activeRun.variant === null
         ) {
           const run = await tryGetProviderRun(client, payload.session.active_provider_run_id, appLogger)
           logProviderRunDebug("session poll refreshed provider run", run, {
             session_id: payload.session.id,
             previous_provider_run_id: activeRun?.id ?? null,
             previous_model: activeRun?.model ?? null,
+            previous_variant: activeRun?.variant ?? null,
             refresh_reason: !activeRun
               ? "missing_run"
               : activeRun.id !== payload.session.active_provider_run_id
                 ? "run_changed"
-                : "model_default",
+                : activeRun.model === "default"
+                  ? "model_default"
+                  : "variant_missing",
           })
           setProviderRunState(run)
           updateSessionChrome()
@@ -1605,20 +1616,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           paddingLeft={2}
           paddingRight={2}
           paddingTop={1}
-          paddingBottom={1}
+          paddingBottom={0}
           backgroundColor={theme.backgroundElement}
           flexDirection="column"
           gap={1}
         >
-          <box flexDirection="row" justifyContent="flex-end">
-            <box
-              ref={(value) => {
-                promptStateBox = value
-                updateSessionChrome()
-              }}
-              flexDirection="row"
-            />
-          </box>
           <textarea
             ref={(value) => {
               promptInput = value
@@ -1820,7 +1822,7 @@ async function submitPromptWithRecovery(
       session_id: sessionId,
     })
     await client.send<Record<string, unknown>>(
-      launchProviderRunRequest(sessionId, options.accountProfile, options.model),
+      launchProviderRunRequest(sessionId, options.accountProfile, options.model, options.effort),
     )
     await maybeResize(client, sessionId)
     logger?.info("relaunched provider after recoverable prompt failure", {
@@ -1918,6 +1920,16 @@ function buildTranscriptEntryRenderable(
   return { entry, wrapper, update }
 }
 
+function transcriptRenderMode(entry: TranscriptEntry) {
+  if (readTranscriptApplyPatch(entry)) {
+    return "patch"
+  }
+  if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
+    return "markdown"
+  }
+  return "text"
+}
+
 function readTranscriptApplyPatch(entry: TranscriptEntry) {
   const parsed = parseToolTranscriptUpdate(entry.sourceText ?? entry.text)
   if (!parsed) {
@@ -1937,7 +1949,7 @@ function buildApplyPatchTranscriptContent(
   body.gap = 1
   body.add(
     new TextRenderable(renderer, {
-      content: `apply_patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
+      content: `patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
       fg: theme.secondary,
       attributes: TextAttributes.BOLD,
       wrapMode: "word",
@@ -1961,26 +1973,31 @@ function buildApplyPatchTranscriptContent(
       }),
     )
     if (file.diff) {
+      const diff = new DiffRenderable(renderer, {
+        diff: file.diff,
+        view: "split",
+        filetype: guessPathFenceLanguage(file.filePath),
+        syntaxStyle: transcriptSyntax,
+        showLineNumbers: true,
+        wrapMode: "none",
+        fg: theme.text,
+        addedBg: RGBA.fromHex("#102616"),
+        removedBg: RGBA.fromHex("#2a1215"),
+        contextBg: theme.backgroundElement,
+        addedSignColor: theme.success,
+        removedSignColor: theme.error,
+        lineNumberFg: theme.textMuted,
+        lineNumberBg: theme.backgroundElement,
+        addedLineNumberBg: RGBA.fromHex("#16301d"),
+        removedLineNumberBg: RGBA.fromHex("#34191d"),
+      })
       block.add(
-        new DiffRenderable(renderer, {
-          diff: file.diff,
-          view: "split",
-          filetype: guessPathFenceLanguage(file.filePath),
-          syntaxStyle: transcriptSyntax,
-          showLineNumbers: true,
-          wrapMode: "none",
-          fg: theme.text,
-          addedBg: RGBA.fromHex("#102616"),
-          removedBg: RGBA.fromHex("#2a1215"),
-          contextBg: theme.backgroundElement,
-          addedSignColor: theme.success,
-          removedSignColor: theme.error,
-          lineNumberFg: theme.textMuted,
-          lineNumberBg: theme.backgroundElement,
-          addedLineNumberBg: RGBA.fromHex("#16301d"),
-          removedLineNumberBg: RGBA.fromHex("#34191d"),
-        }),
+        diff,
       )
+      startTimeout(() => {
+        ;(diff as unknown as { requestRebuild?: () => void }).requestRebuild?.()
+        diff.requestRender()
+      }, 0)
     } else {
       block.add(
         new TextRenderable(renderer, {
@@ -2192,7 +2209,7 @@ function parseArgs(args: string[]): CliOptions {
     clientId: `arroba-cli-${process.pid}`,
     model: "default",
     accountProfile: "default",
-    effort: "high",
+    effort: "",
   }
 
   for (let index = 0; index < args.length; index += 1) {
@@ -2290,7 +2307,7 @@ async function bootstrapSession(
   const attachedSession = await getSessionState(client, session.id)
   let providerRun: RuntimeProviderRun | null = null
   if (!attachedSession.active_provider_run_id) {
-    providerRun = await launchProviderRun(client, session.id, options.accountProfile, options.model)
+    providerRun = await launchProviderRun(client, session.id, options.accountProfile, options.model, options.effort)
   } else {
     providerRun = await tryGetProviderRun(client, attachedSession.active_provider_run_id)
   }
@@ -2396,8 +2413,9 @@ async function launchProviderRun(
   sessionId: string,
   accountProfile: string,
   model: string,
+  effort: string,
 ): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, accountProfile, model))
+  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, accountProfile, model, effort))
   const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
   return payload.provider_run
 }
@@ -2505,7 +2523,7 @@ function getSessionHistoryRequest(sessionId: string, cursor?: SessionHistoryCurs
   }
 }
 
-function launchProviderRunRequest(sessionId: string, accountProfile: string, model: string) {
+function launchProviderRunRequest(sessionId: string, accountProfile: string, model: string, effort: string) {
   return {
     LaunchProviderRun: {
       session_id: sessionId,
@@ -2513,6 +2531,7 @@ function launchProviderRunRequest(sessionId: string, accountProfile: string, mod
       provider: "opencode",
       account_profile: accountProfile,
       model,
+      variant: effort.trim() || null,
     },
   }
 }

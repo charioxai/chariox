@@ -320,27 +320,42 @@ impl ProviderProcessService {
                 "base_url": base_url.clone(),
             }),
         );
-        if run.model() == "default" {
-            let resolved = client.configured_model()?;
+        if run.model() == "default" || run.variant().is_none() {
+            let resolved = client.configured_defaults()?;
             crate::logging::debug_with_fields(
                 "daemon.provider.opencode",
-                "checked opencode configured model",
+                "checked opencode configured defaults",
                 serde_json::json!({
                     "provider_run_id": run.id(),
                     "requested_model": run.model(),
-                    "resolved_model": resolved,
+                    "requested_variant": run.variant(),
+                    "selected_agent": resolved.selected_agent,
+                    "agent_model": resolved.agent_model,
+                    "agent_variant": resolved.agent_variant,
+                    "top_level_model": resolved.top_level_model,
+                    "resolved_model": resolved.model,
+                    "resolved_variant": resolved.variant,
                 }),
             );
-            if let Some(model) = resolved {
-                self.get_run_mut(run.id())?.set_model(model);
+            let model = resolved.model;
+            let variant = resolved.variant;
+            let next = self.get_run_mut(run.id())?;
+            if next.model() == "default" {
+                if let Some(model) = model {
+                    next.set_model(model);
+                }
+            }
+            if next.variant().is_none() {
+                next.set_variant(variant);
             }
         } else {
             crate::logging::debug_with_fields(
                 "daemon.provider.opencode",
-                "skipped configured model lookup for explicit model",
+                "skipped configured defaults lookup for explicit model and variant",
                 serde_json::json!({
                     "provider_run_id": run.id(),
                     "requested_model": run.model(),
+                    "requested_variant": run.variant(),
                 }),
             );
         }
@@ -377,6 +392,63 @@ impl ProviderProcessService {
                 last_completed_assistant_message_id: None,
             },
         );
+        self.sync_run_selection(run.id())?;
+        Ok(())
+    }
+
+    pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
+        let Some(state) = self.opencode_runs.get(provider_run_id) else {
+            return Ok(());
+        };
+        let base_url = state.base_url.clone();
+        let session_id = state.session_id.clone();
+        let client = OpenCodeClient::new(provider_run_id, &base_url)?;
+        let defaults = client.configured_defaults()?;
+        let messages = client.messages(&session_id)?;
+        let latest = messages.iter().rev().find(|message| {
+            message.info.resolved_model().is_some() || message.info.resolved_variant().is_some()
+        });
+        let model = messages
+            .iter()
+            .rev()
+            .find_map(|message| message.info.resolved_model())
+            .or(defaults.model);
+        let variant = messages
+            .iter()
+            .rev()
+            .find_map(|message| message.info.resolved_variant())
+            .or(defaults.variant);
+
+        crate::logging::debug_with_fields(
+            "daemon.provider.opencode",
+            "synced provider run selection from opencode",
+            serde_json::json!({
+                "provider_run_id": provider_run_id,
+                "provider_session_id": session_id,
+                "selected_agent": defaults.selected_agent,
+                "agent_model": defaults.agent_model,
+                "agent_variant": defaults.agent_variant,
+                "top_level_model": defaults.top_level_model,
+                "message_count": messages.len(),
+                "latest_message_role": latest.map(|message| message.info.role.clone()),
+                "latest_message_model": latest.and_then(|message| message.info.resolved_model()),
+                "latest_message_variant": latest.and_then(|message| message.info.resolved_variant()),
+                "resolved_model": model,
+                "resolved_variant": variant,
+            }),
+        );
+
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = model {
+            if run.model() != model {
+                run.set_model(model);
+            }
+        }
+        if let Some(variant) = variant {
+            if run.variant() != Some(variant.as_str()) {
+                run.set_variant(Some(variant));
+            }
+        }
         Ok(())
     }
 
@@ -422,7 +494,7 @@ impl ProviderProcessService {
                     message: "no OpenCode session is bound to this provider run".to_string(),
                 })?;
         let client = OpenCodeClient::new(run.id(), &state.base_url)?;
-        client.submit_prompt(&state.session_id, prompt, Some(run.model()))?;
+        client.submit_prompt(&state.session_id, prompt, Some(run.model()), run.variant())?;
         Ok(true)
     }
 
@@ -523,6 +595,7 @@ impl ProviderProcessService {
         let mut notices = Vec::new();
         let mut resolved_model = None;
         let mut resolved_model_source = None;
+        let mut resolved_variant = None;
 
         {
             let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
@@ -541,6 +614,9 @@ impl ProviderProcessService {
                             if resolved_model.is_some() {
                                 resolved_model_source = Some("message.updated");
                             }
+                        }
+                        if resolved_variant.is_none() {
+                            resolved_variant = info.resolved_variant();
                         }
                         state
                             .message_roles
@@ -725,6 +801,13 @@ impl ProviderProcessService {
                                     resolved_model_source = Some("snapshot");
                                 }
                             }
+                            if resolved_variant.is_none() {
+                                resolved_variant = snapshot
+                                    .messages
+                                    .iter()
+                                    .rev()
+                                    .find_map(|message| message.info.resolved_variant());
+                            }
                             record_snapshot_message_metadata(state, &snapshot.messages);
                             let snapshot_deltas =
                                 render_snapshot_text_deltas(state, &snapshot.messages);
@@ -774,6 +857,11 @@ impl ProviderProcessService {
             if run.model() != model {
                 run.set_model(model);
             }
+            if let Some(variant) = resolved_variant {
+                if run.variant() != Some(variant.as_str()) {
+                    run.set_variant(Some(variant));
+                }
+            }
         } else {
             crate::logging::debug_with_fields(
                 "daemon.provider.opencode",
@@ -782,6 +870,21 @@ impl ProviderProcessService {
                     "provider_run_id": provider_run_id,
                 }),
             );
+            if let Some(variant) = resolved_variant {
+                let run = self.get_run_mut(provider_run_id)?;
+                if run.variant() != Some(variant.as_str()) {
+                    crate::logging::debug_with_fields(
+                        "daemon.provider.opencode",
+                        "resolved provider run variant from opencode metadata",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "previous_variant": run.variant(),
+                            "resolved_variant": variant,
+                        }),
+                    );
+                    run.set_variant(Some(variant));
+                }
+            }
         }
 
         Ok(OpenCodeEventDrainResult {

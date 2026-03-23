@@ -81,6 +81,8 @@ pub struct OpenCodeMessageInfo {
     #[serde(default)]
     pub model: Option<OpenCodeSelectedModel>,
     #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
     pub time: OpenCodeMessageTime,
 }
 
@@ -95,6 +97,14 @@ impl OpenCodeMessageInfo {
         self.model
             .as_ref()
             .map(|model| format!("{}/{}", model.provider_id, model.model_id))
+    }
+
+    pub fn resolved_variant(&self) -> Option<String> {
+        self.variant
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
     }
 }
 
@@ -164,6 +174,42 @@ struct OpenCodeHealth {
 struct OpenCodeConfig {
     #[serde(default)]
     model: Option<String>,
+    #[serde(rename = "default_agent", default)]
+    default_agent: Option<String>,
+    #[serde(default)]
+    agent: BTreeMap<String, OpenCodeConfigAgent>,
+    #[serde(default)]
+    mode: BTreeMap<String, OpenCodeConfigAgent>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenCodeConfigAgent {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    variant: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenCodeConfiguredDefaults {
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub selected_agent: Option<String>,
+    pub agent_model: Option<String>,
+    pub agent_variant: Option<String>,
+    pub top_level_model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeAgentInfo {
+    name: String,
+    mode: String,
+    #[serde(default)]
+    hidden: Option<bool>,
+    #[serde(default)]
+    model: Option<OpenCodeSelectedModel>,
+    #[serde(default)]
+    variant: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,20 +304,28 @@ impl OpenCodeClient {
         Ok(created.id)
     }
 
-    pub fn configured_model(&self) -> Result<Option<String>, DaemonError> {
+    pub fn configured_defaults(&self) -> Result<OpenCodeConfiguredDefaults, DaemonError> {
         let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
             Ok(config) => config,
             Err(DaemonError::ProviderProtocol {
                 operation: "opencode_http",
                 message,
                 ..
-            }) if message == "OpenCode returned HTTP 404" => return Ok(None),
+            }) if message == "OpenCode returned HTTP 404" => {
+                return Ok(OpenCodeConfiguredDefaults::default())
+            }
             Err(error) => return Err(error),
         };
-        Ok(config
-            .model
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()))
+        let agents: Vec<OpenCodeAgentInfo> = match self.send_json_request("GET", "/agent", None) {
+            Ok(agents) => agents,
+            Err(DaemonError::ProviderProtocol {
+                operation: "opencode_http",
+                message,
+                ..
+            }) if message == "OpenCode returned HTTP 404" => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        Ok(resolve_configured_defaults(&config, &agents))
     }
 
     pub fn submit_prompt(
@@ -279,6 +333,7 @@ impl OpenCodeClient {
         session_id: &str,
         prompt: &str,
         model: Option<&str>,
+        variant: Option<&str>,
     ) -> Result<(), DaemonError> {
         let mut body = json!({
             "parts": [
@@ -293,6 +348,9 @@ impl OpenCodeClient {
                 "providerID": provider_id,
                 "modelID": model_id,
             });
+        }
+        if let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) {
+            body["variant"] = json!(variant);
         }
 
         self.send_no_content_request(
@@ -707,6 +765,61 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> 
     Ok((status_code, body))
 }
 
+fn resolve_configured_defaults(
+    config: &OpenCodeConfig,
+    agents: &[OpenCodeAgentInfo],
+) -> OpenCodeConfiguredDefaults {
+    let selected_agent = config
+        .default_agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "build".to_string());
+    let config_agent = config
+        .agent
+        .get(&selected_agent)
+        .or_else(|| config.mode.get(&selected_agent));
+    let listed_agent = agents.iter().find(|agent| {
+        agent.name == selected_agent && agent.mode != "subagent" && agent.hidden != Some(true)
+    });
+    let top_level_model = config
+        .model
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let config_agent_model = config_agent
+        .and_then(|agent| agent.model.as_ref())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let listed_agent_model = listed_agent
+        .and_then(|agent| agent.model.as_ref())
+        .map(|model| format!("{}/{}", model.provider_id, model.model_id));
+    let agent_model = config_agent_model.clone().or(listed_agent_model.clone());
+    let config_agent_variant = config_agent
+        .and_then(|agent| agent.variant.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let listed_agent_variant = listed_agent
+        .and_then(|agent| agent.variant.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let agent_variant = config_agent_variant
+        .clone()
+        .or(listed_agent_variant.clone());
+
+    OpenCodeConfiguredDefaults {
+        model: agent_model.clone().or(top_level_model.clone()),
+        variant: agent_variant.clone(),
+        selected_agent: Some(selected_agent),
+        agent_model,
+        agent_variant,
+        top_level_model,
+    }
+}
+
 fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
     let value = model?.trim();
     if value.is_empty() || value == "default" {
@@ -717,12 +830,17 @@ fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
 
-    use super::{parse_model, OpenCodeClient, OpenCodeEvent, OpenCodeMessageInfo};
+    use super::{
+        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient,
+        OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
+        OpenCodeSelectedModel,
+    };
 
     #[test]
     fn parses_provider_model_ids() {
@@ -741,13 +859,15 @@ mod tests {
             "sessionID": "session-1",
             "role": "assistant",
             "providerID": "openai",
-            "modelID": "gpt-5.4"
+            "modelID": "gpt-5.4",
+            "variant": "medium"
         }))
         .expect("assistant info should parse");
         assert_eq!(
             assistant.resolved_model().as_deref(),
             Some("openai/gpt-5.4")
         );
+        assert_eq!(assistant.resolved_variant().as_deref(), Some("medium"));
 
         let user = serde_json::from_value::<OpenCodeMessageInfo>(serde_json::json!({
             "id": "message-2",
@@ -760,6 +880,84 @@ mod tests {
         }))
         .expect("user info should parse");
         assert_eq!(user.resolved_model().as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(user.resolved_variant(), None);
+    }
+
+    #[test]
+    fn resolves_defaults_from_default_agent_before_global_model() {
+        let defaults = resolve_configured_defaults(
+            &OpenCodeConfig {
+                model: Some("openai/gpt-5.4".to_string()),
+                default_agent: Some("build".to_string()),
+                agent: BTreeMap::new(),
+                mode: BTreeMap::new(),
+            },
+            &[
+                OpenCodeAgentInfo {
+                    name: "build".to_string(),
+                    mode: "primary".to_string(),
+                    hidden: Some(false),
+                    model: Some(OpenCodeSelectedModel {
+                        provider_id: "anthropic".to_string(),
+                        model_id: "claude-sonnet-4".to_string(),
+                    }),
+                    variant: Some("medium".to_string()),
+                },
+                OpenCodeAgentInfo {
+                    name: "plan".to_string(),
+                    mode: "primary".to_string(),
+                    hidden: Some(false),
+                    model: None,
+                    variant: None,
+                },
+            ],
+        );
+        assert_eq!(defaults.model.as_deref(), Some("anthropic/claude-sonnet-4"));
+        assert_eq!(defaults.variant.as_deref(), Some("medium"));
+        assert_eq!(defaults.selected_agent.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn falls_back_to_global_model_when_agent_has_no_model() {
+        let defaults = resolve_configured_defaults(
+            &OpenCodeConfig {
+                model: Some("openai/gpt-5.4".to_string()),
+                default_agent: Some("build".to_string()),
+                agent: BTreeMap::new(),
+                mode: BTreeMap::new(),
+            },
+            &[OpenCodeAgentInfo {
+                name: "build".to_string(),
+                mode: "primary".to_string(),
+                hidden: Some(false),
+                model: None,
+                variant: Some("low".to_string()),
+            }],
+        );
+        assert_eq!(defaults.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(defaults.variant.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn resolves_defaults_from_configured_build_agent_without_default_agent() {
+        let defaults = resolve_configured_defaults(
+            &OpenCodeConfig {
+                model: None,
+                default_agent: None,
+                agent: BTreeMap::from([(
+                    "build".to_string(),
+                    OpenCodeConfigAgent {
+                        model: Some("openai/gpt-5.4".to_string()),
+                        variant: Some("low".to_string()),
+                    },
+                )]),
+                mode: BTreeMap::new(),
+            },
+            &[],
+        );
+        assert_eq!(defaults.model.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(defaults.variant.as_deref(), Some("low"));
+        assert_eq!(defaults.selected_agent.as_deref(), Some("build"));
     }
 
     #[test]

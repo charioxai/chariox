@@ -31,6 +31,7 @@ pub struct LaunchProviderRequest {
     pub provider: String,
     pub account_profile: String,
     pub model: String,
+    pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
 }
 
@@ -48,8 +49,17 @@ impl LaunchProviderRequest {
             provider: provider.into(),
             account_profile: account_profile.into(),
             model: model.into(),
+            variant: None,
             working_directory: None,
         }
+    }
+
+    pub fn with_variant(mut self, variant: Option<String>) -> Self {
+        self.variant = variant.and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        });
+        self
     }
 
     pub fn with_working_directory(mut self, working_directory: PathBuf) -> Self {
@@ -76,6 +86,7 @@ pub struct RuntimeProviderRun {
     provider: String,
     account_profile: String,
     model: String,
+    variant: Option<String>,
     state: ProviderRunState,
     process_label: String,
     pty_target: Option<String>,
@@ -98,6 +109,7 @@ impl RuntimeProviderRun {
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
             model: request.model.clone(),
+            variant: request.variant.clone(),
             state: ProviderRunState::Starting,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
@@ -127,8 +139,19 @@ impl RuntimeProviderRun {
         &self.model
     }
 
+    pub fn variant(&self) -> Option<&str> {
+        self.variant.as_deref()
+    }
+
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    pub fn set_variant(&mut self, variant: Option<String>) {
+        self.variant = variant.and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        });
     }
 
     pub fn state(&self) -> ProviderRunState {

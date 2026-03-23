@@ -300,6 +300,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
                 provider: "claude-code".to_string(),
                 account_profile: "default".to_string(),
                 model: "sonnet".to_string(),
+                variant: None,
             },
         ))
         .expect("provider launch should succeed")

@@ -57,6 +57,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
             provider: "claude-code".to_string(),
             account_profile: "default".to_string(),
             model: "sonnet".to_string(),
+            variant: None,
         },
     ))? {
         LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,

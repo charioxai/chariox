@@ -252,6 +252,46 @@ test("formatToolTranscriptUpdate renders multi-file grep output with per-file sy
   )
 })
 
+test("formatToolTranscriptUpdate truncates multi-file grep collections as one blob", () => {
+  const output = [
+    "Found 24 matches",
+    "/Users/miguel/arroba/apps/cli/src/index.tsx:",
+    ...Array.from({ length: 12 }, (_, index) => `  Line ${index + 1}: index line ${index + 1}`),
+    "/Users/miguel/arroba/apps/cli/src/transcript.ts:",
+    ...Array.from({ length: 12 }, (_, index) => `  Line ${index + 20}: transcript line ${index + 20}`),
+  ].join("\n")
+
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-9b",
+      tool: "grep",
+      status: "completed",
+      input: {
+        pattern: "line",
+        path: "/Users/miguel/arroba/apps/cli/src",
+      },
+      output,
+    }),
+    [
+      "**grep** · completed",
+      "Pattern: `line` (24 matches in 2 files)",
+      [
+        "`index.tsx`",
+        "```typescriptreact",
+        ...Array.from({ length: 7 }, (_, index) => `Line ${index + 1}: index line ${index + 1}`),
+        "```",
+      ].join("\n"),
+      "...",
+      [
+        "`transcript.ts`",
+        "```typescript",
+        ...Array.from({ length: 7 }, (_, index) => `Line ${index + 25}: transcript line ${index + 25}`),
+        "```",
+      ].join("\n"),
+    ].join("\n"),
+  )
+})
+
 test("formatToolTranscriptUpdate uses webfetch format for syntax highlighting", () => {
   assert.equal(
     formatToolTranscriptUpdate({
@@ -314,6 +354,32 @@ test("formatToolTranscriptUpdate infers embedded file payloads generically", () 
         "`/Users/miguel/arroba/apps/cli/src/transcript.ts`",
         "```typescript",
         "1: export const value = 1",
+        "```",
+      ].join("\n"),
+    ].join("\n\n"),
+  )
+})
+
+test("formatToolTranscriptUpdate truncates large generic blobs in the middle", () => {
+  const output = Array.from({ length: 24 }, (_, index) => `line ${index + 1}`).join("\n")
+
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-10d",
+      tool: "bash",
+      status: "completed",
+      description: "Shows long output",
+      output,
+    }),
+    [
+      "**bash** · completed",
+      "Shows long output",
+      [
+        "**Output**",
+        "```text",
+        ...Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
+        "...",
+        ...Array.from({ length: 10 }, (_, index) => `line ${index + 15}`),
         "```",
       ].join("\n"),
     ].join("\n\n"),
@@ -453,7 +519,7 @@ test("formatToolTranscriptUpdate summarizes apply_patch changes", () => {
       },
     }),
     [
-      "**apply_patch** · completed",
+      "**patch** · completed",
       "2 files · 1 updated, 1 deleted",
       "- Patched src/app.ts",
       "- Deleted src/old.ts",

@@ -8,7 +8,7 @@ test("formatPromptMetaLine renders provider, model, and effort values", () => {
 })
 
 test("formatPromptMetaLine handles defaults and provider-qualified models", () => {
-  assert.equal(formatPromptMetaLine("opencode", "openai/gpt-5.4", ""), "OpenCode • GPT-5.4 OpenAI • High")
-  assert.equal(formatPromptMetaLine("opencode", "github-copilot/gpt-5.4", ""), "OpenCode • GPT-5.4 GitHub-Copilot • High")
-  assert.equal(formatPromptMetaLine("opencode", "default", "default"), "OpenCode • Default • Default")
+  assert.equal(formatPromptMetaLine("opencode", "openai/gpt-5.4", ""), "OpenCode • GPT-5.4 OpenAI")
+  assert.equal(formatPromptMetaLine("opencode", "github-copilot/gpt-5.4", ""), "OpenCode • GPT-5.4 GitHub-Copilot")
+  assert.equal(formatPromptMetaLine("opencode", "default", "default"), "OpenCode • Default")
 })

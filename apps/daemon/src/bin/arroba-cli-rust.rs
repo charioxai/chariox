@@ -64,6 +64,7 @@ fn main() -> Result<(), DaemonError> {
                 provider: "opencode".to_string(),
                 account_profile: options.account_profile.clone(),
                 model: options.model.clone(),
+                variant: None,
             },
         ))?;
     }

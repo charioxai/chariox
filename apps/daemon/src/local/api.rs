@@ -31,6 +31,7 @@ pub struct LaunchProviderRunRequest {
     pub provider: String,
     pub account_profile: String,
     pub model: String,
+    pub variant: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,13 +326,16 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                let provider_run = self.launch_provider(LaunchProviderRequest::new(
-                    request.session_id,
-                    request.adapter_key,
-                    request.provider,
-                    request.account_profile,
-                    request.model,
-                ))?;
+                let provider_run = self.launch_provider(
+                    LaunchProviderRequest::new(
+                        request.session_id,
+                        request.adapter_key,
+                        request.provider,
+                        request.account_profile,
+                        request.model,
+                    )
+                    .with_variant(request.variant),
+                )?;
                 crate::logging::debug_with_fields(
                     "daemon.local_api",
                     "returning launched provider run to client",
@@ -340,6 +344,7 @@ impl DaemonApp {
                         "session_id": provider_run.session_id(),
                         "provider": provider_run.provider(),
                         "model": provider_run.model(),
+                        "variant": provider_run.variant(),
                         "state": provider_run.state().to_string(),
                     }),
                 );
@@ -360,6 +365,8 @@ impl DaemonApp {
                 session: self.sessions().get_session(&request.session_id)?,
             }),
             LocalDaemonRequest::GetProviderRun(request) => {
+                self.providers_mut()
+                    .sync_run_selection(&request.provider_run_id)?;
                 let provider_run = self.providers().get_run(&request.provider_run_id)?;
                 crate::logging::debug_with_fields(
                     "daemon.local_api",
@@ -369,6 +376,7 @@ impl DaemonApp {
                         "session_id": provider_run.session_id(),
                         "provider": provider_run.provider(),
                         "model": provider_run.model(),
+                        "variant": provider_run.variant(),
                         "state": provider_run.state().to_string(),
                     }),
                 );
@@ -765,6 +773,7 @@ mod tests {
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
                     model: "sonnet".to_string(),
+                    variant: None,
                 },
             ))
             .expect_err("unknown adapters should be rejected");
@@ -824,6 +833,7 @@ mod tests {
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
                     model: "sonnet".to_string(),
+                    variant: None,
                 },
             ))
             .expect("provider launch should succeed");
@@ -957,6 +967,7 @@ mod tests {
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
                     model: "sonnet".to_string(),
+                    variant: None,
                 },
             ))
             .expect("provider launch should succeed")
