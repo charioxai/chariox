@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::DaemonError;
@@ -200,6 +200,31 @@ pub struct OpenCodeConfiguredDefaults {
     pub top_level_model: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenCodeProviderCatalog {
+    pub all: Vec<OpenCodeProviderInfo>,
+    pub default: BTreeMap<String, String>,
+    pub connected: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenCodeProviderInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub models: BTreeMap<String, OpenCodeProviderModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenCodeProviderModel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub variants: BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenCodeAgentInfo {
     name: String,
@@ -326,6 +351,10 @@ impl OpenCodeClient {
             Err(error) => return Err(error),
         };
         Ok(resolve_configured_defaults(&config, &agents))
+    }
+
+    pub fn provider_catalog(&self) -> Result<OpenCodeProviderCatalog, DaemonError> {
+        self.send_json_request("GET", "/provider", None)
     }
 
     pub fn submit_prompt(

@@ -14,7 +14,15 @@ import { computePrependedHistoryScrollTop } from "./history-viewport.js"
 import { LocalIpcClient } from "./ipc.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
+import { loadPreferences, saveProviderPreferences } from "./preferences.js"
 import { formatPromptMetaLine } from "./prompt-meta.js"
+import {
+  catalogModelOptions,
+  fallbackProviderCatalog,
+  selectConfiguredModel,
+  selectConfiguredVariant,
+  type ProviderCatalog,
+} from "./provider-catalog.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   describeCliError,
@@ -36,14 +44,26 @@ import {
   type ToolTranscriptUpdate,
 } from "./transcript.js"
 import {
-  ARROBA_ASCII_ART,
+  decideBootstrapAction,
   SESSION_NEW_ERROR_HINT,
   SESSION_NEW_FOOTER_HINT,
   SESSION_NEW_HELP_TEXT,
   SESSION_NEW_PLACEHOLDER,
   formatSessionList,
+  selectAttachableSession,
 } from "./sessions.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
+import {
+  arrobaArtFrame,
+  createWaitingRoomState,
+  cycleWaitingRoomValue,
+  moveWaitingRoomFocus,
+  normalizeWaitingRoomState,
+  waitingRoomChoice,
+  waitingRoomRows,
+  type WaitingRoomFocus,
+  type WaitingRoomState,
+} from "./waiting-room.js"
 import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -200,6 +220,8 @@ function markDeferredHistoryEntries(items: TranscriptEntry[]) {
 type BootstrapState = {
   client: LocalIpcClient
   binding: SessionBinding | null
+  sessions: RuntimeSession[]
+  providerCatalog: ProviderCatalog
   options: CliOptions
 }
 
@@ -238,6 +260,13 @@ async function main() {
   processLogger = createProcessLogger("cli")
   getLogger("cli.main")?.info("starting cli process", { argv })
   const options = parseArgs(argv)
+  const preferences = await loadPreferences()
+  if (options.model === "default") {
+    options.model = preferences.providers?.opencode?.model ?? options.model
+  }
+  if (!options.effort.trim()) {
+    options.effort = preferences.providers?.opencode?.effort ?? options.effort
+  }
   const socketPath = options.socketPath ?? defaultSocketPath()
   const client = new LocalIpcClient(socketPath)
   const workspace = options.workspace ?? process.cwd()
@@ -299,10 +328,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const initialEntries = initialBinding?.historyEntries ?? []
+  const initialSessions = props.bootstrap.sessions
+  const initialProviderCatalog = props.bootstrap.providerCatalog
   const [sessionState, setSessionState] = createSignal(initialSession)
   const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
   const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
   const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
+  const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
+  const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
+  const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
+    createWaitingRoomState(initialSessions, initialProviderCatalog, options.model, options.effort),
+  )
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
@@ -322,6 +358,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
   let promptStateText: TextRenderable | undefined
+  let promptMetaText: TextRenderable | undefined
   let footerSummaryText: TextRenderable | undefined
   let footerFlashText: TextRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
@@ -339,7 +376,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let lastTranscriptScrollTop = 0
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
-  let lastPromptMetaDebugKey = ""
 
   const isAttached = () => attachmentState() !== null
   const queueDepth = () => sessionState().queued_prompts.length
@@ -355,25 +391,62 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ...fields,
     })
   }
-  const promptMetaLine = () => {
-    const run = providerRunState()
-    const provider = run?.provider ?? "opencode"
-    const model = run?.model ?? options.model
-    const effort = run?.variant ?? options.effort
-    const line = formatPromptMetaLine(provider, model, effort)
-    const key = JSON.stringify({ provider, model, effort, line, runId: run?.id ?? null, runState: run?.state ?? null })
-    if (key !== lastPromptMetaDebugKey) {
-      lastPromptMetaDebugKey = key
-      appLogger?.debug("prompt meta line updated", {
-        provider_run_id: run?.id ?? null,
-        provider_state: run?.state ?? null,
-        prompt_meta_provider: provider,
-        prompt_meta_model: model,
-        prompt_meta_variant: effort,
-        prompt_meta_line: line,
+  const reconcileWaitingRoom = (next: WaitingRoomState) => {
+    const previous = waitingRoomState()
+    const normalized = normalizeWaitingRoomState(next, availableSessions(), providerCatalogState())
+    setWaitingRoomState(normalized)
+    options.model = normalized.modelId || options.model
+    options.effort = normalized.effort
+    if (options.model && (previous.modelId !== normalized.modelId || previous.effort !== normalized.effort)) {
+      void saveProviderPreferences("opencode", {
+        model: options.model,
+        effort: options.effort,
       })
     }
-    return line
+    if (!isAttached()) {
+      rebuildTranscript()
+    }
+    updateSessionChrome()
+    return normalized
+  }
+  const activateWaitingRoom = async () => {
+    const choice = waitingRoomChoice(waitingRoomState(), availableSessions(), providerCatalogState())
+    const launch = {
+      model: choice.model?.id ?? options.model,
+      effort: choice.effort,
+    }
+    if (waitingRoomState().focus === "new") {
+      const root = options.workspace ?? process.cwd()
+      const session = await createSession(client, root, options.worktree ?? root)
+      await attachBinding(session, true, launch)
+      flashFooter(`created session ${session.alias ?? session.id}`, "info")
+      return
+    }
+    if (waitingRoomState().focus === "join") {
+      if (!choice.session) {
+        flashFooter("no session available to join", "error")
+        return
+      }
+      await attachBinding(choice.session as RuntimeSession, false, launch)
+      flashFooter(`attached to session ${choice.session.alias ?? choice.session.id}`, "info")
+    }
+  }
+  const refreshWaitingRoomData = async () => {
+    const [sessions, catalog] = await Promise.all([
+      listSessions(client),
+      getProviderCatalog(client, appLogger),
+    ])
+    setAvailableSessions(sessions)
+    setProviderCatalogState(catalog)
+    reconcileWaitingRoom(waitingRoomState())
+  }
+  const promptMetaLine = () => {
+    const run = providerRunState()
+    const waiting = waitingRoomState()
+    const provider = run?.provider ?? "opencode"
+    const model = run?.model ?? waiting.modelId ?? options.model
+    const effort = run?.variant ?? waiting.effort ?? options.effort
+    return formatPromptMetaLine(provider, model, effort)
   }
   const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const sessionStatusMode = (): SessionStatusMode => {
@@ -725,6 +798,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
       fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
     )
+    setTextRenderable(promptMetaText, isAttached() ? promptMetaLine() : " ", theme.textMuted)
     promptStateBox?.requestRender()
     setTextRenderable(
       footerSummaryText,
@@ -797,7 +871,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (entries.length === 0) {
       emptyTranscriptRenderable = isAttached()
         ? buildEmptyTranscriptRenderable(renderer)
-        : buildNoSessionRenderable(renderer)
+        : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
     } else {
       for (const entry of entries.filter((candidate) => candidate && !candidate.historyDeferred)) {
@@ -946,6 +1020,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setHistoryLoadingState(false)
     setStatusLine(message)
     updateSessionChrome()
+    promptInput?.clear()
+    promptInput?.blur()
+    reconcileWaitingRoom({
+      ...waitingRoomState(),
+      focus: "new",
+      introStep: 0,
+      keyState: { up: false, down: false, left: false, right: false },
+    })
+    void refreshWaitingRoomData()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
@@ -958,7 +1041,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAttachmentState(null)
   }
 
-  const attachBinding = async (session: RuntimeSession, createdSession: boolean) => {
+  const attachBinding = async (
+    session: RuntimeSession,
+    createdSession: boolean,
+    launch: { model: string; effort: string } = { model: options.model, effort: options.effort },
+  ) => {
     const currentAttachment = attachmentState()
     if (currentAttachment?.session_id === session.id) {
       return
@@ -970,10 +1057,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const attachment = await attachToSession(client, session.id, options.clientId)
     const attachedSession = await getSessionState(client, session.id)
     if (!attachedSession.active_provider_run_id) {
-      const run = await launchProviderRun(client, session.id, options.accountProfile, options.model, options.effort)
+      options.model = launch.model
+      options.effort = launch.effort
+      const run = await launchProviderRun(client, session.id, options.accountProfile, launch.model, launch.effort)
       logProviderRunDebug("attached session launched provider run", run, {
         session_id: session.id,
-        requested_model: options.model,
+        requested_model: launch.model,
+        requested_variant: launch.effort,
       })
       setProviderRunState(run)
     } else {
@@ -999,6 +1089,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setStatusLine(DEFAULT_CONNECTED_STATUS)
     updateSessionChrome()
     promptInput?.focus()
+    setAvailableSessions(await listSessions(client))
     scheduleShortViewportHistoryCheck()
   }
 
@@ -1262,8 +1353,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
+    if (!event) {
+      return
+    }
     if (event?.ctrl && event.name === "c") {
       void (activePrompt() ? requestPromptStop() : requestExit())
+      return
+    }
+    if (!isAttached()) {
+      const keyName = event.name === "up" || event.name === "down" || event.name === "left" || event.name === "right"
+        ? event.name
+        : null
+      if (keyName) {
+        const next = {
+          ...waitingRoomState(),
+          keyState: {
+            ...waitingRoomState().keyState,
+            [keyName]: event.eventType !== "release",
+          },
+        }
+        if (event.eventType !== "release") {
+          reconcileWaitingRoom(
+            keyName === "up"
+              ? moveWaitingRoomFocus(next, -1)
+              : keyName === "down"
+                ? moveWaitingRoomFocus(next, 1)
+                : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1),
+          )
+          return
+        }
+        setWaitingRoomState(next)
+        rebuildTranscript()
+        return
+      }
+      if (event.eventType === "press" && (event.name === "return" || event.name === "enter")) {
+        void activateWaitingRoom()
+      }
     }
   }
   process.on("SIGINT", handleSigint)
@@ -1505,8 +1630,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     pollersStarted = true
-    promptInput?.focus()
     rebuildTranscript()
+    if (isAttached()) {
+      promptInput.focus()
+    } else {
+      promptInput.blur()
+    }
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
     process.stdout.on("resize", onResize)
     appLogger?.info("starting background pollers")
@@ -1543,6 +1672,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   onCleanup(() => {
     clearInterval(workingAnimation)
+  })
+
+  const waitingRoomAnimation = startInterval(() => {
+    if (isAttached()) {
+      return
+    }
+    const state = waitingRoomState()
+    if (state.introStep >= 12) {
+      return
+    }
+    setWaitingRoomState({
+      ...state,
+      introStep: state.introStep + 1,
+    })
+    rebuildTranscript()
+  }, 90)
+
+  onCleanup(() => {
+    clearInterval(waitingRoomAnimation)
   })
 
   return (
@@ -1636,8 +1784,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
               void submitPrompt()
             }}
           />
-          <text fg={theme.textMuted}>
-            {promptMetaLine()}
+          <text
+            ref={(value) => {
+              promptMetaText = value
+              updateSessionChrome()
+            }}
+            fg={theme.textMuted}
+          >
+            {isAttached() ? promptMetaLine() : " "}
           </text>
         </box>
       </box>
@@ -2071,18 +2225,24 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
   return wrapper
 }
 
-function buildNoSessionRenderable(renderer: ReturnType<typeof useRenderer>) {
+function buildNoSessionRenderable(
+  renderer: ReturnType<typeof useRenderer>,
+  state: WaitingRoomState,
+  sessions: RuntimeSession[],
+  catalog: ProviderCatalog,
+) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
     flexGrow: 1,
     flexDirection: "column",
     justifyContent: "center",
     alignItems: "center",
-    gap: 2,
+    gap: 1,
   })
+  const rows = waitingRoomRows(state, sessions, catalog)
   wrapper.add(
     new TextRenderable(renderer, {
-      content: ARROBA_ASCII_ART,
+      content: arrobaArtFrame(state.introStep),
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
@@ -2090,12 +2250,53 @@ function buildNoSessionRenderable(renderer: ReturnType<typeof useRenderer>) {
   )
   wrapper.add(
     new TextRenderable(renderer, {
-      content: `No session attached.\n\n${SESSION_NEW_HELP_TEXT}`,
+      content: "No session attached. Dial in and choose your next run.",
+      fg: theme.warning,
+      wrapMode: "word",
+    }),
+  )
+  const menu = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 0,
+    border: ["left"],
+    borderColor: theme.secondary,
+    customBorderChars: SplitBorder.customBorderChars,
+    paddingLeft: 1,
+  })
+  for (const row of rows) {
+    menu.add(
+      new TextRenderable(renderer, {
+        content: `${state.focus === row.id ? ">" : " "} ${row.title.padEnd(22, " ")} ${row.value}`,
+        fg: state.focus === row.id ? theme.primary : theme.text,
+        attributes: state.focus === row.id ? TextAttributes.BOLD : TextAttributes.NONE,
+        wrapMode: "none",
+      }),
+    )
+  }
+  wrapper.add(menu)
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: renderWaitingRoomKeys(state),
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }),
+  )
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move, ← → to cycle, Enter to confirm.`,
       fg: theme.textMuted,
       wrapMode: "word",
     }),
   )
   return wrapper
+}
+
+function renderWaitingRoomKeys(state: WaitingRoomState) {
+  const key = (label: string, pressed: boolean) => (pressed ? `[${label}]` : `<${label}>`)
+  return [
+    `        ${key("^", state.keyState.up)}`,
+    `${key("<", state.keyState.left)} ${key("v", state.keyState.down)} ${key(">", state.keyState.right)}`,
+  ].join("\n")
 }
 
 function transcriptAccent(entry: TranscriptEntry) {
@@ -2286,20 +2487,46 @@ async function bootstrapSession(
   worktree: string,
 ): Promise<BootstrapState> {
   let createdSession = false
-  let session: RuntimeSession
+  let session: RuntimeSession | null = null
 
-  if (options.createSession) {
-    session = await createSession(client, workspace, worktree, options.alias)
-    createdSession = true
-  } else if (options.sessionId) {
-    session = await resolveSession(client, options.sessionId, workspace)
-  } else {
-    const existing = await findAttachableSession(client, workspace, worktree)
-    if (existing) {
-      session = existing
-    } else {
+  const sessions = await listSessions(client)
+  const providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
+  const decision = decideBootstrapAction(options, sessions, workspace, worktree)
+  switch (decision.action) {
+    case "create":
       session = await createSession(client, workspace, worktree, options.alias)
       createdSession = true
+      break
+    case "resolve":
+      session = await resolveSession(client, decision.sessionRef, workspace)
+      break
+    case "attach_existing": {
+      const existing = selectAttachableSession(sessions, workspace, worktree)
+      if (!existing) {
+        session = await createSession(client, workspace, worktree, options.alias)
+        createdSession = true
+        break
+      }
+      session = existing as RuntimeSession
+      break
+    }
+    case "none":
+      return {
+        client,
+        binding: null,
+        sessions,
+        providerCatalog,
+        options,
+      }
+  }
+
+  if (!session) {
+    return {
+      client,
+      binding: null,
+      sessions,
+      providerCatalog,
+      options,
     }
   }
 
@@ -2324,24 +2551,29 @@ async function bootstrapSession(
       historyEntries,
       nextHistoryCursor: historyPage.next_cursor,
     },
+    sessions,
+    providerCatalog,
     options,
   }
-}
-
-async function findAttachableSession(
-  client: LocalIpcClient,
-  workspace: string,
-  worktree: string,
-): Promise<RuntimeSession | null> {
-  return (await listSessions(client))
-    .filter((session) => session.workspace_id === workspace && session.worktree_id === worktree && session.status !== "Ended")
-    .sort((left, right) => right.created_at_ms - left.created_at_ms)[0] ?? null
 }
 
 async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())
   const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
   return payload.sessions.sort((left, right) => right.created_at_ms - left.created_at_ms)
+}
+
+async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger | null): Promise<ProviderCatalog> {
+  try {
+    const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest())
+    const payload = expectVariant<{ catalog: ProviderCatalog }>(response, "ProviderCatalog")
+    return payload.catalog
+  } catch (error) {
+    logger?.warn("provider catalog lookup failed; using fallback catalog", {
+      error: formatError(error),
+    })
+    return fallbackProviderCatalog()
+  }
 }
 
 async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
@@ -2508,6 +2740,12 @@ function getProviderRunRequest(providerRunId: string) {
     GetProviderRun: {
       provider_run_id: providerRunId,
     },
+  }
+}
+
+function getProviderCatalogRequest() {
+  return {
+    GetProviderCatalog: {},
   }
 }
 

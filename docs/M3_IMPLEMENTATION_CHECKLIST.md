@@ -117,14 +117,16 @@ Current state: `arroba-cli logs` can filter/follow the shared NDJSON logs by pro
 - [x] Add syntax-highlighted fenced code block rendering in assistant/reasoning transcript entries.
 - [x] Add markdown-aware rendering for assistant and reasoning transcript entries instead of treating all provider text as plain wrapped text.
 - [x] Register a trimmed parser set plus common fence-language alias normalization for terminal transcript rendering.
-- [ ] Surface OpenCode `session.error` and tool lifecycle events as richer TypeScript CLI transcript/status output instead of plain notices only.
+- [x] Surface OpenCode `session.error` and tool lifecycle events as richer TypeScript CLI transcript/status output instead of plain notices only.
 - [ ] Add TypeScript CLI integration-level tests for bootstrap, transcript rendering, polling recovery, and exit cleanup.
+Current state: startup session-selection/bootstrap coverage now exists in `apps/cli/src/sessions.test.ts`, but live transcript/runtime integration coverage is still incomplete.
 - [ ] Keep the TypeScript client and the Rust launcher aligned on help text, env vars, and expected local startup flow.
 
 ## 4.5 Persistent Session Management
 
 - [x] Separate user-facing session deletion from detach/exit semantics.
 - [x] Add daemon-owned `session.delete` semantics that tear down runtime state without overloading ordinary detach.
+- [x] Make `session.delete` a true delete rather than a resumable `session.end` alias.
 - [x] Keep sessions resumable after the last client detaches until explicit deletion.
 - [x] Add a reusable no-session TypeScript CLI state instead of always exiting the process when session context disappears.
 - [x] When the current session is deleted, clear transcript/session chrome and render an Arroba ASCII-art unattached landing state.

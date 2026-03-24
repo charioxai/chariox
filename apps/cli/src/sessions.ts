@@ -8,18 +8,26 @@ export const ARROBA_ASCII_ART = [
   "/_/   \\_\\_| \\_\\_| \\_\\___/|____/_/   \\_\\",
 ].join("\n")
 
-export const SESSION_NEW_HELP_TEXT = "Use `/session new [alias]` to start a session or `/session attach <ref>` to reattach."
-export const SESSION_NEW_PLACEHOLDER = "Use /session new [alias] or /session attach <ref>"
-export const SESSION_NEW_FOOTER_HINT = "No session • /session new or /session attach"
-export const SESSION_NEW_ERROR_HINT = "No session attached. Use /session new or /session attach."
+export const SESSION_NEW_HELP_TEXT = "Use the waiting room to start a new session or join an existing one."
+export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
+export const SESSION_NEW_FOOTER_HINT = "Waiting room • arrows move • Enter confirms"
+export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."
 
 export type SessionListEntry = {
   id: string
   alias?: string | null
+  workspace_id?: string
   worktree_id: string
   status: string
+  created_at_ms?: number
   attachment_ids: string[]
 }
+
+export type SessionBootstrapDecision =
+  | { action: "create" }
+  | { action: "resolve"; sessionRef: string }
+  | { action: "attach_existing"; sessionId: string }
+  | { action: "none" }
 
 export function formatSessionList(sessions: SessionListEntry[], currentSessionId?: string) {
   if (sessions.length === 0) {
@@ -36,4 +44,33 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${current}`
     }),
   ].join("\n")
+}
+
+export function selectAttachableSession(
+  sessions: SessionListEntry[],
+  workspace: string,
+  worktree: string,
+) {
+  return sessions
+    .filter((session) => session.workspace_id === workspace && session.worktree_id === worktree && session.status !== "Ended")
+    .sort((left, right) => (right.created_at_ms ?? 0) - (left.created_at_ms ?? 0))[0] ?? null
+}
+
+export function decideBootstrapAction(
+  options: { createSession?: boolean; sessionId?: string },
+  sessions: SessionListEntry[],
+  workspace: string,
+  worktree: string,
+): SessionBootstrapDecision {
+  if (options.createSession) {
+    return { action: "create" }
+  }
+  if (options.sessionId) {
+    return { action: "resolve", sessionRef: options.sessionId }
+  }
+  const existing = selectAttachableSession(sessions, workspace, worktree)
+  if (existing) {
+    return { action: "none" }
+  }
+  return { action: "none" }
 }

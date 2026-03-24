@@ -56,7 +56,7 @@ impl SessionService {
     }
 
     pub fn list_sessions(&self) -> Vec<RuntimeSession> {
-        self.store.list()
+        self.store.non_ended_sessions().cloned().collect()
     }
 
     pub fn resolve_session_ref(
@@ -158,6 +158,14 @@ impl SessionService {
 
     pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.transition_session(session_id, SessionStatus::Ended)
+    }
+
+    pub fn delete_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.store
+            .remove(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })
     }
 
     pub fn add_attachment_to_session(
@@ -585,6 +593,25 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn delete_session_removes_it_from_registry() {
+        let mut service = SessionService::new(&test_config());
+        let created = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let deleted = service
+            .delete_session(created.id())
+            .expect("session should delete");
+
+        assert_eq!(deleted.id(), created.id());
+        assert!(matches!(
+            service.get_session(created.id()),
+            Err(DaemonError::SessionNotFound { .. })
+        ));
+        assert!(service.list_sessions().is_empty());
     }
 
     #[test]

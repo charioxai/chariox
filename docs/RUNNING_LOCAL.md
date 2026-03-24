@@ -169,7 +169,7 @@ Inside the CLI:
   - `/session create [alias]`
   - `/session attach <ref>`
   - `/session delete [ref]`
-- deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, and returns the user to an unattached shell
+- deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
 
 Outside the TUI:
 

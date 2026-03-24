@@ -98,10 +98,11 @@ Exit criteria:
 Status:
 
 - next implementation priority after M2 closure
-- currently in the OpenCode stabilization, TypeScript CLI hardening, and persistent-session-management phase
+- currently in the late OpenCode stabilization, TypeScript CLI hardening, and persistent-session-management phase
 - transcript code-highlighting is now part of this same M3 stabilization phase, using terminal-native markdown/code rendering rather than LSP semantic coloring
 - explicit persistent session management now exists: delete semantics, no-session CLI state, and session id/alias resolution are in the baseline
-- after that, continue with the TypeScript CLI path: richer OpenCode event rendering and broader client-side tests
+- richer OpenCode event rendering is now in the baseline too
+- next on the TypeScript CLI path is broader client-side integration coverage, then slash-command dispatch and capability wiring
 - slash-command dispatch and capability wiring follow after that client/runtime path is solid
 
 Outcomes:

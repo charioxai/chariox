@@ -191,6 +191,7 @@ Current session-management semantics:
   - unique alias prefix
 - `session.create` accepts an optional alias
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
+- `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
 
 Local cancellation policy:
@@ -212,6 +213,9 @@ Current M2 runtime note:
 Current session-lifecycle note:
 
 - the local implementation still exposes `session.end` as an internal/runtime operation, but the intended user-facing local client contract is persistent detached sessions plus explicit `session.delete`
+- `session.end` and `session.delete` are intentionally distinct:
+  - `session.end` is an internal/runtime operation and may still be reused for resumable daemon-owned transitions
+  - `session.delete` is the user-facing destructive operation and removes the session from the daemon registry after teardown
 - the current local implementation now uses 16-character lowercase hexadecimal session ids with optional aliases and unique-prefix resolution
 
 OpenCode current runtime note:

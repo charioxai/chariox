@@ -303,6 +303,7 @@ Required rules:
 - idle sessions SHOULD remain discoverable and reattachable until explicit deletion
 - deleting a session MUST:
   - terminate or clear active provider/runtime state
+  - remove the session from the daemon registry
   - invalidate further attach attempts
   - notify attached clients that the session no longer exists
 - attached clients SHOULD transition to an unattached "no session" state when their current session is deleted, rather than being forced to terminate the whole client process

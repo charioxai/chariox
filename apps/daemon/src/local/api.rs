@@ -10,7 +10,10 @@ use crate::capability::{
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
-use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
+use crate::provider::{
+    opencode_catalog_endpoint, LaunchProviderRequest, OpenCodeClient, OpenCodeProviderCatalog,
+    RuntimeProviderRun,
+};
 use crate::session::{
     CreateSessionRequest, PromptCancellation, PromptCompletion, PromptSubmissionOutcome,
     RuntimeSession, SessionConfigState,
@@ -74,6 +77,9 @@ pub struct GetSessionStateRequest {
 pub struct GetProviderRunRequest {
     pub provider_run_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderCatalogRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsRequest;
@@ -187,6 +193,7 @@ pub enum LocalDaemonRequest {
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
     GetProviderRun(GetProviderRunRequest),
+    GetProviderCatalog(GetProviderCatalogRequest),
     GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -231,6 +238,9 @@ pub enum LocalDaemonResponse {
     },
     ProviderRun {
         provider_run: RuntimeProviderRun,
+    },
+    ProviderCatalog {
+        catalog: OpenCodeProviderCatalog,
     },
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
@@ -381,6 +391,13 @@ impl DaemonApp {
                     }),
                 );
                 Ok(LocalDaemonResponse::ProviderRun { provider_run })
+            }
+            LocalDaemonRequest::GetProviderCatalog(_) => {
+                let endpoint = opencode_catalog_endpoint()?;
+                let client = OpenCodeClient::new("catalog", endpoint)?;
+                Ok(LocalDaemonResponse::ProviderCatalog {
+                    catalog: client.provider_catalog()?,
+                })
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(
@@ -534,10 +551,11 @@ mod tests {
         AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
         CompletePromptRequest, DeleteSessionRequest, DetachFromSessionRequest,
         EditFileCapabilityRequest, EndSessionRequest, GetSessionStateRequest,
-        InspectGitCapabilityRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
-        ReadFileCapabilityRequest, ResolveSessionRequest, RunShellCapabilityRequest,
-        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        InspectGitCapabilityRequest, LaunchProviderRunRequest, ListSessionsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, ResolveSessionRequest,
+        RunShellCapabilityRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -635,6 +653,21 @@ mod tests {
         assert_eq!(deleted.id(), session.id());
         assert_eq!(deleted.alias(), Some("main"));
         assert_eq!(deleted.status(), crate::session::SessionStatus::Ended);
+        assert!(matches!(
+            app.handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+                session_ref: "main".to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            })),
+            Err(DaemonError::SessionNotFound { .. })
+        ));
+        let listed = match app
+            .handle_local_request(LocalDaemonRequest::ListSessions(ListSessionsRequest))
+            .expect("list should succeed")
+        {
+            LocalDaemonResponse::SessionsListed { sessions } => sessions,
+            _ => panic!("unexpected local response"),
+        };
+        assert!(listed.is_empty());
     }
 
     #[test]

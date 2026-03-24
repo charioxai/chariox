@@ -221,6 +221,30 @@ mod tests {
     }
 
     #[test]
+    fn deleted_sessions_cannot_be_reattached() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"))
+            .expect("session should be created");
+
+        let deleted = app
+            .delete_session_ref("main", Some("workspace-1"))
+            .expect("session should delete");
+
+        assert_eq!(deleted.id(), session.id());
+        assert!(matches!(
+            app.attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            )),
+            Err(crate::error::DaemonError::SessionNotFound { .. })
+        ));
+    }
+
+    #[test]
     fn terminal_flow_writes_input_resizes_and_fans_out_output() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

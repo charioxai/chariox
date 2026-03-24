@@ -47,6 +47,11 @@ pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
     })
 }
 
+pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
+    let port = resolve_opencode_port()?;
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
 fn resolve_opencode_port() -> Result<u16, DaemonError> {
     let Some(value) = env::var_os(OPENCODE_PORT_OVERRIDE) else {
         return Err(DaemonError::InvalidConfig {

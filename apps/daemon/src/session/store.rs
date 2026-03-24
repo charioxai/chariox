@@ -51,6 +51,10 @@ impl SessionStore {
         self.sessions.get_mut(session_id)
     }
 
+    pub fn remove(&mut self, session_id: &str) -> Option<RuntimeSession> {
+        self.sessions.remove(session_id)
+    }
+
     pub fn list(&self) -> Vec<RuntimeSession> {
         self.sessions.values().cloned().collect()
     }
