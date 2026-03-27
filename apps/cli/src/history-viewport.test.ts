@@ -1,7 +1,13 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { computePrependedHistoryScrollTop, findPrependedHistoryMergedHeadId } from "./history-viewport.js"
+import {
+  computeAnchoredScrollTop,
+  computeCollapsedHistoryScrollTop,
+  computePrependedHistoryScrollTop,
+  findPrependedHistoryMergedHeadId,
+  findTurnPromptScrollTarget,
+} from "./history-viewport.js"
 
 test("findPrependedHistoryMergedHeadId returns the current head id when prepended history stitches into it", () => {
   assert.equal(
@@ -59,4 +65,30 @@ test("computePrependedHistoryScrollTop preserves viewport after prepending older
 test("computePrependedHistoryScrollTop clamps to the new scroll range", () => {
   assert.equal(computePrependedHistoryScrollTop(0, 40, 70, 80), 0)
   assert.equal(computePrependedHistoryScrollTop(0, 60, 160, 80), 80)
+})
+
+test("computeAnchoredScrollTop preserves an anchor's viewport position", () => {
+  assert.equal(computeAnchoredScrollTop(12, 50, 180, 80), 38)
+})
+
+test("computeAnchoredScrollTop clamps to the top when needed", () => {
+  assert.equal(computeAnchoredScrollTop(30, 10, 180, 80), 0)
+})
+
+test("computeAnchoredScrollTop returns null without a usable anchor", () => {
+  assert.equal(computeAnchoredScrollTop(null, 10, 180, 80), null)
+  assert.equal(computeAnchoredScrollTop(10, null, 180, 80), null)
+})
+
+test("computeCollapsedHistoryScrollTop shifts upward by removed height", () => {
+  assert.equal(computeCollapsedHistoryScrollTop(90, 320, 220, 80), 0)
+  assert.equal(computeCollapsedHistoryScrollTop(140, 420, 320, 80), 40)
+})
+
+test("findTurnPromptScrollTarget navigates between prompt anchors", () => {
+  const prompts = [0, 18, 47, 90]
+  assert.equal(findTurnPromptScrollTarget(prompts, 0, "next"), 18)
+  assert.equal(findTurnPromptScrollTarget(prompts, 25, "previous"), 0)
+  assert.equal(findTurnPromptScrollTarget(prompts, 25, "next"), 47)
+  assert.equal(findTurnPromptScrollTarget(prompts, 95, "next"), 90)
 })

@@ -1,21 +1,29 @@
 import path from "node:path"
 import process from "node:process"
 import { homedir } from "node:os"
+import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type SyntaxStyle, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { createSignal, onCleanup } from "solid-js"
+import { batch, createSignal, onCleanup } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
 import { copyTextToClipboard } from "./clipboard.js"
-import { computePrependedHistoryScrollTop } from "./history-viewport.js"
+import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { LocalIpcClient } from "./ipc.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { loadPreferences, saveProviderPreferences } from "./preferences.js"
-import { formatPromptMetaLine } from "./prompt-meta.js"
+import {
+  extractDroppedPromptAttachments,
+  parsePromptAttachmentCommand,
+  resolvePromptAttachmentEdit,
+  type ParsedPromptAttachment,
+  type PromptAttachmentKind,
+} from "./prompt-attachments.js"
+import { formatPromptMetaParts, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
 import {
   catalogModelOptions,
   fallbackProviderCatalog,
@@ -24,10 +32,15 @@ import {
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
+  ACTIVE_STATUS_FALLBACK,
+  STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
+  getProviderActivityLabel,
+  getSessionStatusLabel,
+  getToolActivityLabel,
   reconcileWorkingStateFromSession,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
@@ -64,6 +77,16 @@ import {
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
+import {
+  buildDirectoryTreeRows,
+  createDirectoryTreeState,
+  isDirectoryTreePathLoaded,
+  mergeDirectoryTreeEntries,
+  moveDirectoryTreeSelection,
+  toggleDirectoryTreeExpansion,
+  type DirectoryTreeEntry,
+  type DirectoryTreeState,
+} from "./tree-view.js"
 import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -76,8 +99,59 @@ const BOOTSTRAP_HISTORY_MAX_CHARS = 100_000
 const HISTORY_PAGE_ROUND_COUNT = 1
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
-const STATUS_LABEL_WIDTH = "DISCONNECTED".length
+const STREAM_BATCH_WINDOW_MS = 16
 const NO_SESSION_ID = "no-session"
+const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
+const HOTKEY_DIALOG_WIDTH = 72
+
+type HotkeyItem = {
+  keys: string
+  description: string
+}
+
+type HotkeySection = {
+  title: string
+  items: HotkeyItem[]
+}
+
+const GLOBAL_HOTKEYS: HotkeyItem[] = [
+  { keys: "Ctrl+L", description: "Show or hide this hotkey list." },
+  { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
+  { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
+]
+
+const SESSION_HOTKEYS: HotkeyItem[] = [
+  { keys: "Enter", description: "Submit the current prompt." },
+  { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
+  { keys: "Tab", description: "Toggle between the transcript and file tree." },
+  { keys: "Up / Down", description: "Jump between user turns when the prompt is empty." },
+  { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
+  { keys: "Tree: Up / Down / Enter", description: "Move and toggle the file tree when it is active." },
+]
+
+const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
+  { keys: "Arrow keys", description: "Move between sessions, models, and effort levels." },
+  { keys: "Enter", description: "Create or attach to the selected session." },
+]
+
+const promptTokenStyle = SyntaxStyle.create()
+const promptTokenStyleIds = {
+  image: promptTokenStyle.registerStyle("prompt-token-image", {
+    fg: RGBA.fromHex("#1f1400"),
+    bg: RGBA.fromHex("#f0d77d"),
+    bold: true,
+  }),
+  pdf: promptTokenStyle.registerStyle("prompt-token-pdf", {
+    fg: RGBA.fromHex("#09182b"),
+    bg: RGBA.fromHex("#8cc0ff"),
+    bold: true,
+  }),
+  file: promptTokenStyle.registerStyle("prompt-token-file", {
+    fg: RGBA.fromHex("#0d1f13"),
+    bg: RGBA.fromHex("#8fd8a8"),
+    bold: true,
+  }),
+}
 
 type RuntimeSession = {
   id: string
@@ -115,6 +189,33 @@ type RuntimeProviderRun = {
   state: string
 }
 
+type PromptAttachmentPart = {
+  url: string
+  mime: string
+  filename: string | null
+}
+
+type PendingPromptAttachment = {
+  id: string
+  url: string
+  mime: string
+  filename: string
+  kind: PromptAttachmentKind
+  token: string
+}
+
+type StoredTransferArtifact = {
+  artifact_id: string
+  stored_path: string
+  display_name: string
+}
+
+type CaptureScreenshotResult = {
+  status: string
+  artifact_path: string | null
+  message: string
+}
+
 type RuntimeNoticeRecord = {
   message: string
 }
@@ -132,6 +233,12 @@ type PromptSubmittedPayload = {
 type SessionHistoryPage = {
   entries: SessionHistoryPageEntry[]
   next_cursor: SessionHistoryCursor | null
+}
+
+type ReadDirectoryTreeResult = {
+  session_id: string
+  root_path: string
+  entries: DirectoryTreeEntry[]
 }
 
 type SessionHistoryCursor = {
@@ -154,11 +261,14 @@ type SessionHistoryEntry = {
 
 type TranscriptEntry = {
   id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice"
+  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_summary" | "turn_toggle"
   text: string
   sourceText?: string
   mergeKey?: string
   emphasis?: "muted" | "warning" | "error"
+  turnId?: number
+  hidden?: boolean
+  toggleMode?: "expand" | "collapse"
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number
@@ -215,6 +325,102 @@ function markDeferredHistoryEntries(items: TranscriptEntry[]) {
     delete next.historyDeferred
     return next
   })
+}
+
+function collapseHistoricalTurns(entries: TranscriptEntry[], keepLatestExpanded = true) {
+  const normalizedEntries = normalizeTranscriptTurnIds(entries)
+  const latestTurnId = keepLatestExpanded ? computeCurrentTurnId(normalizedEntries) : null
+  if (keepLatestExpanded && !latestTurnId) {
+    return normalizedEntries
+  }
+
+  let nextId = normalizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0)
+  const result: TranscriptEntry[] = normalizedEntries
+    .filter((entry) => entry.role !== "turn_summary" && entry.role !== "turn_toggle")
+    .map((entry) => {
+      const next: TranscriptEntry = { ...entry }
+      if (latestTurnId !== null && entry.turnId === latestTurnId) {
+        next.hidden = false
+      }
+      return next
+    })
+  const turnIds = [...new Set(result.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
+
+  for (const turnId of turnIds) {
+    if (latestTurnId !== null && turnId === latestTurnId) {
+      for (const entry of result) {
+        if (entry.turnId === turnId) {
+          entry.hidden = false
+        }
+      }
+      continue
+    }
+    const promptIndex = result.findIndex((entry) => entry.turnId === turnId && entry.role === "user")
+    const anchorIndex = promptIndex >= 0
+      ? promptIndex
+      : result.findIndex((entry) => entry.turnId === turnId)
+    if (anchorIndex === -1) {
+      continue
+    }
+    const turnEntries = result.filter((entry) => entry.turnId === turnId && entry.role !== "user")
+    if (turnEntries.length === 0) {
+      continue
+    }
+    const collapsedText = collapsedTurnText(turnEntries)
+    for (const entry of turnEntries) {
+      entry.hidden = true
+    }
+    const inserts: TranscriptEntry[] = []
+    if (collapsedText) {
+      inserts.push({
+        id: ++nextId,
+        role: "turn_summary",
+        text: collapsedText,
+        turnId,
+      })
+    }
+    inserts.push({
+      id: ++nextId,
+      role: "turn_toggle",
+      text: "click to expand turn",
+      turnId,
+      toggleMode: "expand",
+    })
+    result.splice(anchorIndex + 1, 0, ...inserts)
+  }
+
+  return result
+}
+
+function normalizeTranscriptTurnIds(entries: TranscriptEntry[]) {
+  let activeTurnId: number | undefined
+  let nextTurnId = 1
+
+  return entries.map((entry) => {
+    const next: TranscriptEntry = { ...entry }
+    if (entry.role === "user") {
+      activeTurnId = entry.turnId ?? nextTurnId
+      next.turnId = activeTurnId
+      nextTurnId = Math.max(nextTurnId, activeTurnId + 1)
+      return next
+    }
+    if (activeTurnId !== undefined) {
+      next.turnId = activeTurnId
+    }
+    return next
+  })
+}
+
+function collapsedTurnText(entries: TranscriptEntry[]) {
+  const visibleEntries = entries.filter((entry) => isUserFacingTurnEntry(entry.role))
+  if (visibleEntries.length > 0) {
+    return visibleEntries.map((entry) => entry.text).join("")
+  }
+  return ""
+}
+
+function isUserFacingTurnEntry(role: TranscriptEntry["role"]) {
+  return role === "assistant" || role === "error" || role === "notice"
 }
 
 type BootstrapState = {
@@ -339,7 +545,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(initialSessions, initialProviderCatalog, options.model, options.effort),
   )
+  const [centerMode, setCenterMode] = createSignal<"transcript" | "tree">("transcript")
+  const [directoryTreeState, setDirectoryTreeState] = createSignal<DirectoryTreeState | null>(null)
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
+  const [activeStatusLabel, setActiveStatusLabel] = createSignal<string | null>(null)
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
@@ -350,15 +559,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
   const [working, setWorking] = createSignal(Boolean(initialSession.active_prompt) || initialSession.queued_prompts.length > 0)
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
+  const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
+  const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   let stopRequestInFlight = false
   let promptInput: TextareaRenderable | undefined
+  let hotkeysFocus: Renderable | null = null
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   let promptStateBox: BoxRenderable | undefined
   let statusIndicatorBox: BoxRenderable | undefined
   let footerSummaryBox: BoxRenderable | undefined
   let historyLoadingBox: BoxRenderable | undefined
   let promptStateText: TextRenderable | undefined
-  let promptMetaText: TextRenderable | undefined
+  let promptMetaProviderText: TextRenderable | undefined
+  let promptMetaProviderDividerText: TextRenderable | undefined
+  let promptMetaModelText: TextRenderable | undefined
+  let promptMetaModelDividerText: TextRenderable | undefined
+  let promptMetaVariantText: TextRenderable | undefined
   let footerSummaryText: TextRenderable | undefined
   let footerFlashText: TextRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
@@ -369,6 +585,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let exitCleanupFailed = false
   const degradedPollers = new Set<string>()
   const tools = new Map<string, ToolTranscriptUpdate>()
+  const activeToolLabels = new Map<string, string>()
   const transcriptRenderables = new Map<number, TranscriptEntryRenderable>()
   const transcriptSyntax = createTranscriptSyntaxStyle()
   let emptyTranscriptRenderable: BoxRenderable | undefined
@@ -376,8 +593,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let lastTranscriptScrollTop = 0
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
+  let pendingTranscriptRelayout = false
+  let pendingSessionChromeUpdate = false
+  let pendingTranscriptRender = false
+  let uiBatchDepth = 0
+  let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
+  let pendingTerminalRecords: TerminalOutputRecord[] = []
+  let currentTurnId = computeCurrentTurnId(initialEntries)
+  let nextTurnId = computeNextTurnId(initialEntries)
+  let promptTextSnapshot = ""
+  let promptTextMuting = false
+  let promptDropPending = false
 
   const isAttached = () => attachmentState() !== null
+  const visibleTranscriptEntries = () => entries.filter((entry) => entry && !entry.hidden)
   const queueDepth = () => sessionState().queued_prompts.length
   const connectedClientCount = () => sessionState().attachment_ids.length
   const activePrompt = () => sessionState().active_prompt
@@ -440,13 +669,90 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setProviderCatalogState(catalog)
     reconcileWaitingRoom(waitingRoomState())
   }
-  const promptMetaLine = () => {
+  const loadDirectoryTree = async (treePath = "") => {
+    const attachment = attachmentState()
+    if (!attachment) {
+      return
+    }
+    const response = await client.send<Record<string, unknown>>(readDirectoryTreeRequest(sessionState().id, attachment.id, treePath || null, 1))
+    const payload = expectVariant<{ result: ReadDirectoryTreeResult }>(response, "DirectoryTreeRead")
+    const next = treePath && directoryTreeState()
+      ? mergeDirectoryTreeEntries(directoryTreeState()!, treePath, payload.result.entries)
+      : createDirectoryTreeState(payload.result.root_path, payload.result.entries)
+    const previous = directoryTreeState()
+    if (previous && previous.rootPath === next.rootPath) {
+      next.expandedPaths = previous.expandedPaths.filter((value) => value === "" || next.entries.some((entry) => entry.relative_path === value))
+      next.selectedPath = next.entries.some((entry) => entry.relative_path === previous.selectedPath) || previous.selectedPath === ""
+        ? previous.selectedPath
+        : next.selectedPath
+    }
+    setDirectoryTreeState(next)
+  }
+  const toggleCenterMode = async () => {
+    if (!isAttached()) {
+      return
+    }
+    if (centerMode() === "tree") {
+      setCenterMode("transcript")
+      rebuildTranscript()
+      if (transcriptScrollbox) {
+        const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
+        const target = Math.max(0, Math.min(lastTranscriptScrollTop, maxScrollTop))
+        transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
+        transcriptScrollbox.requestRender()
+      }
+      return
+    }
+    lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? lastTranscriptScrollTop
+    try {
+      await loadDirectoryTree()
+    } catch (error) {
+      flashFooter(`failed to load tree: ${formatError(error)}`, "error")
+      return
+    }
+    setCenterMode("tree")
+    rebuildTranscript()
+  }
+  const navigateDirectoryTree = (direction: "up" | "down") => {
+    const state = directoryTreeState()
+    if (!state) {
+      return
+    }
+    setDirectoryTreeState(moveDirectoryTreeSelection(state, direction))
+    rebuildTranscript()
+  }
+  const activateDirectoryTreeSelection = () => {
+    const state = directoryTreeState()
+    if (!state) {
+      return
+    }
+    const row = buildDirectoryTreeRows(state).find((candidate) => candidate.id === state.selectedPath)
+    if (!row || (row.kind !== "root" && row.kind !== "directory")) {
+      return
+    }
+    const applyToggle = () => {
+      setDirectoryTreeState((current) => (current ? toggleDirectoryTreeExpansion(current) : current))
+      rebuildTranscript()
+    }
+    if (row.id === "" || isDirectoryTreePathLoaded(state, row.id)) {
+      applyToggle()
+      return
+    }
+    void loadDirectoryTree(row.id)
+      .then(() => {
+        applyToggle()
+      })
+      .catch((error) => {
+        flashFooter(`failed to load tree: ${formatError(error)}`, "error")
+      })
+  }
+  const promptMetaParts = (): PromptMetaPart[] => {
     const run = providerRunState()
     const waiting = waitingRoomState()
     const provider = run?.provider ?? "opencode"
     const model = run?.model ?? waiting.modelId ?? options.model
     const effort = run?.variant ?? waiting.effort ?? options.effort
-    return formatPromptMetaLine(provider, model, effort)
+    return formatPromptMetaParts(provider, model, effort)
   }
   const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const sessionStatusMode = (): SessionStatusMode => {
@@ -469,10 +775,458 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return statusLine()
   }
+  const promptPlaceholder = () => (isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER)
+  const syncPromptTextSnapshot = () => {
+    promptTextSnapshot = promptInput?.plainText ?? ""
+  }
+  const refreshPromptAttachmentHighlights = () => {
+    if (!promptInput) {
+      return
+    }
+    promptInput.clearAllHighlights()
+    const value = promptInput.plainText
+    for (const file of pendingAttachments()) {
+      let start = value.indexOf(file.token)
+      while (start !== -1) {
+        promptInput.addHighlightByCharRange({
+          start,
+          end: start + file.token.length,
+          styleId: promptTokenStyleIds[attachmentTokenKind(file.kind)],
+        })
+        start = value.indexOf(file.token, start + file.token.length)
+      }
+    }
+  }
+  const setPromptText = (value: string) => {
+    if (!promptInput) {
+      promptTextSnapshot = value
+      return
+    }
+    promptTextMuting = true
+    promptInput.setText(value)
+    promptTextSnapshot = value
+    refreshPromptAttachmentHighlights()
+    promptTextMuting = false
+  }
+  const syncPromptPlaceholder = () => {
+    if (!promptInput) {
+      return
+    }
+    promptInput.placeholder = promptPlaceholder()
+  }
+  const clearPendingPromptAttachments = () => {
+    setPendingAttachments([])
+    refreshPromptAttachmentHighlights()
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+  const attachmentTokenKind = (kind: PromptAttachmentKind) => (kind === "image" ? "image" : kind === "pdf" ? "pdf" : "file")
+  const hotkeySections = (): HotkeySection[] => [
+    { title: "Global", items: GLOBAL_HOTKEYS },
+    isAttached()
+      ? { title: "Session", items: SESSION_HOTKEYS }
+      : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
+  ]
+  const closeHotkeys = () => {
+    if (!hotkeysOpen()) {
+      return
+    }
+    setHotkeysOpen(false)
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    startTimeout(() => {
+      if (!hotkeysFocus || hotkeysFocus.isDestroyed) {
+        return
+      }
+      hotkeysFocus.focus()
+      hotkeysFocus = null
+    }, 1)
+  }
+  const openHotkeys = () => {
+    if (hotkeysOpen()) {
+      return
+    }
+    const focused = (renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null
+    hotkeysFocus = focused && !focused.isDestroyed
+      ? focused
+      : promptInput && !promptInput.isDestroyed
+        ? promptInput
+        : null
+    hotkeysFocus?.blur()
+    setHotkeysOpen(true)
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+  const toggleHotkeys = () => {
+    if (hotkeysOpen()) {
+      closeHotkeys()
+      return
+    }
+    openHotkeys()
+  }
+  const nextAttachmentToken = (kind: PromptAttachmentKind) => {
+    const label = attachmentTokenKind(kind)
+    const count = pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === label).length + 1
+    return `[${label} ${count}]`
+  }
+  const syncPendingPromptAttachmentsFromText = (value: string) => {
+    setPendingAttachments((current) => current.filter((file) => value.includes(file.token)))
+    refreshPromptAttachmentHighlights()
+  }
+  const insertPromptAttachmentTokens = (tokens: string[], at: number) => {
+    if (tokens.length === 0) {
+      return
+    }
+    const current = promptInput?.plainText ?? promptTextSnapshot
+    const prefix = current.slice(0, at)
+    const suffix = current.slice(at)
+    const before = prefix && !/\s$/.test(prefix) ? " " : ""
+    const after = suffix && !/^\s/.test(suffix) ? " " : ""
+    const content = tokens.join(" ")
+    const next = `${prefix}${before}${content}${after}${suffix}`
+    setPromptText(next)
+    if (promptInput) {
+      promptInput.cursorOffset = prefix.length + before.length + content.length
+    }
+  }
+  const removeLastPendingPromptAttachment = () => {
+    const last = pendingAttachments().at(-1)
+    if (!last) {
+      return
+    }
+    removePromptAttachmentToken(last.token)
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+  const addPendingPromptAttachments = (files: Array<Omit<PendingPromptAttachment, "token">>, at: number) => {
+    const existing = new Set(pendingAttachments().map((file) => file.url))
+    const next = files.filter((file) => !existing.has(file.url))
+    if (next.length === 0) {
+      return false
+    }
+    const counts = {
+      image: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "image").length,
+      pdf: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "pdf").length,
+      file: pendingAttachments().filter((file) => attachmentTokenKind(file.kind) === "file").length,
+    }
+    const attachments = next.map((file) => {
+      const kind = attachmentTokenKind(file.kind)
+      counts[kind] += 1
+      return { ...file, token: `[${kind} ${counts[kind]}]` }
+    })
+    setPendingAttachments((current) => [...current, ...attachments])
+    insertPromptAttachmentTokens(attachments.map((file) => file.token), at)
+    refreshPromptAttachmentHighlights()
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    return true
+  }
+  const removePromptAttachmentToken = (token: string) => {
+    const current = promptInput?.plainText ?? promptTextSnapshot
+    const index = current.indexOf(token)
+    if (index === -1) {
+      setPendingAttachments((files) => files.filter((file) => file.token !== token))
+      refreshPromptAttachmentHighlights()
+      return
+    }
+    let start = index
+    let end = index + token.length
+    if (start > 0 && current[start - 1] === " " && (end === current.length || current[end] === " " || current[end] === "\n")) {
+      start -= 1
+    } else if (end < current.length && current[end] === " ") {
+      end += 1
+    }
+    const next = `${current.slice(0, start)}${current.slice(end)}`
+    setPendingAttachments((files) => files.filter((file) => file.token !== token))
+    setPromptText(next)
+    if (promptInput) {
+      promptInput.cursorOffset = start
+    }
+  }
+  const removePromptAttachmentsForEdit = (action: "backspace" | "delete") => {
+    if (!promptInput) {
+      return false
+    }
+    const text = promptInput.plainText
+    const selection = promptInput.getSelection()
+    const cursor = promptInput.cursorOffset
+    const edit = resolvePromptAttachmentEdit(
+      text,
+      pendingAttachments().map((file) => file.token),
+      action,
+      cursor,
+      selection,
+    )
+    if (!edit) {
+      return false
+    }
+    if (edit.kind === "noop") {
+      return true
+    }
+    if (edit.kind === "delete-text") {
+      setPromptText(`${text.slice(0, edit.start)}${text.slice(edit.end)}`)
+      promptInput.cursorOffset = cursor
+      updateSessionChrome()
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
+      return true
+    }
+    setPendingAttachments((files) => files.filter((file) => !edit.tokens.includes(file.token)))
+    setPromptText(`${text.slice(0, edit.start)}${text.slice(edit.end)}`)
+    promptInput.cursorOffset = edit.start
+    updateSessionChrome()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    return true
+  }
+  const storePromptAttachment = async (file: ParsedPromptAttachment) => {
+    const attachment = attachmentState()
+    if (!attachment) {
+      throw new Error("no active attachment available for storing prompt attachments")
+    }
+    const response = await client.send<Record<string, unknown>>(
+      storeTransferredFileRequest(sessionState().id, attachment.id, file.path, file.filename),
+    )
+    const payload = expectVariant<{ result: StoredTransferArtifact }>(response, "FileTransferred")
+    return {
+      id: payload.result.artifact_id,
+      url: pathToFileURL(payload.result.stored_path).href,
+      mime: file.mime,
+      filename: payload.result.display_name,
+      kind: file.kind,
+    }
+  }
+  const attachPromptFiles = async (files: ParsedPromptAttachment[], at = promptInput?.cursorOffset ?? promptTextSnapshot.length) => {
+    const stored = []
+    for (const file of files) {
+      stored.push(await storePromptAttachment(file))
+    }
+    addPendingPromptAttachments(stored, at)
+    if (files.length > 0) {
+      flashFooter(`attached ${files.length} file${files.length === 1 ? "" : "s"}`, "info")
+    }
+  }
+  const capturePromptScreenshot = async () => {
+    const attachment = attachmentState()
+    if (!attachment) {
+      flashFooter("attach to a session before capturing screenshots", "error")
+      return
+    }
+    const response = await client.send<Record<string, unknown>>(
+      captureScreenshotRequest(sessionState().id, attachment.id),
+    )
+    const payload = expectVariant<{ result: CaptureScreenshotResult }>(response, "ScreenshotCaptured")
+    if (payload.result.status !== "Captured" || !payload.result.artifact_path) {
+      flashFooter(payload.result.message, "error")
+      return
+    }
+    addPendingPromptAttachments([{
+      id: `screenshot-${Date.now()}`,
+      url: pathToFileURL(payload.result.artifact_path).href,
+      mime: "image/png",
+      filename: path.basename(payload.result.artifact_path),
+      kind: "image",
+    }], promptInput?.cursorOffset ?? promptTextSnapshot.length)
+    flashFooter("attached screenshot", "info")
+  }
+  const handlePromptContentChange = () => {
+    if (!promptInput) {
+      return
+    }
+    const value = promptInput.plainText
+    if (!isAttached()) {
+      promptTextSnapshot = value
+      return
+    }
+    if (promptTextMuting || promptDropPending) {
+      promptTextSnapshot = value
+      return
+    }
+    const drop = extractDroppedPromptAttachments(promptTextSnapshot, value, process.cwd())
+    if (!drop) {
+      syncPendingPromptAttachmentsFromText(value)
+      promptTextSnapshot = value
+      return
+    }
+    setPromptText(drop.nextText)
+    promptDropPending = true
+    void attachPromptFiles(drop.files, drop.insertAt)
+      .catch((error) => {
+        appLogger?.warn("prompt attachment drop failed", {
+          error: formatError(error),
+          paths: drop.files.map((file) => file.path),
+        })
+        flashFooter(`failed to attach files: ${formatError(error)}`, "error")
+      })
+      .finally(() => {
+        promptDropPending = false
+      })
+  }
+  const handleAttachmentCommand = async (commandLine: string) => {
+    const value = commandLine.replace(/^\/attach\s*/, "").trim()
+    if (!value) {
+      flashFooter("usage: /attach <path...> | /attach clear | /attach screenshot", "error")
+      return
+    }
+    if (value === "clear") {
+      clearPendingPromptAttachments()
+      flashFooter("cleared prompt attachments", "info")
+      return
+    }
+    if (value === "screenshot") {
+      await capturePromptScreenshot()
+      return
+    }
+    const files = parsePromptAttachmentCommand(value, process.cwd())
+    if (!files || files.length === 0) {
+      flashFooter("drop or specify images, PDFs, or text files", "error")
+      return
+    }
+    await attachPromptFiles(files)
+  }
+
+  const collapseTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
+    if (!turnId) {
+      return
+    }
+    const scrollbox = transcriptScrollbox
+    const previousScrollTop = scrollbox?.scrollTop ?? 0
+    const previousViewportHeight = scrollbox?.height ?? 0
+    const previousVisibleTurnHeight = measureVisibleTurnHeight(turnId)
+    let nextId = entryCounter()
+    setEntries(
+      produce((draft) => {
+        const promptIndex = draft.findIndex((entry) => entry?.turnId === turnId && entry.role === "user")
+        if (promptIndex === -1) {
+          return
+        }
+        for (let index = draft.length - 1; index >= 0; index -= 1) {
+          const entry = draft[index]
+          if (entry?.turnId === turnId && (entry.role === "turn_toggle" || entry.role === "turn_summary")) {
+            draft.splice(index, 1)
+          }
+        }
+        const turnEntries = draft.filter(
+          (entry) => entry?.turnId === turnId && entry.role !== "turn_toggle" && entry.role !== "turn_summary",
+        )
+        const collapsibleEntries = turnEntries.filter((entry) => entry.role !== "user")
+        const collapsedText = collapsedTurnText(collapsibleEntries)
+        if (collapsibleEntries.length === 0 || !collapsedText) {
+          return
+        }
+        for (const entry of collapsibleEntries) {
+          entry.hidden = true
+        }
+        draft.splice(
+          promptIndex + 1,
+          0,
+          {
+            id: ++nextId,
+            role: "turn_summary",
+            text: collapsedText,
+            turnId,
+          },
+          {
+            id: ++nextId,
+            role: "turn_toggle",
+            text: "click to expand turn",
+            turnId,
+            toggleMode: "expand",
+          },
+        )
+      }),
+    )
+    setEntryCounter(nextId)
+    rebuildTranscript()
+    if (scrollbox) {
+      restoreTurnScrollPosition(
+        scrollbox,
+        turnId,
+        previousScrollTop,
+        previousViewportHeight,
+        previousVisibleTurnHeight,
+      )
+    }
+  }
+
+  const expandTurn = (turnId: number | null | undefined) => {
+    if (!turnId) {
+      return
+    }
+    const scrollbox = transcriptScrollbox
+    const previousScrollTop = scrollbox?.scrollTop ?? 0
+    const previousViewportHeight = scrollbox?.height ?? 0
+    const previousVisibleTurnHeight = measureVisibleTurnHeight(turnId)
+    let nextId = entryCounter()
+    let changed = false
+    setEntries(
+      produce((draft) => {
+        for (const entry of draft) {
+          if (!entry || entry.turnId !== turnId) {
+            continue
+          }
+          if (entry.role === "turn_toggle" || entry.role === "turn_summary") {
+            changed = true
+            continue
+          }
+          if (entry.role !== "user") {
+            entry.hidden = false
+            changed = true
+          }
+        }
+        for (let index = draft.length - 1; index >= 0; index -= 1) {
+          const entry = draft[index]
+          if (entry?.turnId === turnId && (entry.role === "turn_toggle" || entry.role === "turn_summary")) {
+            draft.splice(index, 1)
+          }
+        }
+        const insertIndex = draft.reduce((lastIndex, entry, index) => {
+          if (!entry || entry.turnId !== turnId) {
+            return lastIndex
+          }
+          return index
+        }, -1)
+        if (changed && insertIndex >= 0) {
+          draft.splice(insertIndex + 1, 0, {
+            id: ++nextId,
+            role: "turn_toggle",
+            text: "click to collapse turn",
+            turnId,
+            toggleMode: "collapse",
+          })
+        }
+      }),
+    )
+    if (!changed) {
+      return
+    }
+    setEntryCounter(nextId)
+    rebuildTranscript()
+    if (scrollbox) {
+      restoreTurnScrollPosition(
+        scrollbox,
+        turnId,
+        previousScrollTop,
+        previousViewportHeight,
+        previousVisibleTurnHeight,
+      )
+    }
+  }
+
+  const toggleTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
+    if (!turnId) {
+      return
+    }
+    const toggleEntry = entries.find((entry) => entry?.turnId === turnId && entry.role === "turn_toggle" && !entry.hidden)
+    if (toggleEntry?.toggleMode === "expand") {
+      expandTurn(turnId)
+      return
+    }
+    collapseTurn(turnId, toggleEntryId)
+  }
 
   const appendEntry = (entry: Omit<TranscriptEntry, "id">) => {
     const nextId = entryCounter() + 1
     const nextEntry: TranscriptEntry = { id: nextId, ...entry }
+    if (nextEntry.turnId === undefined && currentTurnId !== null) {
+      nextEntry.turnId = currentTurnId
+    }
     setEntryCounter(nextId)
     setEntries(entries.length, nextEntry)
     mountTranscriptEntry(nextEntry)
@@ -488,7 +1242,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const appendUserPrompt = (text: string) => {
-    appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
+    collapseTurn(currentTurnId)
+    const turnId = nextTurnId
+    nextTurnId += 1
+    currentTurnId = turnId
+    appendEntry({ role: "user", text: trimSingleTrailingNewline(text), turnId })
     setSubmitting(true)
     setWorking(true)
     updateSessionChrome()
@@ -597,12 +1355,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applyProviderActivity = (active: boolean) => {
     setWorking(active)
     if (!active) {
+      activeToolLabels.clear()
       setSubmitting(false)
+      setActiveStatusLabel(null)
       if (!activePrompt() && statusLine() === "Cancellation requested.") {
         setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
     }
     updateSessionChrome()
+  }
+
+  const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {
+    const label = getToolActivityLabel(update.tool)
+    const terminal = update.status === "completed" || update.status === "error" || update.status === "cancelled"
+
+    activeToolLabels.delete(update.id)
+    if (label && !terminal) {
+      activeToolLabels.set(update.id, label)
+    }
+
+    const latestActiveToolLabel = Array.from(activeToolLabels.values()).at(-1)
+    setActiveStatusLabel(latestActiveToolLabel ?? ACTIVE_STATUS_FALLBACK)
   }
 
   const appendProviderChunk = (
@@ -686,10 +1459,72 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (parsed) {
       const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
       tools.set(parsed.id, merged)
+      syncActiveToolLabel(merged)
       appendProviderChunk("tool", formatToolTranscriptUpdate(merged), parsed.id, JSON.stringify(merged))
       return
     }
     appendProviderChunk("tool", normalized, undefined, normalized)
+  }
+
+  const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
+    const text = Buffer.from(record.bytes).toString("utf8")
+    switch (record.kind) {
+      case "prompt_echo":
+        appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
+        break
+      case "provider_reasoning":
+        appendProviderChunk("reasoning", text)
+        break
+      case "provider_tool":
+        appendToolUpdate(text)
+        break
+      case "provider_error":
+        appendProviderError(text)
+        break
+      case "provider_status": {
+        const activityLabel = getProviderActivityLabel(text)
+        setActiveStatusLabel(activityLabel)
+        applyProviderActivity(activityLabel !== null)
+        if (shouldRenderProviderStatus(text)) {
+          appendProviderChunk("status", text, "__provider_status__")
+        }
+        break
+      }
+      default:
+        appendProviderChunk("assistant", text)
+        break
+    }
+  }
+
+  const flushPendingTerminalRecords = () => {
+    if (pendingTerminalRecordFlush) {
+      clearTimeout(pendingTerminalRecordFlush)
+      pendingTerminalRecordFlush = undefined
+    }
+    if (pendingTerminalRecords.length === 0) {
+      return
+    }
+    const records = pendingTerminalRecords
+    pendingTerminalRecords = []
+    runUiBatch(() => {
+      for (const record of records) {
+        processTerminalOutputRecord(record)
+      }
+    })
+  }
+
+  const queueTerminalOutputRecords = (records: TerminalOutputRecord[]) => {
+    if (records.length === 0) {
+      return
+    }
+    pendingTerminalRecords.push(...records)
+    if (pendingTerminalRecordFlush) {
+      return
+    }
+    pendingTerminalRecordFlush = startTimeout(() => {
+      pendingTerminalRecordFlush = undefined
+      flushPendingTerminalRecords()
+    }, STREAM_BATCH_WINDOW_MS)
   }
 
   const ensureChromeRenderables = () => {
@@ -707,7 +1542,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       statusOpenText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
       statusCloseText = new TextRenderable(renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
       statusIndicatorBox.add(statusOpenText)
-      statusLabelTexts = Array.from({ length: STATUS_LABEL_WIDTH }, () => {
+      statusLabelTexts = Array.from({ length: STATUS_BADGE_WIDTH }, () => {
         const text = new TextRenderable(renderer, { wrapMode: "none" })
         statusIndicatorBox!.add(text)
         return text
@@ -730,11 +1565,55 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     text.attributes = attributes
   }
 
+  const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
+
+  const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
+    if (parts.length === 0) {
+      setTextRenderable(promptMetaProviderText, " ", theme.textMuted)
+      setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
+      setTextRenderable(promptMetaModelText, "", theme.textMuted)
+      setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
+      setTextRenderable(promptMetaVariantText, "", theme.textMuted)
+      return
+    }
+
+    const providerPart = parts[0]
+    const modelPart = parts[1]
+    const variantPart = parts[2]
+
+    setTextRenderable(
+      promptMetaProviderText,
+      providerPart?.text ?? "",
+      providerPart ? promptMetaToneColor(providerPart.tone) : theme.textMuted,
+      providerPart ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+    setTextRenderable(promptMetaProviderDividerText, modelPart ? " • " : "", theme.textMuted)
+    setTextRenderable(
+      promptMetaModelText,
+      modelPart?.text ?? "",
+      modelPart ? promptMetaToneColor(modelPart.tone) : theme.textMuted,
+      modelPart ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+    setTextRenderable(promptMetaModelDividerText, variantPart ? " • " : "", theme.textMuted)
+    setTextRenderable(
+      promptMetaVariantText,
+      variantPart?.text ?? "",
+      variantPart ? promptMetaToneColor(variantPart.tone) : theme.textMuted,
+      variantPart ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+  }
+
   const renderHistoryLoadingIndicator = () => {
     if (!historyLoadingBox) {
       return
     }
-    if (loadingHistory()) {
+    if (centerMode() !== "transcript") {
+      if (historyLoadingText) {
+        historyLoadingBox.remove(historyLoadingText.id)
+        historyLoadingText.destroyRecursively()
+        historyLoadingText = undefined
+      }
+    } else if (loadingHistory()) {
       if (!historyLoadingText) {
         historyLoadingText = new TextRenderable(renderer, {
           content: "loading...",
@@ -757,6 +1636,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderHistoryLoadingIndicator()
   }
 
+  const requestTranscriptRender = () => {
+    if (uiBatchDepth > 0) {
+      pendingTranscriptRender = true
+      return
+    }
+    transcriptScrollbox?.requestRender()
+  }
+
+  const flushDeferredUiUpdates = () => {
+    if (pendingTranscriptRender) {
+      pendingTranscriptRender = false
+      transcriptScrollbox?.requestRender()
+    }
+    if (pendingSessionChromeUpdate) {
+      pendingSessionChromeUpdate = false
+      updateSessionChrome()
+    }
+  }
+
+  const runUiBatch = (callback: () => void) => {
+    uiBatchDepth += 1
+    batch(callback)
+    uiBatchDepth -= 1
+    if (uiBatchDepth === 0) {
+      flushDeferredUiUpdates()
+    }
+  }
+
   const renderStatusIndicator = () => {
     ensureChromeRenderables()
     if (!isAttached()) {
@@ -769,9 +1676,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const mode = sessionStatusMode()
-    const label = mode === "working" ? "WORKING" : mode === "disconnected" ? "DISCONNECTED" : "IDLE"
+    const label = getSessionStatusLabel(mode, activeStatusLabel())
     setTextRenderable(statusOpenText, "", theme.textMuted)
-    for (let index = 0; index < STATUS_LABEL_WIDTH; index += 1) {
+    for (let index = 0; index < STATUS_BADGE_WIDTH; index += 1) {
       const character = label[index] ?? " "
       let fg = theme.success
       if (mode === "disconnected") {
@@ -792,18 +1699,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const updateSessionChrome = () => {
+    if (uiBatchDepth > 0) {
+      pendingSessionChromeUpdate = true
+      return
+    }
     ensureChromeRenderables()
+    syncPromptPlaceholder()
     setTextRenderable(
       promptStateText,
       fatalError() ? "error" : submitting() ? "thinking" : footerHint(),
       fatalError() ? theme.error : submitting() ? theme.primary : theme.textMuted,
     )
-    setTextRenderable(promptMetaText, isAttached() ? promptMetaLine() : " ", theme.textMuted)
+    setPromptMetaRenderables(isAttached() ? promptMetaParts() : [])
     promptStateBox?.requestRender()
     setTextRenderable(
       footerSummaryText,
       isAttached()
-        ? `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected • ${sessionState().active_provider_run_id ?? "starting provider"}${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""}`
+        ? `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected • ${sessionState().active_provider_run_id ?? "starting provider"}${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""} • Ctrl+L hotkeys`
         : SESSION_NEW_FOOTER_HINT,
       theme.textMuted,
     )
@@ -829,11 +1741,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       emptyTranscriptRenderable = undefined
     }
 
-    const renderable = buildTranscriptEntryRenderable(renderer, entry, transcriptSyntax)
+    const renderable = buildTranscriptEntryRenderable(renderer, entry, transcriptSyntax, toggleTurn)
     transcriptRenderables.set(entry.id, renderable)
     transcriptScrollbox.add(renderable.wrapper)
     if (requestRender) {
-      transcriptScrollbox.requestRender()
+      requestTranscriptRender()
     }
   }
 
@@ -853,7 +1765,86 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     renderable.update(renderable.entry)
-    transcriptScrollbox?.requestRender()
+    requestTranscriptRender()
+    if (previousMode === "markdown") {
+      scheduleTranscriptRelayout()
+    }
+  }
+
+  const scheduleTranscriptRelayout = () => {
+    if (pendingTranscriptRelayout) {
+      return
+    }
+    pendingTranscriptRelayout = true
+    startTimeout(() => {
+      pendingTranscriptRelayout = false
+      const scrollbox = transcriptScrollbox
+      const previousScrollTop = scrollbox?.scrollTop ?? 0
+      const previousHeight = scrollbox?.height ?? 0
+      const wasNearBottom = scrollbox
+        ? previousScrollTop >= Math.max(0, scrollbox.scrollHeight - previousHeight - 2)
+        : false
+      rebuildTranscript()
+      if (!scrollbox || centerMode() !== "transcript") {
+        return
+      }
+      const maxScrollTop = Math.max(0, scrollbox.scrollHeight - scrollbox.height)
+      const nextScrollTop = wasNearBottom
+        ? maxScrollTop
+        : Math.max(0, Math.min(previousScrollTop, maxScrollTop))
+      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
+      scrollbox.requestRender()
+      lastTranscriptScrollTop = scrollbox.scrollTop
+    }, STREAM_BATCH_WINDOW_MS)
+  }
+
+  const measureVisibleTurnHeight = (turnId: number | null | undefined) => {
+    if (!turnId) {
+      return 0
+    }
+    return visibleTranscriptEntries()
+      .filter((entry) => entry.turnId === turnId && !entry.historyDeferred)
+      .reduce((total, entry) => total + (transcriptRenderables.get(entry.id)?.wrapper.height ?? 0), 0)
+  }
+
+  const restoreTurnScrollPosition = (
+    scrollbox: ScrollBoxRenderable,
+    turnId: number,
+    previousScrollTop: number,
+    previousViewportHeight: number,
+    previousVisibleTurnHeight: number,
+  ) => {
+    const restoreToken = ++pendingHistoryScrollRestore
+    const restoreScroll = (remainingAttempts: number, lastHeight = -1, stableFrames = 0) => {
+      if (!transcriptScrollbox || transcriptScrollbox !== scrollbox || restoreToken !== pendingHistoryScrollRestore) {
+        pendingHistoryScrollRestore = 0
+        return
+      }
+
+      const nextVisibleTurnHeight = measureVisibleTurnHeight(turnId)
+      const nextScrollTop = computeCollapsedHistoryScrollTop(
+        previousScrollTop,
+        previousVisibleTurnHeight,
+        nextVisibleTurnHeight,
+        previousViewportHeight,
+      )
+
+      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
+      scrollbox.requestRender()
+      lastTranscriptScrollTop = scrollbox.scrollTop
+
+      const closeEnough = Math.abs(scrollbox.scrollTop - nextScrollTop) <= 1
+      const nextStableFrames = nextVisibleTurnHeight === lastHeight ? stableFrames + 1 : 0
+      if ((closeEnough && nextStableFrames >= 1) || remainingAttempts <= 1) {
+        pendingHistoryScrollRestore = 0
+        return
+      }
+
+      startTimeout(() => restoreScroll(remainingAttempts - 1, nextVisibleTurnHeight, nextStableFrames), 16)
+    }
+
+    scrollbox.requestRender()
+    startTimeout(() => restoreScroll(4), 0)
   }
 
   const rebuildTranscript = () => {
@@ -868,13 +1859,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptRenderables.clear()
     emptyTranscriptRenderable = undefined
 
-    if (entries.length === 0) {
+    if (centerMode() === "tree" && directoryTreeState()) {
+      const treeState = directoryTreeState()!
+      const rows = buildDirectoryTreeRows(treeState)
+      transcriptScrollbox.add(buildDirectoryTreeRenderable(renderer, treeState))
+      const selectedIndex = Math.max(0, rows.findIndex((row) => row.id === treeState.selectedPath))
+      const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
+      transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: Math.max(0, Math.min(selectedIndex, maxScrollTop)) })
+      transcriptScrollbox.requestRender()
+      return
+    }
+
+    const visibleEntries = visibleTranscriptEntries()
+    if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
         ? buildEmptyTranscriptRenderable(renderer)
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
     } else {
-      for (const entry of entries.filter((candidate) => candidate && !candidate.historyDeferred)) {
+      for (const entry of visibleEntries.filter((candidate) => !candidate.historyDeferred)) {
         mountTranscriptEntry(entry, false)
       }
     }
@@ -885,6 +1888,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const replaceTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
     const sanitizedEntries = nextEntries.filter(Boolean)
     tools.clear()
+    currentTurnId = computeCurrentTurnId(sanitizedEntries)
+    nextTurnId = computeNextTurnId(sanitizedEntries)
     setEntries(reconcile(sanitizedEntries))
     setEntryCounter(sanitizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     rebuildTranscript()
@@ -962,7 +1967,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousScrollHeight = transcriptScrollbox?.scrollHeight ?? 0
     const previousScrollTop = transcriptScrollbox?.scrollTop ?? 0
     const previousViewportHeight = transcriptScrollbox?.height ?? 0
-    const nextCombinedEntries = stitchPrependedHistory(sanitizedEntries, currentEntries)
+    const nextCombinedEntries = collapseHistoricalTurns(
+      stitchPrependedHistory(sanitizedEntries, currentEntries),
+      hasPromptWork(sessionState()),
+    )
+    currentTurnId = computeCurrentTurnId(nextCombinedEntries)
+    nextTurnId = computeNextTurnId(nextCombinedEntries)
     setEntries(reconcile(nextCombinedEntries))
     setEntryCounter(nextCombinedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     rebuildTranscript()
@@ -1004,9 +2014,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const resolveOlderHistoryChunk = async (cursor: SessionHistoryCursor | null) => {
+    let nextCursor = cursor
+    let resolvedEntries: TranscriptEntry[] = []
+
+    while (nextCursor !== null) {
+      const historyPage = await getSessionHistory(client, sessionState().id, nextCursor)
+      const hydratedEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), entryCounter())
+      resolvedEntries = resolvedEntries.length === 0
+        ? hydratedEntries
+        : stitchPrependedHistory(hydratedEntries, resolvedEntries)
+      nextCursor = historyPage.next_cursor
+      if (resolvedEntries.length === 0 || resolvedEntries[0]?.role === "user" || nextCursor === null) {
+        break
+      }
+    }
+
+    return {
+      entries: resolvedEntries,
+      nextCursor,
+    }
+  }
+
   const transitionToNoSession = (message = "No session attached.") => {
     setAttachmentState(null)
     setProviderRunState(null)
+    clearPendingPromptAttachments()
+    setCenterMode("transcript")
+    setDirectoryTreeState(null)
+    activeToolLabels.clear()
+    setActiveStatusLabel(null)
     setCreatedSessionState(false)
     setSessionState(buildDetachedSessionState(options))
     historyLoadGeneration += 1
@@ -1021,6 +2058,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setStatusLine(message)
     updateSessionChrome()
     promptInput?.clear()
+    syncPromptTextSnapshot()
     promptInput?.blur()
     reconcileWaitingRoom({
       ...waitingRoomState(),
@@ -1053,6 +2091,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (currentAttachment) {
       await detachCurrentAttachment()
     }
+    clearPendingPromptAttachments()
     historyLoadGeneration += 1
     const attachment = await attachToSession(client, session.id, options.clientId)
     const attachedSession = await getSessionState(client, session.id)
@@ -1076,11 +2115,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     await maybeResize(client, session.id)
     const historyPage = await getSessionHistory(client, session.id)
-    const historyEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), 0)
+    let resolvedHistoryEntries = hydrateTranscriptEntries(historyPage.entries)
+    let nextResolvedCursor = historyPage.next_cursor
+    while (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user" && nextResolvedCursor !== null) {
+      const olderPage = await getSessionHistory(client, session.id, nextResolvedCursor)
+      resolvedHistoryEntries = stitchPrependedHistory(hydrateTranscriptEntries(olderPage.entries), resolvedHistoryEntries)
+      nextResolvedCursor = olderPage.next_cursor
+    }
+    const historyEntries = reindexTranscriptEntries(
+      collapseHistoricalTurns(
+        resolvedHistoryEntries,
+        hasPromptWork(attachedSession),
+      ),
+      0,
+    )
     setAttachmentState(attachment)
     setCreatedSessionState(createdSession)
     setSessionState(await getSessionState(client, session.id))
-    setNextHistoryCursor(historyPage.next_cursor)
+    setCenterMode("transcript")
+    setDirectoryTreeState(null)
+    activeToolLabels.clear()
+    setActiveStatusLabel(null)
+    setNextHistoryCursor(nextResolvedCursor)
     replaceTranscriptEntries(historyEntries)
     setFatalError(null)
     setDaemonDisconnected(false)
@@ -1103,12 +2159,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const sessionId = sessionState().id
     const cursor = nextHistoryCursor()
     try {
-      const historyPage = await getSessionHistory(client, sessionId, cursor)
+      let historyPage = await getSessionHistory(client, sessionId, cursor)
+      let hydratedEntries = hydrateTranscriptEntries(historyPage.entries)
+      while (hydratedEntries.length > 0 && hydratedEntries[0]?.role !== "user" && historyPage.next_cursor !== null) {
+        historyPage = await getSessionHistory(client, sessionId, historyPage.next_cursor)
+        hydratedEntries = [...hydrateTranscriptEntries(historyPage.entries), ...hydratedEntries]
+      }
       if (generation !== historyLoadGeneration || !isAttached() || sessionState().id !== sessionId) {
         return
       }
-      const hydratedEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), entryCounter())
-      await prependTranscriptEntries(hydratedEntries)
+      const nextEntries = reindexTranscriptEntries(hydratedEntries, entryCounter())
+      await prependTranscriptEntries(nextEntries)
       setNextHistoryCursor(historyPage.next_cursor)
       scheduleShortViewportHistoryCheck()
     } catch (error) {
@@ -1240,12 +2301,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const rawPrompt = promptInput.plainText
     const trimmed = rawPrompt.trim()
-    if (!trimmed) {
+    if (!trimmed && pendingAttachments().length === 0) {
       promptInput.clear()
+      syncPromptTextSnapshot()
       return
     }
     if (trimmed === "/exit") {
       await requestExit()
+      return
+    }
+    if (trimmed.startsWith("/attach")) {
+      try {
+        await handleAttachmentCommand(rawPrompt)
+      } catch (error) {
+        appLogger?.error("attachment command failed", {
+          command: trimmed,
+          error: formatError(error),
+        })
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+        syncPromptTextSnapshot()
+      }
       return
     }
     if (trimmed.startsWith("/session")) {
@@ -1262,6 +2339,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         flashFooter(formatError(error), "error")
       } finally {
         promptInput.clear()
+        syncPromptTextSnapshot()
       }
       return
     }
@@ -1270,30 +2348,49 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await requestPromptStop()
       } finally {
         promptInput.clear()
+        syncPromptTextSnapshot()
       }
       return
     }
     if (!isAttached()) {
       flashFooter(SESSION_NEW_ERROR_HINT, "error")
       promptInput.clear()
+      syncPromptTextSnapshot()
       return
     }
 
-    const prompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
+    const prompt = trimmed ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
+    const attachments = pendingAttachments().map<PromptAttachmentPart>((file) => ({
+      url: file.url,
+      mime: file.mime,
+      filename: file.filename,
+    }))
     try {
       appLogger?.info("submitting prompt", {
         chars: prompt.length,
+        attachments: attachments.length,
       })
+      activeToolLabels.clear()
+      setActiveStatusLabel(null)
       const attachment = attachmentState()
       if (!attachment) {
         flashFooter("No session attached.", "error")
         promptInput.clear()
+        syncPromptTextSnapshot()
         return
       }
-      const response = await submitPromptWithRecovery(client, sessionState().id, attachment.id, prompt, options, appLogger)
+      const response = await submitPromptWithRecovery(
+        client,
+        sessionState().id,
+        attachment.id,
+        prompt,
+        attachments,
+        options,
+        appLogger,
+      )
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
       applySessionState(payload.session)
-      appendUserPrompt(prompt)
+      appendUserPrompt(renderPromptTranscript(prompt))
       setWorking(true)
       updateSessionChrome()
       const outcomeName = firstVariantName(payload.outcome)
@@ -1309,6 +2406,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       updateSessionChrome()
       promptInput.clear()
+      syncPromptTextSnapshot()
+      clearPendingPromptAttachments()
     } catch (error) {
       appLogger?.error("prompt submission failed", {
         error: formatError(error),
@@ -1342,22 +2441,124 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   useKeyboard((event) => {
+    if (event.ctrl && event.name === "l") {
+      event.preventDefault()
+      event.stopPropagation()
+      toggleHotkeys()
+      return
+    }
+    if (hotkeysOpen() && event.name === "escape") {
+      event.preventDefault()
+      event.stopPropagation()
+      closeHotkeys()
+      return
+    }
+    if (event.ctrl && event.name === "e") {
+      event.preventDefault()
+      event.stopPropagation()
+      void requestExit()
+      return
+    }
     if (event.ctrl && event.name === "c") {
       event.preventDefault()
+      event.stopPropagation()
       void (activePrompt() ? requestPromptStop() : requestExit())
+      return
+    }
+    if (hotkeysOpen()) {
+      event.preventDefault()
+      event.stopPropagation()
     }
   })
 
   const handleSigint = () => {
     void (activePrompt() ? requestPromptStop() : requestExit())
   }
+  const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
+    if (!isAttached() || centerMode() !== "transcript" || event.eventType === "release") {
+      return false
+    }
+    if (event.name !== "up" && event.name !== "down") {
+      return false
+    }
+    return Boolean(event.shift) || !(promptInput?.plainText.trim())
+  }
+  const navigatePromptTurns = (direction: "previous" | "next") => {
+    if (!transcriptScrollbox) {
+      return
+    }
+    const promptOffsets = visibleTranscriptEntries()
+      .filter((entry) => entry.role === "user")
+      .map((entry) => transcriptRenderables.get(entry.id)?.wrapper.y ?? null)
+      .filter((offset): offset is number => offset !== null)
+      .sort((left, right) => left - right)
+    const target = findTurnPromptScrollTarget(promptOffsets, transcriptScrollbox.scrollTop, direction)
+    if (target === null) {
+      return
+    }
+    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
+    transcriptScrollbox.requestRender()
+    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
+  }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (!event) {
       return
     }
+    if (event.eventType !== "release" && event.ctrl && event.name === "l") {
+      toggleHotkeys()
+      return
+    }
+    if (event.eventType !== "release" && hotkeysOpen() && event.name === "escape") {
+      closeHotkeys()
+      return
+    }
+    if (event.eventType !== "release" && event.ctrl && event.name === "e") {
+      void requestExit()
+      return
+    }
+    if (event.eventType !== "release" && event.name === "tab") {
+      if (hotkeysOpen()) {
+        return
+      }
+      void toggleCenterMode()
+      return
+    }
     if (event?.ctrl && event.name === "c") {
       void (activePrompt() ? requestPromptStop() : requestExit())
+      return
+    }
+    if (hotkeysOpen()) {
+      return
+    }
+    if (event.eventType !== "release" && promptInput?.focused) {
+      if (event.name === "backspace" && removePromptAttachmentsForEdit("backspace")) {
+        return
+      }
+      if (event.name === "delete" && removePromptAttachmentsForEdit("delete")) {
+        return
+      }
+    }
+    if (event.eventType !== "release" && event.name === "backspace" && isAttached() && !promptInput?.plainText && pendingAttachments().length > 0) {
+      removeLastPendingPromptAttachment()
+      return
+    }
+    if (isAttached() && centerMode() === "tree") {
+      if (event.eventType !== "release" && event.name === "up") {
+        navigateDirectoryTree("up")
+        return
+      }
+      if (event.eventType !== "release" && event.name === "down") {
+        navigateDirectoryTree("down")
+        return
+      }
+      if (event.eventType !== "release" && (event.name === "return" || event.name === "enter") && !(promptInput?.plainText.trim())) {
+        activateDirectoryTreeSelection()
+        return
+      }
+    }
+    if (shouldNavigatePromptTurns(event)) {
+      navigatePromptTurns(event.name === "up" ? "previous" : "next")
       return
     }
     if (!isAttached()) {
@@ -1396,6 +2597,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   onCleanup(() => {
     process.off("SIGINT", handleSigint)
     process.stdin.off("data", handleStdinData)
+    if (pendingTerminalRecordFlush) {
+      clearTimeout(pendingTerminalRecordFlush)
+      pendingTerminalRecordFlush = undefined
+    }
   })
 
   let pollersStarted = false
@@ -1534,32 +2739,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         pumpTerminalOutputRequest(sessionState().id, attachment.id),
       )
       const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
-      for (const record of payload.records) {
-        const text = Buffer.from(record.bytes).toString("utf8")
-        switch (record.kind) {
-          case "prompt_echo":
-            appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
-            break
-          case "provider_reasoning":
-            appendProviderChunk("reasoning", text)
-            break
-          case "provider_tool":
-            appendToolUpdate(text)
-            break
-          case "provider_error":
-            appendProviderError(text)
-            break
-          case "provider_status":
-            applyProviderActivity(!/^OpenCode is idle\.?$/i.test(text.trim()))
-            if (shouldRenderProviderStatus(text)) {
-              appendProviderChunk("status", text, "__provider_status__")
-            }
-            break
-          default:
-            appendProviderChunk("assistant", text)
-            break
-        }
-      }
+      queueTerminalOutputRecords(payload.records)
     })
   }
 
@@ -1631,6 +2811,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     pollersStarted = true
     rebuildTranscript()
+    syncPromptPlaceholder()
     if (isAttached()) {
       promptInput.focus()
     } else {
@@ -1764,35 +2945,107 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           paddingLeft={2}
           paddingRight={2}
           paddingTop={1}
-          paddingBottom={0}
+          paddingBottom={1}
           backgroundColor={theme.backgroundElement}
           flexDirection="column"
           gap={1}
         >
-          <textarea
-            ref={(value) => {
-              promptInput = value
-              ensureBackgroundPollersStarted()
-            }}
-            placeholder={isAttached() ? "Ask Arroba to do work in this session" : SESSION_NEW_PLACEHOLDER}
-            textColor={theme.text}
-            focusedTextColor={theme.text}
-            minHeight={1}
-            maxHeight={6}
-            keyBindings={PROMPT_KEYBINDINGS}
-            onSubmit={() => {
-              void submitPrompt()
-            }}
-          />
-          <text
-            ref={(value) => {
-              promptMetaText = value
-              updateSessionChrome()
-            }}
-            fg={theme.textMuted}
-          >
-            {isAttached() ? promptMetaLine() : " "}
-          </text>
+          {isAttached()
+            ? (
+                <textarea
+                  ref={(value) => {
+                    promptInput = value
+                    value.syntaxStyle = promptTokenStyle
+                    syncPromptPlaceholder()
+                    syncPromptTextSnapshot()
+                    refreshPromptAttachmentHighlights()
+                    ensureBackgroundPollersStarted()
+                  }}
+                  placeholder={ATTACHED_PROMPT_PLACEHOLDER}
+                  textColor={theme.text}
+                  focusedTextColor={theme.text}
+                  minHeight={1}
+                  maxHeight={6}
+                  keyBindings={PROMPT_KEYBINDINGS}
+                  onContentChange={() => {
+                    handlePromptContentChange()
+                  }}
+                  onSubmit={() => {
+                    void submitPrompt()
+                  }}
+                />
+              )
+            : (
+                <textarea
+                  ref={(value) => {
+                    promptInput = value
+                    value.syntaxStyle = promptTokenStyle
+                    syncPromptPlaceholder()
+                    syncPromptTextSnapshot()
+                    refreshPromptAttachmentHighlights()
+                    ensureBackgroundPollersStarted()
+                  }}
+                  placeholder={SESSION_NEW_PLACEHOLDER}
+                  textColor={theme.text}
+                  focusedTextColor={theme.text}
+                  minHeight={1}
+                  maxHeight={6}
+                  keyBindings={PROMPT_KEYBINDINGS}
+                  onContentChange={() => {
+                    handlePromptContentChange()
+                  }}
+                  onSubmit={() => {
+                    void submitPrompt()
+                  }}
+                />
+              )}
+          <box flexDirection="row">
+            <text
+              ref={(value) => {
+                promptMetaProviderText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {" "}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaProviderDividerText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaModelText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaModelDividerText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaVariantText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+          </box>
         </box>
       </box>
 
@@ -1814,6 +3067,64 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           />
         </box>
       </box>
+
+      {hotkeysOpen()
+        ? (
+            <box
+              position="absolute"
+              left={0}
+              top={0}
+              width={dimensions().width}
+              height={dimensions().height}
+              alignItems="center"
+              paddingTop={Math.max(1, Math.floor(dimensions().height / 5))}
+              backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
+              onMouseUp={() => {
+                closeHotkeys()
+              }}
+            >
+              <box
+                onMouseUp={(event) => {
+                  event.stopPropagation()
+                }}
+                width={HOTKEY_DIALOG_WIDTH}
+                maxWidth={dimensions().width - 4}
+                backgroundColor={theme.backgroundPanel}
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={2}
+                flexDirection="column"
+                gap={1}
+              >
+                <box flexDirection="row" justifyContent="space-between">
+                  <text attributes={TextAttributes.BOLD} fg={theme.text}>
+                    Hotkeys
+                  </text>
+                  <text fg={theme.textMuted}>Esc closes</text>
+                </box>
+                <text fg={theme.textMuted}>Ctrl+L toggles this list.</text>
+                {hotkeySections().map((section) => (
+                  <box flexDirection="column" gap={1}>
+                    <text attributes={TextAttributes.BOLD} fg={theme.primary}>
+                      {section.title}
+                    </text>
+                    {section.items.map((item) => (
+                      <box flexDirection="row" gap={2}>
+                        <box width={22} flexShrink={0}>
+                          <text attributes={TextAttributes.BOLD} fg={theme.text}>
+                            {item.keys}
+                          </text>
+                        </box>
+                        <text fg={theme.textMuted}>{item.description}</text>
+                      </box>
+                    ))}
+                  </box>
+                ))}
+              </box>
+            </box>
+          )
+        : null}
     </box>
   )
 }
@@ -1831,9 +3142,11 @@ function reflectedDistance(index: number, length: number, frame: number): number
 }
 
 function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): TranscriptEntry[] {
+  const mergedHistoryEntries = mergeAdjacentHistoryPageEntries(historyEntries)
   const entries: TranscriptEntry[] = []
   const tools = new Map<string, ToolTranscriptUpdate>()
   let nextId = 0
+  let currentTurnId = 0
 
   const appendTranscriptEntry = (
     role: TranscriptEntry["role"],
@@ -1846,6 +3159,7 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
       historyFragmentStart?: number
       historyFragmentEnd?: number
       historyTotalChars?: number
+      turnId?: number
     } = {},
   ) => {
     const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
@@ -1886,19 +3200,31 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
     if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
     if (options.historyFragmentEnd !== undefined) nextEntry.historyFragmentEnd = options.historyFragmentEnd
     if (options.historyTotalChars !== undefined) nextEntry.historyTotalChars = options.historyTotalChars
+    if (options.turnId !== undefined) nextEntry.turnId = options.turnId
     entries.push(nextEntry)
   }
 
-  for (const pageEntry of historyEntries) {
-    const options = {
+  for (const pageEntry of mergedHistoryEntries) {
+    const options: {
+      historyEntryIndex: number
+      historyFragmentStart: number
+      historyFragmentEnd: number
+      historyTotalChars: number
+      turnId?: number
+    } = {
       historyEntryIndex: pageEntry.entry_index,
       historyFragmentStart: pageEntry.fragment_start,
       historyFragmentEnd: pageEntry.fragment_end,
       historyTotalChars: pageEntry.total_chars,
     }
+    if (currentTurnId > 0) options.turnId = currentTurnId
     switch (pageEntry.entry.kind) {
       case "user_prompt":
-        appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), options)
+        currentTurnId = Math.max(currentTurnId + 1, (pageEntry.entry_index ?? 0) + 1)
+        appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), {
+          ...options,
+          turnId: currentTurnId,
+        })
         break
       case "provider_reasoning":
         appendTranscriptEntry("reasoning", pageEntry.entry.text, options)
@@ -1947,6 +3273,38 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
   return markDeferredHistoryEntries(entries)
 }
 
+function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPageEntry[]) {
+  const merged: SessionHistoryPageEntry[] = []
+
+  for (const entry of historyEntries) {
+    const previous = merged.at(-1)
+    if (
+      previous
+      && previous.entry_index === entry.entry_index
+      && previous.entry.kind === entry.entry.kind
+      && previous.fragment_end === entry.fragment_start
+    ) {
+      previous.fragment_end = entry.fragment_end
+      previous.entry.text += entry.entry.text
+      previous.total_chars = Math.max(previous.total_chars, entry.total_chars)
+      continue
+    }
+
+    merged.push({
+      entry_index: entry.entry_index,
+      fragment_start: entry.fragment_start,
+      fragment_end: entry.fragment_end,
+      total_chars: entry.total_chars,
+      entry: {
+        kind: entry.entry.kind,
+        text: entry.entry.text,
+      },
+    })
+  }
+
+  return merged
+}
+
 function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {
   return entries.map((entry, index) => ({
     ...entry,
@@ -1959,12 +3317,13 @@ async function submitPromptWithRecovery(
   sessionId: string,
   attachmentId: string,
   prompt: string,
+  attachments: PromptAttachmentPart[],
   options: CliOptions,
   logger?: ArrobaLogger | null,
 ): Promise<Record<string, unknown>> {
   try {
     return await client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, prompt),
+      submitPromptRequest(sessionId, attachmentId, prompt, attachments),
     )
   } catch (error) {
     if (!isRecoverableProviderError(error)) {
@@ -1983,7 +3342,7 @@ async function submitPromptWithRecovery(
       session_id: sessionId,
     })
     return client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, prompt),
+      submitPromptRequest(sessionId, attachmentId, prompt, attachments),
     )
   }
 }
@@ -1997,6 +3356,7 @@ function buildTranscriptEntryRenderable(
   renderer: ReturnType<typeof useRenderer>,
   entry: TranscriptEntry,
   transcriptSyntax: SyntaxStyle,
+  onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
 ) {
   const patch = readTranscriptApplyPatch(entry)
   const wrapper = new BoxRenderable(renderer, {
@@ -2052,6 +3412,14 @@ function buildTranscriptEntryRenderable(
       fg: transcriptTextColor(entry),
       wrapMode: "word",
     })
+    if (entry.role === "turn_toggle") {
+      text.onMouseUp = (event) => {
+        if (event.button !== MouseButton.LEFT) {
+          return
+        }
+        onToggleTurn(entry.turnId, entry.id)
+      }
+    }
     applyTranscriptTextContent(text, entry)
     body.add(text)
     update = (nextEntry) => {
@@ -2078,7 +3446,7 @@ function transcriptRenderMode(entry: TranscriptEntry) {
   if (readTranscriptApplyPatch(entry)) {
     return "patch"
   }
-  if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
+  if (shouldRenderTranscriptAsMarkdown(entry.role === "turn_summary" ? "assistant" : entry.role, entry.text)) {
     return "markdown"
   }
   return "text"
@@ -2165,13 +3533,68 @@ function buildApplyPatchTranscriptContent(
   }
 }
 
-function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
-  text.clear()
-  if (entry.role === "tool") {
-    applyToolTranscriptTextContent(text, entry)
+function appendAttachmentChip(text: TextRenderable, mime: string, filename: string) {
+  const label = mime.startsWith("image/") ? "img" : mime === "application/pdf" ? "pdf" : "txt"
+  const colors = mime.startsWith("image/")
+    ? { accentBg: RGBA.fromHex("#f0d77d"), accentFg: RGBA.fromHex("#1f1400"), bodyBg: RGBA.fromHex("#2e2615") }
+    : mime === "application/pdf"
+      ? { accentBg: RGBA.fromHex("#8cc0ff"), accentFg: RGBA.fromHex("#09182b"), bodyBg: RGBA.fromHex("#172534") }
+      : { accentBg: RGBA.fromHex("#8fd8a8"), accentFg: RGBA.fromHex("#0d1f13"), bodyBg: RGBA.fromHex("#173022") }
+  text.add(TextNodeRenderable.fromString(` ${label} `, {
+    fg: colors.accentFg,
+    bg: colors.accentBg,
+    attributes: TextAttributes.BOLD,
+  }))
+  text.add(TextNodeRenderable.fromString(` ${filename} `, {
+    fg: theme.text,
+    bg: colors.bodyBg,
+    attributes: TextAttributes.BOLD,
+  }))
+}
+
+function tokenMime(kind: string) {
+  const value = kind.toLowerCase()
+  if (value === "image") {
+    return "image/png"
+  }
+  if (value === "pdf") {
+    return "application/pdf"
+  }
+  return "text/plain"
+}
+
+function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  const lines = entry.text.split("\n")
+  for (const [lineIndex, line] of lines.entries()) {
+    appendPromptTranscriptLine(text, entry, line)
+    if (lineIndex < lines.length - 1) {
+      text.add("\n")
+    }
+  }
+}
+
+function appendPromptTranscriptLine(text: TextRenderable, entry: TranscriptEntry, line: string) {
+  const matches = Array.from(line.matchAll(/\[(image|pdf|file)\s+(\d+)\]/gi))
+  if (matches.length === 0) {
+    appendTranscriptSpans(text, entry, line)
     return
   }
-  for (const span of splitInlineCodeSpans(entry.text)) {
+  let offset = 0
+  for (const match of matches) {
+    const index = match.index ?? 0
+    if (index > offset) {
+      appendTranscriptSpans(text, entry, line.slice(offset, index))
+    }
+    appendAttachmentChip(text, tokenMime(match[1] ?? "file"), `[${(match[1] ?? "file").toLowerCase()} ${match[2] ?? "1"}]`)
+    offset = index + match[0].length
+  }
+  if (offset < line.length) {
+    appendTranscriptSpans(text, entry, line.slice(offset))
+  }
+}
+
+function appendTranscriptSpans(text: TextRenderable, entry: TranscriptEntry, value: string) {
+  for (const span of splitInlineCodeSpans(value)) {
     text.add(
       TextNodeRenderable.fromString(
         span.text,
@@ -2184,6 +3607,19 @@ function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry
       ),
     )
   }
+}
+
+function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  text.clear()
+  if (entry.role === "tool") {
+    applyToolTranscriptTextContent(text, entry)
+    return
+  }
+  if (entry.role === "user") {
+    applyPromptTranscriptTextContent(text, entry)
+    return
+  }
+  appendTranscriptSpans(text, entry, entry.text)
 }
 
 function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
@@ -2214,10 +3650,23 @@ function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptE
 function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
+    flexGrow: 1,
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 1,
   })
   wrapper.add(
     new TextRenderable(renderer, {
-      content: "Type a prompt below. /stop cancels the active turn, /exit detaches from the session.",
+      content: arrobaArtFrame(12),
+      fg: theme.primary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    }),
+  )
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: "Type your first prompt below.",
       fg: theme.textMuted,
       wrapMode: "word",
     }),
@@ -2291,12 +3740,47 @@ function buildNoSessionRenderable(
   return wrapper
 }
 
+function buildDirectoryTreeRenderable(renderer: ReturnType<typeof useRenderer>, state: DirectoryTreeState) {
+  const wrapper = new BoxRenderable(renderer, {
+    marginBottom: 0,
+    flexDirection: "column",
+    gap: 0,
+  })
+  for (const row of buildDirectoryTreeRows(state)) {
+    const isSelected = row.id === state.selectedPath
+    const text = `${"  ".repeat(row.depth)}${row.kind === "root" || row.kind === "directory" ? (row.expanded ? "[-] " : "[+] ") : "    "}${row.label}`
+    wrapper.add(
+      new TextRenderable(renderer, {
+        content: text,
+        fg: row.kind === "root" ? theme.secondary : isSelected ? theme.primary : theme.text,
+        ...(isSelected ? { bg: theme.backgroundElement } : {}),
+        attributes: isSelected || row.kind === "root" ? TextAttributes.BOLD : TextAttributes.NONE,
+        wrapMode: "none",
+      }),
+    )
+  }
+  return wrapper
+}
+
 function renderWaitingRoomKeys(state: WaitingRoomState) {
   const key = (label: string, pressed: boolean) => (pressed ? `[${label}]` : `<${label}>`)
   return [
     `        ${key("^", state.keyState.up)}`,
     `${key("<", state.keyState.left)} ${key("v", state.keyState.down)} ${key(">", state.keyState.right)}`,
   ].join("\n")
+}
+
+function computeCurrentTurnId(entries: TranscriptEntry[]) {
+  return entries.reduce<number | null>((latest, entry) => {
+    if (!entry || entry.role !== "user" || entry.turnId === undefined) {
+      return latest
+    }
+    return entry.turnId
+  }, null)
+}
+
+function computeNextTurnId(entries: TranscriptEntry[]) {
+  return entries.reduce((max, entry) => Math.max(max, entry?.turnId ?? 0), 0) + 1
 }
 
 function transcriptAccent(entry: TranscriptEntry) {
@@ -2321,6 +3805,12 @@ function transcriptAccent(entry: TranscriptEntry) {
       : entry.emphasis === "warning"
         ? theme.warning
         : theme.textMuted
+  }
+  if (entry.role === "turn_summary") {
+    return theme.borderSubtle
+  }
+  if (entry.role === "turn_toggle") {
+    return theme.info
   }
   return theme.borderSubtle
 }
@@ -2361,6 +3851,9 @@ function transcriptBodyColor(entry: TranscriptEntry) {
   if (entry.role === "error") {
     return theme.backgroundPanel
   }
+  if (entry.role === "turn_summary") {
+    return theme.backgroundPanel
+  }
   return entry.role === "assistant" || entry.role === "reasoning"
     ? theme.backgroundPanel
     : theme.backgroundElement
@@ -2389,11 +3882,17 @@ function transcriptTextColor(entry: TranscriptEntry) {
         ? theme.warning
         : theme.textMuted
   }
+  if (entry.role === "turn_summary") {
+    return theme.text
+  }
+  if (entry.role === "turn_toggle") {
+    return theme.info
+  }
   return theme.text
 }
 
 function transcriptInlineCodeColor(entry: TranscriptEntry) {
-  if (entry.role === "tool" || entry.role === "status" || entry.role === "error") {
+  if (entry.role === "tool" || entry.role === "status" || entry.role === "error" || entry.role === "turn_toggle") {
     return theme.primary
   }
   if (entry.role === "user") {
@@ -2403,6 +3902,11 @@ function transcriptInlineCodeColor(entry: TranscriptEntry) {
     return entry.emphasis === "error" ? theme.warning : theme.info
   }
   return theme.info
+}
+
+function renderPromptTranscript(prompt: string) {
+  const text = prompt.trimEnd()
+  return text ? `${text}\n` : ""
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -2539,7 +4043,13 @@ async function bootstrapSession(
     providerRun = await tryGetProviderRun(client, attachedSession.active_provider_run_id)
   }
   const historyPage = await getSessionHistory(client, session.id)
-  const historyEntries = reindexTranscriptEntries(hydrateTranscriptEntries(historyPage.entries), 0)
+  const historyEntries = reindexTranscriptEntries(
+    collapseHistoricalTurns(
+      hydrateTranscriptEntries(historyPage.entries),
+      Boolean(attachedSession.active_prompt) || attachedSession.queued_prompts.length > 0,
+    ),
+    0,
+  )
 
   return {
     client,
@@ -2749,6 +4259,17 @@ function getProviderCatalogRequest() {
   }
 }
 
+function readDirectoryTreeRequest(sessionId: string, attachmentId: string, treePath: string | null, maxDepth: number) {
+  return {
+    ReadDirectoryTree: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      path: treePath,
+      max_depth: maxDepth,
+    },
+  }
+}
+
 function getSessionHistoryRequest(sessionId: string, cursor?: SessionHistoryCursor | null) {
   return {
     GetSessionHistory: {
@@ -2774,6 +4295,26 @@ function launchProviderRunRequest(sessionId: string, accountProfile: string, mod
   }
 }
 
+function captureScreenshotRequest(sessionId: string, attachmentId: string) {
+  return {
+    CaptureScreenshot: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+    },
+  }
+}
+
+function storeTransferredFileRequest(sessionId: string, attachmentId: string, sourcePath: string, displayName?: string) {
+  return {
+    StoreTransferredFile: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      source_path: sourcePath,
+      display_name: displayName ?? null,
+    },
+  }
+}
+
 function resizeTerminalRequest(sessionId: string, cols: number, rows: number) {
   return {
     ResizeTerminal: {
@@ -2793,12 +4334,18 @@ function pumpTerminalOutputRequest(sessionId: string, attachmentId: string) {
   }
 }
 
-function submitPromptRequest(sessionId: string, attachmentId: string, prompt: string) {
+function submitPromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  prompt: string,
+  attachments: PromptAttachmentPart[],
+) {
   return {
     SubmitPrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
       prompt,
+      attachments,
     },
   }
 }

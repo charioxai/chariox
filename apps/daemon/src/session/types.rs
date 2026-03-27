@@ -89,10 +89,40 @@ impl fmt::Display for SessionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptAttachment {
+    url: String,
+    mime: String,
+    filename: Option<String>,
+}
+
+impl PromptAttachment {
+    pub fn new(url: impl Into<String>, mime: impl Into<String>, filename: Option<String>) -> Self {
+        Self {
+            url: url.into(),
+            mime: mime.into(),
+            filename,
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn mime(&self) -> &str {
+        &self.mime
+    }
+
+    pub fn filename(&self) -> Option<&str> {
+        self.filename.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptQueueItem {
     id: String,
     source_attachment_id: String,
     prompt: String,
+    attachments: Vec<PromptAttachment>,
     status: PromptStatus,
 }
 
@@ -107,8 +137,14 @@ impl PromptQueueItem {
             id: id.into(),
             source_attachment_id: source_attachment_id.into(),
             prompt: prompt.into(),
+            attachments: Vec::new(),
             status,
         }
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
+        self.attachments = attachments;
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -121,6 +157,10 @@ impl PromptQueueItem {
 
     pub fn prompt(&self) -> &str {
         &self.prompt
+    }
+
+    pub fn attachments(&self) -> &[PromptAttachment] {
+        &self.attachments
     }
 
     pub fn status(&self) -> PromptStatus {

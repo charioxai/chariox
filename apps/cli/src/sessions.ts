@@ -10,7 +10,7 @@ export const ARROBA_ASCII_ART = [
 
 export const SESSION_NEW_HELP_TEXT = "Use the waiting room to start a new session or join an existing one."
 export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
-export const SESSION_NEW_FOOTER_HINT = "Waiting room • arrows move • Enter confirms"
+export const SESSION_NEW_FOOTER_HINT = "Waiting room • arrows move • Enter confirms • Ctrl+L hotkeys"
 export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."
 
 export type SessionListEntry = {

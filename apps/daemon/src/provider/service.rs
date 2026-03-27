@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::provider::opencode_client::OpenCodePart;
-use crate::session::SessionService;
+use crate::session::{PromptAttachment, SessionService};
 
 use super::{
     LaunchProviderRequest, OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription,
@@ -480,6 +480,7 @@ impl ProviderProcessService {
         &self,
         run: &RuntimeProviderRun,
         prompt: &str,
+        attachments: &[PromptAttachment],
     ) -> Result<bool, DaemonError> {
         if run.adapter_key() != "opencode" {
             return Ok(false);
@@ -494,7 +495,13 @@ impl ProviderProcessService {
                     message: "no OpenCode session is bound to this provider run".to_string(),
                 })?;
         let client = OpenCodeClient::new(run.id(), &state.base_url)?;
-        client.submit_prompt(&state.session_id, prompt, Some(run.model()), run.variant())?;
+        client.submit_prompt(
+            &state.session_id,
+            prompt,
+            attachments,
+            Some(run.model()),
+            run.variant(),
+        )?;
         Ok(true)
     }
 
@@ -863,13 +870,6 @@ impl ProviderProcessService {
                 }
             }
         } else {
-            crate::logging::debug_with_fields(
-                "daemon.provider.opencode",
-                "did not resolve provider run model from opencode metadata",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                }),
-            );
             if let Some(variant) = resolved_variant {
                 let run = self.get_run_mut(provider_run_id)?;
                 if run.variant() != Some(variant.as_str()) {

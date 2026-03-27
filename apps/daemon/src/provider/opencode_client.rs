@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::DaemonError;
+use crate::session::PromptAttachment;
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
@@ -361,16 +362,27 @@ impl OpenCodeClient {
         &self,
         session_id: &str,
         prompt: &str,
+        attachments: &[PromptAttachment],
         model: Option<&str>,
         variant: Option<&str>,
     ) -> Result<(), DaemonError> {
+        let mut parts = Vec::new();
+        if !prompt.is_empty() {
+            parts.push(json!({
+                "type": "text",
+                "text": prompt,
+            }));
+        }
+        for attachment in attachments {
+            parts.push(json!({
+                "type": "file",
+                "mime": attachment.mime(),
+                "url": attachment.url(),
+                "filename": attachment.filename(),
+            }));
+        }
         let mut body = json!({
-            "parts": [
-                {
-                    "type": "text",
-                    "text": prompt,
-                }
-            ],
+            "parts": parts,
         });
         if let Some((provider_id, model_id)) = parse_model(model) {
             body["model"] = json!({

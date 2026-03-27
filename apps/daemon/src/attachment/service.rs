@@ -91,6 +91,14 @@ impl AttachmentService {
             .collect()
     }
 
+    pub fn list_client_attachments(&self, client_id: &str) -> Vec<RuntimeAttachment> {
+        self.attachments
+            .values()
+            .filter(|attachment| attachment.client_id() == client_id)
+            .cloned()
+            .collect()
+    }
+
     pub fn remove_session_attachments(&mut self, session_id: &str) -> Vec<RuntimeAttachment> {
         let attachment_ids = self.list_session_attachment_ids(session_id);
 

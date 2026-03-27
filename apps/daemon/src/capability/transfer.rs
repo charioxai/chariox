@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
-use super::common::resolve_worktree_scoped_path;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreTransferredFileRequest {
     pub session_id: String,
@@ -57,11 +55,7 @@ impl FileTransferService {
         &self,
         request: StoreTransferredFileRequest,
     ) -> Result<StoredTransferArtifact, DaemonError> {
-        let source_path = resolve_worktree_scoped_path(
-            &request.session_id,
-            &request.worktree_root,
-            Some(&request.source_path),
-        )?;
+        let source_path = resolve_transfer_path(&request)?;
         let display_name = request.display_name.unwrap_or_else(|| {
             source_path
                 .file_name()
@@ -104,6 +98,18 @@ impl FileTransferService {
             bytes,
         })
     }
+}
+
+fn resolve_transfer_path(request: &StoreTransferredFileRequest) -> Result<PathBuf, DaemonError> {
+    let base = if request.source_path.is_absolute() {
+        request.source_path.clone()
+    } else {
+        request.worktree_root.join(&request.source_path)
+    };
+    std::fs::canonicalize(&base).map_err(|error| DaemonError::TransferCapabilityFailed {
+        session_id: request.session_id.clone(),
+        message: error.to_string(),
+    })
 }
 
 fn sanitize_stored_name(name: &str) -> Option<String> {

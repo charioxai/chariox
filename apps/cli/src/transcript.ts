@@ -53,7 +53,7 @@ export function mergeToolTranscriptUpdate(
 }
 
 export function shouldRenderProviderStatus(text: string) {
-  return !/^OpenCode is idle\.?$/i.test(text.trim())
+  return !/^OpenCode is (?:idle\.?|thinking\.\.\.)$/i.test(text.trim())
 }
 
 export function splitInlineCodeSpans(text: string): InlineCodeSpan[] {
@@ -515,15 +515,15 @@ function formatGrepTranscriptUpdate(update: ToolTranscriptUpdate) {
 function formatToolStatusBadge(status?: string | null) {
   switch (status) {
     case "running":
-      return " · running"
+      return " · RUNNING"
     case "completed":
-      return " · completed"
+      return " · COMPLETED"
     case "error":
-      return " · error"
+      return " · ERROR"
     case "cancelled":
-      return " · cancelled"
+      return " · CANCELLED"
     default:
-      return status ? ` · ${status}` : ""
+      return status ? ` · ${status.trim().toUpperCase()}` : ""
   }
 }
 

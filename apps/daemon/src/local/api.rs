@@ -15,8 +15,8 @@ use crate::provider::{
     RuntimeProviderRun,
 };
 use crate::session::{
-    CreateSessionRequest, PromptCancellation, PromptCompletion, PromptSubmissionOutcome,
-    RuntimeSession, SessionConfigState,
+    CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
+    PromptSubmissionOutcome, RuntimeSession, SessionConfigState,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -47,6 +47,8 @@ pub struct SubmitPromptRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub prompt: String,
+    #[serde(default)]
+    pub attachments: Vec<PromptAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,6 +428,7 @@ impl DaemonApp {
                     &request.session_id,
                     &request.attachment_id,
                     &request.prompt,
+                    request.attachments,
                 )?;
                 let session = self.sessions().get_session(&request.session_id)?;
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
@@ -744,6 +747,66 @@ mod tests {
     }
 
     #[test]
+    fn attaching_the_same_client_replaces_its_stale_attachment() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let first = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("first attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let second = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("second attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let state = match app
+            .handle_local_request(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("state request should succeed")
+        {
+            LocalDaemonResponse::SessionState { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_ne!(first.id(), second.id());
+        assert_eq!(state.attachment_ids().len(), 1);
+        assert!(state.has_attachment(second.id()));
+        assert!(app.attachments().get_attachment(first.id()).is_err());
+    }
+
+    #[test]
     fn local_request_api_rejects_prompt_without_active_provider_run() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -775,6 +838,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 prompt: "whoami".to_string(),
+                attachments: Vec::new(),
             }))
             .expect_err("prompt submit should fail without active provider run");
 
@@ -876,6 +940,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: a.id().to_string(),
                 prompt: "first".to_string(),
+                attachments: Vec::new(),
             }))
             .expect("first prompt should start");
         let second = app
@@ -883,6 +948,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: b.id().to_string(),
                 prompt: "second".to_string(),
+                attachments: Vec::new(),
             }))
             .expect("second prompt should queue");
         let config = app
@@ -1014,6 +1080,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 prompt: "first prompt\n".to_string(),
+                attachments: Vec::new(),
             }))
             .expect("first prompt should start");
         let _ = app
@@ -1021,6 +1088,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 prompt: "second prompt\n".to_string(),
+                attachments: Vec::new(),
             }))
             .expect("second prompt should queue");
 

@@ -469,6 +469,7 @@ mod tests {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 prompt: "ipc smoke\n".to_string(),
+                attachments: Vec::new(),
             }))
             .expect("prompt submit should succeed");
 

@@ -7,8 +7,12 @@ import {
   MAX_TRANSIENT_POLL_FAILURES,
   describeCliError,
   getExitCleanupDecision,
+  getProviderActivityLabel,
   getPollRecoveryDecision,
+  getSessionStatusLabel,
+  getToolActivityLabel,
   reconcileWorkingStateFromSession,
+  STATUS_BADGE_WIDTH,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 
@@ -85,4 +89,29 @@ test("session polling does not clear working state until provider reports idle",
   assert.equal(reconcileWorkingStateFromSession(true, true), true)
   assert.equal(reconcileWorkingStateFromSession(false, true), true)
   assert.equal(reconcileWorkingStateFromSession(false, false), false)
+})
+
+test("status badge labels show exact active actions", () => {
+  assert.equal(getSessionStatusLabel("idle", "grepping"), "IDLE")
+  assert.equal(getSessionStatusLabel("disconnected", "grepping"), "DISCONNECTED")
+  assert.equal(getSessionStatusLabel("working", null), "THINKING")
+  assert.equal(getSessionStatusLabel("working", "grepping"), "GREPPING")
+  assert.equal(STATUS_BADGE_WIDTH, 14)
+})
+
+test("tool activity labels convert tool names into gerunds", () => {
+  assert.equal(getToolActivityLabel("bash"), "bashing")
+  assert.equal(getToolActivityLabel("grep"), "grepping")
+  assert.equal(getToolActivityLabel("glob"), "globbing")
+  assert.equal(getToolActivityLabel("read"), "reading")
+  assert.equal(getToolActivityLabel("apply_patch"), "patching")
+  assert.equal(getToolActivityLabel("webfetch"), "webfetching")
+  assert.equal(getToolActivityLabel("todowrite"), "todowriting")
+})
+
+test("provider status labels map to active badge text", () => {
+  assert.equal(getProviderActivityLabel("OpenCode is idle."), null)
+  assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
+  assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
+  assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
 })

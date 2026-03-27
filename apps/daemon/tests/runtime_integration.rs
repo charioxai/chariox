@@ -103,10 +103,20 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
         .expect("provider run should launch");
 
     let first_outcome = app
-        .submit_prompt(session.id(), first.id(), "first integration prompt\n")
+        .submit_prompt(
+            session.id(),
+            first.id(),
+            "first integration prompt\n",
+            Vec::new(),
+        )
         .expect("first prompt should start");
     let second_outcome = app
-        .submit_prompt(session.id(), second.id(), "second integration prompt\n")
+        .submit_prompt(
+            session.id(),
+            second.id(),
+            "second integration prompt\n",
+            Vec::new(),
+        )
         .expect("second prompt should queue");
 
     match first_outcome {
@@ -163,10 +173,20 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
         .expect("provider run should launch");
 
     let _ = app
-        .submit_prompt(session.id(), first.id(), "first integration prompt\n")
+        .submit_prompt(
+            session.id(),
+            first.id(),
+            "first integration prompt\n",
+            Vec::new(),
+        )
         .expect("first prompt should start");
     let _ = app
-        .submit_prompt(session.id(), second.id(), "second integration prompt\n")
+        .submit_prompt(
+            session.id(),
+            second.id(),
+            "second integration prompt\n",
+            Vec::new(),
+        )
         .expect("second prompt should queue");
 
     app.detach(second.id())
@@ -314,6 +334,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             session_id: session.id().to_string(),
             attachment_id: first.id().to_string(),
             prompt: "first local prompt\n".to_string(),
+            attachments: Vec::new(),
         }))
         .expect("first prompt should start");
     let second_prompt = app
@@ -321,6 +342,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             session_id: session.id().to_string(),
             attachment_id: second.id().to_string(),
             prompt: "second local prompt\n".to_string(),
+            attachments: Vec::new(),
         }))
         .expect("second prompt should queue");
     let config = app
@@ -396,10 +418,20 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
         .expect("provider run should launch");
 
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "first auto prompt\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "first auto prompt\n",
+            Vec::new(),
+        )
         .expect("first prompt should start");
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "second auto prompt\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "second auto prompt\n",
+            Vec::new(),
+        )
         .expect("second prompt should queue");
 
     let combined = collect_terminal_output_until(
@@ -455,10 +487,20 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
         .expect("provider run should launch");
 
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "first exit prompt\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "first exit prompt\n",
+            Vec::new(),
+        )
         .expect("first prompt should start");
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "second exit prompt\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "second exit prompt\n",
+            Vec::new(),
+        )
         .expect("second prompt should queue");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
@@ -611,10 +653,20 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         .expect("provider run should launch");
 
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "first prompt should fail\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "first prompt should fail\n",
+            Vec::new(),
+        )
         .expect("first prompt should start");
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "second prompt should run\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "second prompt should run\n",
+            Vec::new(),
+        )
         .expect("second prompt should queue");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
@@ -702,6 +754,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
             session.id(),
             attachment.id(),
             "first prompt should cancel\n",
+            Vec::new(),
         )
         .expect("first prompt should start");
     let _ = app
@@ -709,6 +762,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
             session.id(),
             attachment.id(),
             "second prompt after cancel\n",
+            Vec::new(),
         )
         .expect("second prompt should queue");
 
@@ -799,7 +853,12 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
         .expect("provider run should launch");
 
     let _ = app
-        .submit_prompt(session.id(), attachment.id(), "prompt after reconnect\n")
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "prompt after reconnect\n",
+            Vec::new(),
+        )
         .expect("prompt should start");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
@@ -935,6 +994,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
             session.id(),
             attachment.id(),
             "prompt without session status polling\n",
+            Vec::new(),
         )
         .expect("prompt should start");
 

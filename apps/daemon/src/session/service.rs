@@ -4,8 +4,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptDetachEffect, PromptQueueItem, PromptSubmissionOutcome,
-    RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
+    CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
+    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
 };
 
 #[derive(Debug, Clone)]
@@ -74,11 +74,16 @@ impl SessionService {
         let all_sessions = self.store.non_ended_sessions().cloned().collect::<Vec<_>>();
         let workspace_sessions = all_sessions
             .iter()
-            .filter(|session| workspace_id.is_none_or(|workspace| session.workspace_id() == workspace))
+            .filter(|session| {
+                workspace_id.is_none_or(|workspace| session.workspace_id() == workspace)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
-        if let Some(session) = all_sessions.iter().find(|session| session.id() == normalized_ref) {
+        if let Some(session) = all_sessions
+            .iter()
+            .find(|session| session.id() == normalized_ref)
+        {
             return Ok(session.clone());
         }
         if let Some(session) = workspace_sessions
@@ -247,6 +252,7 @@ impl SessionService {
         session_id: &str,
         attachment_id: &str,
         prompt: impl Into<String>,
+        attachments: Vec<PromptAttachment>,
     ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
         let prompt_id = self.next_prompt_id();
         let prompt = PromptQueueItem::new(
@@ -254,7 +260,8 @@ impl SessionService {
             attachment_id,
             prompt,
             super::PromptStatus::Queued,
-        );
+        )
+        .with_attachments(attachments);
         let session = self.get_session_mut_for_operation(session_id, "submit prompt")?;
 
         if !session.has_attachment(attachment_id) {
@@ -409,14 +416,12 @@ impl SessionService {
         self.store.active_session_count()
     }
 
-    fn ensure_alias_available(
-        &self,
-        workspace_id: &str,
-        alias: &str,
-    ) -> Result<(), DaemonError> {
-        if self.store.non_ended_sessions().any(|session| {
-            session.workspace_id() == workspace_id && session.alias() == Some(alias)
-        }) {
+    fn ensure_alias_available(&self, workspace_id: &str, alias: &str) -> Result<(), DaemonError> {
+        if self
+            .store
+            .non_ended_sessions()
+            .any(|session| session.workspace_id() == workspace_id && session.alias() == Some(alias))
+        {
             return Err(DaemonError::SessionAliasConflict {
                 workspace_id: workspace_id.to_string(),
                 alias: alias.to_string(),
@@ -579,15 +584,22 @@ mod tests {
     fn rejects_duplicate_alias_in_same_workspace() {
         let mut service = SessionService::new(&test_config());
         service
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"))
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+            )
             .expect("first session should be created");
 
         let error = service
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-2").with_alias("MAIN"))
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-2").with_alias("MAIN"),
+            )
             .expect_err("duplicate alias should be rejected");
 
         match error {
-            DaemonError::SessionAliasConflict { workspace_id, alias } => {
+            DaemonError::SessionAliasConflict {
+                workspace_id,
+                alias,
+            } => {
                 assert_eq!(workspace_id, "workspace-1");
                 assert_eq!(alias, "main");
             }
@@ -628,10 +640,10 @@ mod tests {
             .expect("attachment should be added");
 
         let (_, first) = service
-            .submit_prompt(created.id(), "attachment-1", "first prompt")
+            .submit_prompt(created.id(), "attachment-1", "first prompt", Vec::new())
             .expect("first prompt should start");
         let (_, second) = service
-            .submit_prompt(created.id(), "attachment-2", "second prompt")
+            .submit_prompt(created.id(), "attachment-2", "second prompt", Vec::new())
             .expect("second prompt should queue");
 
         match first {
@@ -703,7 +715,7 @@ mod tests {
             .add_attachment_to_session(created.id(), "attachment-1")
             .expect("attachment should be added");
         service
-            .submit_prompt(created.id(), "attachment-1", "first prompt")
+            .submit_prompt(created.id(), "attachment-1", "first prompt", Vec::new())
             .expect("prompt should start");
 
         let error = service

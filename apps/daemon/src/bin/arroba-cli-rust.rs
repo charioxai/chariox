@@ -127,6 +127,7 @@ fn main() -> Result<(), DaemonError> {
             session_id: session_id.clone(),
             attachment_id: attachment.id().to_string(),
             prompt: line.clone(),
+            attachments: Vec::new(),
         }))?;
         lock_output_activity(&output_activity).note_prompt_submission();
     }

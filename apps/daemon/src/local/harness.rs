@@ -75,6 +75,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
         session_id: session.id().to_string(),
         attachment_id: prompt_source.id().to_string(),
         prompt: "harness smoke\n".to_string(),
+        attachments: Vec::new(),
     }))?;
 
     let output_preview = wait_for_output(app, session.id(), prompt_source.id())?;

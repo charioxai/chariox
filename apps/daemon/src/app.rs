@@ -21,8 +21,8 @@ use crate::provider::{
 };
 use crate::pty::PtyManager;
 use crate::session::{
-    PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
-    SessionConfigState, SessionService, SessionStatus,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus,
+    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionService, SessionStatus,
 };
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
 
@@ -206,6 +206,15 @@ impl DaemonApp {
         let session_id = request.session_id.clone();
         let client_id = request.client_id.clone();
         let capability_level = format!("{:?}", request.capability_level);
+        let replaced_attachment_ids = self
+            .attachments
+            .list_client_attachments(&client_id)
+            .into_iter()
+            .map(|attachment| attachment.id().to_string())
+            .collect::<Vec<_>>();
+        for attachment_id in &replaced_attachment_ids {
+            let _ = self.detach(attachment_id)?;
+        }
         let attachment = self.attachments.attach(&mut self.sessions, request)?;
         crate::logging::info_with_fields(
             "daemon.session",
@@ -215,6 +224,7 @@ impl DaemonApp {
                 "attachment_id": attachment.id(),
                 "client_id": client_id,
                 "capability_level": capability_level,
+                "replaced_attachment_ids": replaced_attachment_ids,
             }),
         );
         Ok(attachment)
@@ -594,6 +604,7 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
         prompt: &str,
+        attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
         let session_before = self.sessions.get_session(session_id)?;
@@ -606,11 +617,11 @@ impl DaemonApp {
             })?
             .to_string();
 
-        self.append_user_prompt_history(session_id, attachment_id, prompt);
+        self.append_user_prompt_history(session_id, attachment_id, prompt, &attachments);
 
         let (_session, outcome) = self
             .sessions
-            .submit_prompt(session_id, attachment_id, prompt)?;
+            .submit_prompt(session_id, attachment_id, prompt, attachments.clone())?;
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
@@ -619,12 +630,14 @@ impl DaemonApp {
                     &provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
+                    prompt.attachments(),
                 );
                 if let Err(error) = self.dispatch_prompt_to_provider(
                     session_id,
                     &provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
+                    prompt.attachments(),
                 ) {
                     let _ = self.sessions.cancel_active_prompt(session_id);
                     self.clear_prompt_activity(session_id);
@@ -638,6 +651,7 @@ impl DaemonApp {
                     &provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
+                    prompt.attachments(),
                 );
                 self.record_notice(
                     session_id,
@@ -943,10 +957,15 @@ impl DaemonApp {
         session_id: &str,
         source_attachment_id: &str,
         prompt: &str,
+        attachments: &[PromptAttachment],
     ) {
         self.append_history_entry(
             session_id,
-            SessionHistoryEntry::user_prompt(session_id, source_attachment_id, prompt),
+            SessionHistoryEntry::user_prompt(
+                session_id,
+                source_attachment_id,
+                render_prompt_transcript(prompt, attachments),
+            ),
         );
     }
 
@@ -1033,6 +1052,7 @@ impl DaemonApp {
         provider_run_id: &str,
         attachment_id: &str,
         prompt: &str,
+        attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -1046,7 +1066,7 @@ impl DaemonApp {
 
         if self
             .providers
-            .submit_structured_prompt(&provider_run, prompt)?
+            .submit_structured_prompt(&provider_run, prompt, attachments)?
         {
             return Ok(());
         }
@@ -1173,12 +1193,13 @@ impl DaemonApp {
         provider_run_id: &str,
         source_attachment_id: &str,
         prompt: &str,
+        attachments: &[PromptAttachment],
     ) {
         let recipient_attachment_ids = self.other_attachment_ids(session_id, source_attachment_id);
         if recipient_attachment_ids.is_empty() {
             return;
         }
-        let mut bytes = prompt.as_bytes().to_vec();
+        let mut bytes = render_prompt_transcript(prompt, attachments).into_bytes();
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }
@@ -1252,6 +1273,7 @@ impl DaemonApp {
                 &provider_run_id,
                 next.source_attachment_id(),
                 next.prompt(),
+                next.attachments(),
             ) {
                 self.record_notice(
                     session_id,
@@ -1445,6 +1467,16 @@ impl DaemonApp {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await
+    }
+}
+
+fn render_prompt_transcript(prompt: &str, attachments: &[PromptAttachment]) -> String {
+    let text = prompt.trim_end_matches('\n');
+    let _ = attachments;
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!("{text}\n")
     }
 }
 

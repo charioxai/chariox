@@ -33,7 +33,7 @@ test("formatToolTranscriptUpdate renders bash command inline with output", () =>
       description: "Shows working tree status",
     }),
     [
-      "**bash** · completed",
+      "**bash** · COMPLETED",
       "Shows working tree status",
       "**Command**\n```bash\n$ git status\n```",
       "**Output**\n```text\nOn branch main\n```",
@@ -51,7 +51,7 @@ test("formatToolTranscriptUpdate falls back to rendered input and errors", () =>
       error: "file not found",
     }),
     [
-      "**read** · error",
+      "**read** · ERROR",
       '**Input**\n```json\n{\n  "filePath": "/tmp/demo.txt"\n}\n```',
       "**Error**\n```text\nfile not found\n```",
     ].join("\n\n"),
@@ -80,7 +80,7 @@ test("formatToolTranscriptUpdate renders todos as a checklist", () => {
       },
     }),
     [
-      "**Todo list** · completed",
+      "**Todo list** · COMPLETED",
       "Remaining: 1 todo",
       "- [x] Remove temporary idle-status debug logs from CLI and daemon",
       "- [ ] Run CLI and daemon tests after log cleanup",
@@ -108,7 +108,7 @@ test("formatToolTranscriptUpdate renders read output with a compact header", () 
       ].join("\n"),
     }),
     [
-      "**read** · completed",
+      "**read** · COMPLETED",
       "`apps/daemon/src/provider/service.rs [offset=480, limit=220]`",
       "",
       "```rust",
@@ -133,7 +133,7 @@ test("formatToolTranscriptUpdate collapses long read output in the middle", () =
       output: `<path>/Users/miguel/arroba/apps/cli/src/runtime.ts</path>\n<type>file</type>\n<content>${content}\n</content>`,
     }),
     [
-      "**read** · completed",
+      "**read** · COMPLETED",
       "`apps/cli/src/runtime.ts`",
       "",
       "```typescript",
@@ -157,7 +157,7 @@ test("formatToolTranscriptUpdate infers read syntax from common file extensions"
       output: "<path>/Users/miguel/arroba/apps/cli/src/index.tsx</path>\n<type>file</type>\n<content>1: const value = 1\n</content>",
     }),
     [
-      "**read** · completed",
+      "**read** · COMPLETED",
       "`apps/cli/src/index.tsx`",
       "",
       "```typescriptreact",
@@ -185,7 +185,7 @@ test("formatToolTranscriptUpdate renders grep output with a compact header", () 
       ].join("\n"),
     }),
     [
-      "**grep** · completed",
+      "**grep** · COMPLETED",
       "Pattern: `status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle` in apps/daemon/src/provider/service.rs (13 matches)",
       "`apps/daemon/src/provider/service.rs`",
       "```rust",
@@ -210,7 +210,7 @@ test("formatToolTranscriptUpdate renders grep no-files-found compactly", () => {
       output: "No files found",
     }),
     [
-      "**grep** · completed",
+      "**grep** · COMPLETED",
       "Pattern: `handleSessionCommand|submitPrompt\\(|transitionToNoSession|buildNoSessionRenderable` in /Users/miguel/arroba/apps/cli/src [*.test.ts] (0 matches)",
       "```text",
       "No files found",
@@ -238,7 +238,7 @@ test("formatToolTranscriptUpdate renders multi-file grep output with per-file sy
       ].join("\n"),
     }),
     [
-      "**grep** · completed",
+      "**grep** · COMPLETED",
       "Pattern: `highlight|syntax` (3 matches in 2 files)",
       "`package.json`",
       "```json",
@@ -273,7 +273,7 @@ test("formatToolTranscriptUpdate truncates multi-file grep collections as one bl
       output,
     }),
     [
-      "**grep** · completed",
+      "**grep** · COMPLETED",
       "Pattern: `line` (24 matches in 2 files)",
       [
         "`index.tsx`",
@@ -305,7 +305,7 @@ test("formatToolTranscriptUpdate uses webfetch format for syntax highlighting", 
       output: "# Example\n\n```ts\nconst value = 1\n```",
     }),
     [
-      "**webfetch** · completed",
+      "**webfetch** · COMPLETED",
       '**Input**\n```json\n{\n  "url": "https://example.com",\n  "format": "markdown"\n}\n```',
       "**Output**\n````markdown\n# Example\n\n```ts\nconst value = 1\n```\n````",
     ].join("\n\n"),
@@ -324,7 +324,7 @@ test("formatToolTranscriptUpdate infers file rendering generically from tool inp
       output: "1: export function App() {\n2:   return null\n3: }",
     }),
     [
-      "**read_file_like** · completed",
+      "**read_file_like** · COMPLETED",
       '**Input**\n```json\n{\n  "filePath": "apps/cli/src/index.tsx"\n}\n```',
       [
         "**Output**",
@@ -348,7 +348,7 @@ test("formatToolTranscriptUpdate infers embedded file payloads generically", () 
       output: "<path>/Users/miguel/arroba/apps/cli/src/transcript.ts</path>\n<type>file</type>\n<content>1: export const value = 1\n</content>",
     }),
     [
-      "**custom** · completed",
+      "**custom** · COMPLETED",
       [
         "**Output**",
         "`/Users/miguel/arroba/apps/cli/src/transcript.ts`",
@@ -372,7 +372,7 @@ test("formatToolTranscriptUpdate truncates large generic blobs in the middle", (
       output,
     }),
     [
-      "**bash** · completed",
+      "**bash** · COMPLETED",
       "Shows long output",
       [
         "**Output**",
@@ -519,7 +519,7 @@ test("formatToolTranscriptUpdate summarizes apply_patch changes", () => {
       },
     }),
     [
-      "**patch** · completed",
+      "**patch** · COMPLETED",
       "2 files · 1 updated, 1 deleted",
       "- Patched src/app.ts",
       "- Deleted src/old.ts",
@@ -554,7 +554,7 @@ test("mergeToolTranscriptUpdate keeps prior tool details across partial updates"
   assert.equal(
     formatToolTranscriptUpdate(merged),
     [
-      "**bash** · completed",
+      "**bash** · COMPLETED",
       "Shows working tree status",
       "**Command**\n```bash\n$ git status\n```",
       "**Output**\n```text\nOn branch main\n```",
@@ -562,9 +562,10 @@ test("mergeToolTranscriptUpdate keeps prior tool details across partial updates"
   )
 })
 
-test("shouldRenderProviderStatus suppresses idle notices only", () => {
+test("shouldRenderProviderStatus suppresses idle and thinking notices", () => {
   assert.equal(shouldRenderProviderStatus("OpenCode is idle."), false)
-  assert.equal(shouldRenderProviderStatus("OpenCode is thinking..."), true)
+  assert.equal(shouldRenderProviderStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode status: reconnecting"), true)
 })
 
 test("splitInlineCodeSpans marks inline code runs", () => {
