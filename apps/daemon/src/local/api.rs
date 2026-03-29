@@ -397,9 +397,22 @@ impl DaemonApp {
             LocalDaemonRequest::GetProviderCatalog(_) => {
                 let endpoint = opencode_catalog_endpoint()?;
                 let client = OpenCodeClient::new("catalog", endpoint)?;
-                Ok(LocalDaemonResponse::ProviderCatalog {
-                    catalog: client.provider_catalog()?,
-                })
+                let catalog = client.provider_catalog()?;
+                crate::logging::info_with_fields(
+                    "daemon.local",
+                    "Retrieved provider catalog from OpenCode",
+                    serde_json::json!({
+                        "provider_count": catalog.all.len(),
+                        "providers": catalog.all.iter().map(|p| serde_json::json!({
+                            "id": &p.id,
+                            "name": &p.name,
+                            "model_count": p.models.len(),
+                            "models": p.models.keys().collect::<Vec<_>>(),
+                        })).collect::<Vec<_>>(),
+                        "connected": &catalog.connected,
+                    }),
+                );
+                Ok(LocalDaemonResponse::ProviderCatalog { catalog })
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(

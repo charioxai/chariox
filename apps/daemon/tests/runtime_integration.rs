@@ -895,6 +895,103 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 }
 
 #[test]
+fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let first = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            first.id(),
+            "prompt survives detach\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+    app.detach(first.id())
+        .expect("detaching the only attachment should succeed");
+
+    let detached_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(detached_state.attachment_ids().is_empty());
+    assert_eq!(
+        detached_state.active_prompt().map(|prompt| prompt.status()),
+        Some(PromptStatus::Running)
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("provider run should remain queryable")
+            .state(),
+        ProviderRunState::Running
+    );
+
+    thread::sleep(Duration::from_millis(75));
+
+    let second = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-b",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("reattach should succeed");
+
+    let output =
+        collect_terminal_output_until(&mut app, session.id(), second.id(), |output, session| {
+            output.contains("fixture response: prompt survives detach")
+                && session.active_prompt().is_none()
+        });
+
+    assert!(output.contains("fixture response: prompt survives detach"));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn opencode_launch_requires_explicit_port_override() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()

@@ -27,6 +27,8 @@ pub struct SessionHistoryEntry {
     pub provider_run_id: Option<String>,
     pub source_attachment_id: Option<String>,
     pub kind: SessionHistoryEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
     pub text: String,
     pub timestamp_ms: u64,
 }
@@ -42,6 +44,7 @@ impl SessionHistoryEntry {
             provider_run_id: None,
             source_attachment_id: Some(source_attachment_id.to_string()),
             kind: SessionHistoryEntryKind::UserPrompt,
+            merge_key: None,
             text: text.into(),
             timestamp_ms: unix_epoch_ms(),
         }
@@ -51,6 +54,7 @@ impl SessionHistoryEntry {
         session_id: &str,
         provider_run_id: &str,
         kind: TerminalOutputKind,
+        merge_key: Option<String>,
         text: impl Into<String>,
     ) -> Self {
         Self {
@@ -65,6 +69,7 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::ProviderStatus => SessionHistoryEntryKind::ProviderStatus,
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },
+            merge_key,
             text: text.into(),
             timestamp_ms: unix_epoch_ms(),
         }
@@ -80,6 +85,7 @@ impl SessionHistoryEntry {
             provider_run_id: provider_run_id.map(str::to_string),
             source_attachment_id: None,
             kind: SessionHistoryEntryKind::Notice,
+            merge_key: None,
             text: text.into(),
             timestamp_ms: unix_epoch_ms(),
         }
@@ -233,6 +239,7 @@ mod tests {
                     session.id(),
                     "provider-run-1",
                     TerminalOutputKind::ProviderOutput,
+                    None,
                     "world",
                 ),
             )

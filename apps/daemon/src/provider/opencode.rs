@@ -1,4 +1,5 @@
 use std::env;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -28,7 +29,7 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
 
 pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
     let executable = resolve_opencode_executable()?;
-    let port = resolve_opencode_port()?;
+    let port = resolve_available_opencode_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
 
     Ok(ProviderLaunchResult {
@@ -67,6 +68,20 @@ fn resolve_opencode_port() -> Result<u16, DaemonError> {
             field: "ARROBA_OPENCODE_PORT",
             message: "must be a valid TCP port",
         })
+}
+
+fn resolve_available_opencode_port() -> Result<u16, DaemonError> {
+    let start = resolve_opencode_port()?;
+    for port in start..start.saturating_add(64) {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            drop(listener);
+            return Ok(port);
+        }
+    }
+    Err(DaemonError::InvalidConfig {
+        field: "ARROBA_OPENCODE_PORT",
+        message: "must leave at least one available TCP port in the next 64-port range",
+    })
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
@@ -137,19 +152,18 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.pty_program, path.display().to_string());
-        assert_eq!(
-            launch.pty_args,
-            vec![
-                "serve".to_string(),
-                "--hostname".to_string(),
-                "127.0.0.1".to_string(),
-                "--port".to_string(),
-                "43111".to_string()
-            ]
-        );
+        assert_eq!(launch.pty_args[0], "serve");
+        assert_eq!(launch.pty_args[1], "--hostname");
+        assert_eq!(launch.pty_args[2], "127.0.0.1");
+        assert_eq!(launch.pty_args[3], "--port");
+        let port = launch.pty_args[4]
+            .parse::<u16>()
+            .expect("port argument should be numeric");
+        assert!(port >= 43111);
+        let endpoint = format!("http://127.0.0.1:{port}");
         assert_eq!(
             launch.structured_endpoint.as_deref(),
-            Some("http://127.0.0.1:43111")
+            Some(endpoint.as_str())
         );
     }
 

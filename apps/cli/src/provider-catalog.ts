@@ -14,6 +14,11 @@ export type ProviderModel = {
   id: string
   name: string
   status: string
+  limit?: {
+    context: number
+    input?: number
+    output?: number
+  }
   variants?: Record<string, unknown>
 }
 
@@ -53,7 +58,9 @@ export function fallbackProviderCatalog() {
 }
 
 export function catalogModelOptions(catalog: ProviderCatalog) {
+  const connectedProviderIds = new Set(catalog.connected)
   return catalog.all
+    .filter((provider) => connectedProviderIds.has(provider.id))
     .flatMap((provider) =>
       Object.values(provider.models)
         .filter((model) => model.status !== "deprecated")

@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::provider::opencode_client::OpenCodePart;
 use crate::session::{PromptAttachment, SessionService};
+use crate::terminal::TerminalOutputKind;
 
 use super::{
     LaunchProviderRequest, OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription,
@@ -21,22 +22,21 @@ pub struct ProviderProcessService {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
-    pub text_deltas: Vec<Vec<u8>>,
-    pub reasoning_deltas: Vec<Vec<u8>>,
-    pub tool_updates: Vec<Vec<u8>>,
-    pub error_updates: Vec<Vec<u8>>,
-    pub status_updates: Vec<Vec<u8>>,
+    pub chunks: Vec<OpenCodeOutputChunk>,
     pub prompt_completed: bool,
     pub provider_idle: bool,
     pub notices: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeOutputChunk {
+    pub kind: TerminalOutputKind,
+    pub merge_key: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
 struct OpenCodeEventDrainResult {
-    text_deltas: Vec<Vec<u8>>,
-    reasoning_deltas: Vec<Vec<u8>>,
-    tool_updates: Vec<Vec<u8>>,
-    error_updates: Vec<Vec<u8>>,
-    status_updates: Vec<Vec<u8>>,
+    chunks: Vec<OpenCodeOutputChunk>,
     prompt_completed: bool,
     provider_idle: bool,
     notices: Vec<String>,
@@ -396,6 +396,15 @@ impl ProviderProcessService {
         Ok(())
     }
 
+    pub fn runtime_is_healthy(&self, run_id: &str) -> bool {
+        let Some(state) = self.opencode_runs.get(run_id) else {
+            return false;
+        };
+        OpenCodeClient::new(run_id, state.base_url.clone())
+            .and_then(|client| client.check_health())
+            .is_ok()
+    }
+
     pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
         let Some(state) = self.opencode_runs.get(provider_run_id) else {
             return Ok(());
@@ -517,11 +526,7 @@ impl ProviderProcessService {
         let drain = self.drain_opencode_events(provider_run_id)?;
 
         Ok(Some(OpenCodePollResult {
-            text_deltas: drain.text_deltas,
-            reasoning_deltas: drain.reasoning_deltas,
-            tool_updates: drain.tool_updates,
-            error_updates: drain.error_updates,
-            status_updates: drain.status_updates,
+            chunks: drain.chunks,
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
             notices: drain.notices,
@@ -592,17 +597,14 @@ impl ProviderProcessService {
         &mut self,
         provider_run_id: &str,
     ) -> Result<OpenCodeEventDrainResult, DaemonError> {
-        let mut deltas = Vec::new();
-        let mut reasoning_deltas = Vec::new();
-        let mut tool_updates = Vec::new();
-        let mut error_updates = Vec::new();
-        let mut status_updates = Vec::new();
+        let mut chunks = Vec::new();
         let mut prompt_completed = false;
         let mut provider_idle = false;
         let mut notices = Vec::new();
         let mut resolved_model = None;
         let mut resolved_model_source = None;
         let mut resolved_variant = None;
+        let mut resolved_usage_tokens_total = None;
 
         {
             let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
@@ -624,6 +626,12 @@ impl ProviderProcessService {
                         }
                         if resolved_variant.is_none() {
                             resolved_variant = info.resolved_variant();
+                        }
+                        if info.role == "assistant" && info.session_id == state.session_id {
+                            let total_tokens = info.total_tokens();
+                            if total_tokens > 0 {
+                                resolved_usage_tokens_total = Some(total_tokens);
+                            }
                         }
                         state
                             .message_roles
@@ -669,16 +677,28 @@ impl ProviderProcessService {
                         }
                         match state.part_kinds.get(&part_id).map(String::as_str) {
                             Some("reasoning") => {
-                                let emitted =
-                                    state.emitted_text_offsets.entry(part_id).or_insert(0);
+                                let emitted = state
+                                    .emitted_text_offsets
+                                    .entry(part_id.clone())
+                                    .or_insert(0);
                                 *emitted += delta.len();
-                                reasoning_deltas.push(delta.into_bytes());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderReasoning,
+                                    merge_key: Some(part_id.clone()),
+                                    bytes: delta.into_bytes(),
+                                });
                             }
                             Some("text") => {
-                                let emitted =
-                                    state.emitted_text_offsets.entry(part_id).or_insert(0);
+                                let emitted = state
+                                    .emitted_text_offsets
+                                    .entry(part_id.clone())
+                                    .or_insert(0);
                                 *emitted += delta.len();
-                                deltas.push(delta.into_bytes());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderOutput,
+                                    merge_key: Some(part_id.clone()),
+                                    bytes: delta.into_bytes(),
+                                });
                             }
                             Some(_) => {}
                             None => {
@@ -717,8 +737,16 @@ impl ProviderProcessService {
                                     .or_insert(0);
                                 *emitted += delta.len();
                                 match part.kind.as_str() {
-                                    "reasoning" => reasoning_deltas.push(delta.into_bytes()),
-                                    "text" => deltas.push(delta.into_bytes()),
+                                    "reasoning" => chunks.push(OpenCodeOutputChunk {
+                                        kind: TerminalOutputKind::ProviderReasoning,
+                                        merge_key: Some(part.id.clone()),
+                                        bytes: delta.into_bytes(),
+                                    }),
+                                    "text" => chunks.push(OpenCodeOutputChunk {
+                                        kind: TerminalOutputKind::ProviderOutput,
+                                        merge_key: Some(part.id.clone()),
+                                        bytes: delta.into_bytes(),
+                                    }),
                                     _ => {}
                                 }
                             }
@@ -736,7 +764,11 @@ impl ProviderProcessService {
                                 if start == part.text.len() {
                                     continue;
                                 }
-                                deltas.push(part.text.as_bytes()[start..].to_vec());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderOutput,
+                                    merge_key: Some(part.id.clone()),
+                                    bytes: part.text.as_bytes()[start..].to_vec(),
+                                });
                                 *emitted = part.text.len();
                             }
                             "reasoning" => {
@@ -751,7 +783,11 @@ impl ProviderProcessService {
                                 if start == part.text.len() {
                                     continue;
                                 }
-                                reasoning_deltas.push(part.text.as_bytes()[start..].to_vec());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderReasoning,
+                                    merge_key: Some(part.id.clone()),
+                                    bytes: part.text.as_bytes()[start..].to_vec(),
+                                });
                                 *emitted = part.text.len();
                             }
                             "tool" => {
@@ -764,7 +800,11 @@ impl ProviderProcessService {
                                     state
                                         .emitted_tool_summaries
                                         .insert(part.id.clone(), summary.clone());
-                                    tool_updates.push(summary.into_bytes());
+                                    chunks.push(OpenCodeOutputChunk {
+                                        kind: TerminalOutputKind::ProviderTool,
+                                        merge_key: Some(part.id.clone()),
+                                        bytes: summary.into_bytes(),
+                                    });
                                 }
                             }
                             _ => {}
@@ -775,9 +815,12 @@ impl ProviderProcessService {
                         message,
                     }) => {
                         if session_id == state.session_id {
-                            error_updates.push(
-                                render_session_error_transcript_update(&message).into_bytes(),
-                            );
+                            chunks.push(OpenCodeOutputChunk {
+                                kind: TerminalOutputKind::ProviderError,
+                                merge_key: None,
+                                bytes: render_session_error_transcript_update(&message)
+                                    .into_bytes(),
+                            });
                             notices.push(message);
                             prompt_completed = true;
                         }
@@ -789,7 +832,11 @@ impl ProviderProcessService {
                             }
                             if state.last_status_kind.as_deref() != Some(kind.as_str()) {
                                 state.last_status_kind = Some(kind.clone());
-                                status_updates.push(format_session_status(&kind).into_bytes());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderStatus,
+                                    merge_key: Some("__provider_status__".to_string()),
+                                    bytes: format_session_status(&kind).into_bytes(),
+                                });
                             }
                         }
                     }
@@ -815,16 +862,22 @@ impl ProviderProcessService {
                                     .rev()
                                     .find_map(|message| message.info.resolved_variant());
                             }
+                            if let Some(total_tokens) =
+                                latest_assistant_usage_tokens(&snapshot.messages)
+                            {
+                                resolved_usage_tokens_total = Some(total_tokens);
+                            }
                             record_snapshot_message_metadata(state, &snapshot.messages);
-                            let snapshot_deltas =
-                                render_snapshot_text_deltas(state, &snapshot.messages);
-                            deltas.extend(snapshot_deltas.text_deltas);
-                            reasoning_deltas.extend(snapshot_deltas.reasoning_deltas);
-                            tool_updates.extend(snapshot_deltas.tool_updates);
+                            let snapshot_chunks =
+                                render_snapshot_output_chunks(state, &snapshot.messages);
+                            chunks.extend(snapshot_chunks.chunks);
                             if state.last_status_kind.as_deref() != Some(snapshot.status.as_str()) {
                                 state.last_status_kind = Some(snapshot.status.clone());
-                                status_updates
-                                    .push(format_session_status(&snapshot.status).into_bytes());
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderStatus,
+                                    merge_key: Some("__provider_status__".to_string()),
+                                    bytes: format_session_status(&snapshot.status).into_bytes(),
+                                });
                             }
                             if snapshot.status == "idle" {
                                 provider_idle = true;
@@ -849,29 +902,27 @@ impl ProviderProcessService {
             }
         }
 
-        if let Some(model) = resolved_model {
+        if resolved_model.is_some()
+            || resolved_variant.is_some()
+            || resolved_usage_tokens_total.is_some()
+        {
             let run = self.get_run_mut(provider_run_id)?;
-            crate::logging::debug_with_fields(
-                "daemon.provider.opencode",
-                "resolved provider run model from opencode metadata",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "previous_model": run.model(),
-                    "resolved_model": model,
-                    "source": resolved_model_source,
-                }),
-            );
-            if run.model() != model {
-                run.set_model(model);
-            }
-            if let Some(variant) = resolved_variant {
-                if run.variant() != Some(variant.as_str()) {
-                    run.set_variant(Some(variant));
+            if let Some(model) = resolved_model {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.opencode",
+                    "resolved provider run model from opencode metadata",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "previous_model": run.model(),
+                        "resolved_model": model,
+                        "source": resolved_model_source,
+                    }),
+                );
+                if run.model() != model {
+                    run.set_model(model);
                 }
             }
-        } else {
             if let Some(variant) = resolved_variant {
-                let run = self.get_run_mut(provider_run_id)?;
                 if run.variant() != Some(variant.as_str()) {
                     crate::logging::debug_with_fields(
                         "daemon.provider.opencode",
@@ -885,14 +936,15 @@ impl ProviderProcessService {
                     run.set_variant(Some(variant));
                 }
             }
+            if let Some(total_tokens) = resolved_usage_tokens_total {
+                if run.usage_tokens_total() != Some(total_tokens) {
+                    run.set_usage_tokens_total(Some(total_tokens));
+                }
+            }
         }
 
         Ok(OpenCodeEventDrainResult {
-            text_deltas: deltas,
-            reasoning_deltas,
-            tool_updates,
-            error_updates,
-            status_updates,
+            chunks,
             prompt_completed,
             provider_idle,
             notices,
@@ -901,9 +953,7 @@ impl ProviderProcessService {
 }
 
 struct SnapshotRenderResult {
-    text_deltas: Vec<Vec<u8>>,
-    reasoning_deltas: Vec<Vec<u8>>,
-    tool_updates: Vec<Vec<u8>>,
+    chunks: Vec<OpenCodeOutputChunk>,
 }
 
 fn refresh_opencode_message_metadata(
@@ -931,13 +981,19 @@ fn record_snapshot_message_metadata(state: &mut OpenCodeRunState, messages: &[Op
     }
 }
 
-fn render_snapshot_text_deltas(
+fn latest_assistant_usage_tokens(messages: &[OpenCodeMessage]) -> Option<u64> {
+    messages.iter().rev().find_map(|message| {
+        (message.info.role == "assistant")
+            .then(|| message.info.total_tokens())
+            .filter(|total| *total > 0)
+    })
+}
+
+fn render_snapshot_output_chunks(
     state: &mut OpenCodeRunState,
     messages: &[OpenCodeMessage],
 ) -> SnapshotRenderResult {
-    let mut text_deltas = Vec::new();
-    let mut reasoning_deltas = Vec::new();
-    let mut tool_updates = Vec::new();
+    let mut chunks = Vec::new();
     for message in messages
         .iter()
         .filter(|message| message.info.role == "assistant")
@@ -956,12 +1012,15 @@ fn render_snapshot_text_deltas(
                     if start == part.text.len() {
                         continue;
                     }
-                    let bytes = part.text.as_bytes()[start..].to_vec();
-                    if part.kind == "reasoning" {
-                        reasoning_deltas.push(bytes);
-                    } else {
-                        text_deltas.push(bytes);
-                    }
+                    chunks.push(OpenCodeOutputChunk {
+                        kind: if part.kind == "reasoning" {
+                            TerminalOutputKind::ProviderReasoning
+                        } else {
+                            TerminalOutputKind::ProviderOutput
+                        },
+                        merge_key: Some(part.id.clone()),
+                        bytes: part.text.as_bytes()[start..].to_vec(),
+                    });
                     *emitted = part.text.len();
                 }
                 "tool" => {
@@ -971,18 +1030,18 @@ fn render_snapshot_text_deltas(
                         state
                             .emitted_tool_summaries
                             .insert(part.id.clone(), summary.clone());
-                        tool_updates.push(summary.into_bytes());
+                        chunks.push(OpenCodeOutputChunk {
+                            kind: TerminalOutputKind::ProviderTool,
+                            merge_key: Some(part.id.clone()),
+                            bytes: summary.into_bytes(),
+                        });
                     }
                 }
                 _ => {}
             }
         }
     }
-    SnapshotRenderResult {
-        text_deltas,
-        reasoning_deltas,
-        tool_updates,
-    }
+    SnapshotRenderResult { chunks }
 }
 
 fn render_tool_transcript_update(part: &OpenCodePart) -> String {
@@ -1103,12 +1162,14 @@ mod tests {
     use serde_json::json;
 
     use crate::config::DaemonConfig;
-    use crate::provider::opencode_client::{OpenCodePart, OpenCodeToolState};
+    use crate::provider::opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState};
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
+    use crate::terminal::TerminalOutputKind;
 
     use super::{
-        render_tool_transcript_update, LaunchProviderRequest, ProviderProcessService,
-        ProviderRunState, ToolTranscriptUpdate,
+        latest_assistant_usage_tokens, render_snapshot_output_chunks,
+        render_tool_transcript_update, LaunchProviderRequest, OpenCodeRunState,
+        ProviderProcessService, ProviderRunState, ToolTranscriptUpdate,
     };
 
     fn sessions() -> SessionService {
@@ -1258,5 +1319,134 @@ mod tests {
         );
         assert_eq!(parsed.output.as_deref(), Some("On branch main"));
         assert_eq!(parsed.input, Some(json!({ "command": "git status" })));
+    }
+
+    #[test]
+    fn snapshot_rendering_preserves_reasoning_and_text_order() {
+        let mut state = OpenCodeRunState {
+            base_url: "http://localhost:1".to_string(),
+            session_id: "session-1".to_string(),
+            emitted_text_offsets: Default::default(),
+            emitted_tool_summaries: Default::default(),
+            buffered_text_deltas: Default::default(),
+            message_roles: Default::default(),
+            part_kinds: Default::default(),
+            part_message_ids: Default::default(),
+            event_subscription:
+                crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                    std::sync::mpsc::channel().1,
+                ),
+            last_status_kind: None,
+            last_completed_assistant_message_id: None,
+        };
+        let chunks = render_snapshot_output_chunks(
+            &mut state,
+            &[crate::provider::OpenCodeMessage {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+                parts: vec![
+                    OpenCodePart {
+                        id: "part-1".to_string(),
+                        session_id: "session-1".to_string(),
+                        message_id: "message-1".to_string(),
+                        kind: "reasoning".to_string(),
+                        text: "first thought\n".to_string(),
+                        tool: String::new(),
+                        state: None,
+                        time: None,
+                    },
+                    OpenCodePart {
+                        id: "part-2".to_string(),
+                        session_id: "session-1".to_string(),
+                        message_id: "message-1".to_string(),
+                        kind: "text".to_string(),
+                        text: "first answer\n".to_string(),
+                        tool: String::new(),
+                        state: None,
+                        time: None,
+                    },
+                    OpenCodePart {
+                        id: "part-3".to_string(),
+                        session_id: "session-1".to_string(),
+                        message_id: "message-1".to_string(),
+                        kind: "reasoning".to_string(),
+                        text: "second thought\n".to_string(),
+                        tool: String::new(),
+                        state: None,
+                        time: None,
+                    },
+                ],
+            }],
+        )
+        .chunks;
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| (
+                    chunk.kind.clone(),
+                    String::from_utf8_lossy(&chunk.bytes).into_owned()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    TerminalOutputKind::ProviderReasoning,
+                    "first thought\n".to_string()
+                ),
+                (
+                    TerminalOutputKind::ProviderOutput,
+                    "first answer\n".to_string()
+                ),
+                (
+                    TerminalOutputKind::ProviderReasoning,
+                    "second thought\n".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn latest_assistant_usage_tokens_uses_the_newest_assistant_with_tokens() {
+        let messages = vec![
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "tokens": {
+                        "input": 100,
+                        "output": 20,
+                        "reasoning": 5,
+                        "cache": { "read": 10, "write": 5 }
+                    },
+                    "time": { "completed": 1 }
+                },
+                "parts": []
+            }))
+            .expect("message should deserialize"),
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-2",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "tokens": {
+                        "input": 200,
+                        "output": 40,
+                        "reasoning": 10,
+                        "cache": { "read": 20, "write": 10 }
+                    },
+                    "time": { "completed": 2 }
+                },
+                "parts": []
+            }))
+            .expect("message should deserialize"),
+        ];
+
+        assert_eq!(latest_assistant_usage_tokens(&messages), Some(280));
     }
 }

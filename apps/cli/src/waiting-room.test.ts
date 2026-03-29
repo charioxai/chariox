@@ -22,7 +22,7 @@ test("waiting room cycles model and effort from provider catalog", () => {
   let state = createWaitingRoomState([], catalog, "openai/gpt-5.4", "high")
   state = moveWaitingRoomFocus(state, 2)
   state = cycleWaitingRoomValue(state, [], catalog, 1)
-  assert.equal(waitingRoomRows(state, [], catalog)[2]?.value, "GPT-5 mini · OpenAI")
+  assert.equal(waitingRoomRows(state, [], catalog)[2]?.value, "OpenAI GPT-5 mini")
   state = moveWaitingRoomFocus(state, 1)
   state = cycleWaitingRoomValue(state, [], catalog, 1)
   assert.equal(waitingRoomRows(state, [], catalog)[3]?.value, "Low")

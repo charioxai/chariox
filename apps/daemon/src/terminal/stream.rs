@@ -24,6 +24,8 @@ pub struct TerminalOutputRecord {
     pub session_id: String,
     pub provider_run_id: String,
     pub kind: TerminalOutputKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
     pub recipient_attachment_ids: Vec<String>,
     pub pending_recipient_attachment_ids: Vec<String>,
     pub bytes: Vec<u8>,
@@ -70,6 +72,7 @@ impl TerminalStreamService {
         session_id: &str,
         provider_run_id: &str,
         kind: TerminalOutputKind,
+        merge_key: Option<String>,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
@@ -77,6 +80,7 @@ impl TerminalStreamService {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             kind,
+            merge_key,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
@@ -187,6 +191,7 @@ mod tests {
             "session-1",
             "provider-run-1",
             TerminalOutputKind::ProviderOutput,
+            Some("part-1".to_string()),
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
             b"listing\n",
         );
@@ -201,6 +206,7 @@ mod tests {
         assert_eq!(terminal.output_records().len(), 1);
         assert_eq!(terminal.notice_records().len(), 1);
         assert_eq!(output.kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(output.merge_key.as_deref(), Some("part-1"));
         assert_eq!(output.recipient_attachment_ids.len(), 2);
         assert_eq!(output.pending_recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
@@ -215,6 +221,7 @@ mod tests {
             "session-1",
             "provider-run-1",
             TerminalOutputKind::PromptEcho,
+            None,
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
             b"hello\n",
         );

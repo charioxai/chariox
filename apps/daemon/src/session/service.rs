@@ -207,20 +207,13 @@ impl SessionService {
             });
         }
 
-        let removed_active_prompt = session
-            .active_prompt()
-            .map(|prompt| prompt.source_attachment_id() == attachment_id)
-            .unwrap_or(false);
-        if removed_active_prompt {
-            let _ = session.complete_active_prompt_only();
-        }
         let removed_queued_prompt_count =
             session.remove_queued_prompts_by_attachment(attachment_id);
 
         Ok((
             session.clone(),
             PromptDetachEffect {
-                removed_active_prompt,
+                removed_active_prompt: false,
                 removed_queued_prompt_count,
             },
         ))
@@ -728,5 +721,42 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn detaching_an_attachment_keeps_its_active_prompt_running() {
+        let mut service = SessionService::new(&test_config());
+        let created = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        service
+            .add_attachment_to_session(created.id(), "attachment-1")
+            .expect("attachment should be added");
+
+        let (_, outcome) = service
+            .submit_prompt(
+                created.id(),
+                "attachment-1",
+                "background prompt",
+                Vec::new(),
+            )
+            .expect("prompt should start");
+        let prompt_id = match outcome {
+            PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            other => panic!("expected running prompt, got {other:?}"),
+        };
+
+        let (session, effect) = service
+            .remove_attachment_from_session(created.id(), "attachment-1")
+            .expect("detach should succeed");
+
+        assert!(!effect.removed_active_prompt);
+        assert_eq!(effect.removed_queued_prompt_count, 0);
+        assert!(session.attachment_ids().is_empty());
+        assert_eq!(
+            session.active_prompt().map(|prompt| prompt.id()),
+            Some(prompt_id.as_str())
+        );
+        assert_eq!(session.scheduler_state(), SchedulerState::Running);
     }
 }

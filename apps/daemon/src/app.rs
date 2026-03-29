@@ -234,6 +234,7 @@ impl DaemonApp {
         let (attachment, effect) = self
             .attachments
             .detach_with_effect(&mut self.sessions, attachment_id)?;
+        let session_after_detach = self.sessions.get_session(attachment.session_id())?;
 
         if effect.removed_queued_prompt_count > 0 {
             self.record_notice(
@@ -263,13 +264,15 @@ impl DaemonApp {
 
         let remaining_attachment_ids = self.attachments.list_session_attachment_ids(attachment.session_id());
         if remaining_attachment_ids.is_empty() {
-            let terminated_runs = self
-                .providers
-                .terminate_session_runs(&mut self.sessions, attachment.session_id())?;
-            for run in terminated_runs {
-                self.pty.remove_process(run.id())?;
+            if session_after_detach.active_prompt().is_none() {
+                let terminated_runs = self
+                    .providers
+                    .terminate_session_runs(&mut self.sessions, attachment.session_id())?;
+                for run in terminated_runs {
+                    self.pty.remove_process(run.id())?;
+                }
+                self.prompt_activity.remove(attachment.session_id());
             }
-            self.prompt_activity.remove(attachment.session_id());
         }
 
         crate::logging::info_with_fields(
@@ -905,6 +908,7 @@ impl DaemonApp {
                     session_id,
                     provider_run_id,
                     TerminalOutputKind::ProviderOutput,
+                    None,
                     recipient_attachment_ids.clone(),
                     &chunk.bytes,
                 )
@@ -974,6 +978,7 @@ impl DaemonApp {
         session_id: &str,
         provider_run_id: &str,
         kind: TerminalOutputKind,
+        merge_key: Option<String>,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
@@ -981,6 +986,7 @@ impl DaemonApp {
             session_id,
             provider_run_id,
             kind.clone(),
+            merge_key.clone(),
             recipient_attachment_ids,
             bytes,
         );
@@ -991,6 +997,7 @@ impl DaemonApp {
                     session_id,
                     provider_run_id,
                     kind,
+                    merge_key,
                     String::from_utf8_lossy(bytes).into_owned(),
                 ),
             );
@@ -1143,45 +1150,26 @@ impl DaemonApp {
         recipient_attachment_ids: Vec<String>,
         poll_result: OpenCodePollResult,
     ) -> Vec<TerminalOutputRecord> {
-        if !poll_result.text_deltas.is_empty() {
+        if poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+            )
+        }) {
             self.note_prompt_output(session_id);
         }
 
         poll_result
-            .text_deltas
+            .chunks
             .into_iter()
-            .map(|delta| (TerminalOutputKind::ProviderOutput, delta))
-            .chain(
-                poll_result
-                    .reasoning_deltas
-                    .into_iter()
-                    .map(|delta| (TerminalOutputKind::ProviderReasoning, delta)),
-            )
-            .chain(
-                poll_result
-                    .tool_updates
-                    .into_iter()
-                    .map(|delta| (TerminalOutputKind::ProviderTool, delta)),
-            )
-            .chain(
-                poll_result
-                    .error_updates
-                    .into_iter()
-                    .map(|delta| (TerminalOutputKind::ProviderError, delta)),
-            )
-            .chain(
-                poll_result
-                    .status_updates
-                    .into_iter()
-                    .map(|delta| (TerminalOutputKind::ProviderStatus, delta)),
-            )
-            .map(|(kind, delta)| {
+            .map(|chunk| {
                 self.fan_out_output(
                     session_id,
                     provider_run_id,
-                    kind,
+                    chunk.kind,
+                    chunk.merge_key,
                     recipient_attachment_ids.clone(),
-                    &delta,
+                    &chunk.bytes,
                 )
             })
             .collect()
@@ -1207,6 +1195,7 @@ impl DaemonApp {
             session_id,
             provider_run_id,
             TerminalOutputKind::PromptEcho,
+            None,
             recipient_attachment_ids,
             &bytes,
         );
@@ -1378,7 +1367,30 @@ impl DaemonApp {
             return Ok(true);
         }
 
-        if self.pty.poll_process_state(provider_run_id)? == crate::pty::PtyProcessState::Running {
+        let process_running = match self.pty.poll_process_state(provider_run_id) {
+            Ok(crate::pty::PtyProcessState::Running) => true,
+            Ok(crate::pty::PtyProcessState::Exited) => false,
+            Err(DaemonError::PtyProcessNotFound { .. }) => {
+                if self.providers.runtime_is_healthy(provider_run_id) {
+                    return Ok(false);
+                }
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
+        };
+        if process_running {
+            return Ok(false);
+        }
+        if self.providers.runtime_is_healthy(provider_run_id) {
+            let _ = self.pty.remove_process(provider_run_id);
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "provider pty exited but shared runtime remains healthy",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                }),
+            );
             return Ok(false);
         }
 
@@ -1799,6 +1811,7 @@ mod tests {
             provider_run_id: Some("run-1".to_string()),
             source_attachment_id: Some("attachment-1".to_string()),
             kind,
+            merge_key: None,
             text: text.to_string(),
             timestamp_ms: 0,
         }

@@ -35,6 +35,14 @@ impl OpenCodeEventSubscription {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(receiver: Receiver<OpenCodeEvent>) -> Self {
+        Self {
+            receiver,
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +92,8 @@ pub struct OpenCodeMessageInfo {
     #[serde(default)]
     pub variant: Option<String>,
     #[serde(default)]
+    pub tokens: OpenCodeMessageTokens,
+    #[serde(default)]
     pub time: OpenCodeMessageTime,
 }
 
@@ -107,6 +117,36 @@ impl OpenCodeMessageInfo {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     }
+
+    pub fn total_tokens(&self) -> u64 {
+        self.tokens.total()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeMessageTokens {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub reasoning: u64,
+    #[serde(default)]
+    pub cache: OpenCodeMessageCacheTokens,
+}
+
+impl OpenCodeMessageTokens {
+    pub fn total(&self) -> u64 {
+        self.input + self.output + self.reasoning + self.cache.read + self.cache.write
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OpenCodeMessageCacheTokens {
+    #[serde(default)]
+    pub read: u64,
+    #[serde(default)]
+    pub write: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -223,7 +263,18 @@ pub struct OpenCodeProviderModel {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    pub limit: Option<OpenCodeProviderModelLimit>,
+    #[serde(default)]
     pub variants: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenCodeProviderModelLimit {
+    pub context: u64,
+    #[serde(default)]
+    pub input: Option<u64>,
+    #[serde(default)]
+    pub output: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,6 +373,10 @@ impl OpenCodeClient {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    pub fn check_health(&self) -> Result<(), DaemonError> {
+        self.health()
     }
 
     pub fn create_session(&self) -> Result<String, DaemonError> {

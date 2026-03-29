@@ -148,7 +148,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
     {
       id: "model" as const,
       title: "Model",
-      value: choice.model ? `${choice.model.label} · ${choice.model.providerName}` : "No models available",
+      value: choice.model ? `${choice.model.providerName} ${choice.model.label}` : "No models available",
     },
     {
       id: "effort" as const,

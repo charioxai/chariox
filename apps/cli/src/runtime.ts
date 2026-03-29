@@ -73,6 +73,13 @@ export function getToolActivityLabel(tool?: string | null) {
   return TOOL_ACTIVITY_LABELS[normalized] ?? toPresentParticiplePhrase(normalized)
 }
 
+export function chooseVisibleActivityLabel(
+  providerActivity: string | null,
+  activeToolActivity: string | null,
+) {
+  return activeToolActivity ?? providerActivity
+}
+
 export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedClientCount: number): boolean {
   return false
 }

@@ -72,9 +72,29 @@ export function findTurnPromptScrollTarget(
     return null
   }
 
-  const currentIndex = promptOffsets.reduce((best, offset, index) => (offset <= scrollTop + 1 ? index : best), 0)
-  if (direction === "previous") {
-    return promptOffsets[Math.max(0, currentIndex - 1)] ?? null
+  if (promptOffsets.length === 1) {
+    return promptOffsets[0]
   }
-  return promptOffsets[Math.min(promptOffsets.length - 1, currentIndex + 1)] ?? null
+
+  // Find which prompt is currently in view (at or just above the scroll position)
+  let currentIndex = 0
+  for (let i = 0; i < promptOffsets.length; i++) {
+    const offset = promptOffsets[i]
+    if (offset !== undefined && offset <= scrollTop + 5) {
+      currentIndex = i
+    } else {
+      break
+    }
+  }
+
+  if (direction === "previous") {
+    // Already at the first prompt, stay there
+    const prevIndex = Math.max(0, currentIndex - 1)
+    return promptOffsets[prevIndex] ?? null
+  }
+
+  // direction === "next"
+  // Already at the last prompt, stay there
+  const nextIndex = Math.min(promptOffsets.length - 1, currentIndex + 1)
+  return promptOffsets[nextIndex] ?? null
 }

@@ -6,6 +6,16 @@ export type PromptMetaPart = {
   tone: PromptMetaTone
 }
 
+export type PromptUsageMeta = {
+  tokensLabel: string
+  usagePercent: number | null
+  usageLabel: string
+  barFilled: string
+  barEmpty: string
+}
+
+const promptUsageNumber = new Intl.NumberFormat("en-US")
+
 export function formatPromptMetaLine(provider: string, model: string, effort: string) {
   return formatPromptMetaParts(provider, model, effort).map((part) => part.text).join(" • ")
 }
@@ -36,6 +46,28 @@ export function formatPromptMetaParts(provider: string, model: string, effort: s
   return parts
 }
 
+export function formatPromptUsageMeta(totalTokens: number | null | undefined, contextLimit: number | null | undefined, barWidth = 10): PromptUsageMeta | null {
+  if (totalTokens == null || totalTokens < 0) {
+    return null
+  }
+
+  const usagePercent = contextLimit && contextLimit > 0
+    ? Math.round((totalTokens / contextLimit) * 100)
+    : null
+  const clampedPercent = usagePercent == null
+    ? 0
+    : Math.max(0, Math.min(100, usagePercent))
+  const filledCount = Math.round((clampedPercent / 100) * barWidth)
+
+  return {
+    tokensLabel: `${promptUsageNumber.format(totalTokens)} tok`,
+    usagePercent,
+    usageLabel: usagePercent == null ? "" : `${usagePercent}%`,
+    barFilled: "=".repeat(filledCount),
+    barEmpty: "-".repeat(Math.max(0, barWidth - filledCount)),
+  }
+}
+
 function formatProvider(provider: string) {
   return formatKnownLabel(provider) || "OpenCode"
 }
@@ -57,7 +89,8 @@ function formatModel(model: string) {
   if (!providerId) {
     return formatKnownLabel(modelId)
   }
-  return `${formatKnownLabel(modelId)} ${formatKnownLabel(providerId)}`
+  // Show provider first, then model name (e.g., "OpenAI GPT-5.4", "Zen Kimi 2.5")
+  return `${formatKnownLabel(providerId)} ${formatKnownLabel(modelId)}`
 }
 
 function formatEffort(effort: string) {

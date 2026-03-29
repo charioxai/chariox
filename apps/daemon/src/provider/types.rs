@@ -87,6 +87,7 @@ pub struct RuntimeProviderRun {
     account_profile: String,
     model: String,
     variant: Option<String>,
+    usage_tokens_total: Option<u64>,
     state: ProviderRunState,
     process_label: String,
     pty_target: Option<String>,
@@ -110,6 +111,7 @@ impl RuntimeProviderRun {
             account_profile: request.account_profile.clone(),
             model: request.model.clone(),
             variant: request.variant.clone(),
+            usage_tokens_total: None,
             state: ProviderRunState::Starting,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
@@ -152,6 +154,14 @@ impl RuntimeProviderRun {
             let value = value.trim();
             (!value.is_empty()).then(|| value.to_string())
         });
+    }
+
+    pub fn usage_tokens_total(&self) -> Option<u64> {
+        self.usage_tokens_total
+    }
+
+    pub fn set_usage_tokens_total(&mut self, usage_tokens_total: Option<u64>) {
+        self.usage_tokens_total = usage_tokens_total;
     }
 
     pub fn state(&self) -> ProviderRunState {

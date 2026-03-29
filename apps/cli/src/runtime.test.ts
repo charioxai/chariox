@@ -5,6 +5,7 @@ import { LocalIpcError } from "./ipc.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   MAX_TRANSIENT_POLL_FAILURES,
+  chooseVisibleActivityLabel,
   describeCliError,
   getExitCleanupDecision,
   getProviderActivityLabel,
@@ -107,6 +108,13 @@ test("tool activity labels convert tool names into gerunds", () => {
   assert.equal(getToolActivityLabel("apply_patch"), "patching")
   assert.equal(getToolActivityLabel("webfetch"), "webfetching")
   assert.equal(getToolActivityLabel("todowrite"), "todowriting")
+})
+
+test("tool activity labels take precedence over provider activity", () => {
+  assert.equal(chooseVisibleActivityLabel("reading", "grepping"), "grepping")
+  assert.equal(chooseVisibleActivityLabel("reconnecting", null), "reconnecting")
+  assert.equal(chooseVisibleActivityLabel(null, "writing"), "writing")
+  assert.equal(chooseVisibleActivityLabel(null, null), null)
 })
 
 test("provider status labels map to active badge text", () => {

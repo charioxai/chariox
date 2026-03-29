@@ -1,0 +1,4 @@
+# run cli
+export ARROBA_OPENCODE_PORT=43111
+export ARROBA_OPENCODE_BIN=/Users/miguel/.opencode/bin/opencode
+cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli

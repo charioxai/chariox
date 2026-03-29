@@ -10,7 +10,9 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { batch, createSignal, onCleanup } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
+import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
 import { copyTextToClipboard } from "./clipboard.js"
+import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { LocalIpcClient } from "./ipc.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
@@ -23,7 +25,7 @@ import {
   type ParsedPromptAttachment,
   type PromptAttachmentKind,
 } from "./prompt-attachments.js"
-import { formatPromptMetaParts, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
+import { formatPromptMetaParts, formatPromptUsageMeta, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
 import {
   catalogModelOptions,
   fallbackProviderCatalog,
@@ -32,9 +34,9 @@ import {
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
-  ACTIVE_STATUS_FALLBACK,
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
+  chooseVisibleActivityLabel,
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
@@ -115,7 +117,7 @@ type HotkeySection = {
 }
 
 const GLOBAL_HOTKEYS: HotkeyItem[] = [
-  { keys: "Ctrl+L", description: "Show or hide this hotkey list." },
+  { keys: HOTKEY_TOGGLE_LABEL, description: "Show or hide this hotkey list." },
   { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
   { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
 ]
@@ -186,6 +188,7 @@ type RuntimeProviderRun = {
   account_profile: string
   model: string
   variant: string | null
+  usage_tokens_total: number | null
   state: string
 }
 
@@ -222,6 +225,7 @@ type RuntimeNoticeRecord = {
 
 type TerminalOutputRecord = {
   kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
+  merge_key?: string
   bytes: number[]
 }
 
@@ -256,6 +260,7 @@ type SessionHistoryPageEntry = {
 
 type SessionHistoryEntry = {
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
+  merge_key?: string
   text: string
 }
 
@@ -504,6 +509,7 @@ async function main() {
       targetFps: 60,
       gatherStats: false,
       exitOnCtrlC: false,
+      useKittyKeyboard: {},
       useMouse: true,
       enableMouseMovement: false,
       useAlternateScreen: true,
@@ -545,10 +551,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(initialSessions, initialProviderCatalog, options.model, options.effort),
   )
+  const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
+  const [commandCenterItems, setCommandCenterItems] = createSignal<CommandCenterItem[]>([])
+  const [commandCenterIndex, setCommandCenterIndex] = createSignal(0)
   const [centerMode, setCenterMode] = createSignal<"transcript" | "tree">("transcript")
   const [directoryTreeState, setDirectoryTreeState] = createSignal<DirectoryTreeState | null>(null)
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
   const [activeStatusLabel, setActiveStatusLabel] = createSignal<string | null>(null)
+  const [providerActivityLabel, setProviderActivityLabel] = createSignal<string | null>(null)
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
@@ -575,6 +585,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let promptMetaModelText: TextRenderable | undefined
   let promptMetaModelDividerText: TextRenderable | undefined
   let promptMetaVariantText: TextRenderable | undefined
+  let promptMetaUsageDividerText: TextRenderable | undefined
+  let promptMetaUsageTokensText: TextRenderable | undefined
+  let promptMetaUsageBarOpenText: TextRenderable | undefined
+  let promptMetaUsageBarFilledText: TextRenderable | undefined
+  let promptMetaUsageBarEmptyText: TextRenderable | undefined
+  let promptMetaUsageBarCloseText: TextRenderable | undefined
+  let promptMetaUsagePercentText: TextRenderable | undefined
+  let commandCenterBox: BoxRenderable | undefined
+  let hotkeysOverlayBox: BoxRenderable | undefined
   let footerSummaryText: TextRenderable | undefined
   let footerFlashText: TextRenderable | undefined
   let historyLoadingText: TextRenderable | undefined
@@ -593,12 +612,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let lastTranscriptScrollTop = 0
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
-  let pendingTranscriptRelayout = false
   let pendingSessionChromeUpdate = false
   let pendingTranscriptRender = false
   let uiBatchDepth = 0
   let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTerminalRecords: TerminalOutputRecord[] = []
+  // Connection resilience tracking
+  let lastDaemonActivityAt = Date.now()
+  let connectionWatchdogTimeout: ReturnType<typeof startTimeout> | undefined
+  let consecutiveSilentPolls = 0
+  const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
+  let providerRecoveryInFlight = false
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let promptTextSnapshot = ""
@@ -616,9 +640,88 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       provider: run?.provider ?? null,
       provider_model: run?.model ?? null,
       provider_variant: run?.variant ?? null,
+      provider_usage_tokens_total: run?.usage_tokens_total ?? null,
       provider_state: run?.state ?? null,
       ...fields,
     })
+  }
+  const describeRenderableDebug = (renderable: Renderable | null | undefined) => {
+    if (!renderable) {
+      return null
+    }
+    const focusable = renderable as Renderable & { focused?: boolean }
+    return {
+      id: String((renderable as { id?: string | number }).id ?? ""),
+      type: renderable.constructor?.name ?? null,
+      destroyed: renderable.isDestroyed,
+      focused: Boolean(focusable.focused),
+    }
+  }
+  const inspectHotkeysToggleShortcut = (
+    source: "keyboard" | "stdin" | "textarea",
+    event: { name: string; ctrl?: boolean; meta?: boolean; super?: boolean; eventType?: string; baseCode?: number },
+  ) => {
+    const match = matchHotkeysToggleEvent(event)
+    if (match.normalizedName === "t" || event.ctrl || event.meta || event.super) {
+      appLogger?.debug("evaluated hotkeys toggle shortcut", {
+        source,
+        matched: match.matched,
+        reason: match.reason,
+        key_name: event.name,
+        normalized_name: match.normalizedName,
+        event_type: event.eventType ?? null,
+        ctrl: Boolean(event.ctrl),
+        meta: Boolean(event.meta),
+        super: Boolean(event.super),
+        base_code: event.baseCode ?? null,
+        hotkeys_open: hotkeysOpen(),
+      })
+    }
+    return match
+  }
+  const handleHotkeysToggleShortcut = (
+    source: "keyboard" | "stdin" | "textarea",
+    event: {
+      name: string
+      ctrl?: boolean
+      meta?: boolean
+      super?: boolean
+      eventType?: string
+      baseCode?: number
+      defaultPrevented?: boolean
+      preventDefault?: () => void
+      stopPropagation?: () => void
+    },
+  ) => {
+    if (event.defaultPrevented) {
+      return false
+    }
+    const hotkeysToggle = inspectHotkeysToggleShortcut(source, event)
+    if (!hotkeysToggle.matched) {
+      return false
+    }
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    const previousHotkeysOpen = hotkeysOpen()
+    hotkeyDebug(`shortcut ${source} matched reason=${hotkeysToggle.reason} open=${previousHotkeysOpen} key=${event.name}`)
+    appLogger?.debug("toggling hotkeys via shortcut", {
+      source,
+      reason: hotkeysToggle.reason,
+      hotkeys_open: previousHotkeysOpen,
+      next_hotkeys_open: !previousHotkeysOpen,
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
+    toggleHotkeys()
+    hotkeyDebug(`shortcut ${source} finished open=${hotkeysOpen()} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
+    appLogger?.debug("finished toggling hotkeys via shortcut", {
+      source,
+      reason: hotkeysToggle.reason,
+      previous_hotkeys_open: previousHotkeysOpen,
+      hotkeys_open: hotkeysOpen(),
+      saved_focus: describeRenderableDebug(hotkeysFocus),
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
+    return true
   }
   const reconcileWaitingRoom = (next: WaitingRoomState) => {
     const previous = waitingRoomState()
@@ -636,6 +739,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rebuildTranscript()
     }
     updateSessionChrome()
+    syncCommandCenter()
     return normalized
   }
   const activateWaitingRoom = async () => {
@@ -668,6 +772,49 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAvailableSessions(sessions)
     setProviderCatalogState(catalog)
     reconcileWaitingRoom(waitingRoomState())
+  }
+  const applyModelSelection = async (modelId: string) => {
+    const selected = catalogModelOptions(providerCatalogState()).find((option) => option.id === modelId)
+    if (!selected) {
+      flashFooter(`unknown model: ${modelId}`, "error")
+      return
+    }
+    const nextVariant = selectConfiguredVariant(selected, options.effort)
+    reconcileWaitingRoom({
+      ...waitingRoomState(),
+      modelId: selected.id,
+      effort: nextVariant,
+    })
+    if (!isAttached()) {
+      flashFooter(`selected model ${selected.id}`, "info")
+      return
+    }
+    const run = await launchProviderRun(client, sessionState().id, options.accountProfile, selected.id, nextVariant)
+    setProviderRunState(run)
+    applySessionState(await getSessionState(client, sessionState().id))
+    await maybeResize(client, sessionState().id)
+    flashFooter(`model set to ${selected.id}`, "info")
+  }
+  const applyVariantSelection = async (variant: string) => {
+    const selected = catalogModelOptions(providerCatalogState()).find((option) => option.id === currentModelId())
+    if (!selected || !selected.variants.includes(variant)) {
+      flashFooter(`unknown variant: ${variant}`, "error")
+      return
+    }
+    reconcileWaitingRoom({
+      ...waitingRoomState(),
+      modelId: selected.id,
+      effort: variant,
+    })
+    if (!isAttached()) {
+      flashFooter(`selected variant ${variant}`, "info")
+      return
+    }
+    const run = await launchProviderRun(client, sessionState().id, options.accountProfile, selected.id, variant)
+    setProviderRunState(run)
+    applySessionState(await getSessionState(client, sessionState().id))
+    await maybeResize(client, sessionState().id)
+    flashFooter(`variant set to ${variant}`, "info")
   }
   const loadDirectoryTree = async (treePath = "") => {
     const attachment = attachmentState()
@@ -754,6 +901,184 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const effort = run?.variant ?? waiting.effort ?? options.effort
     return formatPromptMetaParts(provider, model, effort)
   }
+  const promptUsageMeta = () => {
+    const run = providerRunState()
+    if (!run) {
+      return null
+    }
+    return formatPromptUsageMeta(
+      run.usage_tokens_total,
+      resolveProviderModelContextLimit(providerCatalogState(), run.provider, run.model),
+      12,
+    )
+  }
+  const currentModelId = () => providerRunState()?.model ?? waitingRoomState().modelId ?? options.model
+  const currentVariantId = () => providerRunState()?.variant ?? waitingRoomState().effort ?? options.effort
+  const syncCommandCenter = (value = promptInput?.plainText ?? promptTextSnapshot) => {
+    setCommandCenterQuery(value)
+    const items = buildCommandCenterItems(value, {
+      providerCatalog: providerCatalogState(),
+      currentModel: currentModelId(),
+      currentVariant: currentVariantId(),
+    })
+    setCommandCenterItems(items)
+    setCommandCenterIndex((index) => (items.length === 0 ? 0 : Math.max(0, Math.min(index, items.length - 1))))
+    renderCommandCenter()
+  }
+  const commandCenterOpen = () => commandCenterItems().length > 0 && commandCenterQuery().startsWith("/")
+  const selectCommandCenterItem = async (item: CommandCenterItem) => {
+    if (item.kind === "command") {
+      if (!item.value.endsWith(" ")) {
+        clearCommandCenter()
+        setPromptText("")
+        syncPromptTextSnapshot()
+        await executeCommandCenterCommand(item.value)
+        return
+      }
+      setPromptText(item.value)
+      if (promptInput) {
+        promptInput.cursorOffset = item.value.length
+      }
+      syncPromptTextSnapshot()
+      syncCommandCenter(item.value)
+      return
+    }
+    if (item.kind === "provider") {
+      await executeCommandCenterCommand(`/provider ${item.value}`)
+      setPromptText("")
+      syncPromptTextSnapshot()
+      syncCommandCenter("")
+      return
+    }
+    if (item.kind === "model") {
+      await executeCommandCenterCommand(`/model ${item.value}`)
+      setPromptText("")
+      syncPromptTextSnapshot()
+      syncCommandCenter("")
+      return
+    }
+    if (item.kind === "variant") {
+      await executeCommandCenterCommand(`/variant ${item.value}`)
+      setPromptText("")
+      syncPromptTextSnapshot()
+      syncCommandCenter("")
+    }
+  }
+  const moveCommandCenterSelection = (delta: number) => {
+    const items = commandCenterItems()
+    if (items.length === 0) {
+      return
+    }
+    setCommandCenterIndex((index) => (index + delta + items.length) % items.length)
+  }
+  const clearCommandCenter = () => {
+    setCommandCenterQuery("")
+    setCommandCenterItems([])
+    setCommandCenterIndex(0)
+    renderCommandCenter()
+  }
+  const selectedCommandCenterItem = () => commandCenterItems()[commandCenterIndex()] ?? commandCenterItems()[0] ?? null
+  const handleCommandCenterKey = (event: {
+    name: string
+    ctrl?: boolean
+    eventType?: string
+    preventDefault?: () => void
+    stopPropagation?: () => void
+  }) => {
+    if (!commandCenterOpen() || event.eventType === "release") {
+      return false
+    }
+    if (event.name === "up" || (event.ctrl && event.name === "p")) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      moveCommandCenterSelection(-1)
+      renderCommandCenter()
+      return true
+    }
+    if (event.name === "down" || (event.ctrl && event.name === "n")) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      moveCommandCenterSelection(1)
+      renderCommandCenter()
+      return true
+    }
+    if (event.name === "escape") {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      clearCommandCenter()
+      return true
+    }
+    if (event.name === "return" || event.name === "enter" || event.name === "tab") {
+      const item = selectedCommandCenterItem()
+      if (!item) {
+        return false
+      }
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void selectCommandCenterItem(item)
+      return true
+    }
+    return false
+  }
+  const selectCommandCenterFromSubmit = () => {
+    const item = selectedCommandCenterItem()
+    if (!item) {
+      return false
+    }
+    void selectCommandCenterItem(item)
+    return true
+  }
+  const renderCommandCenter = () => {
+    if (!commandCenterBox) {
+      return
+    }
+    for (const child of [...commandCenterBox.getChildren()]) {
+      commandCenterBox.remove(child.id)
+      child.destroyRecursively()
+    }
+    if (!commandCenterOpen()) {
+      commandCenterBox.requestRender()
+      return
+    }
+
+    const panel = new BoxRenderable(renderer, {
+      flexDirection: "column",
+      border: ["left"],
+      borderColor: theme.primary,
+      customBorderChars: SplitBorder.customBorderChars,
+      paddingLeft: 1,
+      paddingTop: 1,
+      paddingBottom: 1,
+      backgroundColor: theme.backgroundPanel,
+      gap: 0,
+    })
+
+    for (const [index, item] of commandCenterItems().entries()) {
+      const selected = index === commandCenterIndex()
+      const row = new BoxRenderable(renderer, {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        paddingLeft: 1,
+        paddingRight: 1,
+        ...(selected ? { backgroundColor: theme.primary } : {}),
+      })
+      row.add(new TextRenderable(renderer, {
+        content: item.label,
+        fg: selected ? theme.background : theme.text,
+        attributes: selected ? TextAttributes.BOLD : TextAttributes.NONE,
+        wrapMode: "none",
+      }))
+      row.add(new TextRenderable(renderer, {
+        content: item.description,
+        fg: selected ? theme.background : theme.textMuted,
+        wrapMode: "none",
+      }))
+      panel.add(row)
+    }
+
+    commandCenterBox.add(panel)
+    commandCenterBox.requestRender()
+  }
   const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const sessionStatusMode = (): SessionStatusMode => {
     if (daemonDisconnected()) {
@@ -827,17 +1152,134 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ? { title: "Session", items: SESSION_HOTKEYS }
       : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
   ]
+  const renderHotkeysOverlay = () => {
+    if (!hotkeysOverlayBox) {
+      return
+    }
+    for (const child of [...hotkeysOverlayBox.getChildren()]) {
+      hotkeysOverlayBox.remove(child.id)
+      child.destroyRecursively()
+    }
+    if (!hotkeysOpen()) {
+      hotkeysOverlayBox.requestRender()
+      return
+    }
+
+    const scrim = new BoxRenderable(renderer, {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: dimensions().width,
+      height: dimensions().height,
+      alignItems: "center",
+      paddingTop: Math.max(1, Math.floor(dimensions().height / 5)),
+      backgroundColor: RGBA.fromInts(0, 0, 0, 150),
+    })
+    scrim.onMouseUp = () => {
+      closeHotkeys()
+    }
+
+    const panel = new BoxRenderable(renderer, {
+      width: HOTKEY_DIALOG_WIDTH,
+      maxWidth: dimensions().width - 4,
+      backgroundColor: theme.backgroundPanel,
+      paddingTop: 1,
+      paddingBottom: 1,
+      paddingLeft: 2,
+      paddingRight: 2,
+      flexDirection: "column",
+      gap: 1,
+    })
+    panel.onMouseUp = (event) => {
+      event.stopPropagation()
+    }
+
+    const header = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      justifyContent: "space-between",
+    })
+    header.add(new TextRenderable(renderer, {
+      content: "Hotkeys",
+      attributes: TextAttributes.BOLD,
+      fg: theme.text,
+    }))
+    header.add(new TextRenderable(renderer, {
+      content: "Esc closes",
+      fg: theme.textMuted,
+    }))
+    panel.add(header)
+    panel.add(new TextRenderable(renderer, {
+      content: `${HOTKEY_TOGGLE_LABEL} toggles this list.`,
+      fg: theme.textMuted,
+    }))
+
+    for (const section of hotkeySections()) {
+      const sectionBox = new BoxRenderable(renderer, {
+        flexDirection: "column",
+        gap: 1,
+      })
+      sectionBox.add(new TextRenderable(renderer, {
+        content: section.title,
+        attributes: TextAttributes.BOLD,
+        fg: theme.primary,
+      }))
+      for (const item of section.items) {
+        const row = new BoxRenderable(renderer, {
+          flexDirection: "row",
+          gap: 2,
+        })
+        const keys = new BoxRenderable(renderer, {
+          width: 22,
+          flexShrink: 0,
+        })
+        keys.add(new TextRenderable(renderer, {
+          content: item.keys,
+          attributes: TextAttributes.BOLD,
+          fg: theme.text,
+        }))
+        row.add(keys)
+        row.add(new TextRenderable(renderer, {
+          content: item.description,
+          fg: theme.textMuted,
+        }))
+        sectionBox.add(row)
+      }
+      panel.add(sectionBox)
+    }
+
+    scrim.add(panel)
+    hotkeysOverlayBox.add(scrim)
+    hotkeysOverlayBox.requestRender()
+  }
   const closeHotkeys = () => {
     if (!hotkeysOpen()) {
       return
     }
+    const restoreTarget = hotkeysFocus
+    hotkeyDebug(`close start open=${hotkeysOpen()} saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    appLogger?.debug("closing hotkeys overlay", {
+      hotkeys_open: hotkeysOpen(),
+      restore_focus: describeRenderableDebug(restoreTarget),
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
     setHotkeysOpen(false)
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    renderHotkeysOverlay()
     startTimeout(() => {
-      if (!hotkeysFocus || hotkeysFocus.isDestroyed) {
+      if (!restoreTarget || restoreTarget.isDestroyed) {
+        hotkeyDebug(`close skip-restore saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"}`)
+        appLogger?.debug("hotkeys overlay skipped focus restore", {
+          restore_focus: describeRenderableDebug(restoreTarget),
+          current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+        })
+        hotkeysFocus = null
         return
       }
-      hotkeysFocus.focus()
+      restoreTarget.focus()
+      hotkeyDebug(`close restored saved=${describeRenderableDebug(restoreTarget)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+      appLogger?.debug("hotkeys overlay restored focus", {
+        restore_focus: describeRenderableDebug(restoreTarget),
+        current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+      })
       hotkeysFocus = null
     }, 1)
   }
@@ -851,11 +1293,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       : promptInput && !promptInput.isDestroyed
         ? promptInput
         : null
+    hotkeyDebug(`open start current=${describeRenderableDebug(focused)?.type ?? "none"} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
+    appLogger?.debug("opening hotkeys overlay", {
+      hotkeys_open: hotkeysOpen(),
+      current_focus: describeRenderableDebug(focused),
+      saved_focus: describeRenderableDebug(hotkeysFocus),
+    })
     hotkeysFocus?.blur()
+    hotkeyDebug(`open blurred saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    appLogger?.debug("hotkeys overlay blurred saved focus", {
+      saved_focus: describeRenderableDebug(hotkeysFocus),
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
     setHotkeysOpen(true)
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    renderHotkeysOverlay()
+    hotkeyDebug(`open done open=${hotkeysOpen()} saved=${describeRenderableDebug(hotkeysFocus)?.type ?? "none"}`)
+    appLogger?.debug("hotkeys overlay opened", {
+      hotkeys_open: hotkeysOpen(),
+      saved_focus: describeRenderableDebug(hotkeysFocus),
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
   }
   const toggleHotkeys = () => {
+    hotkeyDebug(`toggle open=${hotkeysOpen()} current=${describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null)?.type ?? "none"}`)
+    appLogger?.debug("toggleHotkeys invoked", {
+      hotkeys_open: hotkeysOpen(),
+      saved_focus: describeRenderableDebug(hotkeysFocus),
+      current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+    })
     if (hotkeysOpen()) {
       closeHotkeys()
       return
@@ -1032,19 +1497,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const value = promptInput.plainText
     if (!isAttached()) {
       promptTextSnapshot = value
+      syncCommandCenter(value)
       return
     }
     if (promptTextMuting || promptDropPending) {
       promptTextSnapshot = value
+      syncCommandCenter(value)
       return
     }
     const drop = extractDroppedPromptAttachments(promptTextSnapshot, value, process.cwd())
     if (!drop) {
       syncPendingPromptAttachmentsFromText(value)
       promptTextSnapshot = value
+      syncCommandCenter(value)
       return
     }
     setPromptText(drop.nextText)
+    syncCommandCenter(drop.nextText)
     promptDropPending = true
     void attachPromptFiles(drop.files, drop.insertAt)
       .catch((error) => {
@@ -1090,12 +1559,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousViewportHeight = scrollbox?.height ?? 0
     const previousVisibleTurnHeight = measureVisibleTurnHeight(turnId)
     let nextId = entryCounter()
+    let didCollapse = false
     setEntries(
       produce((draft) => {
         const promptIndex = draft.findIndex((entry) => entry?.turnId === turnId && entry.role === "user")
         if (promptIndex === -1) {
           return
         }
+        // Remove any existing toggle/summary entries for this turn
         for (let index = draft.length - 1; index >= 0; index -= 1) {
           const entry = draft[index]
           if (entry?.turnId === turnId && (entry.role === "turn_toggle" || entry.role === "turn_summary")) {
@@ -1108,11 +1579,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const collapsibleEntries = turnEntries.filter((entry) => entry.role !== "user")
         const collapsedText = collapsedTurnText(collapsibleEntries)
         if (collapsibleEntries.length === 0 || !collapsedText) {
+          // Nothing to collapse yet, just return without adding toggle
           return
         }
+        // Mark as collapsed and hide entries
+        didCollapse = true
         for (const entry of collapsibleEntries) {
           entry.hidden = true
         }
+        // Insert summary and toggle after the user prompt
         draft.splice(
           promptIndex + 1,
           0,
@@ -1133,8 +1608,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }),
     )
     setEntryCounter(nextId)
+    // Always rebuild transcript even if nothing collapsed (to ensure UI consistency)
     rebuildTranscript()
-    if (scrollbox) {
+    if (scrollbox && didCollapse) {
       restoreTurnScrollPosition(
         scrollbox,
         turnId,
@@ -1237,8 +1713,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!transcriptScrollbox) {
       return
     }
-    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: transcriptScrollbox.scrollHeight })
+    pendingHistoryScrollRestore = 0
+    const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
+    transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: maxScrollTop })
     transcriptScrollbox.requestRender()
+    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
 
   const appendUserPrompt = (text: string) => {
@@ -1322,6 +1801,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }, 3_000)
   }
 
+  const hotkeyDebug = (message: string) => {
+    appLogger?.debug("hotkeys footer debug", { detail: message })
+    if ((process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() !== "debug") {
+      return
+    }
+    flashFooter(`[hotkeys] ${message}`, "info")
+  }
+
   const copySelection = () => {
     const text = renderer.getSelection()?.getSelectedText()
     renderer.clearSelection()
@@ -1349,7 +1836,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       stopRequestInFlight = false
     }
     updateSessionChrome()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
   const applyProviderActivity = (active: boolean) => {
@@ -1357,12 +1843,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!active) {
       activeToolLabels.clear()
       setSubmitting(false)
+      setProviderActivityLabel(null)
       setActiveStatusLabel(null)
       if (!activePrompt() && statusLine() === "Cancellation requested.") {
         setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
     }
     updateSessionChrome()
+  }
+
+  const syncVisibleActivityLabel = () => {
+    const latestActiveToolLabel = Array.from(activeToolLabels.values()).at(-1) ?? null
+    setActiveStatusLabel(chooseVisibleActivityLabel(providerActivityLabel(), latestActiveToolLabel))
   }
 
   const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {
@@ -1374,8 +1866,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       activeToolLabels.set(update.id, label)
     }
 
-    const latestActiveToolLabel = Array.from(activeToolLabels.values()).at(-1)
-    setActiveStatusLabel(latestActiveToolLabel ?? ACTIVE_STATUS_FALLBACK)
+    syncVisibleActivityLabel()
   }
 
   const appendProviderChunk = (
@@ -1407,15 +1898,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             }
           }
           if (existing) {
-            existing.text = normalized
-            if (normalizedSource !== undefined) existing.sourceText = normalizedSource
+            if (role === "assistant" || role === "reasoning") {
+              existing.text += normalized
+              if (normalizedSource !== undefined) {
+                existing.sourceText = `${existing.sourceText ?? ""}${normalizedSource}`
+              }
+            } else {
+              existing.text = normalized
+              if (normalizedSource !== undefined) existing.sourceText = normalizedSource
+            }
             mergedEntryId = existing.id
             mergedText = existing.text
             return
           }
         }
         const last = draft.at(-1)
-        if (last?.role === role && (role === "assistant" || role === "reasoning")) {
+        if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
           last.text += normalized
           mergedEntryId = last.id
           mergedText = last.text
@@ -1467,13 +1965,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
+    recordDaemonActivity("terminal_record")
     const text = Buffer.from(record.bytes).toString("utf8")
     switch (record.kind) {
       case "prompt_echo":
         appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
         break
       case "provider_reasoning":
-        appendProviderChunk("reasoning", text)
+        appendProviderChunk("reasoning", text, record.merge_key)
         break
       case "provider_tool":
         appendToolUpdate(text)
@@ -1483,15 +1982,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         break
       case "provider_status": {
         const activityLabel = getProviderActivityLabel(text)
-        setActiveStatusLabel(activityLabel)
+        setProviderActivityLabel(activityLabel)
         applyProviderActivity(activityLabel !== null)
+        if (activityLabel !== null) {
+          syncVisibleActivityLabel()
+        }
         if (shouldRenderProviderStatus(text)) {
           appendProviderChunk("status", text, "__provider_status__")
         }
         break
       }
       default:
-        appendProviderChunk("assistant", text)
+        appendProviderChunk("assistant", text, record.merge_key)
         break
     }
   }
@@ -1574,6 +2076,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setTextRenderable(promptMetaModelText, "", theme.textMuted)
       setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
       setTextRenderable(promptMetaVariantText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsageDividerText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsageTokensText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsageBarOpenText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsageBarFilledText, "", theme.primary)
+      setTextRenderable(promptMetaUsageBarEmptyText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsageBarCloseText, "", theme.textMuted)
+      setTextRenderable(promptMetaUsagePercentText, "", theme.textMuted)
       return
     }
 
@@ -1600,6 +2109,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       variantPart?.text ?? "",
       variantPart ? promptMetaToneColor(variantPart.tone) : theme.textMuted,
       variantPart ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+
+    const usage = promptUsageMeta()
+    setTextRenderable(promptMetaUsageDividerText, usage ? " • " : "", theme.textMuted)
+    setTextRenderable(
+      promptMetaUsageTokensText,
+      usage?.tokensLabel ?? "",
+      usage ? theme.secondary : theme.textMuted,
+      usage ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+    setTextRenderable(promptMetaUsageBarOpenText, usage?.usageLabel ? " [" : "", theme.textMuted)
+    setTextRenderable(
+      promptMetaUsageBarFilledText,
+      usage?.barFilled ?? "",
+      theme.primary,
+      usage?.barFilled ? TextAttributes.BOLD : TextAttributes.NONE,
+    )
+    setTextRenderable(promptMetaUsageBarEmptyText, usage?.usageLabel ? (usage?.barEmpty ?? "") : "", theme.textMuted)
+    setTextRenderable(promptMetaUsageBarCloseText, usage?.usageLabel ? "]" : "", theme.textMuted)
+    setTextRenderable(
+      promptMetaUsagePercentText,
+      usage?.usageLabel ? ` ${usage.usageLabel}` : "",
+      usage?.usageLabel ? theme.info : theme.textMuted,
+      usage?.usageLabel ? TextAttributes.BOLD : TextAttributes.NONE,
     )
   }
 
@@ -1628,7 +2161,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       historyLoadingText = undefined
     }
     historyLoadingBox.requestRender()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
   const setHistoryLoadingState = (next: boolean) => {
@@ -1715,7 +2247,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setTextRenderable(
       footerSummaryText,
       isAttached()
-        ? `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected • ${sessionState().active_provider_run_id ?? "starting provider"}${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""} • Ctrl+L hotkeys`
+        ? `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected${sessionStatusMode() === "working" ? " • Ctrl+C to stop agent" : ""} • ${HOTKEY_TOGGLE_LABEL} hotkeys`
         : SESSION_NEW_FOOTER_HINT,
       theme.textMuted,
     )
@@ -1727,7 +2259,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     )
     footerSummaryBox?.requestRender()
     renderStatusIndicator()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
   const mountTranscriptEntry = (entry: TranscriptEntry, requestRender = true) => {
@@ -1766,36 +2297,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     renderable.update(renderable.entry)
     requestTranscriptRender()
-    if (previousMode === "markdown") {
-      scheduleTranscriptRelayout()
-    }
-  }
-
-  const scheduleTranscriptRelayout = () => {
-    if (pendingTranscriptRelayout) {
-      return
-    }
-    pendingTranscriptRelayout = true
-    startTimeout(() => {
-      pendingTranscriptRelayout = false
-      const scrollbox = transcriptScrollbox
-      const previousScrollTop = scrollbox?.scrollTop ?? 0
-      const previousHeight = scrollbox?.height ?? 0
-      const wasNearBottom = scrollbox
-        ? previousScrollTop >= Math.max(0, scrollbox.scrollHeight - previousHeight - 2)
-        : false
-      rebuildTranscript()
-      if (!scrollbox || centerMode() !== "transcript") {
-        return
-      }
-      const maxScrollTop = Math.max(0, scrollbox.scrollHeight - scrollbox.height)
-      const nextScrollTop = wasNearBottom
-        ? maxScrollTop
-        : Math.max(0, Math.min(previousScrollTop, maxScrollTop))
-      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
-      scrollbox.requestRender()
-      lastTranscriptScrollTop = scrollbox.scrollTop
-    }, STREAM_BATCH_WINDOW_MS)
   }
 
   const measureVisibleTurnHeight = (turnId: number | null | undefined) => {
@@ -2043,6 +2544,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setCenterMode("transcript")
     setDirectoryTreeState(null)
     activeToolLabels.clear()
+    setProviderActivityLabel(null)
     setActiveStatusLabel(null)
     setCreatedSessionState(false)
     setSessionState(buildDetachedSessionState(options))
@@ -2113,7 +2615,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       setProviderRunState(run)
     }
+    setProviderCatalogState(await getProviderCatalog(client, appLogger))
+    reconcileWaitingRoom(waitingRoomState())
     await maybeResize(client, session.id)
+    await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, appLogger)
+    const hydratedSession = await getSessionState(client, session.id)
     const historyPage = await getSessionHistory(client, session.id)
     let resolvedHistoryEntries = hydrateTranscriptEntries(historyPage.entries)
     let nextResolvedCursor = historyPage.next_cursor
@@ -2125,16 +2631,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const historyEntries = reindexTranscriptEntries(
       collapseHistoricalTurns(
         resolvedHistoryEntries,
-        hasPromptWork(attachedSession),
+        hasPromptWork(hydratedSession),
       ),
       0,
     )
     setAttachmentState(attachment)
     setCreatedSessionState(createdSession)
-    setSessionState(await getSessionState(client, session.id))
+    setSessionState(hydratedSession)
     setCenterMode("transcript")
     setDirectoryTreeState(null)
     activeToolLabels.clear()
+    setProviderActivityLabel(null)
     setActiveStatusLabel(null)
     setNextHistoryCursor(nextResolvedCursor)
     replaceTranscriptEntries(historyEntries)
@@ -2227,6 +2734,92 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       default:
         return false
+    }
+  }
+
+  const handleProviderCommand = async (commandLine: string) => {
+    const value = commandLine.replace(/^\/provider\s*/, "").trim()
+    if (!value) {
+      flashFooter("usage: /provider opencode", "error")
+      return
+    }
+    if (value !== "opencode") {
+      flashFooter(`unknown provider: ${value}`, "error")
+      return
+    }
+    flashFooter("OpenCode selected", "info")
+  }
+
+  const handleModelCommand = async (commandLine: string) => {
+    const value = commandLine.replace(/^\/model\s*/, "").trim()
+    if (!value) {
+      flashFooter("usage: /model <provider/model>", "error")
+      return
+    }
+    await applyModelSelection(value)
+  }
+
+  const handleVariantCommand = async (commandLine: string) => {
+    const value = commandLine.replace(/^\/variant\s*/, "").trim()
+    if (!value) {
+      flashFooter("usage: /variant <name>", "error")
+      return
+    }
+    await applyVariantSelection(value)
+  }
+
+  const recoverProviderRun = async (reason: string) => {
+    if (!isAttached() || providerRecoveryInFlight) {
+      return
+    }
+    providerRecoveryInFlight = true
+    try {
+      const run = await launchProviderRun(
+        client,
+        sessionState().id,
+        options.accountProfile,
+        currentModelId(),
+        currentVariantId(),
+      )
+      setProviderRunState(run)
+      applySessionState(await getSessionState(client, sessionState().id))
+      await maybeResize(client, sessionState().id)
+      setStatusLine("Recovered provider connection.")
+      updateSessionChrome()
+      flashFooter(`recovered provider run after ${reason}`, "info")
+    } catch (error) {
+      appLogger?.warn("provider recovery failed", {
+        reason,
+        error: formatError(error),
+      })
+    } finally {
+      providerRecoveryInFlight = false
+    }
+  }
+
+  const executeCommandCenterCommand = async (value: string) => {
+    if (value === "/exit") {
+      await requestExit()
+      return
+    }
+    if (value === "/stop") {
+      await requestPromptStop()
+      return
+    }
+    if (value === "/session list") {
+      await handleSessionCommand(value)
+      return
+    }
+    if (value.startsWith("/provider ")) {
+      await handleProviderCommand(value)
+      return
+    }
+    if (value.startsWith("/model ")) {
+      await handleModelCommand(value)
+      return
+    }
+    if (value.startsWith("/variant ")) {
+      await handleVariantCommand(value)
     }
   }
 
@@ -2343,6 +2936,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
+    if (trimmed.startsWith("/provider")) {
+      try {
+        await handleProviderCommand(trimmed)
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+        syncPromptTextSnapshot()
+        clearCommandCenter()
+      }
+      return
+    }
+    if (trimmed.startsWith("/model")) {
+      try {
+        await handleModelCommand(trimmed)
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+        syncPromptTextSnapshot()
+        clearCommandCenter()
+      }
+      return
+    }
+    if (trimmed.startsWith("/variant")) {
+      try {
+        await handleVariantCommand(trimmed)
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+      } finally {
+        promptInput.clear()
+        syncPromptTextSnapshot()
+        clearCommandCenter()
+      }
+      return
+    }
     if (trimmed === "/stop") {
       try {
         await requestPromptStop()
@@ -2371,6 +3000,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         attachments: attachments.length,
       })
       activeToolLabels.clear()
+      setProviderActivityLabel(null)
       setActiveStatusLabel(null)
       const attachment = attachmentState()
       if (!attachment) {
@@ -2441,10 +3071,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   useKeyboard((event) => {
-    if (event.ctrl && event.name === "l") {
-      event.preventDefault()
-      event.stopPropagation()
-      toggleHotkeys()
+    if (handleHotkeysToggleShortcut("keyboard", event)) {
       return
     }
     if (hotkeysOpen() && event.name === "escape") {
@@ -2493,7 +3120,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       .filter((offset): offset is number => offset !== null)
       .sort((left, right) => left - right)
     const target = findTurnPromptScrollTarget(promptOffsets, transcriptScrollbox.scrollTop, direction)
-    if (target === null) {
+    if (target === null || target === undefined) {
       return
     }
     transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
@@ -2505,16 +3132,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!event) {
       return
     }
-    if (event.eventType !== "release" && event.ctrl && event.name === "l") {
-      toggleHotkeys()
-      return
-    }
     if (event.eventType !== "release" && hotkeysOpen() && event.name === "escape") {
       closeHotkeys()
       return
     }
     if (event.eventType !== "release" && event.ctrl && event.name === "e") {
       void requestExit()
+      return
+    }
+    if (promptInput?.focused && commandCenterOpen()) {
+      if (event.eventType !== "release" && event.name === "escape") {
+        clearCommandCenter()
+      }
       return
     }
     if (event.eventType !== "release" && event.name === "tab") {
@@ -2677,6 +3306,59 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  // Track daemon activity for connection health monitoring
+  const recordDaemonActivity = (activityType: string) => {
+    lastDaemonActivityAt = Date.now()
+    consecutiveSilentPolls = 0
+    // If we were showing a stale connection warning, clear it
+    if (daemonDisconnected()) {
+      setDaemonDisconnected(false)
+      updateSessionChrome()
+    }
+  }
+
+  // Check if connection appears stale (working but no data received)
+  const checkConnectionHealth = () => {
+    if (!isAttached() || !working()) {
+      consecutiveSilentPolls = 0
+      return
+    }
+
+    const timeSinceLastActivity = Date.now() - lastDaemonActivityAt
+    const isSilent = timeSinceLastActivity > 2000 // 2 seconds without activity
+
+    if (isSilent) {
+      consecutiveSilentPolls++
+    } else {
+      consecutiveSilentPolls = 0
+    }
+
+    // If we've had too many silent polls while "working", something may be wrong
+    if (consecutiveSilentPolls >= SILENT_POLL_THRESHOLD) {
+      appLogger?.warn("connection appears stale - no activity while working", {
+        consecutive_silent_polls: consecutiveSilentPolls,
+        time_since_last_activity_ms: timeSinceLastActivity,
+      })
+      // Trigger recovery
+      void recoverProviderRun("stale connection - no activity received")
+      consecutiveSilentPolls = 0
+    }
+  }
+
+  const startConnectionWatchdog = () => {
+    if (connectionWatchdogTimeout) {
+      return
+    }
+    connectionWatchdogTimeout = startInterval(() => {
+      if (closing) {
+        clearInterval(connectionWatchdogTimeout)
+        connectionWatchdogTimeout = undefined
+        return
+      }
+      checkConnectionHealth()
+    }, 250)
+  }
+
   const runPollingLoop = async (
     operation: string,
     intervalMs: number,
@@ -2735,10 +3417,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!attachment) {
         return
       }
-      const response = await client.send<Record<string, unknown>>(
-        pumpTerminalOutputRequest(sessionState().id, attachment.id),
-      )
+      let response: Record<string, unknown>
+      try {
+        response = await client.send<Record<string, unknown>>(
+          pumpTerminalOutputRequest(sessionState().id, attachment.id),
+        )
+      } catch (error) {
+        const message = formatError(error)
+        if (/has no active provider run/i.test(message) && !hasPromptWork(sessionState())) {
+          setProviderRunState(null)
+          updateSessionChrome()
+          void recoverProviderRun("terminal polling")
+          return
+        }
+        throw error
+      }
       const payload = expectVariant<{ records: TerminalOutputRecord[] }>(response, "TerminalOutput")
+      if (payload.records.length > 0) {
+        recordDaemonActivity("terminal_output")
+      }
       queueTerminalOutputRecords(payload.records)
     })
   }
@@ -2752,6 +3449,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const response = await client.send<Record<string, unknown>>(
         pollRuntimeNoticesRequest(sessionState().id, attachment.id),
       )
+      recordDaemonActivity("runtime_notices")
       const payload = expectVariant<{ notices: RuntimeNoticeRecord[] }>(response, "RuntimeNotices")
       for (const notice of payload.notices) {
         appendNotice(notice.message)
@@ -2765,29 +3463,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
+      recordDaemonActivity("session_state_poll")
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
       applySessionState(payload.session)
       if (payload.session.active_provider_run_id) {
         const activeRun = providerRunState()
-        if (
-          !activeRun
-          || activeRun.id !== payload.session.active_provider_run_id
-          || activeRun.model === "default"
-          || activeRun.variant === null
-        ) {
-          const run = await tryGetProviderRun(client, payload.session.active_provider_run_id, appLogger)
+        const run = await tryGetProviderRun(client, payload.session.active_provider_run_id, appLogger)
+        if (run && (!activeRun || !sameProviderRun(activeRun, run))) {
           logProviderRunDebug("session poll refreshed provider run", run, {
             session_id: payload.session.id,
             previous_provider_run_id: activeRun?.id ?? null,
             previous_model: activeRun?.model ?? null,
             previous_variant: activeRun?.variant ?? null,
+            previous_usage_tokens_total: activeRun?.usage_tokens_total ?? null,
             refresh_reason: !activeRun
               ? "missing_run"
               : activeRun.id !== payload.session.active_provider_run_id
                 ? "run_changed"
-                : activeRun.model === "default"
-                  ? "model_default"
-                  : "variant_missing",
+                : activeRun.usage_tokens_total !== run.usage_tokens_total
+                  ? "usage_changed"
+                  : activeRun.model !== run.model
+                    ? "model_changed"
+                    : activeRun.variant !== run.variant
+                      ? "variant_changed"
+                      : activeRun.state !== run.state
+                        ? "state_changed"
+                        : "metadata_changed",
           })
           setProviderRunState(run)
           updateSessionChrome()
@@ -2798,6 +3499,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         })
         setProviderRunState(null)
         updateSessionChrome()
+        if (!hasPromptWork(payload.session)) {
+          void recoverProviderRun("missing active provider run")
+        }
       }
     })
   }
@@ -2823,6 +3527,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     void pollOutput()
     void pollNotices()
     void pollSessionState()
+    startConnectionWatchdog()
   }
 
   onCleanup(() => {
@@ -2950,6 +3655,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flexDirection="column"
           gap={1}
         >
+          <box
+            ref={(value) => {
+              commandCenterBox = value
+              renderCommandCenter()
+            }}
+            flexDirection="column"
+          />
           {isAttached()
             ? (
                 <textarea
@@ -2967,10 +3679,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   minHeight={1}
                   maxHeight={6}
                   keyBindings={PROMPT_KEYBINDINGS}
+                  onKeyDown={(event) => {
+                    if (handleCommandCenterKey(event)) {
+                      return
+                    }
+                    handleHotkeysToggleShortcut("textarea", event)
+                  }}
                   onContentChange={() => {
                     handlePromptContentChange()
                   }}
                   onSubmit={() => {
+                    if (commandCenterOpen()) {
+                      if (selectCommandCenterFromSubmit()) {
+                        return
+                      }
+                    }
                     void submitPrompt()
                   }}
                 />
@@ -2991,10 +3714,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   minHeight={1}
                   maxHeight={6}
                   keyBindings={PROMPT_KEYBINDINGS}
+                  onKeyDown={(event) => {
+                    if (handleCommandCenterKey(event)) {
+                      return
+                    }
+                    handleHotkeysToggleShortcut("textarea", event)
+                  }}
                   onContentChange={() => {
                     handlePromptContentChange()
                   }}
                   onSubmit={() => {
+                    if (commandCenterOpen()) {
+                      if (selectCommandCenterFromSubmit()) {
+                        return
+                      }
+                    }
                     void submitPrompt()
                   }}
                 />
@@ -3045,6 +3779,69 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             >
               {""}
             </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageDividerText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageTokensText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageBarOpenText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageBarFilledText = value
+                updateSessionChrome()
+              }}
+              fg={theme.primary}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageBarEmptyText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsageBarCloseText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
+            <text
+              ref={(value) => {
+                promptMetaUsagePercentText = value
+                updateSessionChrome()
+              }}
+              fg={theme.textMuted}
+            >
+              {""}
+            </text>
           </box>
         </box>
       </box>
@@ -3069,62 +3866,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       </box>
 
       {hotkeysOpen()
-        ? (
-            <box
-              position="absolute"
-              left={0}
-              top={0}
-              width={dimensions().width}
-              height={dimensions().height}
-              alignItems="center"
-              paddingTop={Math.max(1, Math.floor(dimensions().height / 5))}
-              backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
-              onMouseUp={() => {
-                closeHotkeys()
-              }}
-            >
-              <box
-                onMouseUp={(event) => {
-                  event.stopPropagation()
-                }}
-                width={HOTKEY_DIALOG_WIDTH}
-                maxWidth={dimensions().width - 4}
-                backgroundColor={theme.backgroundPanel}
-                paddingTop={1}
-                paddingBottom={1}
-                paddingLeft={2}
-                paddingRight={2}
-                flexDirection="column"
-                gap={1}
-              >
-                <box flexDirection="row" justifyContent="space-between">
-                  <text attributes={TextAttributes.BOLD} fg={theme.text}>
-                    Hotkeys
-                  </text>
-                  <text fg={theme.textMuted}>Esc closes</text>
-                </box>
-                <text fg={theme.textMuted}>Ctrl+L toggles this list.</text>
-                {hotkeySections().map((section) => (
-                  <box flexDirection="column" gap={1}>
-                    <text attributes={TextAttributes.BOLD} fg={theme.primary}>
-                      {section.title}
-                    </text>
-                    {section.items.map((item) => (
-                      <box flexDirection="row" gap={2}>
-                        <box width={22} flexShrink={0}>
-                          <text attributes={TextAttributes.BOLD} fg={theme.text}>
-                            {item.keys}
-                          </text>
-                        </box>
-                        <text fg={theme.textMuted}>{item.description}</text>
-                      </box>
-                    ))}
-                  </box>
-                ))}
-              </box>
-            </box>
-          )
+        ? null
         : null}
+      <box
+        ref={(value) => {
+          hotkeysOverlayBox = value
+          renderHotkeysOverlay()
+        }}
+        position="absolute"
+        left={0}
+        top={0}
+      />
     </box>
   )
 }
@@ -3171,8 +3923,15 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const candidate = entries[index]
         if (candidate?.role === role && candidate.mergeKey === options.mergeKey) {
-          candidate.text = normalized
-          if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
+          if (role === "assistant" || role === "reasoning") {
+            candidate.text += normalized
+            if (options.sourceText !== undefined) {
+              candidate.sourceText = `${candidate.sourceText ?? ""}${options.sourceText}`
+            }
+          } else {
+            candidate.text = normalized
+            if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
+          }
           if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
           if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
           if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
@@ -3184,7 +3943,7 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
     }
 
     const last = entries.at(-1)
-    if (last?.role === role && (role === "assistant" || role === "reasoning")) {
+    if (!options.mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
       last.text += normalized
       return
     }
@@ -3227,7 +3986,10 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
         })
         break
       case "provider_reasoning":
-        appendTranscriptEntry("reasoning", pageEntry.entry.text, options)
+        appendTranscriptEntry("reasoning", pageEntry.entry.text, {
+          ...options,
+          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
+        })
         break
       case "provider_tool": {
         const parsed = parseToolTranscriptUpdate(pageEntry.entry.text)
@@ -3265,7 +4027,10 @@ function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): Tr
         appendTranscriptEntry("notice", pageEntry.entry.text, options)
         break
       default:
-        appendTranscriptEntry("assistant", pageEntry.entry.text, options)
+        appendTranscriptEntry("assistant", pageEntry.entry.text, {
+          ...options,
+          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
+        })
         break
     }
   }
@@ -3393,6 +4158,7 @@ function buildTranscriptEntryRenderable(
         streaming: true,
       })
       body.add(markdown)
+      markdown.requestRender()
     }
   } else if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
     const markdown = new MarkdownRenderable(renderer, {
@@ -3406,6 +4172,7 @@ function buildTranscriptEntryRenderable(
     update = (nextEntry) => {
       markdown.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
       markdown.streaming = true
+      markdown.requestRender()
     }
   } else {
     const text = new TextRenderable(renderer, {
@@ -3994,7 +4761,7 @@ async function bootstrapSession(
   let session: RuntimeSession | null = null
 
   const sessions = await listSessions(client)
-  const providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
+  let providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)
   switch (decision.action) {
     case "create":
@@ -4042,11 +4809,14 @@ async function bootstrapSession(
   } else {
     providerRun = await tryGetProviderRun(client, attachedSession.active_provider_run_id)
   }
+  providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
+  await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, getLogger("cli.main"))
+  const hydratedSession = await getSessionState(client, session.id)
   const historyPage = await getSessionHistory(client, session.id)
   const historyEntries = reindexTranscriptEntries(
     collapseHistoricalTurns(
       hydrateTranscriptEntries(historyPage.entries),
-      Boolean(attachedSession.active_prompt) || attachedSession.queued_prompts.length > 0,
+      Boolean(hydratedSession.active_prompt) || hydratedSession.queued_prompts.length > 0,
     ),
     0,
   )
@@ -4054,7 +4824,7 @@ async function bootstrapSession(
   return {
     client,
     binding: {
-      session: await getSessionState(client, session.id),
+      session: hydratedSession,
       attachment,
       providerRun,
       createdSession,
@@ -4077,6 +4847,11 @@ async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger 
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest())
     const payload = expectVariant<{ catalog: ProviderCatalog }>(response, "ProviderCatalog")
+    logger?.info("Received provider catalog from daemon", {
+      provider_count: payload.catalog.all.length,
+      providers: payload.catalog.all.map((p) => ({ id: p.id, model_count: Object.keys(p.models).length })),
+      connected: payload.catalog.connected,
+    })
     return payload.catalog
   } catch (error) {
     logger?.warn("provider catalog lookup failed; using fallback catalog", {
@@ -4150,6 +4925,28 @@ async function getSessionHistory(client: LocalIpcClient, sessionId: string, curs
   return expectVariant<SessionHistoryPage>(response, "SessionHistory")
 }
 
+async function catchUpAttachedSession(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  session: RuntimeSession,
+  logger?: ArrobaLogger | null,
+): Promise<void> {
+  if (!session.active_provider_run_id) {
+    return
+  }
+
+  try {
+    await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+  } catch (error) {
+    logger?.warn("attached session catch-up failed", {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      error: formatError(error),
+    })
+  }
+}
+
 async function launchProviderRun(
   client: LocalIpcClient,
   sessionId: string,
@@ -4167,6 +4964,41 @@ async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<v
     return
   }
   await client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, process.stdout.columns, process.stdout.rows))
+}
+
+function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun) {
+  return left.id === right.id
+    && left.session_id === right.session_id
+    && left.adapter_key === right.adapter_key
+    && left.provider === right.provider
+    && left.account_profile === right.account_profile
+    && left.model === right.model
+    && left.variant === right.variant
+    && left.usage_tokens_total === right.usage_tokens_total
+    && left.state === right.state
+}
+
+function resolveProviderModelContextLimit(catalog: ProviderCatalog, providerId: string, modelRef: string) {
+  const normalizedModelRef = modelRef.trim()
+  const parsed = normalizedModelRef.includes("/")
+    ? splitProviderModelRef(normalizedModelRef)
+    : { providerId, modelId: normalizedModelRef }
+  if (!parsed) {
+    return null
+  }
+
+  return catalog.all.find((item) => item.id === parsed.providerId)?.models[parsed.modelId]?.limit?.context ?? null
+}
+
+function splitProviderModelRef(modelRef: string) {
+  const parts = modelRef.split("/").filter(Boolean)
+  if (parts.length < 2) {
+    return null
+  }
+  return {
+    providerId: parts.at(-2)!,
+    modelId: parts.at(-1)!,
+  }
 }
 
 function defaultSocketPath(): string {
@@ -4254,9 +5086,7 @@ function getProviderRunRequest(providerRunId: string) {
 }
 
 function getProviderCatalogRequest() {
-  return {
-    GetProviderCatalog: {},
-  }
+  return { GetProviderCatalog: null }
 }
 
 function readDirectoryTreeRequest(sessionId: string, attachmentId: string, treePath: string | null, maxDepth: number) {
@@ -4389,7 +5219,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n",
+    "usage: arroba-cli [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n",
   )
 }
 
