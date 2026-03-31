@@ -148,6 +148,18 @@ Why this mattered:
 - `service.rs` still held the last chunk of OpenCode-specific client/bootstrap logic after the runtime state machine had already moved out
 - moving that code out completes the current Phase 3 split between generic lifecycle control and provider-specific binding/rendering details
 
+### 11. Launcher build freshness checks
+
+Done:
+
+- updated `apps/daemon/src/bin/arroba-cli.rs` so the Rust launcher only rebuilds `apps/cli` when TypeScript CLI outputs are missing or older than the CLI sources/build inputs
+- added focused launcher tests covering missing-output, fresh-output, and stale-output cases
+
+Why this mattered:
+
+- the launcher had been paying a full `pnpm --filter @arroba/cli run build` cost on every startup even when nothing changed
+- checking freshness first makes the local entrypoint faster and keeps rebuild work tied to actual source changes
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -156,6 +168,7 @@ The refactor has started, but the largest simplification targets still remain:
 - `apps/daemon/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
 - `apps/daemon/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
 - `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
+- `apps/daemon/src/bin/arroba-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
 
 ## Next Phases
 
@@ -202,8 +215,7 @@ Expected outcome:
 
 Targets:
 
-- stop doing unnecessary CLI rebuild work on every launcher execution
-- make the launcher check whether the TypeScript CLI output is missing or stale before building
+- Phase 4 extraction seams are complete for this pass
 
 Expected outcome:
 
@@ -228,4 +240,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should start Phase 4 by making the launcher skip unnecessary CLI rebuilds when the TypeScript output is already present and up to date.
+The next concrete change should return to the remaining CLI monolith in `apps/cli/src/index.tsx` or start a new pass of daemon cleanup only if a concrete pain point appears.
