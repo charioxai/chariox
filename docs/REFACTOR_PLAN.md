@@ -71,6 +71,34 @@ Why this mattered:
 - pane refresh and retention logic had been mixed directly into the main CLI component
 - moving that logic out makes transcript/pane state behavior easier to test without involving render-tree wiring
 
+### 5. Bootstrap and IPC request extraction
+
+Done:
+
+- extracted shared CLI runtime/session types into `apps/cli/src/cli-types.ts`
+- extracted local IPC request builders into `apps/cli/src/ipc-requests.ts`
+- extracted bootstrap orchestration into `apps/cli/src/session-bootstrap.ts`
+- added focused tests in `apps/cli/src/ipc-requests.test.ts` and `apps/cli/src/session-bootstrap.test.ts`
+- simplified `apps/cli/src/index.tsx` so bootstrap flow and IPC request payload construction no longer live inline in the main CLI file
+
+Why this mattered:
+
+- bootstrap orchestration and request payload construction had been mixed into the same large file as rendering and session UI state
+- moving them out reduces `index.tsx` responsibility and makes protocol/bootstrap behavior testable without rendering the CLI
+
+### 6. Response-layout render wiring extraction
+
+Done:
+
+- extracted response-layout render-tree wiring into `apps/cli/src/response-layout-render.ts`
+- added focused tests in `apps/cli/src/response-layout-render.test.ts`
+- simplified `apps/cli/src/index.tsx` so pane layout mutation, auxiliary pane sync, and render-tree repaint traversal no longer live inline in the app root
+
+Why this mattered:
+
+- response layout application had still been tightly coupled to render-tree mutation inside the main CLI file
+- moving that wiring out completes the planned Phase 1 extraction seams and reduces the remaining `index.tsx` surface to higher-level UI orchestration
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -90,8 +118,7 @@ Primary target:
 
 Next extraction seams:
 
-- session bootstrap and local IPC request-builder logic
-- response-layout render wiring that still mutates the OpenTUI renderables directly from the app root
+- Phase 1 extraction seams are complete for this pass
 
 Expected outcome:
 
@@ -154,4 +181,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should stay in Phase 1 by extracting session bootstrap and local IPC request-builder logic out of `apps/cli/src/index.tsx`.
+The next concrete change should move to Phase 2 by extracting history-slicing and transcript helper logic out of `apps/daemon/src/app.rs`.

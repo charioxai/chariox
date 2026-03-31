@@ -10,12 +10,60 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
+import type {
+  AgentInstance,
+  BootstrapState,
+  CaptureScreenshotResult,
+  CliOptions,
+  PromptAttachmentPart,
+  PromptSubmittedPayload,
+  ReadDirectoryTreeResult,
+  RuntimeAttachment,
+  RuntimeNoticeRecord,
+  RuntimeProviderRun,
+  RuntimeSession,
+  SessionConfigState,
+  SessionHistoryCursor,
+  SessionHistoryEntry,
+  SessionHistoryPage,
+  SessionHistoryPageEntry,
+  StoredTransferArtifact,
+  TerminalOutputRecord,
+  TranscriptEntry,
+} from "./cli-types.js"
 import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
 import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { LocalIpcClient } from "./ipc.js"
+import {
+  attachToSessionRequest,
+  cancelActivePromptRequest,
+  captureScreenshotRequest,
+  createSessionRequest,
+  cycleAgentFocusRequest,
+  deleteSessionRequest,
+  destroyAgentRequest,
+  detachFromSessionRequest,
+  endSessionRequest,
+  focusAgentRequest,
+  getProviderCatalogRequest,
+  getProviderRunRequest,
+  getSessionHistoryRequest,
+  getSessionStateRequest,
+  launchProviderRunRequest,
+  listSessionsRequest,
+  pollRuntimeNoticesRequest,
+  pumpTerminalOutputRequest,
+  readDirectoryTreeRequest,
+  resizeTerminalRequest,
+  resolveSessionRequest,
+  spawnAgentRequest,
+  storeTransferredFileRequest,
+  submitPromptRequest,
+  updateSessionConfigRequest,
+} from "./ipc-requests.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { loadPreferences, saveProviderPreferences, saveUiPreferences, type ArrobaPreferences, type MultiAgentResponseLayout } from "./preferences.js"
@@ -76,6 +124,12 @@ import {
   reflectedDistance,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
+import {
+  applyResponseLayoutRenderables,
+  requestRenderableTreeRender,
+  syncAuxiliaryPane,
+} from "./response-layout-render.js"
+import { bootstrapSession } from "./session-bootstrap.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 import {
   arrobaArtFrame,
@@ -168,77 +222,12 @@ const promptTokenStyleIds = {
   }),
 }
 
-type RuntimeSession = {
-  id: string
-  alias?: string | null
-  workspace_id: string
-  worktree_id: string
-  created_at_ms: number
-  status: string
-  active_provider_run_id: string | null
-  attachment_ids: string[]
-  active_prompt: PromptQueueItem | null
-  queued_prompts: PromptQueueItem[]
-  focused_agent_id: string | null
-  max_agents: number
-  agents: AgentInstance[]
-  config_state: SessionConfigState
-}
-
-type SessionConfigState = {
-  version: number
-  values: Record<string, string>
-  updated_by_attachment_id?: string | null
-}
-
-type AgentInstance = {
-  id: string
-  agent_ref: string
-  session_id: string
-  alias: string | null
-  provider: string
-  model: string | null
-  worktree_id: string | null
-  state: "Idle" | "Working" | "Focused" | "Error"
-  is_processing: boolean
-  grid_row: number
-  grid_col: number
-  grid_row_span: number
-  grid_col_span: number
-  created_at_ms: number
-  last_activity_at_ms: number
-}
-
 type PromptQueueItem = {
   id: string
   source_attachment_id: string
   target_agent_id?: string | null
   prompt: string
   status: string
-}
-
-type RuntimeAttachment = {
-  id: string
-  session_id: string
-}
-
-type RuntimeProviderRun = {
-  id: string
-  session_id: string
-  agent_instance_id: string | null
-  adapter_key: string
-  provider: string
-  account_profile: string
-  model: string
-  variant: string | null
-  usage_tokens_total: number | null
-  state: string
-}
-
-type PromptAttachmentPart = {
-  url: string
-  mime: string
-  filename: string | null
 }
 
 type PendingPromptAttachment = {
@@ -250,83 +239,6 @@ type PendingPromptAttachment = {
   token: string
 }
 
-type StoredTransferArtifact = {
-  artifact_id: string
-  stored_path: string
-  display_name: string
-}
-
-type CaptureScreenshotResult = {
-  status: string
-  artifact_path: string | null
-  message: string
-}
-
-type RuntimeNoticeRecord = {
-  message: string
-}
-
-type TerminalOutputRecord = {
-  agent_id?: string | null
-  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
-  merge_key?: string
-  bytes: number[]
-}
-
-type PromptSubmittedPayload = {
-  outcome: Record<string, unknown>
-  session: RuntimeSession
-}
-
-type SessionHistoryPage = {
-  entries: SessionHistoryPageEntry[]
-  next_cursor: SessionHistoryCursor | null
-}
-
-type ReadDirectoryTreeResult = {
-  session_id: string
-  root_path: string
-  entries: DirectoryTreeEntry[]
-}
-
-type SessionHistoryCursor = {
-  before_entry_index: number
-  before_entry_char_offset: number | null
-}
-
-type SessionHistoryPageEntry = {
-  entry_index: number
-  fragment_start: number
-  fragment_end: number
-  total_chars: number
-  entry: SessionHistoryEntry
-}
-
-type SessionHistoryEntry = {
-  agent_id?: string | null
-  provider_run_id?: string | null
-  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
-  merge_key?: string
-  text: string
-}
-
-type TranscriptEntry = {
-  id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_summary" | "turn_toggle"
-  text: string
-  sourceText?: string
-  mergeKey?: string
-  emphasis?: "muted" | "warning" | "error"
-  turnId?: number
-  hidden?: boolean
-  toggleMode?: "expand" | "collapse"
-  historyDeferred?: boolean
-  historyEntryIndex?: number
-  historyFragmentStart?: number
-  historyFragmentEnd?: number
-  historyTotalChars?: number
-}
-
 type TranscriptEntryRenderable = {
   entry: TranscriptEntry
   wrapper: BoxRenderable
@@ -334,20 +246,6 @@ type TranscriptEntryRenderable = {
 }
 
 type TranscriptSurfaceTone = "default" | "focused" | "faded"
-
-type CliOptions = {
-  socketPath?: string
-  sessionId?: string
-  createSession?: boolean
-  deleteSessionRef?: string
-  alias?: string
-  clientId: string
-  model: string
-  accountProfile: string
-  effort: string
-  workspace?: string
-  worktree?: string
-}
 
 function shouldDeferHistoryEntry(entry: TranscriptEntry) {
   return entry.historyFragmentStart !== undefined && entry.historyFragmentStart > 0
@@ -617,24 +515,6 @@ function isUserFacingTurnEntry(role: TranscriptEntry["role"]) {
   return role === "assistant" || role === "error" || role === "notice"
 }
 
-type BootstrapState = {
-  client: LocalIpcClient
-  binding: SessionBinding | null
-  sessions: RuntimeSession[]
-  providerCatalog: ProviderCatalog
-  options: CliOptions
-  preferences: ArrobaPreferences
-}
-
-type SessionBinding = {
-  session: RuntimeSession
-  attachment: RuntimeAttachment
-  providerRun: RuntimeProviderRun | null
-  createdSession: boolean
-  historyEntries: TranscriptEntry[]
-  nextHistoryCursor: SessionHistoryCursor | null
-}
-
 type SessionStatusMode = "idle" | "working" | "disconnected"
 
 type FooterFlash = {
@@ -682,7 +562,35 @@ async function main() {
     worktree_id: worktree,
     client_id: options.clientId,
   })
-  const bootstrap = await bootstrapSession(client, options, workspace, worktree, preferences)
+  const bootstrap = await bootstrapSession(client, options, workspace, worktree, preferences, {
+    logger: getLogger("cli.main"),
+    listSessions,
+    getProviderCatalog,
+    createSession,
+    resolveSession,
+    attachToSession,
+    getSessionState,
+    launchProviderRun,
+    tryGetProviderRun,
+    catchUpAttachedSession,
+    getSessionHistory,
+    resolveVisibleAgentId: (session, nextPreferences) => {
+      const focusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
+      return selectResponsePaneAgents(
+        session.agents,
+        focusedAgentId,
+        sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
+      ).visibleTranscriptAgentId
+    },
+    prepareHistoryEntries: (entries, session) =>
+      reindexTranscriptEntries(
+        collapseHistoricalTurns(
+          hydrateTranscriptEntries(entries),
+          Boolean(session.active_prompt) || session.queued_prompts.length > 0,
+        ),
+        0,
+      ),
+  })
   if (bootstrap.binding) {
     getLogger("cli.main")?.info("bootstrapped cli session", {
       session_id: bootstrap.binding.session.id,
@@ -869,32 +777,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
     return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
-  }
-  const requestRenderableTreeRender = (
-    renderable: Renderable | null | undefined,
-    seen: Set<string | number> = new Set(),
-  ) => {
-    if (!renderable) {
-      return
-    }
-    const target = renderable as Renderable & {
-      id?: string | number
-      requestRender?: () => void
-      requestRebuild?: () => void
-      getChildren?: () => Renderable[]
-    }
-    const renderableId = target.id
-    if (renderableId !== undefined) {
-      if (seen.has(renderableId)) {
-        return
-      }
-      seen.add(renderableId)
-    }
-    target.requestRebuild?.()
-    target.requestRender?.()
-    for (const child of target.getChildren?.() ?? []) {
-      requestRenderableTreeRender(child, seen)
-    }
   }
   const scheduleResponsePaneRepaint = () => {
     const repaintToken = ++pendingResponsePaneRepaint
@@ -2913,39 +2795,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     statusIndicatorBox?.requestRender()
   }
 
-  const syncAuxiliarySplitPane = (
-    scrollbox: ScrollBoxRenderable | undefined,
-    nextAgent: AgentInstance | null,
-    currentAgentId: string | null,
-    assignCurrentAgentId: (value: string | null) => void,
-  ) => {
-    if (!scrollbox) {
-      return
-    }
-
-    if (currentAgentId && currentAgentId !== nextAgent?.id) {
-      clearAuxiliaryAgentPane(currentAgentId)
-      agentTranscriptScrollboxes.delete(currentAgentId)
-      assignCurrentAgentId(null)
-    }
-
-    if (!nextAgent) {
-      for (const child of [...scrollbox.getChildren()]) {
-        scrollbox.remove(child.id)
-        child.destroyRecursively()
-      }
-      if (splitAgentResponseMode()) {
-        scrollbox.add(buildEmptyTranscriptRenderable(renderer))
-      }
-      scrollbox.requestRender()
-      return
-    }
-
-    assignCurrentAgentId(nextAgent.id)
-    agentTranscriptScrollboxes.set(nextAgent.id, scrollbox)
-    rebuildAuxiliaryAgentPane(nextAgent.id)
-  }
-
   const applyResponseLayout = () => {
     if (!responseLayoutBox || !responseTopRowBox || !responsePrimaryPane || !responseSecondaryPane || !responseTertiaryPane) {
       logViewDebug("apply response layout:missing refs", {
@@ -2985,92 +2834,72 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const tertiaryBackground = split
       ? tertiarySurface.panel
       : theme.backgroundElement
-    responseLayoutBox.flexDirection = geometry.layoutDirection
-    responseLayoutBox.gap = geometry.layoutGap
-    responseTopRowBox.visible = geometry.topRowVisible
-    responseTopRowBox.flexDirection = "row"
-    responseTopRowBox.gap = geometry.topRowGap
-    responseTopRowBox.flexGrow = 1
-    responseTopRowBox.width = "auto"
-    responseTopRowBox.flexBasis = geometry.topRowFlexBasis
-    responseTopRowBox.minHeight = geometry.topRowMinHeight
-
-    responsePrimaryPane.border = split ? ["left", "top", "bottom"] : ["left"]
-    responsePrimaryPane.borderColor = split ? (primaryFocused ? theme.primary : theme.borderSubtle) : theme.borderSubtle
-    responsePrimaryPane.backgroundColor = primaryBackground
-    responsePrimaryPane.flexGrow = geometry.primaryFlexGrow
-    responsePrimaryPane.width = geometry.primaryWidth
-    responsePrimaryPane.flexBasis = geometry.primaryFlexBasis
-    responsePrimaryPane.minWidth = geometry.primaryMinWidth
-    responsePrimaryPane.maxWidth = geometry.primaryMaxWidth
-
-    responseSecondaryPane.visible = geometry.showSecondaryPane
-    responseSecondaryPane.width = geometry.secondaryWidth
-    responseSecondaryPane.flexBasis = geometry.secondaryFlexBasis
-    responseSecondaryPane.minWidth = geometry.secondaryMinWidth
-    responseSecondaryPane.maxWidth = geometry.secondaryMaxWidth
-    responseSecondaryPane.border = geometry.showSecondaryPane ? ["left", "top", "bottom", "right"] : false
-    responseSecondaryPane.borderColor = secondaryFocused ? theme.primary : theme.borderSubtle
-    responseSecondaryPane.backgroundColor = secondaryBackground
-    responseSecondaryPane.paddingLeft = 0
-    responseSecondaryPane.paddingRight = 0
-    responseSecondaryPane.paddingTop = 0
-    responseSecondaryPane.paddingBottom = 0
-
-    responseTertiaryPane.visible = geometry.showTertiaryPane
-    responseTertiaryPane.width = geometry.tertiaryWidth
-    responseTertiaryPane.flexGrow = geometry.tertiaryFlexGrow
-    responseTertiaryPane.flexBasis = geometry.tertiaryFlexBasis
-    responseTertiaryPane.minHeight = geometry.tertiaryMinHeight
-    responseTertiaryPane.maxHeight = null
-    responseTertiaryPane.border = geometry.showTertiaryPane ? ["left", "top", "bottom", "right"] : false
-    responseTertiaryPane.borderColor = tertiaryFocused ? theme.primary : theme.borderSubtle
-    responseTertiaryPane.backgroundColor = tertiaryBackground
-    responseTertiaryPane.paddingLeft = 0
-    responseTertiaryPane.paddingRight = 0
-    responseTertiaryPane.paddingTop = 0
-    responseTertiaryPane.paddingBottom = 0
-
-    if (historyLoadingBox) {
-      historyLoadingBox.backgroundColor = primaryBackground
-      historyLoadingBox.borderColor = split && primaryFocused ? theme.primary : theme.borderSubtle
-      historyLoadingBox.requestRender()
-    }
-    if (transcriptScrollbox) {
-      transcriptScrollbox.backgroundColor = primaryBackground
-      transcriptScrollbox.requestRender()
-    }
-    if (responseSecondaryScrollbox) {
-      responseSecondaryScrollbox.backgroundColor = secondaryBackground
-      responseSecondaryScrollbox.requestRender()
-    }
-    if (responseTertiaryScrollbox) {
-      responseTertiaryScrollbox.backgroundColor = tertiaryBackground
-      responseTertiaryScrollbox.requestRender()
-    }
-    if (responsePrimaryFooterBox) {
-      responsePrimaryFooterBox.visible = split
-      responsePrimaryFooterBox.backgroundColor = primaryBackground
-      responsePrimaryFooterBox.requestRender()
-    }
-    if (responseSecondaryFooterBox) {
-      responseSecondaryFooterBox.visible = geometry.showSecondaryPane
-      responseSecondaryFooterBox.backgroundColor = secondaryBackground
-      responseSecondaryFooterBox.requestRender()
-    }
-    if (responseTertiaryFooterBox) {
-      responseTertiaryFooterBox.visible = geometry.showTertiaryPane
-      responseTertiaryFooterBox.backgroundColor = tertiaryBackground
-      responseTertiaryFooterBox.requestRender()
-    }
+    const layoutSummary = applyResponseLayoutRenderables({
+      renderables: {
+        responseLayoutBox,
+        responseTopRowBox,
+        responsePrimaryPane,
+        responseSecondaryPane,
+        responseTertiaryPane,
+        historyLoadingBox,
+        transcriptScrollbox,
+        responseSecondaryScrollbox,
+        responseTertiaryScrollbox,
+        responsePrimaryFooterBox,
+        responseSecondaryFooterBox,
+        responseTertiaryFooterBox,
+      },
+      geometry,
+      split,
+      primaryFocused,
+      secondaryFocused,
+      tertiaryFocused,
+      primaryBackground,
+      secondaryBackground,
+      tertiaryBackground,
+      primaryBorderColor: theme.primary,
+      secondaryBorderColor: theme.primary,
+      tertiaryBorderColor: theme.primary,
+      subtleBorderColor: theme.borderSubtle,
+    })
 
     renderSplitPaneFooters()
 
-    syncAuxiliarySplitPane(responseSecondaryScrollbox, secondaryAgent, responseSecondaryAgentId, (value) => {
-      responseSecondaryAgentId = value
+    syncAuxiliaryPane({
+      scrollbox: responseSecondaryScrollbox,
+      nextAgentId: secondaryAgent?.id ?? null,
+      currentAgentId: responseSecondaryAgentId,
+      splitMode: splitAgentResponseMode(),
+      clearAuxiliaryAgentPane,
+      unregisterAgentScrollbox: (agentId) => {
+        agentTranscriptScrollboxes.delete(agentId)
+      },
+      assignCurrentAgentId: (value) => {
+        responseSecondaryAgentId = value
+      },
+      registerAgentScrollbox: (agentId, scrollbox) => {
+        agentTranscriptScrollboxes.set(agentId, scrollbox)
+      },
+      rebuildAuxiliaryAgentPane,
+      buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
     })
-    syncAuxiliarySplitPane(responseTertiaryScrollbox, tertiaryAgent, responseTertiaryAgentId, (value) => {
-      responseTertiaryAgentId = value
+    syncAuxiliaryPane({
+      scrollbox: responseTertiaryScrollbox,
+      nextAgentId: tertiaryAgent?.id ?? null,
+      currentAgentId: responseTertiaryAgentId,
+      splitMode: splitAgentResponseMode(),
+      clearAuxiliaryAgentPane,
+      unregisterAgentScrollbox: (agentId) => {
+        agentTranscriptScrollboxes.delete(agentId)
+      },
+      assignCurrentAgentId: (value) => {
+        responseTertiaryAgentId = value
+      },
+      registerAgentScrollbox: (agentId, scrollbox) => {
+        agentTranscriptScrollboxes.set(agentId, scrollbox)
+      },
+      rebuildAuxiliaryAgentPane,
+      buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
     })
 
     if (transcriptScrollbox) {
@@ -3083,23 +2912,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rebuildAuxiliaryAgentPane(tertiaryAgent.id)
     }
 
-    responseTopRowBox.requestRender()
-    responsePrimaryPane.requestRender()
-    responseSecondaryPane.requestRender()
-    responseTertiaryPane.requestRender()
-    responseLayoutBox.requestRender()
-    transcriptScrollbox?.requestRender()
-    responseSecondaryScrollbox?.requestRender()
-    responseTertiaryScrollbox?.requestRender()
     scheduleResponsePaneRepaint()
 
     logViewDebug("apply response layout", {
       split,
-      split_pane_width: geometry.splitPaneWidth,
-      secondary_visible: responseSecondaryPane.visible,
-      tertiary_visible: responseTertiaryPane.visible,
-      primary_width: responsePrimaryPane.width,
-      secondary_width: responseSecondaryPane.width,
+      split_pane_width: layoutSummary.splitPaneWidth,
+      secondary_visible: layoutSummary.secondaryVisible,
+      tertiary_visible: layoutSummary.tertiaryVisible,
+      primary_width: layoutSummary.primaryWidth,
+      secondary_width: layoutSummary.secondaryWidth,
       secondary_agent_id: secondaryAgent?.id ?? null,
       tertiary_agent_id: tertiaryAgent?.id ?? null,
     })
@@ -6720,104 +6541,6 @@ function parseArgs(args: string[]): CliOptions {
   return options
 }
 
-async function bootstrapSession(
-  client: LocalIpcClient,
-  options: CliOptions,
-  workspace: string,
-  worktree: string,
-  preferences: ArrobaPreferences,
-): Promise<BootstrapState> {
-  let createdSession = false
-  let session: RuntimeSession | null = null
-
-  const sessions = await listSessions(client)
-  let providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
-  const decision = decideBootstrapAction(options, sessions, workspace, worktree)
-  switch (decision.action) {
-    case "create":
-      session = await createSession(client, workspace, worktree, options.alias)
-      createdSession = true
-      break
-    case "resolve":
-      session = await resolveSession(client, decision.sessionRef, workspace)
-      break
-    case "attach_existing": {
-      const existing = selectAttachableSession(sessions, workspace, worktree)
-      if (!existing) {
-        session = await createSession(client, workspace, worktree, options.alias)
-        createdSession = true
-        break
-      }
-      session = existing as RuntimeSession
-      break
-    }
-    case "none":
-      return {
-        client,
-        binding: null,
-        sessions,
-        providerCatalog,
-        options,
-        preferences,
-      }
-  }
-
-  if (!session) {
-    return {
-      client,
-      binding: null,
-      sessions,
-      providerCatalog,
-      options,
-      preferences,
-    }
-  }
-
-  const attachment = await attachToSession(client, session.id, options.clientId)
-  const attachedSession = await getSessionState(client, session.id)
-  let providerRun: RuntimeProviderRun | null = null
-  if (!attachedSession.active_provider_run_id) {
-    providerRun = await launchProviderRun(client, session.id, options.accountProfile, options.model, options.effort, attachedSession.focused_agent_id)
-  } else {
-    providerRun = await tryGetProviderRun(client, attachedSession.active_provider_run_id)
-  }
-  providerCatalog = await getProviderCatalog(client, getLogger("cli.main"))
-  await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, getLogger("cli.main"))
-  const hydratedSession = await getSessionState(client, session.id)
-  const focusedAgentId = hydratedSession.focused_agent_id ?? hydratedSession.agents[0]?.id ?? null
-  const visibleAgentId = selectResponsePaneAgents(
-    hydratedSession.agents,
-    focusedAgentId,
-    sessionResponseLayout(hydratedSession, preferences.ui?.multiAgentResponseLayout) === "split",
-  ).visibleTranscriptAgentId
-  const historyPage = visibleAgentId
-    ? await getSessionHistory(client, session.id, null, visibleAgentId)
-    : { entries: [], next_cursor: null }
-  const historyEntries = reindexTranscriptEntries(
-    collapseHistoricalTurns(
-      hydrateTranscriptEntries(historyPage.entries),
-      Boolean(hydratedSession.active_prompt) || hydratedSession.queued_prompts.length > 0,
-    ),
-    0,
-  )
-
-  return {
-    client,
-    binding: {
-      session: hydratedSession,
-      attachment,
-      providerRun,
-      createdSession,
-      historyEntries,
-      nextHistoryCursor: historyPage.next_cursor,
-    },
-    sessions,
-    providerCatalog,
-    options,
-    preferences,
-  }
-}
-
 async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())
   const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
@@ -6920,7 +6643,9 @@ async function getSessionHistory(
   cursor?: SessionHistoryCursor | null,
   agentId?: string | null,
 ): Promise<SessionHistoryPage> {
-  const response = await client.send<Record<string, unknown>>(getSessionHistoryRequest(sessionId, cursor, agentId))
+  const response = await client.send<Record<string, unknown>>(
+    getSessionHistoryRequest(sessionId, HISTORY_PAGE_ROUND_COUNT, BOOTSTRAP_HISTORY_MAX_CHARS, cursor, agentId),
+  )
   return expectVariant<SessionHistoryPage>(response, "SessionHistory")
 }
 
@@ -7010,263 +6735,6 @@ function defaultSocketPath(): string {
       ? path.join(homedir(), ".arroba", "run")
       : path.join(process.cwd(), ".arroba", "run")
   return process.env.ARROBA_DAEMON_SOCKET ?? path.join(runtimeDir, `${daemonId}.sock`)
-}
-
-function createSessionRequest(workspaceId: string, worktreeId: string, alias?: string) {
-  return {
-    CreateSession: {
-      workspace_id: workspaceId,
-      worktree_id: worktreeId,
-      alias: alias ?? null,
-    },
-  }
-}
-
-function listSessionsRequest() {
-  return { ListSessions: null }
-}
-
-function resolveSessionRequest(sessionRef: string, workspaceId?: string) {
-  return {
-    ResolveSession: {
-      session_ref: sessionRef,
-      workspace_id: workspaceId ?? null,
-    },
-  }
-}
-
-function attachToSessionRequest(sessionId: string, clientId: string) {
-  return {
-    AttachToSession: {
-      session_id: sessionId,
-      client_id: clientId,
-      capability_level: "FullTerminal",
-    },
-  }
-}
-
-function detachFromSessionRequest(attachmentId: string) {
-  return {
-    DetachFromSession: {
-      attachment_id: attachmentId,
-    },
-  }
-}
-
-function endSessionRequest(sessionId: string) {
-  return {
-    EndSession: {
-      session_id: sessionId,
-    },
-  }
-}
-
-function deleteSessionRequest(sessionRef: string, workspaceId?: string) {
-  return {
-    DeleteSession: {
-      session_ref: sessionRef,
-      workspace_id: workspaceId ?? null,
-    },
-  }
-}
-
-function getSessionStateRequest(sessionId: string) {
-  return {
-    GetSessionState: {
-      session_id: sessionId,
-    },
-  }
-}
-
-function updateSessionConfigRequest(
-  sessionId: string,
-  attachmentId: string,
-  values: Record<string, string>,
-  requiresIdle = false,
-) {
-  return {
-    UpdateSessionConfig: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-      values,
-      requires_idle: requiresIdle,
-    },
-  }
-}
-
-function getProviderRunRequest(providerRunId: string) {
-  return {
-    GetProviderRun: {
-      provider_run_id: providerRunId,
-    },
-  }
-}
-
-function getProviderCatalogRequest() {
-  return { GetProviderCatalog: null }
-}
-
-function readDirectoryTreeRequest(sessionId: string, attachmentId: string, treePath: string | null, maxDepth: number) {
-  return {
-    ReadDirectoryTree: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-      path: treePath,
-      max_depth: maxDepth,
-    },
-  }
-}
-
-function getSessionHistoryRequest(sessionId: string, cursor?: SessionHistoryCursor | null, agentId?: string | null) {
-  return {
-    GetSessionHistory: {
-      session_id: sessionId,
-      agent_id: agentId ?? null,
-      round_count: HISTORY_PAGE_ROUND_COUNT,
-      max_chars: BOOTSTRAP_HISTORY_MAX_CHARS,
-      before_entry_index: cursor?.before_entry_index ?? null,
-      before_entry_char_offset: cursor?.before_entry_char_offset ?? null,
-    },
-  }
-}
-
-function launchProviderRunRequest(sessionId: string, accountProfile: string, model: string, effort: string, agentId?: string | null) {
-  return {
-    LaunchProviderRun: {
-      session_id: sessionId,
-      agent_id: agentId ?? null,
-      adapter_key: "opencode",
-      provider: "opencode",
-      account_profile: accountProfile,
-      model,
-      variant: effort.trim() || null,
-    },
-  }
-}
-
-function captureScreenshotRequest(sessionId: string, attachmentId: string) {
-  return {
-    CaptureScreenshot: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-    },
-  }
-}
-
-function storeTransferredFileRequest(sessionId: string, attachmentId: string, sourcePath: string, displayName?: string) {
-  return {
-    StoreTransferredFile: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-      source_path: sourcePath,
-      display_name: displayName ?? null,
-    },
-  }
-}
-
-function resizeTerminalRequest(sessionId: string, cols: number, rows: number) {
-  return {
-    ResizeTerminal: {
-      session_id: sessionId,
-      cols,
-      rows,
-    },
-  }
-}
-
-function pumpTerminalOutputRequest(sessionId: string, attachmentId: string) {
-  return {
-    PumpTerminalOutput: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-    },
-  }
-}
-
-function submitPromptRequest(
-  sessionId: string,
-  attachmentId: string,
-  prompt: string,
-  attachments: PromptAttachmentPart[],
-) {
-  return {
-    SubmitPrompt: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-      prompt,
-      attachments,
-    },
-  }
-}
-
-function cancelActivePromptRequest(sessionId: string, attachmentId: string) {
-  return {
-    CancelActivePrompt: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-    },
-  }
-}
-
-function pollRuntimeNoticesRequest(sessionId: string, attachmentId: string) {
-  return {
-    PollRuntimeNotices: {
-      session_id: sessionId,
-      attachment_id: attachmentId,
-    },
-  }
-}
-
-function spawnAgentRequest(
-  sessionId: string,
-  provider: string,
-  alias?: string,
-  model?: string,
-  worktreeId?: string,
-) {
-  return {
-    SpawnAgent: {
-      session_id: sessionId,
-      provider,
-      alias: alias ?? null,
-      model: model ?? null,
-      worktree_id: worktreeId ?? null,
-    },
-  }
-}
-
-function destroyAgentRequest(sessionId: string, agentId: string) {
-  return {
-    DestroyAgent: {
-      session_id: sessionId,
-      agent_id: agentId,
-    },
-  }
-}
-
-function focusAgentRequest(sessionId: string, agentId: string) {
-  return {
-    FocusAgent: {
-      session_id: sessionId,
-      agent_id: agentId,
-    },
-  }
-}
-
-function cycleAgentFocusRequest(sessionId: string) {
-  return {
-    CycleAgentFocus: {
-      session_id: sessionId,
-    },
-  }
-}
-
-function listAgentsRequest(sessionId: string) {
-  return {
-    ListAgents: {
-      session_id: sessionId,
-    },
-  }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
