@@ -31,6 +31,19 @@ import type {
   TerminalOutputRecord,
   TranscriptEntry,
 } from "./cli-types.js"
+import {
+  createCommandActionHandlers,
+} from "./command-actions.js"
+import {
+  evaluateTranscriptScrollMonitor,
+  nextWaitingRoomIntroStep,
+  shouldLoadShortViewportHistory,
+} from "./background-effects.js"
+import {
+  executeSlashCommand,
+  shouldClearCommandCenterForSlashCommand,
+  type ParsedSlashCommand,
+} from "./commands.js"
 import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
 import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { copyTextToClipboard } from "./clipboard.js"
@@ -66,6 +79,7 @@ import {
 } from "./ipc-requests.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
+import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import { loadPreferences, saveProviderPreferences, saveUiPreferences, type ArrobaPreferences, type MultiAgentResponseLayout } from "./preferences.js"
 import {
   extractDroppedPromptAttachments,
@@ -112,6 +126,7 @@ import {
   sessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
+import { createSessionLifecycleController } from "./session-lifecycle.js"
 import {
   formatToolTranscriptUpdate,
   guessPathFenceLanguage,
@@ -3752,121 +3767,98 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const transitionToNoSession = (message = "No session attached.") => {
-    const nextDetachedState = deriveDetachedCliTransitionState({
-      cliOptions: options,
-      waitingRoomState: waitingRoomState(),
-      message,
-    })
-    setAttachmentState(null)
-    setProviderRunState(null)
-    clearPendingPromptAttachments()
-    setCenterMode(nextDetachedState.centerMode)
-    setDirectoryTreeState(null)
-    activeToolLabels.clear()
-    setProviderActivityLabel(nextDetachedState.providerActivityLabel)
-    setActiveStatusLabel(nextDetachedState.activeStatusLabel)
-    setCreatedSessionState(nextDetachedState.createdSession)
-    setSessionState(nextDetachedState.session)
-    historyLoadGeneration += 1
-    replaceTranscriptEntries([])
-    setAgentPaneEntries(nextDetachedState.agentPaneEntries)
-    setAgentPanePreviews(nextDetachedState.agentPanePreviews)
-    setAgentActivityLabels(nextDetachedState.agentActivityLabels)
-    setStreamingAgentId(nextDetachedState.streamingAgentId)
+  const clearAgentPaneRuntime = () => {
     agentTranscriptScrollboxes.clear()
     agentTranscriptRenderables.clear()
     agentEmptyTranscriptRenderables.clear()
     agentPaneTools.clear()
-    setSubmitting(nextDetachedState.submitting)
-    setWorking(nextDetachedState.working)
-    stopRequestInFlight = false
-    setFatalError(nextDetachedState.fatalError)
-    setDaemonDisconnected(nextDetachedState.daemonDisconnected)
-    setNextHistoryCursor(nextDetachedState.nextHistoryCursor)
-    setHistoryLoadingState(false)
-    setStatusLine(nextDetachedState.statusLine)
-    updateSessionChrome()
-    promptInput?.clear()
-    syncPromptTextSnapshot()
-    promptInput?.blur()
-    reconcileWaitingRoom(nextDetachedState.waitingRoomState)
-    void refreshWaitingRoomData()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
-  const detachCurrentAttachment = async () => {
-    const attachment = attachmentState()
-    if (!attachment) {
-      return
-    }
-    await client.send(detachFromSessionRequest(attachment.id))
-    setAttachmentState(null)
-  }
-
-  const attachBinding = async (
-    session: Pick<RuntimeSession, "id">,
-    createdSession: boolean,
-    launch: { model: string; effort: string } = { model: options.model, effort: options.effort },
-  ) => {
-    const currentAttachment = attachmentState()
-    if (currentAttachment?.session_id === session.id) {
-      return
-    }
-    if (currentAttachment) {
-      await detachCurrentAttachment()
-    }
-    clearPendingPromptAttachments()
-    historyLoadGeneration += 1
-    const attachment = await attachToSession(client, session.id, options.clientId)
-    const attachedSession = await getSessionState(client, session.id)
-    if (!attachedSession.active_provider_run_id) {
-      options.model = launch.model
-      options.effort = launch.effort
-      const run = await launchProviderRun(client, session.id, options.accountProfile, launch.model, launch.effort, attachedSession.focused_agent_id)
-      logProviderRunDebug("attached session launched provider run", run, {
-        session_id: session.id,
-        requested_model: launch.model,
-        requested_variant: launch.effort,
-      })
-      setProviderRunState(run)
-    } else {
-      const run = await tryGetProviderRun(client, attachedSession.active_provider_run_id, appLogger)
-      logProviderRunDebug("attached session loaded existing provider run", run, {
-        session_id: session.id,
-        requested_model: options.model,
-      })
-      setProviderRunState(run)
-    }
-    setProviderCatalogState(await getProviderCatalog(client, appLogger))
-    reconcileWaitingRoom(waitingRoomState())
-    await maybeResize(client, session.id)
-    await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, appLogger)
-    const hydratedSession = await getSessionState(client, session.id)
-    const nextAttachedState = deriveAttachedCliTransitionState({
-      session: hydratedSession,
-      createdSession,
-      connectedStatus: DEFAULT_CONNECTED_STATUS,
-    })
-    setAttachmentState(attachment)
-    setCreatedSessionState(nextAttachedState.createdSession)
-    setSessionState(nextAttachedState.session)
-    setCenterMode(nextAttachedState.centerMode)
-    setDirectoryTreeState(null)
-    activeToolLabels.clear()
-    setProviderActivityLabel(nextAttachedState.providerActivityLabel)
-    setActiveStatusLabel(nextAttachedState.activeStatusLabel)
-    await refreshAgentPanes(hydratedSession)
-    setFatalError(nextAttachedState.fatalError)
-    setDaemonDisconnected(nextAttachedState.daemonDisconnected)
-    setSubmitting(nextAttachedState.submitting)
-    setWorking(nextAttachedState.working)
-    setStatusLine(nextAttachedState.statusLine)
-    updateSessionChrome()
-    promptInput?.focus()
-    setAvailableSessions(await listSessions(client))
-    scheduleShortViewportHistoryCheck()
-  }
+  const {
+    transitionToNoSession,
+    detachCurrentAttachment,
+    attachBinding,
+  } = createSessionLifecycleController({
+    cliOptions: options,
+    connectedStatus: DEFAULT_CONNECTED_STATUS,
+    waitingRoomState,
+    attachmentState,
+    deriveDetachedCliTransitionState,
+    deriveAttachedCliTransitionState,
+    clearPendingPromptAttachments,
+    clearActiveToolLabels: () => {
+      activeToolLabels.clear()
+    },
+    clearAgentPaneRuntime,
+    clearDirectoryTree: () => setDirectoryTreeState(null),
+    clearTranscript: () => replaceTranscriptEntries([]),
+    resetStopRequestInFlight: () => {
+      stopRequestInFlight = false
+    },
+    bumpHistoryLoadGeneration: () => {
+      historyLoadGeneration += 1
+    },
+    reconcileWaitingRoom,
+    refreshWaitingRoomData,
+    requestRender: () => {
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
+    },
+    clearPromptInput: () => {
+      promptInput?.clear()
+    },
+    syncPromptTextSnapshot,
+    blurPromptInput: () => {
+      promptInput?.blur()
+    },
+    focusPromptInput: () => {
+      promptInput?.focus()
+    },
+    setAttachmentState,
+    setProviderRunState,
+    setCenterMode,
+    setCreatedSessionState,
+    setSessionState,
+    setProviderActivityLabel,
+    setActiveStatusLabel,
+    setAgentPaneEntries,
+    setAgentPanePreviews,
+    setAgentActivityLabels,
+    setStreamingAgentId,
+    setSubmitting,
+    setWorking,
+    setFatalError,
+    setDaemonDisconnected,
+    setNextHistoryCursor,
+    setHistoryLoadingState,
+    setStatusLine,
+    updateSessionChrome,
+    attachToSession: (sessionId, clientId) => attachToSession(client, sessionId, clientId),
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    launchProviderRun: (sessionId, accountProfile, model, effort, targetAgentId) =>
+      launchProviderRun(client, sessionId, accountProfile, model, effort, targetAgentId),
+    tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
+    setProviderCatalogState,
+    getProviderCatalog: () => getProviderCatalog(client, appLogger),
+    maybeResize: (sessionId) => maybeResize(client, sessionId),
+    catchUpAttachedSession: (sessionId, attachmentId, session) =>
+      catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
+    refreshAgentPanes,
+    setAvailableSessions,
+    listSessions: () => listSessions(client),
+    scheduleShortViewportHistoryCheck: () => {
+      scheduleShortViewportHistoryCheck()
+    },
+    detachAttachment: (attachmentId) => client.send(detachFromSessionRequest(attachmentId)).then(() => {}),
+    logAttachedProviderRun: (mode, run, fields) => {
+      logProviderRunDebug(
+        mode === "launched"
+          ? "attached session launched provider run"
+          : "attached session loaded existing provider run",
+        run,
+        fields,
+      )
+    },
+  })
 
   const loadOlderHistoryPage = async () => {
     if (!isAttached() || loadingHistory() || nextHistoryCursor() === null) {
@@ -3902,293 +3894,123 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const handleSessionCommand = async (commandLine: string) => {
-    const [_, action, ...args] = commandLine.trim().split(/\s+/)
-    const value = args.join(" ").trim()
-
-    switch (action) {
-      case "create":
-      case "new": {
-        const session = await createSession(client, options.workspace ?? process.cwd(), options.worktree ?? options.workspace ?? process.cwd(), value || undefined)
-        await attachBinding(session, true)
-        flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
-        return true
-      }
-      case "attach": {
-        if (!value) {
-          flashFooter("usage: /session attach <ref>", "error")
-          return true
-        }
-        const session = await resolveSession(client, value, options.workspace ?? process.cwd())
-        await attachBinding(session, false)
-        flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
-        return true
-      }
-      case "list":
-      case "ls": {
-        const sessions = await listSessions(client)
-        appendNotice(formatSessionList(sessions, sessionState().id))
-        flashFooter(`listed ${sessions.length} session${sessions.length === 1 ? "" : "s"}`, "info")
-        return true
-      }
-      case "delete": {
-        const sessionRef = value || (isAttached() ? sessionState().id : "")
-        if (!sessionRef) {
-          flashFooter("usage: /session delete <ref>", "error")
-          return true
-        }
-        const deleted = await deleteSessionByRef(client, sessionRef, options.workspace ?? process.cwd())
-        if (isAttached() && deleted.id === sessionState().id) {
-          transitionToNoSession(`Session ${deleted.alias ?? deleted.id} was deleted.`)
-        } else {
-          flashFooter(`deleted session ${deleted.alias ?? deleted.id}`, "info")
-        }
-        return true
-      }
-      default:
-        return false
-    }
-  }
-
-  const handleProviderCommand = async (commandLine: string) => {
-    const value = commandLine.replace(/^\/provider\s*/, "").trim()
-    if (!value) {
-      flashFooter("usage: /provider opencode", "error")
-      return
-    }
-    if (value !== "opencode") {
-      flashFooter(`unknown provider: ${value}`, "error")
-      return
-    }
-    flashFooter("OpenCode selected", "info")
-  }
-
-  const handleModelCommand = async (commandLine: string) => {
-    const value = commandLine.replace(/^\/model\s*/, "").trim()
-    if (!value) {
-      flashFooter("usage: /model <provider/model>", "error")
-      return
-    }
-    await applyModelSelection(value)
-  }
-
-  const handleVariantCommand = async (commandLine: string) => {
-    const value = commandLine.replace(/^\/variant\s*/, "").trim()
-    if (!value) {
-      flashFooter("usage: /variant <name>", "error")
-      return
-    }
-    await applyVariantSelection(value)
-  }
-
-  const handleViewCommand = async (commandLine: string) => {
-    const value = commandLine.replace(/^\/view\s*/, "").trim().toLowerCase()
-    if (!value) {
-      flashFooter(
-        `view: ${multiAgentResponseLayout()} • agents: ${sessionState().agents.length}`,
-        "info",
-      )
-      return
-    }
-    if (value !== "split" && value !== "individual") {
-      flashFooter("usage: /view <split|individual>", "error")
-      return
-    }
-    const nextLayout = value as MultiAgentResponseLayout
-    appLogger?.info("handling view command", {
-      requested_layout: nextLayout,
-      previous_layout: multiAgentResponseLayout(),
-      attached: isAttached(),
-      agent_count: sessionState().agents.length,
-      focused_agent_id: focusedAgentId(),
-    })
-    setMultiAgentResponseLayout(nextLayout)
-    logViewDebug("view command:after set layout", {
-      requested_layout: nextLayout,
-    })
-    applyResponseLayout()
-    if (isAttached() && attachmentState()) {
-      const updated = await updateSessionConfig(
+  const {
+    handleSessionCommand,
+    handleProviderCommand,
+    handleModelCommand,
+    handleVariantCommand,
+    handleViewCommand,
+    handleCycleAgentFocus,
+    handleAgentCommand,
+  } = createCommandActionHandlers({
+    workspace: options.workspace ?? process.cwd(),
+    worktree: options.worktree ?? options.workspace ?? process.cwd(),
+    accountProfile: options.accountProfile,
+    isAttached,
+    sessionState,
+    attachmentState,
+    providerRunState,
+    currentModelId,
+    currentVariantId,
+    focusedAgentId,
+    multiAgentResponseLayout,
+    flashFooter,
+    appendNotice,
+    formatError,
+    createSession: (workspace, worktree, alias) => createSession(client, workspace, worktree, alias),
+    attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
+    listSessions: () => listSessions(client),
+    deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
+    transitionToNoSession,
+    applyModelSelection,
+    applyVariantSelection,
+    logViewCommand: (fields) => {
+      appLogger?.info("handling view command", fields)
+      logViewDebug("view command:after set layout", fields)
+    },
+    setMultiAgentResponseLayout,
+    applyResponseLayout,
+    updateSessionResponseLayout: (sessionId, attachmentId, layout) =>
+      updateSessionConfig(
         client,
-        sessionState().id,
-        attachmentState()!.id,
-        { [SESSION_CONFIG_RESPONSE_LAYOUT_KEY]: nextLayout },
+        sessionId,
+        attachmentId,
+        { [SESSION_CONFIG_RESPONSE_LAYOUT_KEY]: layout },
         false,
-      )
-      applySessionState(updated.session)
-      await refreshAgentPanes(updated.session)
-    }
-    await saveUiPreferences({ multiAgentResponseLayout: nextLayout })
-    rebuildTranscript()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
-    startTimeout(() => {
-      logViewDebug("view command:post render tick", {
-        requested_layout: nextLayout,
-        current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
-      })
-    }, 0)
-    flashFooter(`view set to ${nextLayout} • ${sessionState().agents.length} agents`, "info")
-  }
-
-  const handleCycleAgentFocus = async () => {
-    if (!isAttached()) {
-      flashFooter("must be attached to a session to cycle agents", "error")
-      return
-    }
-    try {
+      ),
+    applySessionState,
+    refreshAgentPanes,
+    saveUiPreferences,
+    rebuildTranscript,
+    requestRender: () => {
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
+    },
+    afterViewRender: (layout) => {
+      startTimeout(() => {
+        logViewDebug("view command:post render tick", {
+          requested_layout: layout,
+          current_focus: describeRenderableDebug((renderer as { currentFocusedRenderable?: Renderable | null }).currentFocusedRenderable ?? null),
+        })
+      }, 0)
+    },
+    cycleAgentFocus: async () => {
       const response = await client.send<Record<string, unknown>>(
         cycleAgentFocusRequest(sessionState().id),
       )
       const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
-      const nextSession = await getSessionState(client, sessionState().id)
-      const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-      applySessionState(nextSession)
-      if (shouldRefreshPanes) {
-        await refreshAgentPanes(nextSession)
+      return {
+        agent: payload.agent,
+        session: await getSessionState(client, sessionState().id),
       }
-      if (!nextSession.active_provider_run_id && payload.agent) {
-        const run = await launchProviderRun(
-          client,
-          sessionState().id,
-          options.accountProfile,
-          payload.agent.model ?? currentModelId(),
-          currentVariantId(),
-          payload.agent.id,
-        )
-        setProviderRunState(run)
-        applySessionState(await getSessionState(client, sessionState().id))
+    },
+    launchAgentProviderRun: (model, variant, agentId) =>
+      launchProviderRun(
+        client,
+        sessionState().id,
+        options.accountProfile,
+        model,
+        variant,
+        agentId,
+      ),
+    setProviderRunState,
+    refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+    spawnAgent: async (provider, alias, model) => {
+      const response = await client.send<Record<string, unknown>>(
+        spawnAgentRequest(sessionState().id, provider, alias, model),
+      )
+      const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
+      return {
+        agent: payload.agent,
+        session: await getSessionState(client, sessionState().id),
       }
-      if (payload.agent) {
-        flashFooter(`cycled to agent ${payload.agent.agent_ref}${payload.agent.alias ? ` (${payload.agent.alias})` : ""}`, "info")
-      } else {
-        flashFooter("no agents to cycle", "info")
+    },
+    destroyAgent: async (agentId) => {
+      await client.send<Record<string, unknown>>(
+        destroyAgentRequest(sessionState().id, agentId),
+      )
+      return getSessionState(client, sessionState().id)
+    },
+    focusAgent: async (agentId) => {
+      const response = await client.send<Record<string, unknown>>(
+        focusAgentRequest(sessionState().id, agentId),
+      )
+      const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
+      return {
+        agent: payload.agent,
+        session: await getSessionState(client, sessionState().id),
       }
-    } catch (error) {
-      flashFooter(formatError(error), "error")
-    }
-  }
-
-  const handleAgentCommand = async (commandLine: string) => {
-    const args = commandLine.replace(/^\/agent\s*/, "").trim().split(/\s+/)
-    const subcommand = args[0]
-
-    if (!isAttached()) {
-      flashFooter("must be attached to a session to manage agents", "error")
-      return
-    }
-
-    switch (subcommand) {
-      case "spawn": {
-        const alias = args[1]
-        const model = args[2]
-        const provider = providerRunState()?.provider ?? "opencode"
-        try {
-          const response = await client.send<Record<string, unknown>>(
-            spawnAgentRequest(sessionState().id, provider, alias, model),
-          )
-          const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
-          const run = await launchProviderRun(
-            client,
-            sessionState().id,
-            options.accountProfile,
-            model ?? currentModelId(),
-            currentVariantId(),
-            payload.agent.id,
-          )
-          setProviderRunState(run)
-          const nextSession = await getSessionState(client, sessionState().id)
-          const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-          applySessionState(nextSession)
-          if (shouldRefreshPanes) {
-            await refreshAgentPanes(nextSession)
-          }
-          rebuildTranscript()
-          flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}`, "info")
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-        return
-      }
-      case "delete":
-      case "destroy": {
-        const reference = args[1]
-        const resolved = resolveSessionAgent(reference)
-        if (resolved.error || !resolved.agent) {
-          flashFooter(resolved.error ?? "usage: /agent delete <agent-name|agent-alias>", "error")
-          return
-        }
-        try {
-          await client.send<Record<string, unknown>>(
-            destroyAgentRequest(sessionState().id, resolved.agent.id),
-          )
-          const nextSession = await getSessionState(client, sessionState().id)
-          const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-          applySessionState(nextSession)
-          if (shouldRefreshPanes) {
-            await refreshAgentPanes(nextSession)
-          }
-          rebuildTranscript()
-          refreshSplitPaneFocusRepaint()
-          flashFooter(`deleted agent ${formatAgentLabel(resolved.agent)}`, "info")
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-        return
-      }
-      case "focus": {
-        const agentId = args[1]
-        if (!agentId) {
-          flashFooter("usage: /agent focus <agent-id>", "error")
-          return
-        }
-        try {
-          const response = await client.send<Record<string, unknown>>(
-            focusAgentRequest(sessionState().id, agentId),
-          )
-          const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
-          const nextSession = await getSessionState(client, sessionState().id)
-          const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
-          applySessionState(nextSession)
-          if (shouldRefreshPanes) {
-            await refreshAgentPanes(nextSession)
-          }
-          if (!nextSession.active_provider_run_id) {
-            const run = await launchProviderRun(
-              client,
-              sessionState().id,
-              options.accountProfile,
-              payload.agent.model ?? currentModelId(),
-              currentVariantId(),
-              payload.agent.id,
-            )
-            setProviderRunState(run)
-            applySessionState(await getSessionState(client, sessionState().id))
-          }
-          flashFooter(`focused on agent ${payload.agent.agent_ref}${payload.agent.alias ? ` (${payload.agent.alias})` : ""}`, "info")
-        } catch (error) {
-          flashFooter(formatError(error), "error")
-        }
-        return
-      }
-      case "list":
-      case "ls": {
-        const agents = sessionState().agents
-        if (agents.length === 0) {
-          flashFooter("no agents in session", "info")
-        } else {
-          const agentList = agents.map(a => `${a.agent_ref}${a.alias ? ` (${a.alias})` : ""} [${a.state}]`).join(", ")
-          flashFooter(`${agents.length} agent${agents.length === 1 ? "" : "s"}: ${agentList}`, "info")
-        }
-        return
-      }
-      case "cycle": {
-        await handleCycleAgentFocus()
-        return
-      }
-      default:
-        flashFooter("usage: /agent spawn [alias] [model] | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle", "error")
-    }
-  }
+    },
+    resolveSessionAgent: (reference) => {
+      const resolved = resolveSessionAgent(reference)
+      return resolved.error
+        ? { agent: resolved.agent ?? null, error: resolved.error }
+        : { agent: resolved.agent ?? null }
+    },
+    formatAgentLabel,
+    refreshSplitPaneFocusRepaint,
+    formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
+  })
 
   const recoverProviderRun = async (reason: string) => {
     if (!isAttached() || providerRecoveryInFlight) {
@@ -4221,46 +4043,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const executeCommandCenterCommand = async (value: string) => {
-    if (value === "/exit") {
-      await requestExit()
-      return
-    }
-    if (value === "/waiting") {
-      await requestWaitingRoom()
-      return
-    }
-    if (value === "/stop") {
-      await requestPromptStop()
-      return
-    }
-    if (value === "/session list") {
-      await handleSessionCommand(value)
-      return
-    }
-    if (value.startsWith("/provider ")) {
-      await handleProviderCommand(value)
-      return
-    }
-    if (value.startsWith("/model ")) {
-      await handleModelCommand(value)
-      return
-    }
-    if (value.startsWith("/variant ")) {
-      await handleVariantCommand(value)
-      return
-    }
-    if (value.startsWith("/view")) {
-      await handleViewCommand(value)
-      return
-    }
-    if (value.startsWith("/agent ")) {
-      try {
-        await handleAgentCommand(value)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      }
-      return
-    }
+    await executeSlashCommand(value, {
+      onExit: requestExit,
+      onWaiting: requestWaitingRoom,
+      onStop: requestPromptStop,
+      onAttachment: async (command) => {
+        await handleAttachmentCommand(command.raw)
+      },
+      onSession: handleSessionCommand,
+      onProvider: handleProviderCommand,
+      onModel: handleModelCommand,
+      onVariant: handleVariantCommand,
+      onView: handleViewCommand,
+      onAgent: async (command) => {
+        try {
+          await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+    })
   }
 
   const requestExit = async () => {
@@ -4365,113 +4167,76 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       syncPromptTextSnapshot()
       return
     }
-    if (trimmed === "/exit") {
-      await requestExit()
-      return
-    }
-    if (trimmed === "/waiting") {
-      await requestWaitingRoom()
-      return
-    }
-    if (trimmed.startsWith("/attach")) {
-      try {
-        await handleAttachmentCommand(rawPrompt)
-      } catch (error) {
-        appLogger?.error("attachment command failed", {
-          command: trimmed,
-          error: formatError(error),
-        })
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-      }
-      return
-    }
-    if (trimmed.startsWith("/session")) {
-      try {
-        const handled = await handleSessionCommand(trimmed)
-        if (!handled) {
-          flashFooter("unknown /session command", "error")
+    const handledCommand = await executeSlashCommand(rawPrompt, {
+      onExit: requestExit,
+      onWaiting: requestWaitingRoom,
+      onStop: requestPromptStop,
+      onAttachment: async (command) => {
+        try {
+          await handleAttachmentCommand(command.raw)
+        } catch (error) {
+          appLogger?.error("attachment command failed", {
+            command: trimmed,
+            error: formatError(error),
+          })
+          flashFooter(formatError(error), "error")
         }
-      } catch (error) {
-        appLogger?.error("session command failed", {
-          command: trimmed,
-          error: formatError(error),
-        })
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-      }
-      return
-    }
-    if (trimmed.startsWith("/provider")) {
-      try {
-        await handleProviderCommand(trimmed)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
+      },
+      onSession: async (command) => {
+        try {
+          const handled = await handleSessionCommand(command)
+          if (!handled) {
+            flashFooter("unknown /session command", "error")
+          }
+        } catch (error) {
+          appLogger?.error("session command failed", {
+            command: trimmed,
+            error: formatError(error),
+          })
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onProvider: async (command) => {
+        try {
+          await handleProviderCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onModel: async (command) => {
+        try {
+          await handleModelCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onVariant: async (command) => {
+        try {
+          await handleVariantCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onView: async (command) => {
+        try {
+          await handleViewCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onAgent: async (command) => {
+        try {
+          await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+    })
+    if (handledCommand) {
+      promptInput.clear()
+      syncPromptTextSnapshot()
+      if (shouldClearCommandCenterForSlashCommand(handledCommand)) {
         clearCommandCenter()
-      }
-      return
-    }
-    if (trimmed.startsWith("/model")) {
-      try {
-        await handleModelCommand(trimmed)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearCommandCenter()
-      }
-      return
-    }
-    if (trimmed.startsWith("/variant")) {
-      try {
-        await handleVariantCommand(trimmed)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearCommandCenter()
-      }
-      return
-    }
-    if (trimmed.startsWith("/agent")) {
-      try {
-        await handleAgentCommand(trimmed)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearCommandCenter()
-      }
-      return
-    }
-    if (trimmed.startsWith("/view")) {
-      try {
-        await handleViewCommand(trimmed)
-      } catch (error) {
-        flashFooter(formatError(error), "error")
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearCommandCenter()
-      }
-      return
-    }
-    if (trimmed === "/stop") {
-      try {
-        await requestPromptStop()
-      } finally {
-        promptInput.clear()
-        syncPromptTextSnapshot()
       }
       return
     }
@@ -4742,26 +4507,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const monitorTranscriptScroll = () => {
     const scrollbox = transcriptScrollbox
-    if (!scrollbox) {
-      return
-    }
-    if (pendingHistoryScrollRestore > 0) {
-      return
-    }
-
-    const currentScrollTop = scrollbox.scrollTop
-    if (currentScrollTop === 0 && lastTranscriptScrollTop > 0 && nextHistoryCursor() !== null && !loadingHistory()) {
+    const decision = evaluateTranscriptScrollMonitor({
+      hasScrollbox: Boolean(scrollbox),
+      pendingHistoryScrollRestore,
+      currentScrollTop: scrollbox?.scrollTop ?? 0,
+      lastTranscriptScrollTop,
+      hasMoreHistory: nextHistoryCursor() !== null,
+      loadingHistory: loadingHistory(),
+    })
+    if (decision.shouldLoadOlderHistory) {
       void loadOlderHistoryPage()
     }
-    lastTranscriptScrollTop = currentScrollTop
+    lastTranscriptScrollTop = decision.nextLastScrollTop
   }
 
   const maybeLoadOlderHistoryForShortViewport = () => {
     const scrollbox = transcriptScrollbox
-    if (!scrollbox || !isAttached() || loadingHistory() || nextHistoryCursor() === null) {
-      return
-    }
-    if (scrollbox.scrollTop === 0 && scrollbox.scrollHeight <= scrollbox.height) {
+    if (shouldLoadShortViewportHistory({
+      hasScrollbox: Boolean(scrollbox),
+      attached: isAttached(),
+      loadingHistory: loadingHistory(),
+      hasMoreHistory: nextHistoryCursor() !== null,
+      scrollTop: scrollbox?.scrollTop ?? 0,
+      scrollHeight: scrollbox?.scrollHeight ?? 0,
+      viewportHeight: scrollbox?.height ?? 0,
+    })) {
       void loadOlderHistoryPage()
     }
   }
@@ -4820,27 +4590,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   // Check if connection appears stale (working but no data received)
   const checkConnectionHealth = () => {
-    if (!isAttached() || !working()) {
-      consecutiveSilentPolls = 0
-      return
-    }
+    const decision = evaluateConnectionHealth({
+      attached: isAttached(),
+      working: working(),
+      now: Date.now(),
+      lastDaemonActivityAt,
+      consecutiveSilentPolls,
+      silentThreshold: SILENT_POLL_THRESHOLD,
+      silenceWindowMs: 2000,
+    })
+    consecutiveSilentPolls = decision.nextConsecutiveSilentPolls
 
-    const timeSinceLastActivity = Date.now() - lastDaemonActivityAt
-    const isSilent = timeSinceLastActivity > 2000 // 2 seconds without activity
-
-    if (isSilent) {
-      consecutiveSilentPolls++
-    } else {
-      consecutiveSilentPolls = 0
-    }
-
-    // If we've had too many silent polls while "working", something may be wrong
-    if (consecutiveSilentPolls >= SILENT_POLL_THRESHOLD) {
+    if (decision.shouldRecover) {
       appLogger?.warn("connection appears stale - no activity while working", {
         consecutive_silent_polls: consecutiveSilentPolls,
-        time_since_last_activity_ms: timeSinceLastActivity,
+        time_since_last_activity_ms: decision.timeSinceLastActivityMs,
       })
-      // Trigger recovery
       void recoverProviderRun("stale connection - no activity received")
       consecutiveSilentPolls = 0
     }
@@ -4860,60 +4625,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }, 250)
   }
 
-  const runPollingLoop = async (
-    operation: string,
-    intervalMs: number,
-    task: () => Promise<void>,
-  ) => {
-    let consecutiveFailures = 0
-
-    while (!closing) {
-      try {
-        await task()
-        markPollerRecovered(operation, consecutiveFailures)
-        consecutiveFailures = 0
-      } catch (error) {
-        if (closing) {
-          break
-        }
-        if (isSessionUnavailableError(error)) {
-          appLogger?.info("session became unavailable; returning to unattached state", {
-            operation,
-            error: formatError(error),
-          })
-          transitionToNoSession("Current session is no longer available.")
-          consecutiveFailures = 0
-          continue
-        }
-        consecutiveFailures += 1
-        appLogger?.warn("poll operation failed", {
-          operation,
-          error: formatError(error),
-          attempt: consecutiveFailures,
-        })
-        const decision = getPollRecoveryDecision(operation, error, consecutiveFailures)
-        if (decision.retry) {
-          markPollerDegraded(operation, decision.message)
-          await sleep(decision.delayMs)
-          continue
-        }
-        appLogger?.error("poll operation became fatal", {
-          operation,
-          error: formatError(error),
-        })
+  const pollOutput = async () => {
+    await runPollingLoop({
+      operation: "polling terminal output",
+      intervalMs: 50,
+      isClosing: () => closing,
+      logger: appLogger,
+      formatError,
+      isSessionUnavailableError,
+      getPollRecoveryDecision,
+      onSessionUnavailable: () => {
+        transitionToNoSession("Current session is no longer available.")
+      },
+      onMarkRecovered: markPollerRecovered,
+      onMarkDegraded: markPollerDegraded,
+      onFatalError: (error) => {
         if (error instanceof Error && /local transport/i.test(error.message)) {
           setDaemonDisconnected(true)
         }
         setFatalError(formatError(error))
         updateSessionChrome()
-        break
-      }
-      await sleep(intervalMs)
-    }
-  }
-
-  const pollOutput = async () => {
-    await runPollingLoop("polling terminal output", 50, async () => {
+      },
+      task: async () => {
       const attachment = attachmentState()
       if (!attachment) {
         return
@@ -4938,11 +4671,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         recordDaemonActivity("terminal_output")
       }
       queueTerminalOutputRecords(payload.records)
+      },
+      sleep,
     })
   }
 
   const pollNotices = async () => {
-    await runPollingLoop("polling runtime notices", 150, async () => {
+    await runPollingLoop({
+      operation: "polling runtime notices",
+      intervalMs: 150,
+      isClosing: () => closing,
+      logger: appLogger,
+      formatError,
+      isSessionUnavailableError,
+      getPollRecoveryDecision,
+      onSessionUnavailable: () => {
+        transitionToNoSession("Current session is no longer available.")
+      },
+      onMarkRecovered: markPollerRecovered,
+      onMarkDegraded: markPollerDegraded,
+      onFatalError: (error) => {
+        if (error instanceof Error && /local transport/i.test(error.message)) {
+          setDaemonDisconnected(true)
+        }
+        setFatalError(formatError(error))
+        updateSessionChrome()
+      },
+      task: async () => {
       const attachment = attachmentState()
       if (!attachment) {
         return
@@ -4955,11 +4710,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       for (const notice of payload.notices) {
         appendNotice(notice.message)
       }
+      },
+      sleep,
     })
   }
 
   const pollSessionState = async () => {
-    await runPollingLoop("polling session state", 250, async () => {
+    await runPollingLoop({
+      operation: "polling session state",
+      intervalMs: 250,
+      isClosing: () => closing,
+      logger: appLogger,
+      formatError,
+      isSessionUnavailableError,
+      getPollRecoveryDecision,
+      onSessionUnavailable: () => {
+        transitionToNoSession("Current session is no longer available.")
+      },
+      onMarkRecovered: markPollerRecovered,
+      onMarkDegraded: markPollerDegraded,
+      onFatalError: (error) => {
+        if (error instanceof Error && /local transport/i.test(error.message)) {
+          setDaemonDisconnected(true)
+        }
+        setFatalError(formatError(error))
+        updateSessionChrome()
+      },
+      task: async () => {
       if (!isAttached()) {
         return
       }
@@ -5008,6 +4785,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           void recoverProviderRun("missing active provider run")
         }
       }
+      },
+      sleep,
     })
   }
 
@@ -5077,16 +4856,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const waitingRoomAnimation = startInterval(() => {
-    if (isAttached()) {
-      return
-    }
     const state = waitingRoomState()
-    if (state.introStep >= 12) {
+    const nextIntroStep = nextWaitingRoomIntroStep(isAttached(), state.introStep)
+    if (nextIntroStep === null) {
       return
     }
     setWaitingRoomState({
       ...state,
-      introStep: state.introStep + 1,
+      introStep: nextIntroStep,
     })
     rebuildTranscript()
   }, 90)

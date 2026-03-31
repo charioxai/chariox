@@ -225,6 +225,72 @@ Why this mattered:
 - the status badge and visible activity label were still being derived inside the main CLI shell even after the rest of the chrome state had moved out
 - moving them into the state layer completes the planned Phase 5 extraction seam for transcript-visible session chrome decisions
 
+### 17. CLI slash-command routing extraction
+
+Done:
+
+- extracted slash-command parsing and top-level dispatch into `apps/cli/src/commands.ts`
+- added focused command parsing/dispatch coverage in `apps/cli/src/commands.test.ts`
+- simplified `apps/cli/src/index.tsx` so prompt submission and command-center execution no longer duplicate the same slash-command routing branches inline
+
+Why this mattered:
+
+- `index.tsx` had still been duplicating slash-command detection and routing across the command-center and prompt-submit paths
+- moving the routing seam out starts Phase 6 with a behavior-preserving split between command parsing/dispatch and the TUI shell
+
+### 18. CLI polling/effect controller extraction
+
+Done:
+
+- extracted generic poll-loop retry/session-unavailable/fatal handling into `apps/cli/src/polling-effects.ts`
+- extracted connection-watchdog decision logic into the same controller module
+- added focused coverage in `apps/cli/src/polling-effects.test.ts`
+- simplified `apps/cli/src/index.tsx` so the background output/notices/session polling path now delegates retry and health decisions instead of carrying that state machine inline
+
+Why this mattered:
+
+- `index.tsx` had still been mixing long-running transport-effect policy with transcript/session UI orchestration
+- moving the polling state machine out starts the second half of Phase 6 and makes recovery behavior testable without booting the full TUI
+
+### 19. CLI background refresh effect extraction
+
+Done:
+
+- extracted transcript-scroll history-load decisions and waiting-room intro animation decisions into `apps/cli/src/background-effects.ts`
+- added focused coverage in `apps/cli/src/background-effects.test.ts`
+- simplified `apps/cli/src/index.tsx` so the transcript scroll monitor, short-viewport history check, and waiting-room animation loop now delegate their control decisions to a dedicated background-effects module
+
+Why this mattered:
+
+- `index.tsx` had still been carrying several recurring background-effect decision branches even after polling/recovery moved out
+- extracting those decisions continues Phase 6 by reducing non-render loop policy inside the TUI shell and making history/intro behavior easier to test directly
+
+### 20. CLI command-action extraction
+
+Done:
+
+- extracted session, provider, model, variant, view, and agent action handlers into `apps/cli/src/command-actions.ts`
+- added focused helper coverage in `apps/cli/src/command-actions.test.ts`
+- simplified `apps/cli/src/index.tsx` so the main slash-command side-effect handlers are now wired through a dedicated action module instead of living inline beside the TUI shell
+
+Why this mattered:
+
+- even after parsing/dispatch moved out, `index.tsx` still contained a large command side-effect block for session and agent operations
+- moving those handlers out completes the main Phase 6 command split and leaves the CLI shell closer to orchestration plus rendering only
+
+### 21. CLI session-lifecycle extraction
+
+Done:
+
+- extracted no-session transition, attachment detach, and attach-binding orchestration into `apps/cli/src/session-lifecycle.ts`
+- added focused controller coverage in `apps/cli/src/session-lifecycle.test.ts`
+- simplified `apps/cli/src/index.tsx` so the main session entry/exit workflow no longer lives inline beside transcript/render orchestration
+
+Why this mattered:
+
+- `index.tsx` still had one large session-lifecycle workflow cluster even after command and polling extraction
+- moving that cluster out completes the final planned CLI extraction pass and leaves the remaining shell much closer to TUI composition plus local coordination glue
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -303,8 +369,12 @@ Expected outcome:
 
 Targets:
 
-- extract slash-command handlers into dedicated command modules
-- move daemon polling, reconnect/recovery, and background refresh loops into effect/controller modules
+- command parsing/dispatch extraction is complete for this pass
+- polling/recovery controller extraction is complete for this pass
+- first background refresh-loop extraction seams are complete for this pass
+- command-action handler extraction is complete for this pass
+- session-lifecycle extraction is complete for this pass
+- additional CLI shell splits are optional later, not the current priority
 
 Expected outcome:
 
@@ -341,4 +411,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should start Phase 6 by extracting slash-command handlers from `apps/cli/src/index.tsx` into dedicated command modules, so command parsing/dispatch stops sharing a file with render-tree and session-state orchestration.
+The next concrete change should start Phase 7 by extracting prompt lifecycle and queue advancement orchestration out of `apps/daemon/src/app.rs`.
