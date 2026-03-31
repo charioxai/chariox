@@ -291,6 +291,20 @@ Why this mattered:
 - `index.tsx` still had one large session-lifecycle workflow cluster even after command and polling extraction
 - moving that cluster out completes the final planned CLI extraction pass and leaves the remaining shell much closer to TUI composition plus local coordination glue
 
+### 22. Daemon prompt-lifecycle extraction
+
+Done:
+
+- extracted prompt submission, completion, cancellation, queue advancement, idle completion, and provider-exit reconciliation into `apps/daemon/src/app/prompt_lifecycle.rs`
+- kept `apps/daemon/src/app.rs` focused more tightly on higher-level daemon composition and non-prompt orchestration
+- hardened the OpenCode launch path to use the explicit configured port directly instead of silently shifting ports
+- hardened provider-output pumping so OpenCode structured polling tolerates a missing PTY during reconciliation, while a real launched-process exit still ends the run
+
+Why this mattered:
+
+- `app.rs` still concentrated the daemon’s most complex prompt lifecycle and queue advancement logic in one file
+- moving that block out starts Phase 7 with the most important orchestration seam while preserving behavior and keeping the daemon test suite green
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -385,8 +399,11 @@ Expected outcome:
 
 Targets:
 
-- extract prompt lifecycle and queue advancement orchestration from `apps/daemon/src/app.rs`
-- split attachment/session membership cleanup and terminal fanout coordination into dedicated daemon modules
+- prompt lifecycle and queue advancement extraction is complete for this pass
+- attachment/session membership cleanup extraction is complete for this pass
+- terminal fanout and session-history coordination extraction is complete for this pass
+- provider-run launch and focus-sync orchestration extraction is complete for this pass
+- `app.rs` now only needs further splits when a new coherent policy seam appears, not for mechanical file-size reduction
 
 Expected outcome:
 
@@ -411,4 +428,25 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should start Phase 7 by extracting prompt lifecycle and queue advancement orchestration out of `apps/daemon/src/app.rs`.
+Phase 7 is complete for this refactor pass. The next refactor should be driven by product work exposing a new coherent seam, not by forcing additional daemon-shell splits.
+
+### 23. Daemon session-runtime extraction
+
+`attach`, `detach`, `end_session`, and `delete_session_ref` were still bundled into `app.rs` even though they form one coherent session-runtime lifecycle block.
+
+- moving them into `apps/daemon/src/app/session_runtime.rs` narrows `app.rs` to provider/control coordination and keeps session membership teardown in one place
+- `other_attachment_ids` moved with that block because it is a session fanout helper shared by the same lifecycle and prompt code paths
+
+### 24. Daemon terminal-fanout extraction
+
+Prompt echo, provider output fanout, runtime notices, and session-history append logic were still grouped in `app.rs` even though they serve one shared responsibility: translating daemon/provider activity into terminal records plus durable history.
+
+- moving them into `apps/daemon/src/app/terminal_fanout.rs` keeps transport/history side effects together
+- `app.rs` now reads more clearly as provider orchestration plus public control surface, rather than mixing that with transcript persistence details
+
+### 25. Daemon provider-runtime extraction
+
+Provider launch, active-run switching, and focus-sync logic were still grouped in `app.rs` even though they represent one provider-runtime orchestration concern.
+
+- moving them into `apps/daemon/src/app/provider_runtime.rs` makes `app.rs` a thinner shell around the remaining public control surface and low-level terminal path
+- Phase 7 now stops at the point where further daemon extractions would be mostly mechanical rather than revealing new architectural seams

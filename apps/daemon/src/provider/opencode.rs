@@ -1,5 +1,4 @@
 use std::env;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -29,7 +28,7 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
 
 pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
     let executable = resolve_opencode_executable()?;
-    let port = resolve_available_opencode_port()?;
+    let port = resolve_opencode_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
 
     Ok(ProviderLaunchResult {
@@ -68,20 +67,6 @@ fn resolve_opencode_port() -> Result<u16, DaemonError> {
             field: "ARROBA_OPENCODE_PORT",
             message: "must be a valid TCP port",
         })
-}
-
-fn resolve_available_opencode_port() -> Result<u16, DaemonError> {
-    let start = resolve_opencode_port()?;
-    for port in start..start.saturating_add(64) {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
-            drop(listener);
-            return Ok(port);
-        }
-    }
-    Err(DaemonError::InvalidConfig {
-        field: "ARROBA_OPENCODE_PORT",
-        message: "must leave at least one available TCP port in the next 64-port range",
-    })
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
