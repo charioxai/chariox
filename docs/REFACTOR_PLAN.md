@@ -136,6 +136,18 @@ Why this mattered:
 - `service.rs` had still been interleaving generic run lifecycle transitions with a large OpenCode-only event/render state machine
 - moving that state machine out leaves a much smaller provider boundary and makes the remaining provider-specific setup logic easier to isolate later
 
+### 10. OpenCode binding extraction
+
+Done:
+
+- extracted OpenCode session bootstrap, health checks, prompt submission, abort handling, and run-selection sync into `apps/daemon/src/provider/opencode_binding.rs`
+- simplified `apps/daemon/src/provider/service.rs` so it mainly coordinates generic provider lifecycle and delegates OpenCode-specific session binding work to dedicated provider modules
+
+Why this mattered:
+
+- `service.rs` still held the last chunk of OpenCode-specific client/bootstrap logic after the runtime state machine had already moved out
+- moving that code out completes the current Phase 3 split between generic lifecycle control and provider-specific binding/rendering details
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -143,7 +155,7 @@ The refactor has started, but the largest simplification targets still remain:
 - `apps/cli/src/index.tsx` is still the main monolith
 - `apps/daemon/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
 - `apps/daemon/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
-- `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_runtime.rs` owns event parsing and transcript rendering
+- `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
 
 ## Next Phases
 
@@ -179,8 +191,7 @@ Expected outcome:
 
 Targets:
 
-- separate generic provider-run lifecycle management from the remaining OpenCode session bootstrap and run-selection sync logic
-- keep provider state transitions, process control, runtime binding, and transcript rendering in different modules
+- Phase 3 extraction seams are complete for this pass
 
 Expected outcome:
 
@@ -217,4 +228,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should stay in Phase 2 by reducing `apps/daemon/src/local/api.rs` to transport/request handling only.
+The next concrete change should start Phase 4 by making the launcher skip unnecessary CLI rebuilds when the TypeScript output is already present and up to date.

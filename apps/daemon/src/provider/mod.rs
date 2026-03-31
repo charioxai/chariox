@@ -1,4 +1,5 @@
 mod opencode;
+mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
 mod registry;
