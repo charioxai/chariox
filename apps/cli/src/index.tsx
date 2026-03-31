@@ -84,7 +84,6 @@ import { computeSplitPaneGeometry, selectResponsePaneAgents, splitPaneAuxiliaryA
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
-  chooseVisibleActivityLabel,
   describeCliError,
   getExitCleanupDecision,
   getPollRecoveryDecision,
@@ -97,9 +96,11 @@ import {
   deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
   deriveFooterHint,
+  deriveFocusedStatusBadge,
   derivePromptMetaState,
   derivePromptUsageState,
   deriveSessionStatusMode,
+  deriveVisibleActivityLabel,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
 import {
@@ -133,7 +134,6 @@ import {
   selectAttachableSession,
 } from "./sessions.js"
 import {
-  agentPaneStatusBadge,
   buildSplitPaneFooterState,
   reflectedDistance,
   type StatusBadgeTone,
@@ -884,13 +884,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ?? activeProcessingAgentId
       ?? focusedAgentId()
   }
-  const focusedStatusBadge = () => {
-    if (daemonDisconnected()) {
-      return { label: "DISCONNECTED", tone: "disconnected" as const }
-    }
-    const agent = focusedAgent()
-    return agentPaneStatusBadge(agent, agentActivityLabel(agent?.id), agent?.id === streamingAgentId())
-  }
+  const focusedStatusBadge = () => deriveFocusedStatusBadge({
+    attached: isAttached(),
+    daemonDisconnected: daemonDisconnected(),
+    focusedAgent: focusedAgent(),
+    focusedAgentActivityLabel: agentActivityLabel(focusedAgent()?.id),
+    streamingAgentId: streamingAgentId(),
+  })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
       provider_run_id: run?.id ?? null,
@@ -2198,8 +2198,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const syncVisibleActivityLabel = () => {
-    const latestActiveToolLabel = Array.from(activeToolLabels.values()).at(-1) ?? null
-    setActiveStatusLabel(chooseVisibleActivityLabel(providerActivityLabel(), latestActiveToolLabel))
+    setActiveStatusLabel(deriveVisibleActivityLabel({
+      providerActivityLabel: providerActivityLabel(),
+      activeToolLabels: activeToolLabels.values(),
+    }))
   }
 
   const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {

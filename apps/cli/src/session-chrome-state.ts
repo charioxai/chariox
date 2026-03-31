@@ -7,9 +7,16 @@ import {
   type PromptMetaPart,
   type PromptUsageMeta,
 } from "./prompt-meta.js"
+import { chooseVisibleActivityLabel } from "./runtime.js"
+import type { StatusBadgeTone } from "./split-pane-footer.js"
+import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room.js"
 
 export type SessionStatusMode = "idle" | "working" | "disconnected"
+export type FocusedStatusBadge = {
+  label: string
+  tone: StatusBadgeTone
+}
 
 type ProviderSelectionOptions = {
   providerRun: RuntimeProviderRun | null
@@ -82,6 +89,34 @@ export function deriveFooterHint(options: {
       : `Processing ${options.activePromptId}.`
   }
   return options.statusLine
+}
+
+export function deriveVisibleActivityLabel(options: {
+  providerActivityLabel: string | null
+  activeToolLabels: Iterable<string>
+}) {
+  const latestActiveToolLabel = Array.from(options.activeToolLabels).at(-1) ?? null
+  return chooseVisibleActivityLabel(options.providerActivityLabel, latestActiveToolLabel)
+}
+
+export function deriveFocusedStatusBadge(options: {
+  attached: boolean
+  daemonDisconnected: boolean
+  focusedAgent: SplitPaneFooterAgent | null
+  focusedAgentActivityLabel: string | null
+  streamingAgentId: string | null
+}): FocusedStatusBadge {
+  if (!options.attached) {
+    return { label: "", tone: "idle" }
+  }
+  if (options.daemonDisconnected) {
+    return { label: "DISCONNECTED", tone: "disconnected" }
+  }
+  return agentPaneStatusBadge(
+    options.focusedAgent,
+    options.focusedAgentActivityLabel,
+    options.focusedAgent?.id === options.streamingAgentId,
+  )
 }
 
 export function deriveAttachedFooterSummary(options: {

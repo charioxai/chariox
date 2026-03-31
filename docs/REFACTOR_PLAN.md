@@ -212,6 +212,19 @@ Why this mattered:
 - `updateSessionChrome()` had still been a dense mix of state inspection, prompt-meta formatting, and session summary rendering
 - moving that derivation into a tested module gives Phase 5 a clearer boundary between state calculation and TUI mutation, which is the main architectural goal of this second pass
 
+### 16. CLI status-indicator state extraction
+
+Done:
+
+- extracted focused status-badge derivation and visible-activity-label selection into `apps/cli/src/session-chrome-state.ts`
+- added focused coverage in `apps/cli/src/session-chrome-state.test.ts`
+- simplified `apps/cli/src/index.tsx` so the status-indicator path and active-activity selection no longer recompute those pure decisions inline
+
+Why this mattered:
+
+- the status badge and visible activity label were still being derived inside the main CLI shell even after the rest of the chrome state had moved out
+- moving them into the state layer completes the planned Phase 5 extraction seam for transcript-visible session chrome decisions
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -279,8 +292,7 @@ Expected outcome:
 
 Targets:
 
-- move pure session/UI state derivation out of `apps/cli/src/index.tsx`
-- create tested state modules for session transitions, detached/waiting-room state, and transcript-facing runtime state
+- Phase 5 extraction seams are complete for this pass
 
 Expected outcome:
 
@@ -329,4 +341,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should continue Phase 5 by extracting transcript status-indicator and visible-activity derivation from `apps/cli/src/index.tsx` into the CLI runtime-state layer, so `renderStatusIndicator()` and related chrome refresh paths stop recomputing those decisions inline.
+The next concrete change should start Phase 6 by extracting slash-command handlers from `apps/cli/src/index.tsx` into dedicated command modules, so command parsing/dispatch stops sharing a file with render-tree and session-state orchestration.

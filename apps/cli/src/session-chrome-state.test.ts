@@ -7,9 +7,11 @@ import {
   deriveAttachedFooterSummary,
   deriveCurrentProviderSelection,
   deriveFooterHint,
+  deriveFocusedStatusBadge,
   derivePromptMetaState,
   derivePromptUsageState,
   deriveSessionStatusMode,
+  deriveVisibleActivityLabel,
 } from "./session-chrome-state.js"
 import type { WaitingRoomState } from "./waiting-room.js"
 
@@ -152,6 +154,58 @@ test("deriveAttachedFooterSummary includes focused agent, view mode, and hotkey 
   assert.equal(
     summary,
     "Session feature-refactor • 2 CLIs connected • 2 agents in session • Agent: review (QA) [working] • View: split • Ctrl+C to stop • Ctrl+T hotkeys",
+  )
+})
+
+test("deriveVisibleActivityLabel prefers active tool activity over provider activity", () => {
+  assert.equal(
+    deriveVisibleActivityLabel({
+      providerActivityLabel: "thinking",
+      activeToolLabels: ["reading", "patching"],
+    }),
+    "patching",
+  )
+  assert.equal(
+    deriveVisibleActivityLabel({
+      providerActivityLabel: "thinking",
+      activeToolLabels: [],
+    }),
+    "thinking",
+  )
+})
+
+test("deriveFocusedStatusBadge handles unattached, disconnected, and streaming focused agents", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: false,
+      daemonDisconnected: false,
+      focusedAgent: null,
+      focusedAgentActivityLabel: null,
+      streamingAgentId: null,
+    }),
+    { label: "", tone: "idle" },
+  )
+
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: true,
+      focusedAgent: agent("agent-a", { state: "Working", is_processing: true }),
+      focusedAgentActivityLabel: "reading",
+      streamingAgentId: "agent-a",
+    }),
+    { label: "DISCONNECTED", tone: "disconnected" },
+  )
+
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      focusedAgent: agent("agent-a", { state: "Idle", is_processing: false }),
+      focusedAgentActivityLabel: null,
+      streamingAgentId: "agent-a",
+    }),
+    { label: "WORKING", tone: "working" },
   )
 })
 
