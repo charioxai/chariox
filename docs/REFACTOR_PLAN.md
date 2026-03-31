@@ -99,14 +99,51 @@ Why this mattered:
 - response layout application had still been tightly coupled to render-tree mutation inside the main CLI file
 - moving that wiring out completes the planned Phase 1 extraction seams and reduces the remaining `index.tsx` surface to higher-level UI orchestration
 
+### 7. Daemon history helper extraction
+
+Done:
+
+- extracted session history paging types and slicing logic into `apps/daemon/src/session_history_page.rs`
+- extracted prompt transcript rendering into `apps/daemon/src/prompt_transcript.rs`
+- simplified `apps/daemon/src/app.rs` so history pagination and prompt transcript formatting are delegated to dedicated daemon modules
+
+Why this mattered:
+
+- `app.rs` had been carrying transport-adjacent orchestration alongside low-level history slicing and transcript formatting helpers
+- moving those helpers out is the first Phase 2 step toward making `DaemonApp` a coordinator instead of a dumping ground
+
+### 8. Local API provider-handler extraction
+
+Done:
+
+- extracted provider-launch, provider-run lookup, and provider-catalog request handling into `apps/daemon/src/local/provider_requests.rs`
+- simplified `apps/daemon/src/local/api.rs` so it keeps request/response types and dispatches provider-specific requests through dedicated local handlers
+
+Why this mattered:
+
+- `local/api.rs` had still been mixing transport dispatch with OpenCode-specific request-building and catalog-fetch logic
+- moving those branches out leaves the local API layer closer to a transport boundary and narrows the next refactor seam to provider service internals
+
+### 9. OpenCode runtime extraction
+
+Done:
+
+- extracted OpenCode runtime state, event draining, snapshot replay, and transcript rendering into `apps/daemon/src/provider/opencode_runtime.rs`
+- simplified `apps/daemon/src/provider/service.rs` so generic provider-run lifecycle code delegates provider-specific stream/render handling to the OpenCode runtime module
+
+Why this mattered:
+
+- `service.rs` had still been interleaving generic run lifecycle transitions with a large OpenCode-only event/render state machine
+- moving that state machine out leaves a much smaller provider boundary and makes the remaining provider-specific setup logic easier to isolate later
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
 
 - `apps/cli/src/index.tsx` is still the main monolith
-- `apps/daemon/src/app.rs` still mixes orchestration with history/prompt helper logic
-- `apps/daemon/src/local/api.rs` still mixes transport handling with provider-specific work
-- `apps/daemon/src/provider/service.rs` still mixes provider lifecycle control with OpenCode-specific transcript rendering
+- `apps/daemon/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
+- `apps/daemon/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
+- `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_runtime.rs` owns event parsing and transcript rendering
 
 ## Next Phases
 
@@ -130,21 +167,20 @@ Expected outcome:
 
 Targets:
 
-- move history-slicing and transcript helper code out of `apps/daemon/src/app.rs`
-- reduce `apps/daemon/src/local/api.rs` to transport/request handling only
-- move provider-catalog/provider-specific logic behind a clearer provider service boundary
+- Phase 2 extraction seams are complete for this pass
 
 Expected outcome:
 
 - `DaemonApp` becomes the coordinator instead of the dumping ground
 - local IPC handling becomes easier to reason about and test
+- provider-specific behavior stops leaking across transport and orchestration layers
 
 ### Phase 3. Split provider lifecycle from provider-specific rendering
 
 Targets:
 
-- separate generic provider-run lifecycle management from OpenCode-specific event parsing and transcript formatting
-- keep provider state transitions, process control, and transcript rendering in different modules
+- separate generic provider-run lifecycle management from the remaining OpenCode session bootstrap and run-selection sync logic
+- keep provider state transitions, process control, runtime binding, and transcript rendering in different modules
 
 Expected outcome:
 
@@ -181,4 +217,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should move to Phase 2 by extracting history-slicing and transcript helper logic out of `apps/daemon/src/app.rs`.
+The next concrete change should stay in Phase 2 by reducing `apps/daemon/src/local/api.rs` to transport/request handling only.

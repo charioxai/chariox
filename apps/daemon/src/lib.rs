@@ -7,9 +7,11 @@ pub mod error;
 pub mod history;
 pub mod local;
 pub mod logging;
+pub mod prompt_transcript;
 pub mod provider;
 pub mod pty;
 pub mod session;
+pub mod session_history_page;
 pub mod terminal;
 
 pub use app::DaemonApp;
@@ -214,9 +216,14 @@ mod tests {
             .expect("history should still load");
 
         assert_eq!(reopened.session_id(), session.id());
-        assert_eq!(reopened_session.status(), super::session::SessionStatus::Parked);
+        assert_eq!(
+            reopened_session.status(),
+            super::session::SessionStatus::Parked
+        );
         assert_eq!(reopened_session.attachment_ids().len(), 1);
-        assert!(history.iter().any(|entry| entry.text.contains("restore me")));
+        assert!(history
+            .iter()
+            .any(|entry| entry.text.contains("restore me")));
     }
 
     #[test]
@@ -225,7 +232,9 @@ mod tests {
             .expect("daemon bootstrap should succeed");
         let session = app
             .sessions_mut()
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"))
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+            )
             .expect("session should be created");
 
         let deleted = app

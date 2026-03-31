@@ -112,7 +112,11 @@ pub fn default_log_root() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return path.join(".local").join("state").join("arroba").join("logs");
+        return path
+            .join(".local")
+            .join("state")
+            .join("arroba")
+            .join("logs");
     }
 
     std::env::current_dir()
@@ -157,7 +161,10 @@ fn log(level: LogLevel, component: &str, message: String, fields: Value) {
     let mut record = Map::new();
     record.insert("timestamp_ms".to_string(), Value::from(unix_epoch_ms()));
     record.insert("level".to_string(), Value::from(level.as_str()));
-    record.insert("process_kind".to_string(), Value::from(logger.process_kind.clone()));
+    record.insert(
+        "process_kind".to_string(),
+        Value::from(logger.process_kind.clone()),
+    );
     record.insert("pid".to_string(), Value::from(logger.pid));
     record.insert("component".to_string(), Value::from(component.to_string()));
     record.insert("message".to_string(), Value::from(message));
@@ -212,7 +219,9 @@ fn cleanup_log_root(log_root: &Path, current_log_path: &Path) -> std::io::Result
     for entry in fs::read_dir(log_root)? {
         let entry = entry?;
         let path = entry.path();
-        if path == current_log_path || path.extension().and_then(|ext| ext.to_str()) != Some("ndjson") {
+        if path == current_log_path
+            || path.extension().and_then(|ext| ext.to_str()) != Some("ndjson")
+        {
             continue;
         }
 

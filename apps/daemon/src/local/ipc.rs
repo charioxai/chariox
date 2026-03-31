@@ -543,7 +543,11 @@ mod tests {
         }
     }
 
-    async fn wait_for_output(client: &LocalIpcClient, session_id: &str, attachment_id: &str) -> String {
+    async fn wait_for_output(
+        client: &LocalIpcClient,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> String {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
 
         loop {
