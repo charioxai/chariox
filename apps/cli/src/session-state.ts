@@ -1,0 +1,204 @@
+import process from "node:process"
+
+import type { CliOptions, RuntimeSession, SessionHistoryCursor, TranscriptEntry } from "./cli-types.js"
+import type { MultiAgentResponseLayout } from "./preferences.js"
+import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
+import type { WaitingRoomState } from "./waiting-room.js"
+
+export const NO_SESSION_ID = "no-session"
+export const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = "ui.multiAgentResponseLayout"
+
+type SessionTransitionOptions = {
+  currentSession: RuntimeSession
+  nextSession: RuntimeSession
+  currentWorking: boolean
+  currentStreamingAgentId: string | null
+  currentAgentActivityLabels: Record<string, string | null>
+  layoutPreference?: MultiAgentResponseLayout | null | undefined
+}
+
+export type SessionTransitionState = {
+  nextFocusedAgentId: string | null
+  nextHasPromptWork: boolean
+  nextStreamingAgentId: string | null
+  nextFocusedActivityLabel: string | null
+  nextAgentActivityLabels: Record<string, string | null>
+  nextLayout: MultiAgentResponseLayout
+  nextWorking: boolean
+  previousAgentSignature: string
+  nextAgentSignature: string
+}
+
+export type DetachedCliTransitionState = {
+  centerMode: "transcript"
+  createdSession: false
+  session: RuntimeSession
+  providerActivityLabel: null
+  activeStatusLabel: null
+  agentPaneEntries: Record<string, TranscriptEntry[]>
+  agentPanePreviews: Record<string, string>
+  agentActivityLabels: Record<string, string | null>
+  streamingAgentId: null
+  submitting: false
+  working: false
+  fatalError: null
+  daemonDisconnected: false
+  nextHistoryCursor: SessionHistoryCursor | null
+  statusLine: string
+  waitingRoomState: WaitingRoomState
+}
+
+export type AttachedCliTransitionState = {
+  centerMode: "transcript"
+  createdSession: boolean
+  session: RuntimeSession
+  providerActivityLabel: null
+  activeStatusLabel: null
+  fatalError: null
+  daemonDisconnected: false
+  submitting: false
+  working: boolean
+  statusLine: string
+}
+
+export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
+  const workspace = options.workspace ?? process.cwd()
+  const worktree = options.worktree ?? workspace
+  return {
+    id: NO_SESSION_ID,
+    alias: null,
+    workspace_id: workspace,
+    worktree_id: worktree,
+    created_at_ms: Date.now(),
+    status: "Parked",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 6,
+    agents: [],
+    config_state: {
+      version: 0,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+  }
+}
+
+export function sessionHasPromptWork(session: RuntimeSession): boolean {
+  return Boolean(session.active_prompt) || session.queued_prompts.length > 0
+}
+
+export function sessionResponseLayout(
+  session: RuntimeSession | null | undefined,
+  fallback?: MultiAgentResponseLayout | null,
+): MultiAgentResponseLayout {
+  return normalizeMultiAgentResponseLayout(
+    session?.config_state?.values?.[SESSION_CONFIG_RESPONSE_LAYOUT_KEY],
+  )
+    ?? normalizeMultiAgentResponseLayout(fallback)
+    ?? "individual"
+}
+
+export function deriveSessionTransitionState(
+  options: SessionTransitionOptions,
+): SessionTransitionState {
+  const previousAgentSignature = options.currentSession.agents
+    .map((agent) => agent.id)
+    .join(",")
+  const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
+  const nextFocusedAgentId =
+    options.nextSession.focused_agent_id ?? options.nextSession.agents[0]?.id ?? null
+  const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
+  const nextStreamingAgentId = resolveStreamingAgentId(
+    options.nextSession.agents,
+    options.nextSession.active_prompt?.target_agent_id ?? null,
+    nextHasPromptWork,
+    options.currentStreamingAgentId,
+  )
+  const nextFocusedActivityLabel = nextFocusedAgentId
+    ? options.currentAgentActivityLabels[nextFocusedAgentId] ?? null
+    : null
+  const nextAgentActivityLabels: Record<string, string | null> = {}
+  for (const agent of options.nextSession.agents) {
+    nextAgentActivityLabels[agent.id] =
+      agent.is_processing || agent.state === "Working" || agent.id === nextStreamingAgentId
+        ? (options.currentAgentActivityLabels[agent.id] ?? null)
+        : null
+  }
+
+  return {
+    nextFocusedAgentId,
+    nextHasPromptWork,
+    nextStreamingAgentId,
+    nextFocusedActivityLabel,
+    nextAgentActivityLabels,
+    nextLayout: sessionResponseLayout(options.nextSession, options.layoutPreference),
+    nextWorking: reconcileWorkingStateFromSession(
+      options.currentWorking,
+      nextHasPromptWork,
+    ),
+    previousAgentSignature,
+    nextAgentSignature,
+  }
+}
+
+export function deriveDetachedCliTransitionState(options: {
+  cliOptions: CliOptions
+  waitingRoomState: WaitingRoomState
+  message: string
+}): DetachedCliTransitionState {
+  return {
+    centerMode: "transcript",
+    createdSession: false,
+    session: buildDetachedSessionState(options.cliOptions),
+    providerActivityLabel: null,
+    activeStatusLabel: null,
+    agentPaneEntries: {},
+    agentPanePreviews: {},
+    agentActivityLabels: {},
+    streamingAgentId: null,
+    submitting: false,
+    working: false,
+    fatalError: null,
+    daemonDisconnected: false,
+    nextHistoryCursor: null,
+    statusLine: options.message,
+    waitingRoomState: resetWaitingRoomState(options.waitingRoomState),
+  }
+}
+
+export function deriveAttachedCliTransitionState(options: {
+  session: RuntimeSession
+  createdSession: boolean
+  connectedStatus: string
+}): AttachedCliTransitionState {
+  return {
+    centerMode: "transcript",
+    createdSession: options.createdSession,
+    session: options.session,
+    providerActivityLabel: null,
+    activeStatusLabel: null,
+    fatalError: null,
+    daemonDisconnected: false,
+    submitting: false,
+    working: sessionHasPromptWork(options.session),
+    statusLine: options.connectedStatus,
+  }
+}
+
+function resetWaitingRoomState(state: WaitingRoomState): WaitingRoomState {
+  return {
+    ...state,
+    focus: "new",
+    introStep: 0,
+    keyState: { up: false, down: false, left: false, right: false },
+  }
+}
+
+function normalizeMultiAgentResponseLayout(
+  value?: string | null,
+): MultiAgentResponseLayout | null {
+  return value === "split" || value === "individual" ? value : null
+}

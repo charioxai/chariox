@@ -160,6 +160,58 @@ Why this mattered:
 - the launcher had been paying a full `pnpm --filter @arroba/cli run build` cost on every startup even when nothing changed
 - checking freshness first makes the local entrypoint faster and keeps rebuild work tied to actual source changes
 
+### 12. CLI session-state core extraction
+
+Done:
+
+- extracted detached-session construction, session layout derivation, prompt-work detection, and session-transition state calculation into `apps/cli/src/session-state.ts`
+- added focused tests in `apps/cli/src/session-state.test.ts`
+- simplified `apps/cli/src/index.tsx` so `applySessionState()` now delegates its pure state calculations to the extracted module instead of computing them inline
+
+Why this mattered:
+
+- `index.tsx` still mixed rendering with low-level session-state derivation
+- moving the first pure state cluster out establishes the second-pass CLI refactor around tested state transitions instead of one-off helper extraction
+
+### 13. CLI attach/detach transition extraction
+
+Done:
+
+- extracted detached waiting-room reset state and attached-session UI reset state into `apps/cli/src/session-state.ts`
+- added focused transition coverage in `apps/cli/src/session-state.test.ts`
+- simplified `apps/cli/src/index.tsx` so `transitionToNoSession()` and the post-attach state reset path now delegate their pure transition bundles to the CLI state core
+
+Why this mattered:
+
+- attach/detach transitions had still been encoded as large inline state mutation bundles in `index.tsx`
+- moving those reset bundles out makes the remaining CLI state work more mechanical and reduces the chance of drift across session-entry and session-exit paths
+
+### 14. CLI waiting-room controller extraction
+
+Done:
+
+- extracted waiting-room normalization, activation, and model/variant selection decisions into `apps/cli/src/waiting-room-controller.ts`
+- added focused controller coverage in `apps/cli/src/waiting-room-controller.test.ts`
+- simplified `apps/cli/src/index.tsx` so waiting-room selection and launch handlers now delegate their decision logic instead of mixing validation, normalization, and side-effect setup inline
+
+Why this mattered:
+
+- the waiting-room flow had still been combining state normalization, command validation, and attached-session launch preparation inside `index.tsx`
+- moving those decisions into a tested controller keeps Phase 5 centered on explicit CLI state transitions and reduces the amount of session-entry logic coupled to the render shell
+
+### 15. CLI session chrome runtime-state extraction
+
+Done:
+
+- extracted current provider/model selection, prompt-meta state, prompt-usage state, footer hint derivation, session status mode, and attached footer summary formatting into `apps/cli/src/session-chrome-state.ts`
+- added focused coverage in `apps/cli/src/session-chrome-state.test.ts`
+- simplified `apps/cli/src/index.tsx` so `updateSessionChrome()` now delegates its runtime-state derivation instead of assembling status and summary text inline
+
+Why this mattered:
+
+- `updateSessionChrome()` had still been a dense mix of state inspection, prompt-meta formatting, and session summary rendering
+- moving that derivation into a tested module gives Phase 5 a clearer boundary between state calculation and TUI mutation, which is the main architectural goal of this second pass
+
 ## Current State
 
 The refactor has started, but the largest simplification targets still remain:
@@ -169,6 +221,7 @@ The refactor has started, but the largest simplification targets still remain:
 - `apps/daemon/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
 - `apps/daemon/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
 - `apps/daemon/src/bin/arroba-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
+- `apps/cli/src/index.tsx` still contains most runtime wiring, but the session-state, attach/detach, waiting-room decision, and session-chrome runtime-state seams are now extracted
 
 ## Next Phases
 
@@ -222,6 +275,42 @@ Expected outcome:
 - faster local startup
 - simpler launcher behavior
 
+### Phase 5. Establish a CLI state core
+
+Targets:
+
+- move pure session/UI state derivation out of `apps/cli/src/index.tsx`
+- create tested state modules for session transitions, detached/waiting-room state, and transcript-facing runtime state
+
+Expected outcome:
+
+- `index.tsx` becomes a thinner app shell instead of the state engine
+- CLI state transitions become testable without rendering the TUI
+
+### Phase 6. Split CLI commands and effects
+
+Targets:
+
+- extract slash-command handlers into dedicated command modules
+- move daemon polling, reconnect/recovery, and background refresh loops into effect/controller modules
+
+Expected outcome:
+
+- command behavior stops being coupled to rendering concerns
+- transport and recovery behavior become easier to reason about and test
+
+### Phase 7. Decompose daemon app coordination
+
+Targets:
+
+- extract prompt lifecycle and queue advancement orchestration from `apps/daemon/src/app.rs`
+- split attachment/session membership cleanup and terminal fanout coordination into dedicated daemon modules
+
+Expected outcome:
+
+- `DaemonApp` becomes a thinner composition shell
+- daemon behavior becomes easier to change without touching one large file
+
 ## Verification Strategy
 
 For each phase:
@@ -240,4 +329,4 @@ Current verification already completed during this pass:
 
 ## Immediate Next Step
 
-The next concrete change should return to the remaining CLI monolith in `apps/cli/src/index.tsx` or start a new pass of daemon cleanup only if a concrete pain point appears.
+The next concrete change should continue Phase 5 by extracting transcript status-indicator and visible-activity derivation from `apps/cli/src/index.tsx` into the CLI runtime-state layer, so `renderStatusIndicator()` and related chrome refresh paths stop recomputing those decisions inline.

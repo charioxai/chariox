@@ -74,12 +74,10 @@ import {
   type ParsedPromptAttachment,
   type PromptAttachmentKind,
 } from "./prompt-attachments.js"
-import { formatPromptMetaParts, formatPromptUsageMeta, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
+import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
 import {
-  catalogModelOptions,
   fallbackProviderCatalog,
   selectConfiguredModel,
-  selectConfiguredVariant,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import { computeSplitPaneGeometry, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
@@ -93,10 +91,26 @@ import {
   getProviderActivityLabel,
   getSessionStatusLabel,
   getToolActivityLabel,
-  reconcileWorkingStateFromSession,
-  resolveStreamingAgentId,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
+import {
+  deriveAttachedFooterSummary,
+  deriveCurrentProviderSelection,
+  deriveFooterHint,
+  derivePromptMetaState,
+  derivePromptUsageState,
+  deriveSessionStatusMode,
+  type SessionStatusMode,
+} from "./session-chrome-state.js"
+import {
+  deriveAttachedCliTransitionState,
+  deriveDetachedCliTransitionState,
+  buildDetachedSessionState,
+  deriveSessionTransitionState,
+  sessionHasPromptWork,
+  sessionResponseLayout,
+  SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
+} from "./session-state.js"
 import {
   formatToolTranscriptUpdate,
   guessPathFenceLanguage,
@@ -132,12 +146,17 @@ import {
 import { bootstrapSession } from "./session-bootstrap.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 import {
+  deriveWaitingRoomActivationDecision,
+  deriveWaitingRoomModelSelectionDecision,
+  deriveWaitingRoomStateUpdate,
+  deriveWaitingRoomVariantSelectionDecision,
+} from "./waiting-room-controller.js"
+import {
   arrobaArtFrame,
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
   normalizeWaitingRoomState,
-  waitingRoomChoice,
   waitingRoomRows,
   type WaitingRoomFocus,
   type WaitingRoomState,
@@ -167,8 +186,6 @@ const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
 const STREAM_BATCH_WINDOW_MS = 16
 const TURN_COMPLETION_SETTLE_MS = 150
 const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
-const NO_SESSION_ID = "no-session"
-const SESSION_CONFIG_RESPONSE_LAYOUT_KEY = "ui.multiAgentResponseLayout"
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
 const HOTKEY_DIALOG_WIDTH = 72
 
@@ -514,8 +531,6 @@ function collapsedTurnText(entries: TranscriptEntry[]) {
 function isUserFacingTurnEntry(role: TranscriptEntry["role"]) {
   return role === "assistant" || role === "error" || role === "notice"
 }
-
-type SessionStatusMode = "idle" | "working" | "disconnected"
 
 type FooterFlash = {
   message: string
@@ -982,12 +997,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return true
   }
   const reconcileWaitingRoom = (next: WaitingRoomState) => {
-    const previous = waitingRoomState()
-    const normalized = normalizeWaitingRoomState(next, availableSessions(), providerCatalogState())
-    setWaitingRoomState(normalized)
-    options.model = normalized.modelId || options.model
-    options.effort = normalized.effort
-    if (options.model && (previous.modelId !== normalized.modelId || previous.effort !== normalized.effort)) {
+    const update = deriveWaitingRoomStateUpdate({
+      currentState: waitingRoomState(),
+      nextState: next,
+      sessions: availableSessions(),
+      catalog: providerCatalogState(),
+      currentModel: options.model,
+    })
+    setWaitingRoomState(update.normalizedState)
+    options.model = update.nextModel
+    options.effort = update.nextEffort
+    if (update.shouldPersistProviderPreferences) {
       void saveProviderPreferences("opencode", {
         model: options.model,
         effort: options.effort,
@@ -998,28 +1018,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     updateSessionChrome()
     syncCommandCenter()
-    return normalized
+    return update.normalizedState
   }
   const activateWaitingRoom = async () => {
-    const choice = waitingRoomChoice(waitingRoomState(), availableSessions(), providerCatalogState())
-    const launch = {
-      model: choice.model?.id ?? options.model,
-      effort: choice.effort,
-    }
-    if (waitingRoomState().focus === "new") {
+    const decision = deriveWaitingRoomActivationDecision({
+      state: waitingRoomState(),
+      sessions: availableSessions(),
+      catalog: providerCatalogState(),
+      currentModel: options.model,
+    })
+    if (decision.action === "create") {
       const root = options.workspace ?? process.cwd()
       const session = await createSession(client, root, options.worktree ?? root)
-      await attachBinding(session, true, launch)
+      await attachBinding(session, true, decision.launch)
       flashFooter(`created session ${session.alias ?? session.id}`, "info")
       return
     }
-    if (waitingRoomState().focus === "join") {
-      if (!choice.session) {
-        flashFooter("no session available to join", "error")
-        return
-      }
-      await attachBinding(choice.session as RuntimeSession, false, launch)
-      flashFooter(`attached to session ${choice.session.alias ?? choice.session.id}`, "info")
+    if (decision.action === "join") {
+      await attachBinding(decision.session, false, decision.launch)
+      flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
+      return
+    }
+    if (decision.action === "error") {
+      flashFooter(decision.message, "error")
     }
   }
   const refreshWaitingRoomData = async () => {
@@ -1032,47 +1053,64 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     reconcileWaitingRoom(waitingRoomState())
   }
   const applyModelSelection = async (modelId: string) => {
-    const selected = catalogModelOptions(providerCatalogState()).find((option) => option.id === modelId)
-    if (!selected) {
-      flashFooter(`unknown model: ${modelId}`, "error")
-      return
-    }
-    const nextVariant = selectConfiguredVariant(selected, options.effort)
-    reconcileWaitingRoom({
-      ...waitingRoomState(),
-      modelId: selected.id,
-      effort: nextVariant,
+    const decision = deriveWaitingRoomModelSelectionDecision({
+      modelId,
+      state: waitingRoomState(),
+      sessions: availableSessions(),
+      catalog: providerCatalogState(),
+      configuredEffort: options.effort,
     })
-    if (!isAttached()) {
-      flashFooter(`selected model ${selected.id}`, "info")
+    if (decision.kind === "error") {
+      flashFooter(decision.message, "error")
       return
     }
-    const run = await launchProviderRun(client, sessionState().id, options.accountProfile, selected.id, nextVariant, focusedAgentId())
+    reconcileWaitingRoom(decision.nextState)
+    if (!isAttached()) {
+      flashFooter(`selected model ${decision.selectedModelId}`, "info")
+      return
+    }
+    const run = await launchProviderRun(
+      client,
+      sessionState().id,
+      options.accountProfile,
+      decision.launch.model,
+      decision.launch.effort,
+      focusedAgentId(),
+    )
     setProviderRunState(run)
     applySessionState(await getSessionState(client, sessionState().id))
     await maybeResize(client, sessionState().id)
-    flashFooter(`model set to ${selected.id}`, "info")
+    flashFooter(`model set to ${decision.selectedModelId}`, "info")
   }
   const applyVariantSelection = async (variant: string) => {
-    const selected = catalogModelOptions(providerCatalogState()).find((option) => option.id === currentModelId())
-    if (!selected || !selected.variants.includes(variant)) {
-      flashFooter(`unknown variant: ${variant}`, "error")
-      return
-    }
-    reconcileWaitingRoom({
-      ...waitingRoomState(),
-      modelId: selected.id,
-      effort: variant,
+    const decision = deriveWaitingRoomVariantSelectionDecision({
+      variant,
+      currentModelId: currentModelId(),
+      state: waitingRoomState(),
+      sessions: availableSessions(),
+      catalog: providerCatalogState(),
     })
-    if (!isAttached()) {
-      flashFooter(`selected variant ${variant}`, "info")
+    if (decision.kind === "error") {
+      flashFooter(decision.message, "error")
       return
     }
-    const run = await launchProviderRun(client, sessionState().id, options.accountProfile, selected.id, variant, focusedAgentId())
+    reconcileWaitingRoom(decision.nextState)
+    if (!isAttached()) {
+      flashFooter(`selected variant ${decision.selectedVariant}`, "info")
+      return
+    }
+    const run = await launchProviderRun(
+      client,
+      sessionState().id,
+      options.accountProfile,
+      decision.launch.model,
+      decision.launch.effort,
+      focusedAgentId(),
+    )
     setProviderRunState(run)
     applySessionState(await getSessionState(client, sessionState().id))
     await maybeResize(client, sessionState().id)
-    flashFooter(`variant set to ${variant}`, "info")
+    flashFooter(`variant set to ${decision.selectedVariant}`, "info")
   }
   const loadDirectoryTree = async (treePath = "") => {
     const attachment = attachmentState()
@@ -1151,27 +1189,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         flashFooter(`failed to load tree: ${formatError(error)}`, "error")
       })
   }
-  const promptMetaParts = (): PromptMetaPart[] => {
-    const run = providerRunState()
-    const waiting = waitingRoomState()
-    const provider = run?.provider ?? "opencode"
-    const model = run?.model ?? waiting.modelId ?? options.model
-    const effort = run?.variant ?? waiting.effort ?? options.effort
-    return formatPromptMetaParts(provider, model, effort)
-  }
-  const promptUsageMeta = () => {
-    const run = providerRunState()
-    if (!run) {
-      return null
-    }
-    return formatPromptUsageMeta(
-      run.usage_tokens_total,
-      resolveProviderModelContextLimit(providerCatalogState(), run.provider, run.model),
-      12,
-    )
-  }
-  const currentModelId = () => providerRunState()?.model ?? waitingRoomState().modelId ?? options.model
-  const currentVariantId = () => providerRunState()?.variant ?? waitingRoomState().effort ?? options.effort
+  const currentProviderSelection = () => deriveCurrentProviderSelection({
+    providerRun: providerRunState(),
+    waitingRoomState: waitingRoomState(),
+    defaultModel: options.model,
+    defaultEffort: options.effort,
+  })
+  const promptMetaParts = (): PromptMetaPart[] => derivePromptMetaState({
+    providerRun: providerRunState(),
+    waitingRoomState: waitingRoomState(),
+    defaultModel: options.model,
+    defaultEffort: options.effort,
+  })
+  const promptUsageMeta = () => derivePromptUsageState({
+    providerRun: providerRunState(),
+    catalog: providerCatalogState(),
+  })
+  const currentModelId = () => currentProviderSelection().model
+  const currentVariantId = () => currentProviderSelection().effort
   const syncCommandCenter = (value = promptInput?.plainText ?? promptTextSnapshot) => {
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
@@ -1377,7 +1412,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     commandCenterBox.add(panel)
     commandCenterBox.requestRender()
   }
-  const hasPromptWork = (nextSession: RuntimeSession) => Boolean(nextSession.active_prompt) || nextSession.queued_prompts.length > 0
   const cancelPendingTurnCompletion = () => {
     if (pendingTurnCompletion) {
       clearTimeout(pendingTurnCompletion)
@@ -1402,7 +1436,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const finalizeTurnCompletion = () => {
     cancelPendingTurnCompletion()
-    if (hasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
+    if (sessionHasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
       return
     }
     batch(() => {
@@ -1420,7 +1454,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const scheduleTurnCompletion = () => {
     cancelPendingTurnCompletion()
-    if (hasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
+    if (sessionHasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
       return
     }
     pendingTurnCompletion = startTimeout(() => {
@@ -1429,24 +1463,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }, TURN_COMPLETION_SETTLE_MS)
   }
   const sessionStatusMode = (): SessionStatusMode => {
-    if (daemonDisconnected()) {
-      return "disconnected"
-    }
-    if (working() || activePrompt() || submitting() || queueDepth() > 0) {
-      return "working"
-    }
-    return "idle"
+    return deriveSessionStatusMode({
+      daemonDisconnected: daemonDisconnected(),
+      working: working(),
+      hasActivePrompt: Boolean(activePrompt()),
+      submitting: submitting(),
+      queueDepth: queueDepth(),
+    })
   }
   const footerHint = () => {
-    if (fatalError()) {
-      return fatalError()!
-    }
-    if (activePrompt()) {
-      return queueDepth() > 0
-        ? `Processing ${activePrompt()!.id}; ${queueDepth()} queued.`
-        : `Processing ${activePrompt()!.id}.`
-    }
-    return statusLine()
+    return deriveFooterHint({
+      fatalError: fatalError(),
+      activePromptId: activePrompt()?.id ?? null,
+      queueDepth: queueDepth(),
+      statusLine: statusLine(),
+    })
   }
   const promptPlaceholder = () => (isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER)
   const syncPromptTextSnapshot = () => {
@@ -2121,50 +2152,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applySessionState = (nextSession: RuntimeSession) => {
     const previousFocusedAgentId = focusedAgentId()
     const previousLayout = multiAgentResponseLayout()
-    const previousAgentSignature = sessionState().agents.map((agent) => agent.id).join(",")
-    const nextFocusedAgentId = nextSession.focused_agent_id ?? nextSession.agents[0]?.id ?? null
-    const nextHasPromptWork = hasPromptWork(nextSession)
-    const nextStreamAgentId = resolveStreamingAgentId(
-      nextSession.agents,
-      nextSession.active_prompt?.target_agent_id ?? null,
-      nextHasPromptWork,
-      streamingAgentId(),
-    )
-    const nextFocusedActivityLabel = nextFocusedAgentId
-      ? agentActivityLabel(nextFocusedAgentId)
-      : null
-    setSessionState(nextSession)
-    setAgentActivityLabels((current) => {
-      const nextLabels: Record<string, string | null> = {}
-      for (const agent of nextSession.agents) {
-        nextLabels[agent.id] = agent.is_processing || agent.state === "Working" || agent.id === nextStreamAgentId
-          ? (current[agent.id] ?? null)
-          : null
-      }
-      return nextLabels
+    const transition = deriveSessionTransitionState({
+      currentSession: sessionState(),
+      nextSession,
+      currentWorking: working(),
+      currentStreamingAgentId: streamingAgentId(),
+      currentAgentActivityLabels: agentActivityLabels(),
+      layoutPreference: initialPreferences.ui?.multiAgentResponseLayout,
     })
-    setStreamingAgentId(nextStreamAgentId)
-    const nextLayout = sessionResponseLayout(nextSession, initialPreferences.ui?.multiAgentResponseLayout)
-    setMultiAgentResponseLayout(nextLayout)
-    setWorking(reconcileWorkingStateFromSession(working(), nextHasPromptWork))
-    if (nextHasPromptWork) {
+    setSessionState(nextSession)
+    setAgentActivityLabels(transition.nextAgentActivityLabels)
+    setStreamingAgentId(transition.nextStreamingAgentId)
+    setMultiAgentResponseLayout(transition.nextLayout)
+    setWorking(transition.nextWorking)
+    if (transition.nextHasPromptWork) {
       cancelPendingTurnCompletion()
     } else {
       scheduleTurnCompletion()
     }
-    setProviderActivityLabel(nextFocusedActivityLabel)
-    setActiveStatusLabel(nextFocusedActivityLabel)
+    setProviderActivityLabel(transition.nextFocusedActivityLabel)
+    setActiveStatusLabel(transition.nextFocusedActivityLabel)
     if (!nextSession.active_prompt) {
       setSubmitting(false)
       stopRequestInFlight = false
     }
     updateSessionChrome()
-    const nextAgentSignature = nextSession.agents.map((agent) => agent.id).join(",")
     if (
-      nextLayout === "split"
-      && (previousLayout !== nextLayout
-        || previousFocusedAgentId !== nextFocusedAgentId
-        || previousAgentSignature !== nextAgentSignature)
+      transition.nextLayout === "split"
+      && (previousLayout !== transition.nextLayout
+        || previousFocusedAgentId !== transition.nextFocusedAgentId
+        || transition.previousAgentSignature !== transition.nextAgentSignature)
     ) {
       refreshSplitPaneFocusRepaint()
     }
@@ -2993,14 +3010,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setTextRenderable(
       footerSummaryText,
       isAttached()
-        ? (() => {
-            const focusedAgent = sessionState().agents.find(a => a.id === sessionState().focused_agent_id)
-            const agentInfo = focusedAgent
-              ? ` • Agent: ${focusedAgent.agent_ref}${focusedAgent.alias ? ` (${focusedAgent.alias})` : ""}${focusedAgent.is_processing ? " [working]" : ""}`
-              : ""
-            const viewInfo = multiAgentMode() ? ` • View: ${multiAgentResponseLayout()}` : ""
-            return `Session ${sessionState().alias ?? sessionState().id} • ${connectedClientCount()} ${connectedClientCount() === 1 ? "CLI" : "CLIs"} connected • ${sessionState().agents.length} ${sessionState().agents.length === 1 ? "agent" : "agents"} in session${agentInfo}${viewInfo}${sessionStatusMode() === "working" ? " • Ctrl+C to stop" : ""} • ${HOTKEY_TOGGLE_LABEL} hotkeys`
-          })()
+        ? deriveAttachedFooterSummary({
+            session: sessionState(),
+            connectedClientCount: connectedClientCount(),
+            multiAgentMode: multiAgentMode(),
+            responseLayout: multiAgentResponseLayout(),
+            sessionStatusMode: sessionStatusMode(),
+            hotkeyToggleLabel: HOTKEY_TOGGLE_LABEL,
+          })
         : SESSION_NEW_FOOTER_HINT,
       theme.textMuted,
     )
@@ -3405,7 +3422,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const refreshAgentPanes = async (session: RuntimeSession) => {
     const nextPaneState = await refreshAgentPaneState<AgentInstance, SessionHistoryPageEntry, TranscriptEntry, SessionHistoryCursor>({
       session,
-      hasPromptWork: hasPromptWork(session),
+      hasPromptWork: sessionHasPromptWork(session),
       expandedTurnIdsByAgent: expandedTurnIdsByAgent(),
       resolveVisibleAgentId: (agents, focusedAgentId) =>
         selectResponsePaneAgents(agents, focusedAgentId, splitAgentResponseMode()).visibleTranscriptAgentId,
@@ -3665,7 +3682,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousViewportHeight = transcriptScrollbox?.height ?? 0
     const nextCombinedEntries = collapseHistoricalTurns(
       stitchPrependedHistory(sanitizedEntries, currentEntries),
-      hasPromptWork(sessionState()),
+      sessionHasPromptWork(sessionState()),
     )
     currentTurnId = computeCurrentTurnId(nextCombinedEntries)
     nextTurnId = computeNextTurnId(nextCombinedEntries)
@@ -3734,44 +3751,44 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const transitionToNoSession = (message = "No session attached.") => {
+    const nextDetachedState = deriveDetachedCliTransitionState({
+      cliOptions: options,
+      waitingRoomState: waitingRoomState(),
+      message,
+    })
     setAttachmentState(null)
     setProviderRunState(null)
     clearPendingPromptAttachments()
-    setCenterMode("transcript")
+    setCenterMode(nextDetachedState.centerMode)
     setDirectoryTreeState(null)
     activeToolLabels.clear()
-    setProviderActivityLabel(null)
-    setActiveStatusLabel(null)
-    setCreatedSessionState(false)
-    setSessionState(buildDetachedSessionState(options))
+    setProviderActivityLabel(nextDetachedState.providerActivityLabel)
+    setActiveStatusLabel(nextDetachedState.activeStatusLabel)
+    setCreatedSessionState(nextDetachedState.createdSession)
+    setSessionState(nextDetachedState.session)
     historyLoadGeneration += 1
     replaceTranscriptEntries([])
-    setAgentPaneEntries({})
-    setAgentPanePreviews({})
-    setAgentActivityLabels({})
-    setStreamingAgentId(null)
+    setAgentPaneEntries(nextDetachedState.agentPaneEntries)
+    setAgentPanePreviews(nextDetachedState.agentPanePreviews)
+    setAgentActivityLabels(nextDetachedState.agentActivityLabels)
+    setStreamingAgentId(nextDetachedState.streamingAgentId)
     agentTranscriptScrollboxes.clear()
     agentTranscriptRenderables.clear()
     agentEmptyTranscriptRenderables.clear()
     agentPaneTools.clear()
-    setSubmitting(false)
-    setWorking(false)
+    setSubmitting(nextDetachedState.submitting)
+    setWorking(nextDetachedState.working)
     stopRequestInFlight = false
-    setFatalError(null)
-    setDaemonDisconnected(false)
-    setNextHistoryCursor(null)
+    setFatalError(nextDetachedState.fatalError)
+    setDaemonDisconnected(nextDetachedState.daemonDisconnected)
+    setNextHistoryCursor(nextDetachedState.nextHistoryCursor)
     setHistoryLoadingState(false)
-    setStatusLine(message)
+    setStatusLine(nextDetachedState.statusLine)
     updateSessionChrome()
     promptInput?.clear()
     syncPromptTextSnapshot()
     promptInput?.blur()
-    reconcileWaitingRoom({
-      ...waitingRoomState(),
-      focus: "new",
-      introStep: 0,
-      keyState: { up: false, down: false, left: false, right: false },
-    })
+    reconcileWaitingRoom(nextDetachedState.waitingRoomState)
     void refreshWaitingRoomData()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
@@ -3786,7 +3803,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const attachBinding = async (
-    session: RuntimeSession,
+    session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
     launch: { model: string; effort: string } = { model: options.model, effort: options.effort },
   ) => {
@@ -3824,20 +3841,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await maybeResize(client, session.id)
     await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, appLogger)
     const hydratedSession = await getSessionState(client, session.id)
+    const nextAttachedState = deriveAttachedCliTransitionState({
+      session: hydratedSession,
+      createdSession,
+      connectedStatus: DEFAULT_CONNECTED_STATUS,
+    })
     setAttachmentState(attachment)
-    setCreatedSessionState(createdSession)
-    setSessionState(hydratedSession)
-    setCenterMode("transcript")
+    setCreatedSessionState(nextAttachedState.createdSession)
+    setSessionState(nextAttachedState.session)
+    setCenterMode(nextAttachedState.centerMode)
     setDirectoryTreeState(null)
     activeToolLabels.clear()
-    setProviderActivityLabel(null)
-    setActiveStatusLabel(null)
+    setProviderActivityLabel(nextAttachedState.providerActivityLabel)
+    setActiveStatusLabel(nextAttachedState.activeStatusLabel)
     await refreshAgentPanes(hydratedSession)
-    setFatalError(null)
-    setDaemonDisconnected(false)
-    setSubmitting(false)
-    setWorking(hasPromptWork(sessionState()))
-    setStatusLine(DEFAULT_CONNECTED_STATUS)
+    setFatalError(nextAttachedState.fatalError)
+    setDaemonDisconnected(nextAttachedState.daemonDisconnected)
+    setSubmitting(nextAttachedState.submitting)
+    setWorking(nextAttachedState.working)
+    setStatusLine(nextAttachedState.statusLine)
     updateSessionChrome()
     promptInput?.focus()
     setAvailableSessions(await listSessions(client))
@@ -4901,7 +4923,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         )
       } catch (error) {
         const message = formatError(error)
-        if (/has no active provider run/i.test(message) && !hasPromptWork(sessionState())) {
+        if (/has no active provider run/i.test(message) && !sessionHasPromptWork(sessionState())) {
           setProviderRunState(null)
           updateSessionChrome()
           void recoverProviderRun("terminal polling")
@@ -4980,7 +5002,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         })
         setProviderRunState(null)
         updateSessionChrome()
-        if (!hasPromptWork(payload.session)) {
+        if (!sessionHasPromptWork(payload.session)) {
           void recoverProviderRun("missing active provider run")
         }
       }
@@ -6327,31 +6349,6 @@ function transcriptAccent(entry: TranscriptEntry) {
   return theme.borderSubtle
 }
 
-function buildDetachedSessionState(options: CliOptions): RuntimeSession {
-  const workspace = options.workspace ?? process.cwd()
-  const worktree = options.worktree ?? workspace
-  return {
-    id: NO_SESSION_ID,
-    alias: null,
-    workspace_id: workspace,
-    worktree_id: worktree,
-    created_at_ms: Date.now(),
-    status: "Parked",
-    active_provider_run_id: null,
-    attachment_ids: [],
-    active_prompt: null,
-    queued_prompts: [],
-    focused_agent_id: null,
-    max_agents: 6,
-    agents: [],
-    config_state: {
-      version: 0,
-      values: {},
-      updated_by_attachment_id: null,
-    },
-  }
-}
-
 function isSessionUnavailableError(error: unknown): boolean {
   const message = formatError(error)
   return /session `[^`]+` was not found/i.test(message)
@@ -6449,16 +6446,6 @@ function transcriptInlineCodeColor(entry: TranscriptEntry) {
     return entry.emphasis === "error" ? theme.warning : theme.info
   }
   return theme.info
-}
-
-function normalizeMultiAgentResponseLayout(value?: string | null): MultiAgentResponseLayout | null {
-  return value === "split" || value === "individual" ? value : null
-}
-
-function sessionResponseLayout(session: RuntimeSession | null | undefined, fallback?: MultiAgentResponseLayout | null): MultiAgentResponseLayout {
-  return normalizeMultiAgentResponseLayout(session?.config_state?.values?.[SESSION_CONFIG_RESPONSE_LAYOUT_KEY])
-    ?? normalizeMultiAgentResponseLayout(fallback)
-    ?? "individual"
 }
 
 function renderPromptTranscript(prompt: string) {
@@ -6702,29 +6689,6 @@ function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun) {
     && left.variant === right.variant
     && left.usage_tokens_total === right.usage_tokens_total
     && left.state === right.state
-}
-
-function resolveProviderModelContextLimit(catalog: ProviderCatalog, providerId: string, modelRef: string) {
-  const normalizedModelRef = modelRef.trim()
-  const parsed = normalizedModelRef.includes("/")
-    ? splitProviderModelRef(normalizedModelRef)
-    : { providerId, modelId: normalizedModelRef }
-  if (!parsed) {
-    return null
-  }
-
-  return catalog.all.find((item) => item.id === parsed.providerId)?.models[parsed.modelId]?.limit?.context ?? null
-}
-
-function splitProviderModelRef(modelRef: string) {
-  const parts = modelRef.split("/").filter(Boolean)
-  if (parts.length < 2) {
-    return null
-  }
-  return {
-    providerId: parts.at(-2)!,
-    modelId: parts.at(-1)!,
-  }
 }
 
 function defaultSocketPath(): string {
