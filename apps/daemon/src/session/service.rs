@@ -240,10 +240,27 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn set_focused_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: Option<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        session.set_focused_agent(agent_id);
+        Ok(session.clone())
+    }
+
     pub fn submit_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        target_agent_id: &str,
         prompt: impl Into<String>,
         attachments: Vec<PromptAttachment>,
     ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
@@ -251,6 +268,7 @@ impl SessionService {
         let prompt = PromptQueueItem::new(
             prompt_id,
             attachment_id,
+            target_agent_id,
             prompt,
             super::PromptStatus::Queued,
         )
@@ -633,10 +651,22 @@ mod tests {
             .expect("attachment should be added");
 
         let (_, first) = service
-            .submit_prompt(created.id(), "attachment-1", "first prompt", Vec::new())
+            .submit_prompt(
+                created.id(),
+                "attachment-1",
+                "agent-1",
+                "first prompt",
+                Vec::new(),
+            )
             .expect("first prompt should start");
         let (_, second) = service
-            .submit_prompt(created.id(), "attachment-2", "second prompt", Vec::new())
+            .submit_prompt(
+                created.id(),
+                "attachment-2",
+                "agent-1",
+                "second prompt",
+                Vec::new(),
+            )
             .expect("second prompt should queue");
 
         match first {
@@ -708,7 +738,13 @@ mod tests {
             .add_attachment_to_session(created.id(), "attachment-1")
             .expect("attachment should be added");
         service
-            .submit_prompt(created.id(), "attachment-1", "first prompt", Vec::new())
+            .submit_prompt(
+                created.id(),
+                "attachment-1",
+                "agent-1",
+                "first prompt",
+                Vec::new(),
+            )
             .expect("prompt should start");
 
         let error = service
@@ -737,6 +773,7 @@ mod tests {
             .submit_prompt(
                 created.id(),
                 "attachment-1",
+                "agent-1",
                 "background prompt",
                 Vec::new(),
             )

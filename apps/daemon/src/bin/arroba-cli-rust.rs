@@ -38,7 +38,7 @@ fn main() -> Result<(), DaemonError> {
                 worktree.display().to_string(),
             ),
         ))? {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             other => unexpected_response("create session", &other),
         };
         (session.id().to_string(), true)
@@ -60,6 +60,7 @@ fn main() -> Result<(), DaemonError> {
         let _ = client.send(&LocalDaemonRequest::LaunchProviderRun(
             LaunchProviderRunRequest {
                 session_id: session_id.clone(),
+                agent_id: None,
                 adapter_key: "opencode".to_string(),
                 provider: "opencode".to_string(),
                 account_profile: options.account_profile.clone(),

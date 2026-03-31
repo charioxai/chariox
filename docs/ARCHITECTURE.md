@@ -91,9 +91,9 @@ Arroba remote terminals MUST be architected as multi-surface, multi-transport cl
 - Features MUST be implemented in reusable core layers (terminal streaming, structured control/state, adapter layer) as appropriate.
 - Feature delivery MUST NOT be coupled to one UI surface.
 
-## 2.3 Multi-Agent Workflow Architecture Rule
+## 2.3 Multi-Agent Session and Workflow Architecture Rule
 
-Arroba MUST support a workflow layer above single-agent sessions.
+Arroba MUST support both manually directed multi-agent sessions and a workflow layer above single-agent sessions.
 
 Delivery priority inside v1:
 
@@ -102,7 +102,8 @@ Delivery priority inside v1:
 
 Normative rules:
 
-- A session MAY run in single-agent mode or multi-agent workflow mode.
+- A session MAY run in single-agent mode, multi-agent session mode, or multi-agent workflow mode.
+- Multi-agent session mode MUST reuse the same top-level agent abstraction that workflow mode later builds on.
 - Multi-agent execution MUST be modeled as a general directed workflow graph.
 - v1 validates only two workflow topologies:
   - circular
@@ -128,6 +129,7 @@ Client examples include local terminal clients, web terminals, and third-party m
 Responsibilities:
 
 - render terminal stream from active provider run
+- render focused-agent state and, when multiple top-level agents exist, per-agent sub-areas/history views while keeping the daemon as runtime authority
 - capture terminal keystrokes and prompt/config interactions, then route them to the daemon through the appropriate runtime surface
 - render Arroba slash-command completion, help, warnings, and command results
 - upload files and display artifacts
@@ -261,8 +263,11 @@ A session is bound to:
 
 A session may include:
 
+- many top-level Arroba-managed agents
 - many client attachments
 - parked provider runs
+- agent-scoped provider runs when multi-agent session mode or workflow mode is active
+- agent-scoped history/runtime metadata and worktree assignments when multi-agent session mode or workflow mode is active
 - prompt queue state and canonical session config state
 - a workflow definition and zero or one active workflow run
 - node-scoped provider runs when workflow mode is active
@@ -292,7 +297,25 @@ Current M1 runtime note:
 
 The daemon MUST treat prompt scheduling and config state as structured runtime state, not terminal-local behavior.
 
-### 4.2.2 Persistent Session and Deletion Ownership
+### 4.2.2 Multi-Agent Session Ownership
+
+Manual multi-agent session behavior is still daemon-owned runtime behavior, not just client chrome.
+
+Required daemon-owned responsibilities:
+
+- maintain the canonical top-level agent list for each session
+- maintain focused-agent state for direct user interaction
+- route prompt submission to the selected agent's runtime context
+- keep agent-scoped provider-run, history, and worktree-assignment metadata authoritative in daemon state
+- expose enough agent-scoped state for pane-based clients to render one visible sub-area per active agent
+
+Current implementation note:
+
+- the local runtime already has session agent records, focused-agent metadata, and `/agent ...` management commands
+- the current CLI footer/chrome reflects that state, but transcript routing and provider execution are still effectively single-agent
+- the next implementation step is to make focused-agent changes affect both prompt routing and visible per-agent panes/history
+
+### 4.2.3 Persistent Session and Deletion Ownership
 
 Arroba session lifetime should be explicit and daemon-owned.
 

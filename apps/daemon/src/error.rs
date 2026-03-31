@@ -20,7 +20,10 @@ pub enum DaemonError {
     #[error("session `{session_id}` was not found")]
     SessionNotFound { session_id: String },
     #[error("session alias `{alias}` is invalid: {message}")]
-    InvalidSessionAlias { alias: String, message: &'static str },
+    InvalidSessionAlias {
+        alias: String,
+        message: &'static str,
+    },
     #[error("session alias `{alias}` is already in use for workspace `{workspace_id}`")]
     SessionAliasConflict { workspace_id: String, alias: String },
     #[error("session reference `{session_ref}` is ambiguous: {matches:?}")]
@@ -180,4 +183,15 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("agent `{agent_id}` was not found")]
+    AgentNotFound { agent_id: String },
+    #[error("agent `{agent_id}` does not belong to session `{session_id}`")]
+    AgentNotInSession {
+        session_id: String,
+        agent_id: String,
+    },
+    #[error("agent alias `{alias}` is already in use for session `{session_id}`")]
+    AgentAliasConflict { session_id: String, alias: String },
+    #[error("session `{session_id}` has reached the maximum of {max_agents} agents")]
+    AgentLimitReached { session_id: String, max_agents: i32 },
 }

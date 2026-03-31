@@ -14,11 +14,13 @@ The immediate next milestone is M3, "Local Capability Surface and Provider Expan
 v1 scope includes both:
 
 - single-agent sessions
+- manually directed multi-agent sessions
 - multi-agent workflow execution
 
 Current delivery priority:
 
 - first: local capabilities, slash commands, and more providers on top of the now-working local OpenCode path
+- then: manually directed multi-agent session runtime and CLI UX
 - then: multi-agent workflows
 - then: relay/web surfaces
 - then: provider switching, memory, compaction, and per-agent extensions such as MCPs and skills
@@ -30,10 +32,16 @@ The current codebase provides:
 - a shared domain package for workflow-oriented core v1 entities
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
+- early session-agent plumbing in the daemon and TypeScript CLI: agent records, focused-agent state, `/agent ...` management commands, and `Ctrl+A` focus cycling
 - a Rust compatibility launcher for the TypeScript CLI plus the phased-out legacy Rust CLI binary retained as `arroba-cli-rust`
 - a local daemon smoke harness for managed-session flows
 - a Prisma schema aligned with workflow-oriented runtime entities
 - baseline CI for TypeScript and Rust checks
+
+Current implementation caveat:
+
+- the new agent commands currently manage session agent metadata and focused-agent state, but prompts, provider routing, and transcript rendering are still effectively single-agent
+- split-pane multi-agent history rendering and isolated per-agent runtime context are planned next, before daemon-scheduled workflow automation
 
 The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
 
@@ -173,6 +181,14 @@ Current local CLI controls:
 - `/session create [alias]` creates and attaches to a new session
 - `/session attach <ref>` attaches to a session by full id, unique id prefix, alias, or unique alias prefix within the current workspace
 - `/session delete [ref]` deletes the current or referenced session; deleting the active session returns the CLI to its no-session landing state
+- experimental agent-management commands exist today:
+  - `/agent spawn [alias] [model]`
+  - `/agent delete [name-or-alias]`
+  - `/agent focus <id>`
+  - `/agent list`
+  - `/agent cycle`
+  - `Ctrl+A` cycles focused agent in the current session
+- these agent controls are currently partial: they update session agent state and footer/chrome, but they do not yet provide isolated per-agent transcript panes or per-agent prompt/runtime routing
 
 Optional executable override:
 

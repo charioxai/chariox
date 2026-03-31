@@ -2,6 +2,24 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-03-30
+
+### CLI TUI repaint skill
+
+- Added `docs/CLI_TUI_REPAINT_SKILL.md` as a repo-native repaint playbook for future agents working on OpenTUI/JVX visual update bugs.
+- Captured the main lesson from split-pane focus bugs: proactive multi-pass repainting and child-renderable rebuilds matter more than only changing parent pane colors.
+
+## 2026-03-29
+
+### Multi-agent docs alignment update
+
+- Reviewed the current daemon and TypeScript CLI agent plumbing after reproducing that focused-agent changes currently affect footer/chrome state more than actual runtime routing.
+- Updated `README.md`, `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, `docs/PROTOCOL.md`, `docs/RUNNING_LOCAL.md`, `docs/ROADMAP.md`, and `docs/ops/TASKS.md` so they distinguish three things clearly:
+  - current single-agent-effective runtime behavior
+  - already-landed session-agent metadata/focus plumbing (`/agent ...`, `Ctrl+A`, focused-agent state)
+  - the intended next milestone: manual multi-agent sessions with per-agent context/history and split-pane CLI rendering before workflow automation
+- Reframed the roadmap so manual multi-agent session execution is the next step ahead of daemon-scheduled workflow topology work.
+
 ## 2026-03-22
 
 ### CLI transcript highlighting update

@@ -169,7 +169,20 @@ Inside the CLI:
   - `/session create [alias]`
   - `/session attach <ref>`
   - `/session delete [ref]`
+- experimental agent-management commands:
+  - `/agent spawn [alias] [model]`
+  - `/agent delete [name-or-alias]`
+  - `/agent focus <id>`
+  - `/agent list`
+  - `/agent cycle`
+  - `Ctrl+A` cycles focus to the next session agent
 - deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
+
+Current agent-command note:
+
+- the daemon and TypeScript CLI now track multiple top-level agents per session plus a focused-agent id
+- today this is still partial plumbing: the footer/chrome and agent list update, but prompt submission, transcript rendering, and provider runtime behavior are still effectively single-agent
+- the intended next step is one sub-area per agent, each with its own history/runtime context, with `Ctrl+A` cycling the active pane/agent
 
 Outside the TUI:
 
@@ -372,4 +385,6 @@ tail -f ~/.local/state/arroba/logs/*.ndjson
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.
 - `arroba-cli-rust` is still present, but it is no longer the primary client path.
-- The current local runtime is still single-agent focused; slash-command capability work and broader provider support remain in M3.
+- The current local runtime still has one effective prompt/runtime path even though session-local agent records and focus commands now exist.
+- Multi-agent split-pane history rendering, per-agent prompt routing, and isolated per-agent runtime context are not implemented yet.
+- Slash-command capability work and broader provider support remain in M3; full manual multi-agent session UX follows immediately after that stabilization work.

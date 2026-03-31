@@ -9,6 +9,8 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getProviderActivityLabel,
+  resolveStreamingAgentId,
+  resolveVisibleTranscriptAgentId,
   getPollRecoveryDecision,
   getSessionStatusLabel,
   getToolActivityLabel,
@@ -122,4 +124,22 @@ test("provider status labels map to active badge text", () => {
   assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
   assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
   assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
+})
+
+test("visible transcript follows focus in individual mode and primary pane in split mode", () => {
+  assert.equal(resolveVisibleTranscriptAgentId(false, "agent-a", "agent-b"), "agent-b")
+  assert.equal(resolveVisibleTranscriptAgentId(true, "agent-a", "agent-b"), "agent-a")
+  assert.equal(resolveVisibleTranscriptAgentId(true, null, "agent-b"), "agent-b")
+})
+
+test("streaming agent resolution prefers active processing and clears stale runs", () => {
+  const agents = [
+    { id: "agent-a", is_processing: false, state: "Idle" },
+    { id: "agent-b", is_processing: true, state: "Working" },
+  ]
+
+  assert.equal(resolveStreamingAgentId(agents, "agent-a", true, "agent-a"), "agent-b")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], "agent-a", true, null), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, true, "agent-a"), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, "agent-a"), null)
 })

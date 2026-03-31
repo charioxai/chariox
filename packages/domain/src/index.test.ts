@@ -91,11 +91,12 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
     hostDaemonId: daemon.id,
     executionMode: 'multi_agent_workflow',
     status: 'active',
-    activeProviderRunId: 'run_1',
     activeWorkflowRunId: 'workflow_run_1',
     activePromptId: 'prompt_1',
+    focusedAgentId: 'agent_1',
     configVersion: 2,
     schedulerState: 'running',
+    maxAgents: 4,
   }
   const attachment: SessionAttachment = {
     id: 'attachment_1',
@@ -107,6 +108,7 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
     id: 'prompt_1',
     sessionId: session.id,
     sourceAttachmentId: attachment.id,
+    targetAgentId: 'agent_1',
     prompt: 'Implement the feature',
     status: 'running',
   }
@@ -168,6 +170,7 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
   const providerRun: ProviderRun = {
     id: 'run_1',
     sessionId: session.id,
+    agentInstanceId: 'agent_1',
     nodeRunId: 'node_run_1',
     worktreeAssignmentId: worktreeAssignment.id,
     provider: 'claude-code',

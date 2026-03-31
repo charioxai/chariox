@@ -27,6 +27,7 @@ impl fmt::Display for ProviderRunState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRequest {
     pub session_id: String,
+    pub agent_id: Option<String>,
     pub adapter_key: String,
     pub provider: String,
     pub account_profile: String,
@@ -45,6 +46,7 @@ impl LaunchProviderRequest {
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            agent_id: None,
             adapter_key: adapter_key.into(),
             provider: provider.into(),
             account_profile: account_profile.into(),
@@ -59,6 +61,11 @@ impl LaunchProviderRequest {
             let value = value.trim();
             (!value.is_empty()).then(|| value.to_string())
         });
+        self
+    }
+
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
         self
     }
 
@@ -82,6 +89,7 @@ pub struct ProviderLaunchResult {
 pub struct RuntimeProviderRun {
     id: String,
     session_id: String,
+    agent_instance_id: Option<String>,
     adapter_key: String,
     provider: String,
     account_profile: String,
@@ -106,6 +114,7 @@ impl RuntimeProviderRun {
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
+            agent_instance_id: request.agent_id.clone(),
             adapter_key: request.adapter_key.clone(),
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
@@ -127,6 +136,9 @@ impl RuntimeProviderRun {
     }
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+    pub fn agent_instance_id(&self) -> Option<&str> {
+        self.agent_instance_id.as_deref()
     }
     pub fn adapter_key(&self) -> &str {
         &self.adapter_key

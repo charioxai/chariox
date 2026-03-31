@@ -268,6 +268,27 @@ impl ProviderProcessService {
             })
     }
 
+    pub fn get_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.session_id() == session_id
+                    && run.agent_instance_id() == Some(agent_id)
+                    && run.state() != ProviderRunState::Ended
+            })
+            .max_by_key(|run| match run.state() {
+                ProviderRunState::Running => 3,
+                ProviderRunState::Parked => 2,
+                ProviderRunState::Starting => 1,
+                ProviderRunState::Ended => 0,
+            })
+            .cloned()
+    }
+
     pub fn terminate_session_runs(
         &mut self,
         sessions: &mut SessionService,
@@ -414,9 +435,6 @@ impl ProviderProcessService {
         let client = OpenCodeClient::new(provider_run_id, &base_url)?;
         let defaults = client.configured_defaults()?;
         let messages = client.messages(&session_id)?;
-        let latest = messages.iter().rev().find(|message| {
-            message.info.resolved_model().is_some() || message.info.resolved_variant().is_some()
-        });
         let model = messages
             .iter()
             .rev()
@@ -427,25 +445,6 @@ impl ProviderProcessService {
             .rev()
             .find_map(|message| message.info.resolved_variant())
             .or(defaults.variant);
-
-        crate::logging::debug_with_fields(
-            "daemon.provider.opencode",
-            "synced provider run selection from opencode",
-            serde_json::json!({
-                "provider_run_id": provider_run_id,
-                "provider_session_id": session_id,
-                "selected_agent": defaults.selected_agent,
-                "agent_model": defaults.agent_model,
-                "agent_variant": defaults.agent_variant,
-                "top_level_model": defaults.top_level_model,
-                "message_count": messages.len(),
-                "latest_message_role": latest.map(|message| message.info.role.clone()),
-                "latest_message_model": latest.and_then(|message| message.info.resolved_model()),
-                "latest_message_variant": latest.and_then(|message| message.info.resolved_variant()),
-                "resolved_model": model,
-                "resolved_variant": variant,
-            }),
-        );
 
         let run = self.get_run_mut(provider_run_id)?;
         if let Some(model) = model {

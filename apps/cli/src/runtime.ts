@@ -80,6 +80,33 @@ export function chooseVisibleActivityLabel(
   return activeToolActivity ?? providerActivity
 }
 
+export function resolveVisibleTranscriptAgentId(
+  splitMode: boolean,
+  primaryAgentId: string | null,
+  focusedAgentId: string | null,
+) {
+  return splitMode ? (primaryAgentId ?? focusedAgentId) : focusedAgentId
+}
+
+export function resolveStreamingAgentId(
+  agents: ReadonlyArray<{ id: string; is_processing: boolean; state: string }>,
+  activePromptTargetAgentId: string | null,
+  sessionHasPromptWork: boolean,
+  previousStreamingAgentId: string | null,
+) {
+  const processingAgentId = agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
+  if (processingAgentId) {
+    return processingAgentId
+  }
+  if (activePromptTargetAgentId && agents.some((agent) => agent.id === activePromptTargetAgentId)) {
+    return activePromptTargetAgentId
+  }
+  if (sessionHasPromptWork && previousStreamingAgentId && agents.some((agent) => agent.id === previousStreamingAgentId)) {
+    return previousStreamingAgentId
+  }
+  return null
+}
+
 export function shouldEndSessionOnCliExit(_createdSession: boolean, _connectedClientCount: number): boolean {
   return false
 }

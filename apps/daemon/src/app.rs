@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{AgentInstance, AgentService, CreateAgentRequest};
 use crate::attachment::{AttachRequest, AttachmentService, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotRequest, CaptureScreenshotResult, DirectoryTreeService, EditFileRequest,
@@ -21,13 +22,14 @@ use crate::provider::{
 };
 use crate::pty::PtyManager;
 use crate::session::{
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus,
+    CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionService, SessionStatus,
 };
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
 
 pub struct DaemonApp {
     config: DaemonConfig,
+    agents: AgentService,
     attachments: AttachmentService,
     capabilities: ShellCommandService,
     directory_tree: DirectoryTreeService,
@@ -86,6 +88,7 @@ impl DaemonApp {
         config.validate()?;
 
         Ok(Self {
+            agents: AgentService::new(),
             attachments: AttachmentService::new(),
             capabilities: ShellCommandService::new(),
             directory_tree: DirectoryTreeService::new(),
@@ -104,6 +107,35 @@ impl DaemonApp {
         })
     }
 
+    /// Create a new session with a default agent
+    pub fn create_session(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        // Create the session
+        let session = self.sessions.create_session(request)?;
+        
+        // Create default agent automatically (without provider - user launches it separately)
+        let agent_request = CreateAgentRequest::new(
+            session.id(),
+            "default",  // Provider will be set when user launches it
+        ).with_worktree(session.worktree_id());
+        
+        let agent = self.agents.create_agent(agent_request, &mut self.sessions)?;
+        
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "session created with default agent",
+            serde_json::json!({
+                "session_id": session.id(),
+                "agent_id": agent.id(),
+                "agent_ref": agent.agent_ref(),
+            }),
+        );
+        
+        Ok((session, agent))
+    }
+
     pub fn config(&self) -> &DaemonConfig {
         &self.config
     }
@@ -114,6 +146,14 @@ impl DaemonApp {
 
     pub fn sessions_mut(&mut self) -> &mut SessionService {
         &mut self.sessions
+    }
+
+    pub fn agents(&self) -> &AgentService {
+        &self.agents
+    }
+
+    pub fn agents_mut(&mut self) -> &mut AgentService {
+        &mut self.agents
     }
 
     pub fn attachments(&self) -> &AttachmentService {
@@ -140,6 +180,54 @@ impl DaemonApp {
         &self.terminal
     }
 
+    /// Spawn a new agent in a session
+    pub fn spawn_agent(
+        &mut self,
+        request: crate::agent::CreateAgentRequest,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.agents.create_agent(request, &mut self.sessions)
+    }
+
+    /// Destroy an agent
+    pub fn destroy_agent(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.agents.destroy_agent(agent_id, &mut self.sessions)
+    }
+
+    /// Focus a specific agent in a session
+    pub fn focus_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self.agents.focus_agent(session_id, agent_id, &mut self.sessions)?;
+        if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
+            self.sync_active_provider_run_for_agent(session_id, agent_id)?;
+        }
+        Ok(agent)
+    }
+
+    /// Cycle focus to next agent in session
+    pub fn cycle_agent_focus(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let agent = self.agents.cycle_focus(session_id, &mut self.sessions)?;
+        if let Some(focused) = agent.as_ref() {
+            if !self.should_defer_provider_run_sync_for_focus_change(session_id, focused.id())? {
+                self.sync_active_provider_run_for_agent(session_id, focused.id())?;
+            }
+        }
+        Ok(agent)
+    }
+
+    /// Get all agents in a session
+    pub fn list_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
+        self.agents.get_session_agents(session_id)
+    }
+
     pub fn session_history(&self, session_id: &str) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         self.history.load(&session)
@@ -148,12 +236,18 @@ impl DaemonApp {
     pub fn session_history_page(
         &self,
         session_id: &str,
+        agent_id: Option<&str>,
         round_count: Option<usize>,
         max_chars: Option<usize>,
         before_entry_index: Option<usize>,
         before_entry_char_offset: Option<usize>,
     ) -> Result<SessionHistoryPage, DaemonError> {
-        let entries = self.session_history(session_id)?;
+        let mut entries = self.session_history(session_id)?;
+        if let Some(agent_id) = agent_id {
+            entries.retain(|entry| {
+                entry.agent_id.is_none() || entry.agent_id.as_deref() == Some(agent_id)
+            });
+        }
         let mut slices = build_history_slices(
             &entries,
             before_entry_index,
@@ -216,6 +310,25 @@ impl DaemonApp {
             let _ = self.detach(attachment_id)?;
         }
         let attachment = self.attachments.attach(&mut self.sessions, request)?;
+        
+        // Create default agent if session has no agents (e.g., after session was ended and reattached)
+        // Parked/active sessions that were never ended will retain their existing agents
+        let session_agents = self.agents.get_session_agents(&session_id);
+        if session_agents.is_empty() {
+            let worktree_id = self.sessions.get_session(&session_id)?.worktree_id().to_string();
+            let agent_request = CreateAgentRequest::new(&session_id, "default")
+                .with_worktree(worktree_id);
+            let _agent = self.agents.create_agent(agent_request, &mut self.sessions)?;
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "created default agent for session",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "reason": "session had no agents (possibly after being ended and reattached)",
+                }),
+            );
+        }
+        
         crate::logging::info_with_fields(
             "daemon.session",
             "attachment joined session",
@@ -308,6 +421,14 @@ impl DaemonApp {
         for run in terminated_runs {
             self.pty.remove_process(run.id())?;
         }
+        
+        // Remove all agents for this session
+        let removed_agents = self.agents.remove_session_agents(session_id);
+        let removed_agent_ids: Vec<_> = removed_agents
+            .iter()
+            .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
+            .collect();
+        
         self.prompt_activity.remove(session_id);
         let ended = self.sessions.end_session(session_id)?;
         crate::logging::info_with_fields(
@@ -317,6 +438,7 @@ impl DaemonApp {
                 "session_id": session_id,
                 "removed_attachment_ids": removed_attachments.iter().map(|attachment| attachment.id().to_string()).collect::<Vec<_>>(),
                 "terminated_provider_run_ids": terminated_run_ids,
+                "removed_agents": removed_agent_ids,
             }),
         );
         Ok(ended)
@@ -478,21 +600,38 @@ impl DaemonApp {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        if request.agent_id.is_none() {
+            request.agent_id = self
+                .sessions
+                .get_session(&request.session_id)?
+                .focused_agent_id()
+                .map(str::to_string);
+        }
         crate::logging::info_with_fields(
             "daemon.app",
             "launching provider run",
             serde_json::json!({
                 "adapter_key": request.adapter_key.clone(),
+                "agent_id": request.agent_id.clone(),
                 "provider": request.provider.clone(),
                 "session_id": request.session_id.clone(),
             }),
         );
         if request.adapter_key == "opencode" && request.working_directory.is_none() {
-            request.working_directory = Some(PathBuf::from(
-                self.sessions
-                    .get_session(&request.session_id)?
-                    .worktree_id(),
-            ));
+            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
+                self.agents
+                    .get_agent(agent_id)
+                    .ok()
+                    .and_then(|agent| agent.worktree_id().map(PathBuf::from))
+            });
+            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
+                PathBuf::from(
+                    self.sessions
+                        .get_session(&request.session_id)
+                        .map(|session| session.worktree_id().to_string())
+                        .unwrap_or_default(),
+                )
+            }));
         }
         let previous_active_run_id = self
             .sessions
@@ -611,20 +750,22 @@ impl DaemonApp {
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
         let session_before = self.sessions.get_session(session_id)?;
-        let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
+        
+        // Get the focused agent to target the prompt
+        let target_agent_id = session_before
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "no focused agent".to_string(),
             })?
             .to_string();
+        
+        let provider_run_id = self.ensure_active_provider_run_for_agent(session_id, &target_agent_id)?;
 
-        self.append_user_prompt_history(session_id, attachment_id, prompt, &attachments);
+        self.append_user_prompt_history(session_id, attachment_id, &target_agent_id, prompt, &attachments);
 
         let (_session, outcome) = self
             .sessions
-            .submit_prompt(session_id, attachment_id, prompt, attachments.clone())?;
+            .submit_prompt(session_id, attachment_id, &target_agent_id, prompt, attachments.clone())?;
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
@@ -674,6 +815,110 @@ impl DaemonApp {
         Ok(outcome)
     }
 
+    fn sync_active_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let current_active_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
+
+        if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+            let active_run = self.providers.get_run(current_active_run_id)?;
+            if active_run.agent_instance_id() != Some(agent_id)
+                && active_run.state() == crate::provider::ProviderRunState::Running
+            {
+                self.providers
+                    .park_run(&mut self.sessions, session_id, current_active_run_id)?;
+            }
+        }
+
+        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
+            match agent_run.state() {
+                crate::provider::ProviderRunState::Running => {
+                    self.sessions
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                crate::provider::ProviderRunState::Parked => {
+                    self.providers
+                        .resume_run(&mut self.sessions, session_id, agent_run.id())?;
+                }
+                crate::provider::ProviderRunState::Starting => {
+                    self.sessions
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                crate::provider::ProviderRunState::Ended => {
+                    self.sessions.set_active_provider_run(session_id, None)?;
+                }
+            }
+        } else {
+            self.sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(())
+    }
+
+    fn should_defer_provider_run_sync_for_focus_change(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let Some(active_provider_run_id) = session.active_provider_run_id().map(str::to_string) else {
+            return Ok(false);
+        };
+        let active_run = self.providers.get_run(&active_provider_run_id)?;
+        if active_run.agent_instance_id() == Some(target_agent_id)
+            || active_run.state() != crate::provider::ProviderRunState::Running
+        {
+            return Ok(false);
+        }
+
+        Ok(
+            session.active_prompt().is_some()
+                || session.agents().iter().any(|agent| agent.is_processing()),
+        )
+    }
+
+    fn sync_focused_provider_run_if_idle(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        if session.active_prompt().is_some() || session.agents().iter().any(|agent| agent.is_processing()) {
+            return Ok(());
+        }
+
+        let focused_agent_id = session.focused_agent_id().map(str::to_string);
+        if let Some(focused_agent_id) = focused_agent_id {
+            self.sync_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+        } else {
+            self.sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_active_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        self.sync_active_provider_run_for_agent(session_id, agent_id)?;
+        if let Some(provider_run_id) = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string)
+        {
+            return Ok(provider_run_id);
+        }
+
+        Err(DaemonError::NoActiveProviderRun {
+            session_id: session_id.to_string(),
+        })
+    }
+
     pub fn complete_active_prompt(
         &mut self,
         session_id: &str,
@@ -690,6 +935,9 @@ impl DaemonApp {
         } else {
             None
         };
+        if started_next.is_none() {
+            self.sync_focused_provider_run_if_idle(session_id)?;
+        }
 
         Ok(PromptCompletion {
             completed,
@@ -762,16 +1010,22 @@ impl DaemonApp {
             self.sessions
                 .update_config(session_id, attachment_id, values, requires_idle)?;
 
-        self.record_notice(
-            session_id,
-            None,
-            self.other_attachment_ids(session_id, attachment_id),
-            format!(
-                "Session config updated to version {} by attachment `{}`.",
-                config.version(),
-                attachment_id
-            ),
-        );
+        let recipient_attachment_ids = self.other_attachment_ids(session_id, attachment_id);
+        if !recipient_attachment_ids.is_empty() {
+            let active_provider_run_id = self
+                .sessions
+                .get_session(session_id)?
+                .active_provider_run_id()
+                .map(str::to_string);
+            self.record_notice(
+                session_id,
+                active_provider_run_id.as_deref(),
+                recipient_attachment_ids,
+                format!(
+                    "Attachment `{attachment_id}` updated configuration for session `{session_id}`."
+                ),
+            );
+        }
 
         Ok(config)
     }
@@ -960,6 +1214,7 @@ impl DaemonApp {
         &self,
         session_id: &str,
         source_attachment_id: &str,
+        agent_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
     ) {
@@ -968,6 +1223,7 @@ impl DaemonApp {
             SessionHistoryEntry::user_prompt(
                 session_id,
                 source_attachment_id,
+                agent_id,
                 render_prompt_transcript(prompt, attachments),
             ),
         );
@@ -982,9 +1238,15 @@ impl DaemonApp {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
+        let agent_id = self
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
         let record = self.terminal.fan_out_output(
             session_id,
             provider_run_id,
+            agent_id.as_deref(),
             kind.clone(),
             merge_key.clone(),
             recipient_attachment_ids,
@@ -996,6 +1258,7 @@ impl DaemonApp {
                 SessionHistoryEntry::provider_output(
                     session_id,
                     provider_run_id,
+                    agent_id.as_deref(),
                     kind,
                     merge_key,
                     String::from_utf8_lossy(bytes).into_owned(),
@@ -1013,15 +1276,22 @@ impl DaemonApp {
         message: impl Into<String>,
     ) -> crate::terminal::RuntimeNoticeRecord {
         let message = message.into();
+        let agent_id = provider_run_id.and_then(|run_id| {
+            self.providers
+                .get_run(run_id)
+                .ok()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
         let record = self.terminal.record_notice(
             session_id,
             provider_run_id,
+            agent_id.as_deref(),
             recipient_attachment_ids,
             message.clone(),
         );
         self.append_history_entry(
             session_id,
-            SessionHistoryEntry::notice(session_id, provider_run_id, message),
+            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id.as_deref(), message),
         );
         record
     }
@@ -1458,6 +1728,9 @@ impl DaemonApp {
         } else {
             None
         };
+        if started_next.is_none() {
+            self.sync_focused_provider_run_if_idle(session_id)?;
+        }
 
         Ok(PromptCancellation {
             prompt,
@@ -1809,6 +2082,7 @@ mod tests {
         SessionHistoryEntry {
             session_id: "session-1".to_string(),
             provider_run_id: Some("run-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
             source_attachment_id: Some("attachment-1".to_string()),
             kind,
             merge_key: None,

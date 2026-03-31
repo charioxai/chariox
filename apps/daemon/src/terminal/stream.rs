@@ -23,6 +23,8 @@ pub enum TerminalOutputKind {
 pub struct TerminalOutputRecord {
     pub session_id: String,
     pub provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub kind: TerminalOutputKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
@@ -35,6 +37,8 @@ pub struct TerminalOutputRecord {
 pub struct RuntimeNoticeRecord {
     pub session_id: String,
     pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub recipient_attachment_ids: Vec<String>,
     pub pending_recipient_attachment_ids: Vec<String>,
     pub message: String,
@@ -71,6 +75,7 @@ impl TerminalStreamService {
         &mut self,
         session_id: &str,
         provider_run_id: &str,
+        agent_id: Option<&str>,
         kind: TerminalOutputKind,
         merge_key: Option<String>,
         recipient_attachment_ids: Vec<String>,
@@ -79,6 +84,7 @@ impl TerminalStreamService {
         let record = TerminalOutputRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.map(str::to_string),
             kind,
             merge_key,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
@@ -94,12 +100,14 @@ impl TerminalStreamService {
         &mut self,
         session_id: &str,
         provider_run_id: Option<&str>,
+        agent_id: Option<&str>,
         recipient_attachment_ids: Vec<String>,
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
         let record = RuntimeNoticeRecord {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
+            agent_id: agent_id.map(str::to_string),
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             message: message.into(),
@@ -190,6 +198,7 @@ mod tests {
         let output = terminal.fan_out_output(
             "session-1",
             "provider-run-1",
+            Some("agent-1"),
             TerminalOutputKind::ProviderOutput,
             Some("part-1".to_string()),
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
@@ -198,6 +207,7 @@ mod tests {
         let notice = terminal.record_notice(
             "session-1",
             Some("provider-run-1"),
+            Some("agent-1"),
             vec!["attachment-2".to_string()],
             "provider switch failed; resumed previous run",
         );
@@ -206,10 +216,12 @@ mod tests {
         assert_eq!(terminal.output_records().len(), 1);
         assert_eq!(terminal.notice_records().len(), 1);
         assert_eq!(output.kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(output.agent_id.as_deref(), Some("agent-1"));
         assert_eq!(output.merge_key.as_deref(), Some("part-1"));
         assert_eq!(output.recipient_attachment_ids.len(), 2);
         assert_eq!(output.pending_recipient_attachment_ids.len(), 2);
         assert_eq!(notice.provider_run_id.as_deref(), Some("provider-run-1"));
+        assert_eq!(notice.agent_id.as_deref(), Some("agent-1"));
         assert_eq!(notice.recipient_attachment_ids.len(), 1);
         assert_eq!(notice.pending_recipient_attachment_ids.len(), 1);
     }
@@ -220,6 +232,7 @@ mod tests {
         terminal.fan_out_output(
             "session-1",
             "provider-run-1",
+            Some("agent-1"),
             TerminalOutputKind::PromptEcho,
             None,
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
@@ -240,6 +253,7 @@ mod tests {
         let mut terminal = TerminalStreamService::new();
         terminal.record_notice(
             "session-1",
+            None,
             None,
             vec!["attachment-1".to_string(), "attachment-2".to_string()],
             "queued prompt",

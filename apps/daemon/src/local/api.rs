@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
@@ -30,6 +31,7 @@ pub struct AttachToSessionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRunRequest {
     pub session_id: String,
+    pub agent_id: Option<String>,
     pub adapter_key: String,
     pub provider: String,
     pub account_profile: String,
@@ -95,6 +97,7 @@ pub struct ResolveSessionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryRequest {
     pub session_id: String,
+    pub agent_id: Option<String>,
     pub round_count: Option<usize>,
     pub max_chars: Option<usize>,
     pub before_entry_index: Option<usize>,
@@ -186,6 +189,37 @@ pub struct StoreTransferredFileCapabilityRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnAgentRequest {
+    pub session_id: String,
+    pub alias: Option<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    pub worktree_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestroyAgentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FocusAgentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleAgentFocusRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListAgentsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -213,12 +247,18 @@ pub enum LocalDaemonRequest {
     StoreTransferredFile(StoreTransferredFileCapabilityRequest),
     EndSession(EndSessionRequest),
     DeleteSession(DeleteSessionRequest),
+    SpawnAgent(SpawnAgentRequest),
+    DestroyAgent(DestroyAgentRequest),
+    FocusAgent(FocusAgentRequest),
+    CycleAgentFocus(CycleAgentFocusRequest),
+    ListAgents(ListAgentsRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     SessionCreated {
         session: RuntimeSession,
+        agent: AgentInstance,
     },
     SessionAttached {
         attachment: RuntimeAttachment,
@@ -300,6 +340,21 @@ pub enum LocalDaemonResponse {
     SessionDeleted {
         session: RuntimeSession,
     },
+    AgentSpawned {
+        agent: AgentInstance,
+    },
+    AgentDestroyed {
+        agent: AgentInstance,
+    },
+    AgentFocused {
+        agent: AgentInstance,
+    },
+    AgentFocusCycled {
+        agent: Option<AgentInstance>,
+    },
+    AgentsListed {
+        agents: Vec<AgentInstance>,
+    },
 }
 
 impl DaemonApp {
@@ -309,19 +364,24 @@ impl DaemonApp {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::CreateSession(request) => {
-                let session = self.sessions_mut().create_session(request)?;
+                let (mut session, agent) = self.create_session(request)?;
+                // Populate agents list
+                let agents = self.agents().get_session_agents(&session.id());
+                session.set_agents(agents);
                 crate::logging::info_with_fields(
                     "daemon.session",
-                    "session created",
+                    "session created with default agent",
                     serde_json::json!({
                         "session_id": session.id(),
                         "session_alias": session.alias(),
                         "workspace_id": session.workspace_id(),
                         "worktree_id": session.worktree_id(),
                         "execution_mode": format!("{:?}", session.execution_mode()),
+                        "agent_id": agent.id(),
+                        "agent_ref": agent.agent_ref(),
                     }),
                 );
-                Ok(LocalDaemonResponse::SessionCreated { session })
+                Ok(LocalDaemonResponse::SessionCreated { session, agent })
             }
             LocalDaemonRequest::AttachToSession(request) => {
                 Ok(LocalDaemonResponse::SessionAttached {
@@ -338,16 +398,23 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                let provider_run = self.launch_provider(
-                    LaunchProviderRequest::new(
-                        request.session_id,
-                        request.adapter_key,
-                        request.provider,
-                        request.account_profile,
-                        request.model,
-                    )
-                    .with_variant(request.variant),
-                )?;
+                let mut launch_request = LaunchProviderRequest::new(
+                    request.session_id.clone(),
+                    request.adapter_key,
+                    request.provider,
+                    request.account_profile,
+                    request.model,
+                )
+                .with_variant(request.variant);
+                if let Some(agent_id) = request.agent_id.clone().or_else(|| {
+                    self.sessions()
+                        .get_session(&request.session_id)
+                        .ok()
+                        .and_then(|session| session.focused_agent_id().map(str::to_string))
+                }) {
+                    launch_request = launch_request.with_agent_id(agent_id);
+                }
+                let provider_run = self.launch_provider(launch_request)?;
                 crate::logging::debug_with_fields(
                     "daemon.local_api",
                     "returning launched provider run to client",
@@ -362,36 +429,40 @@ impl DaemonApp {
                 );
                 Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
             }
-            LocalDaemonRequest::ListSessions(_) => Ok(LocalDaemonResponse::SessionsListed {
-                sessions: self.sessions().list_sessions(),
-            }),
-            LocalDaemonRequest::ResolveSession(request) => {
-                Ok(LocalDaemonResponse::SessionResolved {
-                    session: self.resolve_session_ref(
-                        &request.session_ref,
-                        request.workspace_id.as_deref(),
-                    )?,
+            LocalDaemonRequest::ListSessions(_) => {
+                let sessions = self.sessions().list_sessions();
+                // Populate agents for each session
+                let sessions_with_agents: Vec<_> = sessions
+                    .into_iter()
+                    .map(|mut session| {
+                        let agents = self.agents().get_session_agents(&session.id());
+                        session.set_agents(agents);
+                        session
+                    })
+                    .collect();
+                Ok(LocalDaemonResponse::SessionsListed {
+                    sessions: sessions_with_agents,
                 })
             }
-            LocalDaemonRequest::GetSessionState(request) => Ok(LocalDaemonResponse::SessionState {
-                session: self.sessions().get_session(&request.session_id)?,
-            }),
+            LocalDaemonRequest::ResolveSession(request) => {
+                let mut session = self
+                    .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
+                // Populate agents list
+                let agents = self.agents().get_session_agents(&session.id());
+                session.set_agents(agents);
+                Ok(LocalDaemonResponse::SessionResolved { session })
+            }
+            LocalDaemonRequest::GetSessionState(request) => {
+                let mut session = self.sessions().get_session(&request.session_id)?;
+                // Populate agents list from agent service
+                let agents = self.agents().get_session_agents(&request.session_id);
+                session.set_agents(agents);
+                Ok(LocalDaemonResponse::SessionState { session })
+            }
             LocalDaemonRequest::GetProviderRun(request) => {
                 self.providers_mut()
                     .sync_run_selection(&request.provider_run_id)?;
                 let provider_run = self.providers().get_run(&request.provider_run_id)?;
-                crate::logging::debug_with_fields(
-                    "daemon.local_api",
-                    "returning provider run lookup to client",
-                    serde_json::json!({
-                        "provider_run_id": provider_run.id(),
-                        "session_id": provider_run.session_id(),
-                        "provider": provider_run.provider(),
-                        "model": provider_run.model(),
-                        "variant": provider_run.variant(),
-                        "state": provider_run.state().to_string(),
-                    }),
-                );
                 Ok(LocalDaemonResponse::ProviderRun { provider_run })
             }
             LocalDaemonRequest::GetProviderCatalog(_) => {
@@ -417,6 +488,7 @@ impl DaemonApp {
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(
                     &request.session_id,
+                    request.agent_id.as_deref(),
                     request.round_count,
                     request.max_chars,
                     request.before_entry_index,
@@ -443,7 +515,8 @@ impl DaemonApp {
                     &request.prompt,
                     request.attachments,
                 )?;
-                let session = self.sessions().get_session(&request.session_id)?;
+                let mut session = self.sessions().get_session(&request.session_id)?;
+                session.set_agents(self.agents().get_session_agents(&request.session_id));
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
             }
             LocalDaemonRequest::CompletePrompt(request) => {
@@ -465,7 +538,8 @@ impl DaemonApp {
                     request.values,
                     request.requires_idle,
                 )?;
-                let session = self.sessions().get_session(&session_id)?;
+                let mut session = self.sessions().get_session(&session_id)?;
+                session.set_agents(self.agents().get_session_agents(&session_id));
                 Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
             }
             LocalDaemonRequest::ResizeTerminal(request) => {
@@ -551,6 +625,43 @@ impl DaemonApp {
                 session: self
                     .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
             }),
+            LocalDaemonRequest::SpawnAgent(request) => {
+                let create_request =
+                    crate::agent::CreateAgentRequest::new(&request.session_id, &request.provider);
+                let create_request = if let Some(alias) = request.alias {
+                    create_request.with_alias(alias)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(model) = request.model {
+                    create_request.with_model(model)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(worktree_id) = request.worktree_id {
+                    create_request.with_worktree(worktree_id)
+                } else {
+                    create_request
+                };
+                let agent = self.spawn_agent(create_request)?;
+                Ok(LocalDaemonResponse::AgentSpawned { agent })
+            }
+            LocalDaemonRequest::DestroyAgent(request) => {
+                let agent = self.destroy_agent(&request.agent_id)?;
+                Ok(LocalDaemonResponse::AgentDestroyed { agent })
+            }
+            LocalDaemonRequest::FocusAgent(request) => {
+                let agent = self.focus_agent(&request.session_id, &request.agent_id)?;
+                Ok(LocalDaemonResponse::AgentFocused { agent })
+            }
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                let agent = self.cycle_agent_focus(&request.session_id)?;
+                Ok(LocalDaemonResponse::AgentFocusCycled { agent })
+            }
+            LocalDaemonRequest::ListAgents(request) => {
+                let agents = self.list_session_agents(&request.session_id);
+                Ok(LocalDaemonResponse::AgentsListed { agents })
+            }
         }
     }
 }
@@ -558,6 +669,8 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -565,13 +678,13 @@ mod tests {
 
     use super::{
         AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
-        CompletePromptRequest, DeleteSessionRequest, DetachFromSessionRequest,
-        EditFileCapabilityRequest, EndSessionRequest, GetSessionStateRequest,
-        InspectGitCapabilityRequest, LaunchProviderRunRequest, ListSessionsRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, ResolveSessionRequest,
-        RunShellCapabilityRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        CompletePromptRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+        DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
+        GetSessionStateRequest, InspectGitCapabilityRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+        PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+        ResolveSessionRequest, RunShellCapabilityRequest, SpawnAgentRequest,
+        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -584,7 +697,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
 
@@ -633,13 +746,13 @@ mod tests {
     fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let session = match app
+        let (session, _agent) = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
             _ => panic!("unexpected local response"),
         };
 
@@ -687,6 +800,117 @@ mod tests {
     }
 
     #[test]
+    fn local_request_api_spawns_and_focuses_agents() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            _ => panic!("unexpected local response"),
+        };
+
+        let spawned = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "opencode".to_string(),
+                model: Some("openai/gpt-5.4".to_string()),
+                worktree_id: None,
+            }))
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
+        let session_state = match app
+            .handle_local_request(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("session state should load")
+        {
+            LocalDaemonResponse::SessionState { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(session_state.agents().len(), 2);
+        assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+        assert_eq!(
+            session_state
+                .agents()
+                .iter()
+                .find(|agent| agent.id() == default_agent.id())
+                .expect("default agent should still exist")
+                .state(),
+            crate::agent::AgentState::Idle
+        );
+        assert_eq!(
+            session_state
+                .agents()
+                .iter()
+                .find(|agent| agent.id() == spawned.id())
+                .expect("spawned agent should exist")
+                .state(),
+            crate::agent::AgentState::Focused
+        );
+
+        let focused_default = match app
+            .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: default_agent.id().to_string(),
+            }))
+            .expect("focus should succeed")
+        {
+            LocalDaemonResponse::AgentFocused { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(focused_default.id(), default_agent.id());
+
+        let cycled = match app
+            .handle_local_request(LocalDaemonRequest::CycleAgentFocus(
+                CycleAgentFocusRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("cycle should succeed")
+        {
+            LocalDaemonResponse::AgentFocusCycled { agent } => {
+                agent.expect("cycle should return a focused agent")
+            }
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(cycled.id(), spawned.id());
+
+        let listed = match app
+            .handle_local_request(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("list should succeed")
+        {
+            LocalDaemonResponse::AgentsListed { agents } => agents,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed
+                .iter()
+                .find(|agent| agent.id() == spawned.id())
+                .expect("spawned agent should be listed")
+                .state(),
+            crate::agent::AgentState::Focused
+        );
+    }
+
+    #[test]
     fn detaching_one_attachment_keeps_the_session_open_for_others() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -696,7 +920,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
 
@@ -760,6 +984,171 @@ mod tests {
     }
 
     #[test]
+    fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "client-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+
+        let default_run = match app
+            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(default_agent.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("default provider launch should succeed")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        let spawned = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                worktree_id: None,
+            }))
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
+        let focused_run = match app
+            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(spawned.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "opus".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("spawned provider launch should succeed")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: default_agent.id().to_string(),
+            }))
+            .expect("focusing default agent should succeed");
+
+        let started = app
+            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                prompt: "keep streaming while focus changes\n".to_string(),
+                attachments: Vec::new(),
+            }))
+            .expect("prompt should start");
+
+        match started {
+            LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+                PromptSubmissionOutcome::Started { prompt } => {
+                    assert_eq!(prompt.target_agent_id(), default_agent.id());
+                }
+                _ => panic!("expected prompt to start immediately"),
+            },
+            _ => panic!("unexpected local response"),
+        }
+
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: spawned.id().to_string(),
+            }))
+            .expect("focusing spawned agent should succeed");
+
+        let session_state = match app
+            .handle_local_request(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session.id().to_string(),
+                },
+            ))
+            .expect("session state should load")
+        {
+            LocalDaemonResponse::SessionState { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+        assert_eq!(
+            session_state.active_provider_run_id(),
+            Some(default_run.id())
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_output = false;
+        while Instant::now() < deadline {
+            let records = app
+                .pump_terminal_output(session.id(), attachment.id())
+                .expect("terminal output should keep pumping");
+            if !records.is_empty() {
+                saw_output = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            saw_output,
+            "expected background agent output to continue while unfocused"
+        );
+
+        let settle_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let _ = app
+                .pump_terminal_output(session.id(), attachment.id())
+                .expect("terminal output should keep pumping");
+            let session_state = app
+                .sessions()
+                .get_session(session.id())
+                .expect("session should still exist");
+            if session_state.active_prompt().is_none() {
+                assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+                assert_eq!(
+                    session_state.active_provider_run_id(),
+                    Some(focused_run.id())
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < settle_deadline,
+                "prompt did not settle in time"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn attaching_the_same_client_replaces_its_stale_attachment() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -769,7 +1158,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
 
@@ -829,7 +1218,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -871,7 +1260,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
 
@@ -879,6 +1268,7 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
+                    agent_id: None,
                     adapter_key: "missing-adapter".to_string(),
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
@@ -906,7 +1296,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let a = match app
@@ -939,6 +1329,7 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
+                    agent_id: None,
                     adapter_key: "dev-stub".to_string(),
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
@@ -1053,7 +1444,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
 
@@ -1075,6 +1466,7 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
+                    agent_id: None,
                     adapter_key: "dev-stub".to_string(),
                     provider: "claude-code".to_string(),
                     account_profile: "default".to_string(),
@@ -1138,7 +1530,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -1189,7 +1581,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -1241,7 +1633,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -1295,7 +1687,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -1389,7 +1781,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app
@@ -1443,7 +1835,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             _ => panic!("unexpected local response"),
         };
         let attachment = match app

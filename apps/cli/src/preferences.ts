@@ -4,11 +4,18 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 
 export type ArrobaPreferences = {
   providers?: Record<string, ProviderPreferences>
+  ui?: UiPreferences
 }
 
 export type ProviderPreferences = {
   model?: string
   effort?: string
+}
+
+export type MultiAgentResponseLayout = "individual" | "split"
+
+export type UiPreferences = {
+  multiAgentResponseLayout?: MultiAgentResponseLayout
 }
 
 export async function loadPreferences() {
@@ -20,25 +27,26 @@ export async function loadPreferences() {
 }
 
 export async function saveProviderPreferences(provider: string, next: ProviderPreferences) {
-  const filePath = preferencesPath()
   const current = await loadPreferences()
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(
-    filePath,
-    JSON.stringify(
-      {
-        providers: {
-          ...(current.providers ?? {}),
-          [provider]: {
-            ...(current.providers?.[provider] ?? {}),
-            ...next,
-          },
-        },
-      } satisfies ArrobaPreferences,
-      null,
-      2,
-    ),
-  )
+  await savePreferences({
+    providers: {
+      ...(current.providers ?? {}),
+      [provider]: {
+        ...(current.providers?.[provider] ?? {}),
+        ...next,
+      },
+    },
+  })
+}
+
+export async function saveUiPreferences(next: UiPreferences) {
+  const current = await loadPreferences()
+  await savePreferences({
+    ui: {
+      ...(current.ui ?? {}),
+      ...next,
+    },
+  })
 }
 
 export function preferencesPath() {
@@ -47,4 +55,21 @@ export function preferencesPath() {
     return path.join(xdg, "arroba", "config.json")
   }
   return path.join(os.homedir(), ".arroba", "config.json")
+}
+
+async function savePreferences(next: ArrobaPreferences) {
+  const filePath = preferencesPath()
+  const current = await loadPreferences()
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(
+    filePath,
+    JSON.stringify(
+      {
+        ...current,
+        ...next,
+      } satisfies ArrobaPreferences,
+      null,
+      2,
+    ),
+  )
 }

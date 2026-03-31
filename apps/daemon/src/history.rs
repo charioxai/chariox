@@ -25,6 +25,8 @@ pub enum SessionHistoryEntryKind {
 pub struct SessionHistoryEntry {
     pub session_id: String,
     pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub source_attachment_id: Option<String>,
     pub kind: SessionHistoryEntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,11 +39,13 @@ impl SessionHistoryEntry {
     pub fn user_prompt(
         session_id: &str,
         source_attachment_id: &str,
+        agent_id: &str,
         text: impl Into<String>,
     ) -> Self {
         Self {
             session_id: session_id.to_string(),
             provider_run_id: None,
+            agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(source_attachment_id.to_string()),
             kind: SessionHistoryEntryKind::UserPrompt,
             merge_key: None,
@@ -53,6 +57,7 @@ impl SessionHistoryEntry {
     pub fn provider_output(
         session_id: &str,
         provider_run_id: &str,
+        agent_id: Option<&str>,
         kind: TerminalOutputKind,
         merge_key: Option<String>,
         text: impl Into<String>,
@@ -60,6 +65,7 @@ impl SessionHistoryEntry {
         Self {
             session_id: session_id.to_string(),
             provider_run_id: Some(provider_run_id.to_string()),
+            agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             kind: match kind {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
@@ -78,11 +84,13 @@ impl SessionHistoryEntry {
     pub fn notice(
         session_id: &str,
         provider_run_id: Option<&str>,
+        agent_id: Option<&str>,
         text: impl Into<String>,
     ) -> Self {
         Self {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.map(str::to_string),
+            agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             kind: SessionHistoryEntryKind::Notice,
             merge_key: None,
@@ -229,7 +237,12 @@ mod tests {
         store
             .append(
                 &session,
-                &SessionHistoryEntry::user_prompt(session.id(), "attachment-1", "hello\n"),
+                &SessionHistoryEntry::user_prompt(
+                    session.id(),
+                    "attachment-1",
+                    "agent-1",
+                    "hello\n",
+                ),
             )
             .expect("user prompt should persist");
         store
@@ -238,6 +251,7 @@ mod tests {
                 &SessionHistoryEntry::provider_output(
                     session.id(),
                     "provider-run-1",
+                    Some("agent-1"),
                     TerminalOutputKind::ProviderOutput,
                     None,
                     "world",

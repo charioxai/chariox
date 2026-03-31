@@ -136,6 +136,7 @@ Common fields:
 - `type` (event/action identifier)
 - `request_id` when request/response matching is needed
 - `session_id`
+- `agent_id` when agent-scoped
 - `provider_run_id` when provider-scoped
 - `workflow_run_id` when workflow-scoped
 - `node_run_id` when node-scoped
@@ -155,6 +156,11 @@ Minimum request set:
 - `session.attach`
 - `session.detach`
 - `session.delete`
+- `agent.spawn`
+- `agent.destroy`
+- `agent.focus`
+- `agent.cycle`
+- `agent.list`
 - `provider_run.launch`
 - `session.state.get`
 - `session.notice.poll`
@@ -171,6 +177,7 @@ Minimum response/result shapes:
 - session creation returns structured session metadata
 - session resolution returns structured session metadata
 - attach/detach returns structured attachment metadata
+- agent lifecycle/focus operations return structured agent metadata plus updated focused-agent state where relevant
 - provider launch returns structured provider-run metadata
 - session state reads return canonical queue and config state
 - notice polling returns structured daemon notices scoped to the requesting attachment within the session
@@ -193,6 +200,12 @@ Current session-management semantics:
 - deleting the currently attached session invalidates the attachment and the client should transition to an unattached "no session" state instead of forcing process exit
 - `session.delete` is a real delete operation: after runtime teardown the session is removed from the daemon registry and can no longer be listed, resolved, or reattached
 - if a session reference is ambiguous, the daemon rejects it with a structured ambiguity error
+
+Current agent-management semantics:
+
+- the local daemon API now includes top-level session-agent management operations (`spawn`, `destroy`, `focus`, `cycle`, `list`)
+- focused-agent state is part of canonical session state and is intended to determine which top-level agent receives direct user interaction
+- the current implementation is still incomplete: agent operations update daemon/client state, but prompt routing, transcript partitioning, and provider runtime isolation do not yet fully follow the selected agent
 
 Local cancellation policy:
 
@@ -458,7 +471,23 @@ Suggested events:
 - `session.notice`
 - `session.provider_run.changed`
 
-## 7.1 Workflow Semantics
+## 7.1 Multi-Agent Session Semantics
+
+When a session runs in multi-agent session mode:
+
+- the daemon MUST maintain a canonical list of top-level session agents
+- one top-level agent MAY be marked focused for direct user interaction
+- prompt submission, runtime notices, and provider output intended for direct interaction SHOULD be agent-scoped
+- pane-capable clients SHOULD be able to render one visible sub-area per top-level agent using daemon-owned state and agent-scoped events
+
+Suggested events:
+
+- `session.agent.spawned`
+- `session.agent.destroyed`
+- `session.agent.focused`
+- `session.agent.cycled`
+
+## 7.2 Workflow Semantics
 
 When a session runs in multi-agent workflow mode:
 
@@ -479,7 +508,7 @@ Required runtime entities:
 - `WorktreeAssignment`
 - `AggregationState` or equivalent barrier/fan-in state
 
-## 7.2 Node Completion Contract
+## 7.3 Node Completion Contract
 
 Each workflow node MUST emit a structured completion report that the daemon can parse.
 
@@ -499,7 +528,7 @@ Suggested event:
 
 The daemon scheduler MUST advance workflow execution from these completion reports.
 
-## 7.3 Handoff Contract
+## 7.4 Handoff Contract
 
 Outputs from one node MUST be transformed by the daemon into a structured handoff payload before delivery to the next node.
 
@@ -518,7 +547,7 @@ Suggested event:
 
 - `workflow.node.handoff`
 
-## 7.4 Topology and Barrier Semantics
+## 7.5 Topology and Barrier Semantics
 
 Circular topology rules in v1:
 

@@ -435,7 +435,7 @@ mod tests {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session } => session,
+            LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
             other => panic!("unexpected response: {other:?}"),
         };
         let attachment = match client
@@ -456,6 +456,7 @@ mod tests {
             .send(&LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
+                    agent_id: None,
                     adapter_key: "dev-stub".to_string(),
                     provider: "dev-stub".to_string(),
                     account_profile: "default".to_string(),

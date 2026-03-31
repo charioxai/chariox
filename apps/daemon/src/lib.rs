@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod app;
 pub mod attachment;
 pub mod capability;
@@ -116,8 +117,7 @@ mod tests {
     fn prompt_submission_queues_and_notifies_other_attachments() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let session = app
-            .sessions_mut()
+        let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
@@ -172,8 +172,7 @@ mod tests {
     fn ended_sessions_reopen_on_attach_and_preserve_history() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let session = app
-            .sessions_mut()
+        let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let attachment = app

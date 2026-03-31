@@ -35,6 +35,7 @@ export const NODE_MESSAGE_DELIVERY_STATUSES = ['pending', 'delivered', 'consumed
 export const WORKTREE_ISOLATION_MODES = ['shared_session', 'isolated_branch', 'isolated_worktree'] as const;
 export const WORKFLOW_EDGE_TYPES = ['handoff', 'loopback', 'fanout', 'fanin'] as const;
 export const STOP_RECOMMENDATIONS = ['continue', 'stop', 'complete'] as const;
+export const AGENT_STATES = ['idle', 'working', 'focused', 'error'] as const;
 
 export type DaemonStatus = (typeof DAEMON_STATUSES)[number];
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -51,6 +52,7 @@ export type NodeMessageDeliveryStatus = (typeof NODE_MESSAGE_DELIVERY_STATUSES)[
 export type WorktreeIsolationMode = (typeof WORKTREE_ISOLATION_MODES)[number];
 export type WorkflowEdgeType = (typeof WORKFLOW_EDGE_TYPES)[number];
 export type StopRecommendation = (typeof STOP_RECOMMENDATIONS)[number];
+export type AgentState = (typeof AGENT_STATES)[number];
 
 export interface User {
   id: EntityId;
@@ -84,6 +86,24 @@ export interface Worktree {
   absolutePath: string;
 }
 
+export interface AgentInstance {
+  id: EntityId;
+  agentRef: string;
+  sessionId: EntityId;
+  alias: string | null;
+  provider: string;
+  model: string | null;
+  worktreeId: EntityId | null;
+  state: AgentState;
+  isProcessing: boolean;
+  gridRow: number;
+  gridCol: number;
+  gridRowSpan: number;
+  gridColSpan: number;
+  createdAt: string;
+  lastActivityAt: string;
+}
+
 export interface Session {
   id: EntityId;
   workspaceId: EntityId;
@@ -92,16 +112,18 @@ export interface Session {
   hostDaemonId: EntityId;
   executionMode: SessionExecutionMode;
   status: SessionStatus;
-  activeProviderRunId: EntityId | null;
   activeWorkflowRunId: EntityId | null;
   activePromptId: EntityId | null;
+  focusedAgentId: EntityId | null;
   configVersion: number;
   schedulerState: SchedulerState;
+  maxAgents: number;
 }
 
 export interface ProviderRun {
   id: EntityId;
   sessionId: EntityId;
+  agentInstanceId: EntityId | null;
   nodeRunId: EntityId | null;
   worktreeAssignmentId: EntityId | null;
   provider: string;
@@ -121,6 +143,7 @@ export interface PromptQueueItem {
   id: EntityId;
   sessionId: EntityId;
   sourceAttachmentId: EntityId;
+  targetAgentId: EntityId;
   prompt: string;
   status: PromptStatus;
 }
@@ -232,3 +255,5 @@ export interface AggregationState {
   aggregationPolicy: string;
   status: AggregationStatus;
 }
+
+export * from './layout.js';

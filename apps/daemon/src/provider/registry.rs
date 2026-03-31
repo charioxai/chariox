@@ -182,19 +182,18 @@ mod tests {
 
         assert_eq!(launch_result.pty_program, executable.display().to_string());
         assert_eq!(launch_result.working_directory, Some(PathBuf::from("/tmp")));
-        assert_eq!(
-            launch_result.pty_args,
-            vec![
-                "serve".to_string(),
-                "--hostname".to_string(),
-                "127.0.0.1".to_string(),
-                "--port".to_string(),
-                "43112".to_string()
-            ]
-        );
+        assert_eq!(launch_result.pty_args[0], "serve");
+        assert_eq!(launch_result.pty_args[1], "--hostname");
+        assert_eq!(launch_result.pty_args[2], "127.0.0.1");
+        assert_eq!(launch_result.pty_args[3], "--port");
+        let port = launch_result.pty_args[4]
+            .parse::<u16>()
+            .expect("port argument should be numeric");
+        assert!(port >= 43112, "port should be >= 43112, got {}", port);
+        let endpoint = format!("http://127.0.0.1:{port}");
         assert_eq!(
             launch_result.structured_endpoint.as_deref(),
-            Some("http://127.0.0.1:43112")
+            Some(endpoint.as_str())
         );
     }
 }

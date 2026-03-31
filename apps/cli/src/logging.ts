@@ -119,6 +119,11 @@ export function defaultLogDir() {
     return process.env.ARROBA_LOG_DIR
   }
 
+  const workspaceLogDir = path.join(process.cwd(), ".arroba", "logs")
+  if (workspaceLogDir) {
+    return workspaceLogDir
+  }
+
   if (process.env.XDG_STATE_HOME) {
     return path.join(process.env.XDG_STATE_HOME, "arroba", "logs")
   }

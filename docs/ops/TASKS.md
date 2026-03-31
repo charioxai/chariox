@@ -18,8 +18,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Continue with richer OpenCode event rendering and broader TypeScript CLI integration tests, then move into slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces.
 - [ ] **M3-003** Add Claude Code and Codex provider support
   - Note: Reuse the same daemon-managed local CLI model after OpenCode is proven.
-- [ ] **M4-001** Add local multi-agent workflow runtime
-  - Note: Build daemon-owned workflow scheduling and worktree-safe multi-agent execution after the single-agent path is solid.
+- [ ] **M4-001** Deliver manual multi-agent session runtime and split-pane CLI UX
+  - Note: Make session agents real execution targets with isolated prompt routing, per-agent history/runtime context, and visible pane switching via `Ctrl+A` and `/agent cycle`.
+- [ ] **M4-002** Add daemon-scheduled multi-agent workflow runtime
+  - Note: Build circular-first workflow scheduling and structured handoffs on top of the same top-level session-agent runtime.
 - [ ] **M5-001** Add relay/web surfaces on top of the local daemon model
   - Note: Remote relay and webapp come after the local CLI + provider path and workflow baseline.
 - [ ] **M6-001** Add provider switching, memory, compaction, and per-agent extension management

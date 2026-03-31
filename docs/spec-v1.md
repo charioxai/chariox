@@ -28,6 +28,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 
 - Preserve native provider PTY behavior for ordinary prompt and terminal work.
 - Allow multiple local or remote clients to attach to the same session.
+- Support multiple top-level Arroba-managed agents inside one session, each with its own runtime context.
 - Let users invoke Arroba actions through daemon-owned slash commands.
 - Reserve `/agent ...` as the provider-specific command namespace exposed by Arroba.
 - Support daemon-owned capabilities for shell, file, git, screenshot, scheduling, and transfer workflows.
@@ -75,6 +76,7 @@ Examples:
 Responsibilities:
 
 - render the provider terminal stream
+- render focused-agent state and, when a session contains multiple top-level agents, render per-agent history/runtime views without making the client the runtime authority
 - render Arroba slash-command help, completions, warnings, and command results
 - send terminal keystrokes or structured prompt/config actions to the daemon through the appropriate surface
 - invoke daemon capabilities
@@ -274,8 +276,11 @@ A session is bound to:
 
 A session may have:
 
+- multiple top-level Arroba-managed agents
 - multiple attached clients
 - multiple parked provider runs
+- agent-scoped provider runs when multi-agent session mode or workflow mode is active
+- agent-scoped histories and worktree assignments when multi-agent session mode or workflow mode is active
 - multiple node-scoped provider runs when workflow mode is active and daemon resource policy allows it
 - multiple worktree assignments when workflow mode is active
 - multiple eligible agent machine options (local or remote)
@@ -285,7 +290,26 @@ Sessions do not move across workspaces in v1.
 
 A session can be reassigned between its eligible agent machines over time, but only one machine hosts the active provider run at any moment.
 
-### 7.1.1 Session Lifecycle Semantics
+### 7.1.1 Session Agent Model
+
+Arroba-managed top-level agents are first-class session entities in v1.
+
+Required rules:
+
+- a session MAY contain one or more top-level Arroba-managed agents
+- each top-level agent MUST have its own stable agent id within the session
+- each top-level agent SHOULD carry its own provider context, prompt target, history, and worktree-assignment metadata even when the initial implementation reuses shared session infrastructure
+- the daemon MUST track a focused top-level agent for direct user interaction in multi-agent session mode
+- direct prompt submission in multi-agent session mode MUST target the focused agent, not merely the session at large
+- clients SHOULD make focused-agent changes visible in session chrome and in the main transcript/work area
+- pane-based clients SHOULD render one visible sub-area per top-level agent when multiple agents are active in the session
+
+Implementation note for the current codebase:
+
+- the daemon and TypeScript CLI already expose partial top-level agent plumbing (`spawn`, `destroy`, `focus`, `list`, `cycle`, and focused-agent state)
+- that plumbing is not sufficient for v1 multi-agent session behavior until prompt routing, transcript/history separation, and runtime isolation follow the selected agent
+
+### 7.1.2 Session Lifecycle Semantics
 
 Arroba sessions are intended to be persistent by default.
 
@@ -309,7 +333,7 @@ The current daemon API still exposes an internal `end` operation, but the intend
 
 Deleting the currently attached session is valid. The client should transition to an unattached "no session" state rather than being forced to terminate the entire CLI process.
 
-### 7.1.2 Session Identity and Aliases
+### 7.1.3 Session Identity and Aliases
 
 Session references should become user-friendly and resumable.
 
@@ -396,7 +420,7 @@ Future implementations MAY surface debug or telemetry metadata about provider-na
 
 ### 7.3 Workflow Layer Above Sessions
 
-Arroba v1 MUST support a workflow layer above the single-agent session model.
+Arroba v1 MUST support both manually directed multi-agent sessions and a workflow layer above the single-agent session model.
 
 Delivery priority inside v1:
 
@@ -405,7 +429,8 @@ Delivery priority inside v1:
 
 Normative rules:
 
-- A session MAY run in single-agent mode or multi-agent workflow mode.
+- A session MAY run in single-agent mode, multi-agent session mode, or multi-agent workflow mode.
+- Multi-agent session mode is user-directed: the user selects the active top-level agent and the daemon routes direct interaction to that agent.
 - Multi-agent execution MUST be modeled as a general directed workflow graph.
 - v1 validates only two workflow topologies:
   - circular
@@ -426,7 +451,7 @@ Coordinator rules:
 
 ### 7.5 Inter-Agent Communication Contract
 
-Inter-agent communication MUST be daemon-orchestrated.
+Inter-agent communication in workflow mode MUST be daemon-orchestrated.
 
 Required rules:
 

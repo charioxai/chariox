@@ -4,6 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentInstance;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
@@ -121,6 +123,7 @@ impl PromptAttachment {
 pub struct PromptQueueItem {
     id: String,
     source_attachment_id: String,
+    target_agent_id: String,
     prompt: String,
     attachments: Vec<PromptAttachment>,
     status: PromptStatus,
@@ -130,12 +133,14 @@ impl PromptQueueItem {
     pub fn new(
         id: impl Into<String>,
         source_attachment_id: impl Into<String>,
+        target_agent_id: impl Into<String>,
         prompt: impl Into<String>,
         status: PromptStatus,
     ) -> Self {
         Self {
             id: id.into(),
             source_attachment_id: source_attachment_id.into(),
+            target_agent_id: target_agent_id.into(),
             prompt: prompt.into(),
             attachments: Vec::new(),
             status,
@@ -153,6 +158,10 @@ impl PromptQueueItem {
 
     pub fn source_attachment_id(&self) -> &str {
         &self.source_attachment_id
+    }
+
+    pub fn target_agent_id(&self) -> &str {
+        &self.target_agent_id
     }
 
     pub fn prompt(&self) -> &str {
@@ -278,6 +287,9 @@ pub struct RuntimeSession {
     execution_mode: SessionExecutionMode,
     status: SessionStatus,
     active_provider_run_id: Option<String>,
+    focused_agent_id: Option<String>,
+    max_agents: i32,
+    agents: Vec<AgentInstance>,
     attachment_ids: BTreeSet<String>,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
@@ -309,6 +321,9 @@ impl RuntimeSession {
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             active_provider_run_id: None,
+            focused_agent_id: None,
+            max_agents: 6,
+            agents: Vec::new(),
             attachment_ids: BTreeSet::new(),
             active_prompt: None,
             queued_prompts: VecDeque::new(),
@@ -353,6 +368,18 @@ impl RuntimeSession {
     pub fn active_provider_run_id(&self) -> Option<&str> {
         self.active_provider_run_id.as_deref()
     }
+    pub fn focused_agent_id(&self) -> Option<&str> {
+        self.focused_agent_id.as_deref()
+    }
+    pub fn max_agents(&self) -> i32 {
+        self.max_agents
+    }
+    pub fn agents(&self) -> &[AgentInstance] {
+        &self.agents
+    }
+    pub fn set_agents(&mut self, agents: Vec<AgentInstance>) {
+        self.agents = agents;
+    }
     pub fn attachment_ids(&self) -> &BTreeSet<String> {
         &self.attachment_ids
     }
@@ -389,6 +416,10 @@ impl RuntimeSession {
 
     pub fn set_active_provider_run(&mut self, provider_run_id: Option<String>) {
         self.active_provider_run_id = provider_run_id;
+    }
+
+    pub fn set_focused_agent(&mut self, agent_id: Option<String>) {
+        self.focused_agent_id = agent_id;
     }
 
     pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {
@@ -533,6 +564,7 @@ impl RuntimeSession {
 
         if next == SessionStatus::Ended {
             self.active_provider_run_id = None;
+            self.focused_agent_id = None;
             self.attachment_ids.clear();
             self.active_prompt = None;
             self.queued_prompts.clear();
@@ -557,7 +589,7 @@ impl RuntimeSession {
     }
 }
 
-fn unix_epoch_ms() -> u64 {
+pub fn unix_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -11,6 +11,7 @@ Planning roadmap derived from `docs/spec-v1.md`.
 - preserve native provider UX while adding orchestration value
 - keep server lightweight with strict security boundaries
 - keep the runtime compatible with multi-agent workflow execution, structured handoffs, and isolated branch worktrees
+- deliver manual multi-agent session UX before daemon-scheduled workflow automation
 
 ## 2. Milestone Structure
 
@@ -31,6 +32,7 @@ Rollout priority:
 
 - first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
 - then expand local capability surface and additional providers
+- then deliver manually directed multi-agent session runtime and split-pane CLI behavior
 - then deliver workflow runtime foundations and concrete multi-agent execution
 - hierarchical topology remains later than circular topology inside the workflow milestone
 
@@ -102,6 +104,7 @@ Status:
 - transcript code-highlighting is now part of this same M3 stabilization phase, using terminal-native markdown/code rendering rather than LSP semantic coloring
 - explicit persistent session management now exists: delete semantics, no-session CLI state, and session id/alias resolution are in the baseline
 - richer OpenCode event rendering is now in the baseline too
+- early multi-agent session plumbing is now in the baseline too: session agent records, focused-agent state, `/agent ...` commands, and `Ctrl+A` cycling
 - next on the TypeScript CLI path is broader client-side integration coverage, then slash-command dispatch and capability wiring
 - slash-command dispatch and capability wiring follow after that client/runtime path is solid
 
@@ -121,6 +124,7 @@ Outcomes:
 - daemon-owned slash-command dispatch for Arroba capabilities
 - Claude Code and Codex provider support after the OpenCode baseline is solid
 - workflow-compatible local capability design so later multi-agent execution can reuse the same surfaces
+- explicitly stop short of split-pane multi-agent runtime delivery; the current agent commands are metadata/focus plumbing, not isolated per-agent execution yet
 
 Exit criteria:
 
@@ -130,10 +134,14 @@ Exit criteria:
 - OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
 - detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
 
-## M4 - Multi-Agent Workflow Runtime
+## M4 - Multi-Agent Session Runtime and Workflow Foundations
 
 Outcomes:
 
+- multiple top-level Arroba-managed agents inside one session, each with its own provider context, prompt target, history, and worktree assignment metadata
+- TypeScript CLI split response/transcript area into one sub-area per session agent
+- `Ctrl+A` and `/agent cycle` switch the active pane/agent, not only footer metadata
+- prompts and provider output route through the focused agent's runtime context
 - structured completion and handoff contracts suitable for multi-agent workflow scheduling
 - circular workflow topology delivered first
 - worktree-isolated parallel branches where required
@@ -142,6 +150,7 @@ Outcomes:
 
 Exit criteria:
 
+- manual multi-agent session execution works locally through the daemon, with visible per-agent panes/history and correct focused-agent prompt routing
 - multi-agent workflow execution works locally through the daemon without breaking the single-agent path
 - workflow concurrency and worktree safety rules are enforced centrally
 

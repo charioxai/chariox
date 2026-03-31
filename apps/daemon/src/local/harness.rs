@@ -24,7 +24,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
     let session = match app.handle_local_request(LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-harness", "worktree-harness"),
     ))? {
-        LocalDaemonResponse::SessionCreated { session } => session,
+        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => unreachable!("create-session must return SessionCreated"),
     };
 
@@ -53,6 +53,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
     let provider_run = match app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
         LaunchProviderRunRequest {
             session_id: session.id().to_string(),
+            agent_id: None,
             adapter_key: "dev-stub".to_string(),
             provider: "claude-code".to_string(),
             account_profile: "default".to_string(),
