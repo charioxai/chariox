@@ -111,6 +111,24 @@ Normative rules:
 - The runtime MUST still be architecture-compatible with future DAGs, bounded cycles, conditional routing, richer aggregation, and other advanced topologies.
 - Circular and hierarchical behavior MUST be implemented as validators and policies over a generic workflow engine, not as topology-specific logic scattered through unrelated services.
 
+## 2.4 Current Delivery Sequencing Rule
+
+Arroba should sequence breadth deliberately.
+
+Current implementation order:
+
+- first close the local development cycle around one provider, `opencode`
+- inside that same cycle, finish agent interactions for harnessing and multi-machine session behavior
+- then polish the TypeScript CLI as the reference client
+- then add multi-platform clients such as web, iOS, and Android on the same daemon/protocol model
+- only after that, expand to additional providers such as Claude Code and Codex and harden the provider-generic adapter/protocol design
+
+Normative interpretation:
+
+- daemon and protocol abstractions MUST remain future-compatible with more providers and clients
+- contributors MUST NOT force early provider-generic complexity that slows down finishing the OpenCode-first runtime
+- multi-platform work should reuse the reference CLI/runtime semantics rather than inventing a second interaction model
+
 ### Protocol-First, Capability-Based Interpretation
 
 Arroba is protocol-first and capability-based:
@@ -124,7 +142,7 @@ Arroba is protocol-first and capability-based:
 
 ### 3.1 Client
 
-Client examples include local terminal clients, web terminals, and third-party messaging adapters (Telegram/Discord/Slack/WhatsApp).
+Client examples include the local terminal client first, then later web/mobile terminal clients and third-party messaging adapters (Telegram/Discord/Slack/WhatsApp).
 
 Responsibilities:
 
@@ -137,13 +155,13 @@ Responsibilities:
 - support an unattached "no session" state so the client can remain open after session deletion or explicit detach
 - emit client-process debug logs into the shared Arroba log root using the daemon/client correlation fields
 
-Current M2 runtime note:
+Current runtime note:
 
 - the local CLI is now a real daemon client over local IPC, not only a harness/test surface
 - the primary local CLI implementation is now a TypeScript OpenTUI client
 - `arroba-cli` currently exists as a Rust launcher for that TypeScript client
-- the previous Rust-only CLI remains available as `arroba-cli-rust`, but it is phased out and should be treated as a fallback/debugging surface rather than the primary implementation target
 - local client-daemon communication currently uses a Unix-socket transport on Unix-like systems
+- web and mobile clients remain later delivery phases and should reuse the same daemon-owned semantics after the CLI is polished
 
 ### 3.2 Machine
 

@@ -23,6 +23,12 @@ It is intentionally transport-agnostic at the message level (WebSocket recommend
 - isolate capability/control errors from terminal stream
 - ensure user-generated in-transit payloads are session-E2E encrypted on remote transport
 
+Current sequencing note:
+
+- OpenCode is the reference provider for the current development cycle
+- protocol and adapter boundaries should stay future-compatible, but they should not be generalized prematurely at the expense of finishing the OpenCode-first runtime
+- web/mobile clients come before multi-provider expansion in the current rollout order
+
 ## 3. Protocol Lanes
 
 ## 3.1 Terminal Lane (Provider Output Stream)
@@ -49,6 +55,7 @@ OpenCode-specific note:
 - OpenCode should graduate from PTY-polled `terminal.output` to adapter-fed output derived from its local event stream
 - incremental assistant text should come from provider message-part delta events
 - terminal rendering remains daemon-owned even when the source is a structured provider event stream
+- the current protocol surface should be proven against OpenCode first before new provider families drive further adapter generalization
 
 ## 3.2 Capability Lane (Structured Daemon Actions)
 
@@ -109,6 +116,7 @@ OpenCode-specific structured adapter contract:
 - `/agent ...` command invoke maps to the provider session command operation
 - turn abort maps to the provider session abort operation
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
+- later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -205,7 +213,10 @@ Current agent-management semantics:
 
 - the local daemon API now includes top-level session-agent management operations (`spawn`, `destroy`, `focus`, `cycle`, `list`)
 - focused-agent state is part of canonical session state and is intended to determine which top-level agent receives direct user interaction
-- the current implementation is still incomplete: agent operations update daemon/client state, but prompt routing, transcript partitioning, and provider runtime isolation do not yet fully follow the selected agent
+- direct prompt submission now targets the focused top-level agent in the local runtime
+- provider runs are now tracked per top-level agent and the daemon can park/resume them as focus changes or the session returns to idle
+- session history and terminal-derived structured output records are now agent-scoped for the local multi-agent path
+- pane-capable clients can now render per-agent transcript surfaces from daemon-owned state, although the current TypeScript CLI split-pane surface is still an initial slice rather than the final generalized layout
 
 Local cancellation policy:
 
@@ -220,7 +231,6 @@ Current M2 runtime note:
 - the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
 - the primary local CLI implementation is now a TypeScript OpenTUI client
 - `arroba-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
-- the legacy Rust-only CLI remains available as `arroba-cli-rust`, but it is phased out and should not be the target for new client work unless the shared daemon contract needs comparison
 - the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
 
 Current session-lifecycle note:
@@ -478,6 +488,8 @@ When a session runs in multi-agent session mode:
 - the daemon MUST maintain a canonical list of top-level session agents
 - one top-level agent MAY be marked focused for direct user interaction
 - prompt submission, runtime notices, and provider output intended for direct interaction SHOULD be agent-scoped
+- the daemon SHOULD treat the focused agent as the direct prompt target for user-submitted prompts
+- provider runs SHOULD be associated with specific top-level agents rather than only with the session at large
 - pane-capable clients SHOULD be able to render one visible sub-area per top-level agent using daemon-owned state and agent-scoped events
 
 Suggested events:

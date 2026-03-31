@@ -2,6 +2,32 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-03-31
+
+### Manual multi-agent session runtime slice
+
+- Landed the first real M4 runtime slice instead of keeping agent handling as footer/chrome-only plumbing.
+- Added daemon-owned top-level agent runtime services under `apps/daemon/src/agent/`.
+- Direct prompt submission now targets `focused_agent_id`.
+- Provider runs are now associated with top-level agents, and the daemon parks/resumes runs as focus changes or the session returns to idle.
+- Session history entries now carry `agent_id`, so provider output, notices, and user prompts can be partitioned by agent in the local runtime.
+- The TypeScript CLI now supports `individual` and `split` multi-agent response modes plus visible per-agent transcript panes/previews.
+- Added shared domain and Prisma updates for focused agents, agent-owned provider runs, and prompt queue targeting.
+
+### Docs alignment update
+
+- Updated roadmap/status docs to reflect that manual multi-agent session runtime is now in progress and no longer just planned plumbing.
+- Updated local-running/protocol notes so they describe focused-agent prompt routing, agent-scoped history/provider-run ownership, and the current split-pane CLI behavior.
+- Re-sequenced the spec/roadmap around an OpenCode-first development cycle: close one provider deeply first, then polish the CLI, then add multi-platform clients, and only after that expand provider support.
+
+### Known follow-up from current code state
+
+- The OpenCode-backed multi-agent runtime path is not fully stable yet.
+- The current daemon integration suite still reports failures around:
+  - provider-run launch health checks in the OpenCode event-stream path
+  - delayed local-response handling through the local transport
+- The current split-pane CLI is still a first slice centered on the primary transcript plus up to two auxiliary panes.
+
 ## 2026-03-30
 
 ### CLI TUI repaint skill
@@ -239,7 +265,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Promoted `apps/cli` to the primary local CLI implementation using TypeScript + OpenTUI.
 - Kept `arroba-cli` as a Rust compatibility launcher that builds and starts the TypeScript client.
-- Retained the previous Rust-only CLI as `arroba-cli-rust`, but marked it as phased out rather than the default local client surface.
+- Removed the previous Rust-only CLI after the TypeScript client became the only supported local CLI implementation.
 
 ### TypeScript CLI hardening update
 

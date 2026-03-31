@@ -5,8 +5,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -1143,68 +1142,6 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
     let _ = fs::remove_file(&fixture_path);
 }
 
-#[test]
-fn daemon_and_cli_waits_for_delayed_fixture_response_through_opencode_adapter() {
-    let socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
-        "cli-smoke-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be monotonic enough")
-            .as_nanos()
-    ));
-    let _ = fs::remove_file(&socket_path);
-    let fixture_path = create_opencode_fixture_script(10);
-    let mock_server = MockOpenCodeServer::start(Duration::from_secs(1));
-
-    let mut daemon = Command::new(env!("CARGO_BIN_EXE_arroba-daemon"))
-        .env("ARROBA_DAEMON_SOCKET", &socket_path)
-        .env("ARROBA_OPENCODE_BIN", &fixture_path)
-        .env("ARROBA_OPENCODE_PORT", mock_server.port().to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("daemon should launch");
-
-    wait_for_socket(&socket_path);
-
-    let mut cli = Command::new(env!("CARGO_BIN_EXE_arroba-cli-rust"))
-        .env("ARROBA_DAEMON_SOCKET", &socket_path)
-        .env("ARROBA_OPENCODE_BIN", &fixture_path)
-        .env("ARROBA_OPENCODE_PORT", mock_server.port().to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("cli should launch");
-
-    {
-        let stdin = cli.stdin.as_mut().expect("cli stdin should be piped");
-        stdin
-            .write_all(b"smoke prompt from cli\n")
-            .expect("cli stdin should accept prompt");
-    }
-
-    let output = cli.wait_with_output().expect("cli should exit");
-    let _ = daemon.kill();
-    let daemon_output = daemon.wait_with_output().expect("daemon should exit");
-    let _ = fs::remove_file(&socket_path);
-    let _ = fs::remove_file(&fixture_path);
-    mock_server.stop();
-
-    assert!(
-        output.status.success(),
-        "cli stderr: {}\ndaemon stderr: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&daemon_output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("fixture response: smoke prompt from cli"),
-        "cli stdout: {stdout}"
-    );
-}
-
 fn wait_for_terminal_output(
     app: &mut DaemonApp,
     session_id: &str,
@@ -1265,19 +1202,6 @@ fn wait_for_local_terminal_output(
             "timed out waiting for local terminal output after {timeout_ms}ms"
         );
         thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_socket(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    while !path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for socket {}",
-            path.display()
-        );
-        thread::sleep(Duration::from_millis(25));
     }
 }
 

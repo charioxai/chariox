@@ -10,6 +10,14 @@ Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under *
 Daemon v1 implementation language baseline is Rust.
 Current primary local CLI implementation baseline is TypeScript/OpenTUI, with the previous Rust-only CLI retained only as a phased-out compatibility fallback.
 
+Current delivery sequence:
+
+1. close the one-provider development cycle around `opencode`
+2. finish local agent interactions for harnessing and multi-machine session behavior on that same OpenCode-first path
+3. polish the TypeScript CLI as the reference client
+4. add multi-platform clients on the same daemon/protocol model, starting with web and then iOS/Android
+5. only after that, expand to additional providers such as Claude Code and Codex and harden the provider-generic adapter/protocol design
+
 ## 1. Product Definition
 
 Arroba v1 is a daemon-centered session orchestrator for native AI coding CLIs.
@@ -28,6 +36,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 
 - Preserve native provider PTY behavior for ordinary prompt and terminal work.
 - Allow multiple local or remote clients to attach to the same session.
+- Finish one provider deeply before expanding provider breadth.
 - Support multiple top-level Arroba-managed agents inside one session, each with its own runtime context.
 - Let users invoke Arroba actions through daemon-owned slash commands.
 - Reserve `/agent ...` as the provider-specific command namespace exposed by Arroba.
@@ -52,6 +61,8 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Local-first execution: sessions run on the user's machine.
 - Graceful degradation: a provider without structured control support must still work through raw PTY passthrough.
 - Cross-platform consistency: terminal behavior should be consistent across web, CLI, desktop, and mobile clients by following a shared terminal protocol/conformance profile.
+- OpenCode-first sequencing: v1 should finish the full local development loop around `opencode` before broadening supported provider families.
+- Future-compatible abstraction without premature breadth: daemon, protocol, and adapter boundaries must stay compatible with later providers and clients, but OpenCode correctness and end-to-end UX take priority over early provider-generalization work.
 
 ## 5. Runtime Components
 
@@ -69,8 +80,8 @@ Clients are terminal interfaces that attach to daemon-managed sessions.
 Examples:
 
 - local CLI client
-- web terminal client
-- future desktop or mobile clients
+- future web terminal client after the CLI is polished
+- future desktop or mobile clients after the web path proves out
 - third-party messaging clients (for example Telegram, Discord, Slack, or WhatsApp adapters)
 
 Responsibilities:
@@ -157,7 +168,7 @@ Provider-specific note:
 
 - some providers MAY expose a richer local session/event API in addition to PTY traffic
 - when that API is stable and supported by the adapter, Arroba MAY derive provider output, turn lifecycle, and command discovery from that structured surface instead of from PTY silence or screen scraping
-- OpenCode is the first planned provider-specific use of this model
+- OpenCode is the current reference provider-specific use of this model
 
 ### 6.2 Capability Lane
 
@@ -198,6 +209,7 @@ OpenCode-specific v1.1 target:
 - prompt submission should map to OpenCode session operations rather than PTY writes
 - turn completion should map to OpenCode session/message lifecycle signals rather than daemon idle timers
 - PTY integration remains the fallback path for providers that do not expose a comparable structured surface
+- OpenCode remains the reference provider for the current development cycle; later provider adapters must fit behind the same daemon/client contract rather than forcing that contract to be generalized prematurely
 
 ### 6.4 Slash Command System
 
@@ -306,8 +318,8 @@ Required rules:
 
 Implementation note for the current codebase:
 
-- the daemon and TypeScript CLI already expose partial top-level agent plumbing (`spawn`, `destroy`, `focus`, `list`, `cycle`, and focused-agent state)
-- that plumbing is not sufficient for v1 multi-agent session behavior until prompt routing, transcript/history separation, and runtime isolation follow the selected agent
+- the daemon and TypeScript CLI now expose a first real multi-agent session slice: `spawn`, `destroy`, `focus`, `list`, `cycle`, focused-agent prompt targeting, agent-scoped history metadata, and initial split-pane transcript behavior
+- this slice still needs OpenCode-path stabilization, broader pane/layout completion, and multi-machine/runtime hardening before the one-provider development cycle can be considered closed
 
 ### 7.1.2 Session Lifecycle Semantics
 
@@ -404,6 +416,16 @@ Operational behavior:
 - `account_profile` selects a provider-native local account/config context
 - it is not an Arroba-managed credential container
 - adapters MAY map it to provider-specific config roots, profile names, or environment selections
+
+### 7.2.1.1 Provider Rollout Order
+
+Provider breadth is intentionally sequenced late.
+
+Required rules:
+
+- OpenCode is the only provider that needs to be fully closed end-to-end before provider expansion begins.
+- Multi-provider abstractions in v1 MUST be designed so later adapters can fit cleanly, but they MUST NOT block finishing the OpenCode-first runtime, harnessing, multi-machine, and client UX work.
+- Claude Code, Codex, and broader provider-generic adapter/protocol work come after the OpenCode-first local cycle and after the reference CLI plus multi-platform client surfaces have stabilized.
 
 ### 7.2.2 Provider-Native Subagents
 

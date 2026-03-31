@@ -11,7 +11,6 @@ This checklist starts with the OpenCode structured-adapter upgrade that follows 
 Client-surface note:
 
 - the primary local CLI surface for M3 is the TypeScript OpenTUI client in `apps/cli`
-- `arroba-cli-rust` remains available only as a phased-out comparison/fallback path and should not receive new feature work by default
 
 ## 1. Target M3 outcomes
 
@@ -103,7 +102,7 @@ Current state: `ARROBA_LOG_DIR` overrides the default; otherwise Arroba uses `XD
   - TypeScript CLI
   - server process
   - future provider-side helper processes when Arroba launches them directly
-Current state: daemon, Rust CLI launcher, TypeScript CLI, and server are on the shared logger; provider-side helper processes remain pending.
+Current state: daemon, TypeScript CLI launcher, TypeScript CLI, and server are on the shared logger; provider-side helper processes remain pending.
 - [ ] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
 - [x] Define default privacy policy for logs:
   - metadata/error logs by default

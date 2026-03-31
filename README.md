@@ -9,7 +9,8 @@ The project is intentionally local-first. A daemon owns live sessions on the use
 M0, "Foundations", is complete in this repository.
 M1, "Core Session Runtime", is complete.
 M2, "End-to-End Local OpenCode Baseline", is complete.
-The immediate next milestone is M3, "Local Capability Surface and Provider Expansion".
+M3 is largely delivered for the local baseline hardening work.
+M4 is now in progress with the first manual multi-agent session runtime slice landed in `main`.
 
 v1 scope includes both:
 
@@ -19,11 +20,10 @@ v1 scope includes both:
 
 Current delivery priority:
 
-- first: local capabilities, slash commands, and more providers on top of the now-working local OpenCode path
-- then: manually directed multi-agent session runtime and CLI UX
-- then: multi-agent workflows
-- then: relay/web surfaces
-- then: provider switching, memory, compaction, and per-agent extensions such as MCPs and skills
+- first: close the OpenCode-first runtime cycle, including capabilities, agent harnessing behavior, and multi-machine session work
+- then: polish the TypeScript CLI as the reference client
+- then: add multi-platform clients such as web and iOS/Android on the same daemon/protocol model
+- finally: add more providers such as Claude Code and Codex and harden the generic provider-adapter/protocol shape
 
 The current codebase provides:
 
@@ -32,16 +32,17 @@ The current codebase provides:
 - a shared domain package for workflow-oriented core v1 entities
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
-- early session-agent plumbing in the daemon and TypeScript CLI: agent records, focused-agent state, `/agent ...` management commands, and `Ctrl+A` focus cycling
-- a Rust compatibility launcher for the TypeScript CLI plus the phased-out legacy Rust CLI binary retained as `arroba-cli-rust`
+- a real manual multi-agent session slice in the daemon and TypeScript CLI: agent records, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/agent ...` management commands, `Ctrl+A` focus cycling, and `individual`/`split` response views
+- a Rust compatibility launcher for the TypeScript CLI
 - a local daemon smoke harness for managed-session flows
 - a Prisma schema aligned with workflow-oriented runtime entities
 - baseline CI for TypeScript and Rust checks
 
 Current implementation caveat:
 
-- the new agent commands currently manage session agent metadata and focused-agent state, but prompts, provider routing, and transcript rendering are still effectively single-agent
-- split-pane multi-agent history rendering and isolated per-agent runtime context are planned next, before daemon-scheduled workflow automation
+- the OpenCode-backed multi-agent path still needs stabilization; the daemon integration suite is not fully green
+- the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
+- daemon-scheduled workflow execution still remains the next major M4 step after this manual multi-agent runtime slice
 
 The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
 
@@ -69,9 +70,9 @@ The project specification and architecture remain the primary source of truth fo
 
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
-The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. Broader capability work, more providers, workflows, relay/web support, and memory-oriented features follow in later milestones.
+The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. The near-term plan is to close that one-provider cycle fully before broadening to more clients or more providers.
 
-The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper. The previous Rust-only CLI still exists as `arroba-cli-rust`, but it is now phased out and should be treated only as a fallback/debugging path while the TypeScript client is hardened.
+The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
 
 ### `apps/cli`
 
@@ -161,18 +162,10 @@ export ARROBA_OPENCODE_PORT=43111
 pnpm --filter @arroba/cli run dev
 ```
 
-Phased-out legacy Rust CLI fallback:
-
-```bash
-export ARROBA_OPENCODE_PORT=43111
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli-rust
-```
-
 Current migration status:
 
 - `apps/cli` is the primary local client implementation
 - `arroba-cli` is a compatibility launcher for that TypeScript client
-- `arroba-cli-rust` still exists, but new CLI work should target the TypeScript client unless a daemon-contract issue requires checking the legacy path
 
 Current local CLI controls:
 
@@ -181,14 +174,15 @@ Current local CLI controls:
 - `/session create [alias]` creates and attaches to a new session
 - `/session attach <ref>` attaches to a session by full id, unique id prefix, alias, or unique alias prefix within the current workspace
 - `/session delete [ref]` deletes the current or referenced session; deleting the active session returns the CLI to its no-session landing state
-- experimental agent-management commands exist today:
+- manual multi-agent session commands exist today:
   - `/agent spawn [alias] [model]`
   - `/agent delete [name-or-alias]`
   - `/agent focus <id>`
   - `/agent list`
   - `/agent cycle`
   - `Ctrl+A` cycles focused agent in the current session
-- these agent controls are currently partial: they update session agent state and footer/chrome, but they do not yet provide isolated per-agent transcript panes or per-agent prompt/runtime routing
+- `/view <split|individual>` switches between split-pane and single-transcript multi-agent views
+- these agent controls now drive the local manual multi-agent runtime path: prompts follow the focused agent, the daemon tracks provider runs per agent, and the TypeScript CLI can render individual or split multi-agent transcript views
 
 Optional executable override:
 

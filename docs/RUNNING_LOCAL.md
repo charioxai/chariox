@@ -11,7 +11,6 @@ This document explains how to run the local Arroba processes that exist today:
 - `arroba-daemon`
 - `arroba-cli`
 - the direct TypeScript CLI development path
-- the phased-out Rust CLI fallback
 
 It also summarizes the current env vars and local configuration knobs that affect those processes.
 
@@ -23,8 +22,6 @@ Today the local baseline is two main processes:
 2. `arroba-cli`
 
 `arroba-cli` is currently a Rust launcher that builds and starts the primary TypeScript CLI from `apps/cli`.
-
-The old Rust-only CLI still exists as `arroba-cli-rust`, but it is phased out and should be treated only as a fallback/debugging path.
 
 ## 3. Prerequisites
 
@@ -133,17 +130,7 @@ pnpm --filter @arroba/cli run dev
 
 That path still expects the daemon to already be running.
 
-## 8. Running The Phased-Out Rust CLI
-
-Fallback/debug-only path:
-
-```bash
-cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli-rust
-```
-
-Use this only when comparing behavior or debugging a daemon-contract issue. New client work should target `apps/cli`.
-
-## 9. Typical Local Startup Flow
+## 8. Typical Local Startup Flow
 
 In terminal 1:
 
@@ -159,7 +146,7 @@ export ARROBA_OPENCODE_PORT=43111
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
 ```
 
-## 10. Current CLI Controls
+## 9. Current CLI Controls
 
 Inside the CLI:
 
@@ -169,20 +156,25 @@ Inside the CLI:
   - `/session create [alias]`
   - `/session attach <ref>`
   - `/session delete [ref]`
-- experimental agent-management commands:
+- manual multi-agent session commands:
   - `/agent spawn [alias] [model]`
   - `/agent delete [name-or-alias]`
   - `/agent focus <id>`
   - `/agent list`
   - `/agent cycle`
   - `Ctrl+A` cycles focus to the next session agent
+- `/view <split|individual>` switches between the focused transcript view and the current split-pane response layout
 - deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
 
 Current agent-command note:
 
-- the daemon and TypeScript CLI now track multiple top-level agents per session plus a focused-agent id
-- today this is still partial plumbing: the footer/chrome and agent list update, but prompt submission, transcript rendering, and provider runtime behavior are still effectively single-agent
-- the intended next step is one sub-area per agent, each with its own history/runtime context, with `Ctrl+A` cycling the active pane/agent
+- the daemon and TypeScript CLI now provide a real manual multi-agent session path for the local runtime
+- the focused agent is the direct prompt target
+- provider runs are tracked per top-level agent and can be parked/resumed as focus changes or the session goes idle
+- session history and streamed output records now carry `agent_id`, which the CLI uses for per-agent transcript views
+- `/view individual` and `/view split` switch between a single focused transcript and the current split-pane response layout
+- the current split-pane UI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
+- daemon-scheduled workflow execution is still not implemented, and the OpenCode-backed multi-agent path still needs stabilization work
 
 Outside the TUI:
 
@@ -220,7 +212,7 @@ Example:
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- logs --follow
 ```
 
-## 11. Session Selection Behavior
+## 10. Session Selection Behavior
 
 By default, the CLI tries to reattach before it creates anything new.
 
@@ -267,7 +259,7 @@ cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli -- \
   --worktree /tmp/demo-workspace
 ```
 
-## 12. Current Local Configuration
+## 11. Current Local Configuration
 
 ### 12.1 Transcript Highlighting
 
@@ -340,7 +332,7 @@ Then run both the daemon and the CLI in shells that share that env var.
 
 See [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md) for the full logging guide.
 
-## 13. Troubleshooting
+## 12. Troubleshooting
 
 ### The CLI cannot connect to the daemon
 
@@ -380,11 +372,11 @@ or inspect the shared NDJSON files directly:
 tail -f ~/.local/state/arroba/logs/*.ndjson
 ```
 
-## 14. Current Limitations
+## 13. Current Limitations
 
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.
-- `arroba-cli-rust` is still present, but it is no longer the primary client path.
-- The current local runtime still has one effective prompt/runtime path even though session-local agent records and focus commands now exist.
-- Multi-agent split-pane history rendering, per-agent prompt routing, and isolated per-agent runtime context are not implemented yet.
-- Slash-command capability work and broader provider support remain in M3; full manual multi-agent session UX follows immediately after that stabilization work.
+- the previous Rust-only CLI has been removed; the supported local client paths are `arroba-cli` and direct `apps/cli` development
+- The OpenCode-backed multi-agent runtime path is not fully stable yet; the daemon integration suite still has failing multi-agent adapter scenarios.
+- The current split-pane UI is still limited to the primary transcript plus up to two auxiliary panes even though the runtime model now tracks more session agents than that.
+- Slash-command capability work, broader provider support, and daemon-scheduled workflow execution remain open beyond the current manual multi-agent slice.

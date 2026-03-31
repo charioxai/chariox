@@ -11,6 +11,7 @@ import { batch, createEffect, createMemo, createSignal, onCleanup, onMount } fro
 import { createStore, produce, reconcile } from "solid-js/store"
 
 import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
+import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
@@ -33,6 +34,7 @@ import {
   selectConfiguredVariant,
   type ProviderCatalog,
 } from "./provider-catalog.js"
+import { computeSplitPaneGeometry, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
@@ -45,7 +47,6 @@ import {
   getToolActivityLabel,
   reconcileWorkingStateFromSession,
   resolveStreamingAgentId,
-  resolveVisibleTranscriptAgentId,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
 import {
@@ -69,6 +70,12 @@ import {
   formatSessionList,
   selectAttachableSession,
 } from "./sessions.js"
+import {
+  agentPaneStatusBadge,
+  buildSplitPaneFooterState,
+  reflectedDistance,
+  type StatusBadgeTone,
+} from "./split-pane-footer.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 import {
   arrobaArtFrame,
@@ -327,8 +334,6 @@ type TranscriptEntryRenderable = {
 }
 
 type TranscriptSurfaceTone = "default" | "focused" | "faded"
-
-type StatusBadgeTone = "idle" | "working" | "disconnected" | "error"
 
 type CliOptions = {
   socketPath?: string
@@ -852,19 +857,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
   const splitAgentResponseMode = () => isAttached() && multiAgentResponseLayout() === "split"
-  const primarySplitAgent = () => sessionState().agents[0] ?? null
-  const secondarySplitAgent = () => {
-    return sessionState().agents[1] ?? null
-  }
-  const tertiarySplitAgent = () => {
-    return sessionState().agents[2] ?? null
-  }
-  const visibleTranscriptAgentId = () => resolveVisibleTranscriptAgentId(
-    splitAgentResponseMode(),
-    primarySplitAgent()?.id ?? null,
+  const responsePaneSelection = createMemo(() => selectResponsePaneAgents(
+    sessionState().agents,
     focusedAgentId(),
-  )
-  const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), primarySplitAgent()?.id === focusedAgentId())
+    splitAgentResponseMode(),
+  ))
+  const responsePrimaryAgent = () => responsePaneSelection().primary
+  const responseSecondaryAgent = () => responsePaneSelection().secondary
+  const responseTertiaryAgent = () => responsePaneSelection().tertiary
+  const visibleTranscriptAgentId = () => responsePaneSelection().visibleTranscriptAgentId
+  const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
     return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
   }
@@ -1505,10 +1507,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     for (const agent of sessionState().agents) {
       setAgentTranscriptEntries(
         agent.id,
-        trimAgentTranscriptEntries(
-          collapseHistoricalTurns(currentAgentPaneEntries(agent.id), false),
-          auxiliaryAgentPaneTools(agent.id),
-        ),
+        trimAgentPaneEntries({
+          entries: collapseHistoricalTurns(currentAgentPaneEntries(agent.id), false),
+          maxEntries: LIVE_TRANSCRIPT_LIMIT,
+          maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+          onTrimmedMergeKey: (mergeKey) => {
+            auxiliaryAgentPaneTools(agent.id).delete(mergeKey)
+          },
+        }),
       )
     }
   }
@@ -2108,7 +2114,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     const targetAgentId = agentId ?? focusedAgentId()
-    if (splitAgentResponseMode() && targetAgentId && targetAgentId !== primarySplitAgent()?.id) {
+    if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
       const paneEntries = agentPaneEntries()[targetAgentId] ?? []
       appendTranscriptEntryToAgentPane(targetAgentId, {
         role: "user",
@@ -2722,46 +2728,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const providerRun = providerRunState()
     const fallbackModel = providerRun?.model ?? null
     const fallbackVariant = providerRun?.variant ?? null
-    const primaryAgent = splitAgentResponseMode()
-      ? primarySplitAgent()
-      : (sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null)
-    const secondaryAgent = splitAgentResponseMode() ? secondarySplitAgent() : null
-    const tertiaryAgent = splitAgentResponseMode() ? tertiarySplitAgent() : null
-    const primaryFocused = primaryAgent?.id === focusedAgentId()
-    const secondaryFocused = secondaryAgent?.id === focusedAgentId()
-    const tertiaryFocused = tertiaryAgent?.id === focusedAgentId()
-    const mode = sessionStatusMode()
-    const currentStreamAgentId = streamingAgentId()
-    const primaryBadge = mode === "disconnected"
-      ? { label: "DISCONNECTED", tone: "disconnected" as const }
-      : agentPaneStatusBadge(primaryAgent, agentActivityLabel(primaryAgent?.id), primaryAgent?.id === currentStreamAgentId)
-    const secondaryBadge = mode === "disconnected"
-      ? { label: "DISCONNECTED", tone: "disconnected" as const }
-      : agentPaneStatusBadge(secondaryAgent, agentActivityLabel(secondaryAgent?.id), secondaryAgent?.id === currentStreamAgentId)
-    const tertiaryBadge = mode === "disconnected"
-      ? { label: "DISCONNECTED", tone: "disconnected" as const }
-      : agentPaneStatusBadge(tertiaryAgent, agentActivityLabel(tertiaryAgent?.id), tertiaryAgent?.id === currentStreamAgentId)
+    const footerState = buildSplitPaneFooterState({
+      mode: sessionStatusMode(),
+      selection: responsePaneSelection(),
+      focusedAgentId: focusedAgentId(),
+      streamingAgentId: streamingAgentId(),
+      activityLabels: agentActivityLabels(),
+      catalog: providerCatalogState(),
+      fallbackModel,
+      fallbackVariant,
+    })
 
-    renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, primaryBadge.label, primaryBadge.tone)
-    renderStatusBadgeTexts(responseSecondaryFooterBadgeTexts, secondaryBadge.label, secondaryBadge.tone)
-    renderStatusBadgeTexts(responseTertiaryFooterBadgeTexts, tertiaryBadge.label, tertiaryBadge.tone)
+    renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, footerState.primary.badge.label, footerState.primary.badge.tone)
+    renderStatusBadgeTexts(responseSecondaryFooterBadgeTexts, footerState.secondary.badge.label, footerState.secondary.badge.tone)
+    renderStatusBadgeTexts(responseTertiaryFooterBadgeTexts, footerState.tertiary.badge.label, footerState.tertiary.badge.tone)
     setTextRenderable(
       responsePrimaryFooterText,
-      formatSplitPaneFooter(primaryAgent, providerCatalogState(), fallbackModel, fallbackVariant),
-      primaryFocused ? theme.text : theme.textMuted,
-      primaryFocused ? TextAttributes.BOLD : TextAttributes.NONE,
+      footerState.primary.info,
+      footerState.primary.focused ? theme.text : theme.textMuted,
+      footerState.primary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
     )
     setTextRenderable(
       responseSecondaryFooterText,
-      formatSplitPaneFooter(secondaryAgent, providerCatalogState(), fallbackModel, fallbackVariant),
-      secondaryFocused ? theme.text : theme.textMuted,
-      secondaryFocused ? TextAttributes.BOLD : TextAttributes.NONE,
+      footerState.secondary.info,
+      footerState.secondary.focused ? theme.text : theme.textMuted,
+      footerState.secondary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
     )
     setTextRenderable(
       responseTertiaryFooterText,
-      formatSplitPaneFooter(tertiaryAgent, providerCatalogState(), fallbackModel, fallbackVariant),
-      tertiaryFocused ? theme.text : theme.textMuted,
-      tertiaryFocused ? TextAttributes.BOLD : TextAttributes.NONE,
+      footerState.tertiary.info,
+      footerState.tertiary.focused ? theme.text : theme.textMuted,
+      footerState.tertiary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
     )
     responsePrimaryFooterBox?.requestRender()
     responseSecondaryFooterBox?.requestRender()
@@ -2962,15 +2959,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     const split = splitAgentResponseMode()
-    const secondaryAgent = split ? secondarySplitAgent() : null
-    const tertiaryAgent = split ? tertiarySplitAgent() : null
-    const primaryAgent = split ? primarySplitAgent() : (sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null)
+    const {
+      primary: primaryAgent,
+      secondary: secondaryAgent,
+      tertiary: tertiaryAgent,
+    } = responsePaneSelection()
     const primaryFocused = primaryAgent?.id === focusedAgentId()
     const secondaryFocused = secondaryAgent?.id === focusedAgentId()
     const tertiaryFocused = tertiaryAgent?.id === focusedAgentId()
-    const showSecondaryPane = split && Boolean(secondaryAgent)
-    const showTertiaryPane = split && Boolean(tertiaryAgent)
-    const splitPaneWidth = Math.max(24, Math.floor(Math.max(40, dimensions().width - 8) / 2))
+    const geometry = computeSplitPaneGeometry(
+      dimensions().width,
+      split,
+      Boolean(secondaryAgent),
+      Boolean(tertiaryAgent),
+    )
     const primarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, primaryFocused))
     const secondarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, secondaryFocused))
     const tertiarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, tertiaryFocused))
@@ -2983,31 +2985,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const tertiaryBackground = split
       ? tertiarySurface.panel
       : theme.backgroundElement
-    responseLayoutBox.flexDirection = showTertiaryPane ? "column" : "row"
-    responseLayoutBox.gap = split && (showSecondaryPane || showTertiaryPane) ? 1 : 0
-    responseTopRowBox.visible = split ? (showSecondaryPane || showTertiaryPane) : true
+    responseLayoutBox.flexDirection = geometry.layoutDirection
+    responseLayoutBox.gap = geometry.layoutGap
+    responseTopRowBox.visible = geometry.topRowVisible
     responseTopRowBox.flexDirection = "row"
-    responseTopRowBox.gap = showSecondaryPane ? 1 : 0
-    responseTopRowBox.flexGrow = showTertiaryPane ? 1 : 1
+    responseTopRowBox.gap = geometry.topRowGap
+    responseTopRowBox.flexGrow = 1
     responseTopRowBox.width = "auto"
-    responseTopRowBox.flexBasis = showTertiaryPane ? 0 : "auto"
-    responseTopRowBox.minHeight = showTertiaryPane ? 0 : null
+    responseTopRowBox.flexBasis = geometry.topRowFlexBasis
+    responseTopRowBox.minHeight = geometry.topRowMinHeight
 
     responsePrimaryPane.border = split ? ["left", "top", "bottom"] : ["left"]
     responsePrimaryPane.borderColor = split ? (primaryFocused ? theme.primary : theme.borderSubtle) : theme.borderSubtle
     responsePrimaryPane.backgroundColor = primaryBackground
-    responsePrimaryPane.flexGrow = split && showSecondaryPane ? 0 : 1
-    responsePrimaryPane.width = split && showSecondaryPane ? splitPaneWidth : "auto"
-    responsePrimaryPane.flexBasis = split && showSecondaryPane ? splitPaneWidth : "auto"
-    responsePrimaryPane.minWidth = split && showSecondaryPane ? splitPaneWidth : null
-    responsePrimaryPane.maxWidth = split && showSecondaryPane ? splitPaneWidth : null
+    responsePrimaryPane.flexGrow = geometry.primaryFlexGrow
+    responsePrimaryPane.width = geometry.primaryWidth
+    responsePrimaryPane.flexBasis = geometry.primaryFlexBasis
+    responsePrimaryPane.minWidth = geometry.primaryMinWidth
+    responsePrimaryPane.maxWidth = geometry.primaryMaxWidth
 
-    responseSecondaryPane.visible = split && showSecondaryPane
-    responseSecondaryPane.width = split && showSecondaryPane ? splitPaneWidth : 0
-    responseSecondaryPane.flexBasis = split && showSecondaryPane ? splitPaneWidth : 0
-    responseSecondaryPane.minWidth = split && showSecondaryPane ? splitPaneWidth : 0
-    responseSecondaryPane.maxWidth = split && showSecondaryPane ? splitPaneWidth : 0
-    responseSecondaryPane.border = split && showSecondaryPane ? ["left", "top", "bottom", "right"] : false
+    responseSecondaryPane.visible = geometry.showSecondaryPane
+    responseSecondaryPane.width = geometry.secondaryWidth
+    responseSecondaryPane.flexBasis = geometry.secondaryFlexBasis
+    responseSecondaryPane.minWidth = geometry.secondaryMinWidth
+    responseSecondaryPane.maxWidth = geometry.secondaryMaxWidth
+    responseSecondaryPane.border = geometry.showSecondaryPane ? ["left", "top", "bottom", "right"] : false
     responseSecondaryPane.borderColor = secondaryFocused ? theme.primary : theme.borderSubtle
     responseSecondaryPane.backgroundColor = secondaryBackground
     responseSecondaryPane.paddingLeft = 0
@@ -3015,13 +3017,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responseSecondaryPane.paddingTop = 0
     responseSecondaryPane.paddingBottom = 0
 
-    responseTertiaryPane.visible = showTertiaryPane
-    responseTertiaryPane.width = showTertiaryPane ? "auto" : 0
-    responseTertiaryPane.flexGrow = showTertiaryPane ? 1 : 0
-    responseTertiaryPane.flexBasis = showTertiaryPane ? 0 : 0
-    responseTertiaryPane.minHeight = showTertiaryPane ? 0 : 0
+    responseTertiaryPane.visible = geometry.showTertiaryPane
+    responseTertiaryPane.width = geometry.tertiaryWidth
+    responseTertiaryPane.flexGrow = geometry.tertiaryFlexGrow
+    responseTertiaryPane.flexBasis = geometry.tertiaryFlexBasis
+    responseTertiaryPane.minHeight = geometry.tertiaryMinHeight
     responseTertiaryPane.maxHeight = null
-    responseTertiaryPane.border = showTertiaryPane ? ["left", "top", "bottom", "right"] : false
+    responseTertiaryPane.border = geometry.showTertiaryPane ? ["left", "top", "bottom", "right"] : false
     responseTertiaryPane.borderColor = tertiaryFocused ? theme.primary : theme.borderSubtle
     responseTertiaryPane.backgroundColor = tertiaryBackground
     responseTertiaryPane.paddingLeft = 0
@@ -3052,12 +3054,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       responsePrimaryFooterBox.requestRender()
     }
     if (responseSecondaryFooterBox) {
-      responseSecondaryFooterBox.visible = split && showSecondaryPane
+      responseSecondaryFooterBox.visible = geometry.showSecondaryPane
       responseSecondaryFooterBox.backgroundColor = secondaryBackground
       responseSecondaryFooterBox.requestRender()
     }
     if (responseTertiaryFooterBox) {
-      responseTertiaryFooterBox.visible = showTertiaryPane
+      responseTertiaryFooterBox.visible = geometry.showTertiaryPane
       responseTertiaryFooterBox.backgroundColor = tertiaryBackground
       responseTertiaryFooterBox.requestRender()
     }
@@ -3093,7 +3095,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     logViewDebug("apply response layout", {
       split,
-      split_pane_width: splitPaneWidth,
+      split_pane_width: geometry.splitPaneWidth,
       secondary_visible: responseSecondaryPane.visible,
       tertiary_visible: responseTertiaryPane.visible,
       primary_width: responsePrimaryPane.width,
@@ -3128,13 +3130,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (transcriptScrollbox) {
       rebuildTranscript()
     }
-    const secondaryAgentId = secondarySplitAgent()?.id
-    if (secondaryAgentId) {
-      rebuildAuxiliaryAgentPane(secondaryAgentId)
-    }
-    const tertiaryAgentId = tertiarySplitAgent()?.id
-    if (tertiaryAgentId) {
-      rebuildAuxiliaryAgentPane(tertiaryAgentId)
+    for (const agentId of splitPaneAuxiliaryAgentIds(sessionState().agents, splitAgentResponseMode())) {
+      rebuildAuxiliaryAgentPane(agentId)
     }
   }
 
@@ -3276,42 +3273,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       [agentId]: sanitizedEntries,
     }))
     setAgentPanePreview(agentId, formatTranscriptPreview(sanitizedEntries))
-    if (splitAgentResponseMode() && agentId === primarySplitAgent()?.id) {
+    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
       replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })))
     }
-    if (splitAgentResponseMode() && agentId === secondarySplitAgent()?.id) {
+    if (splitAgentResponseMode() && agentId === responseSecondaryAgent()?.id) {
       rebuildAuxiliaryAgentPane(agentId)
     }
-    if (splitAgentResponseMode() && agentId === tertiarySplitAgent()?.id) {
+    if (splitAgentResponseMode() && agentId === responseTertiaryAgent()?.id) {
       rebuildAuxiliaryAgentPane(agentId)
     }
     if (splitAgentResponseMode()) {
       scheduleResponsePaneRepaint()
     }
-  }
-
-  const trimAgentTranscriptEntries = (items: TranscriptEntry[], toolState?: Map<string, ToolTranscriptUpdate>) => {
-    let totalChars = items.reduce((sum, entry) => sum + entry.text.length, 0)
-    let removeCount = 0
-
-    while (
-      items.length - removeCount > LIVE_TRANSCRIPT_LIMIT
-      || (totalChars > LIVE_TRANSCRIPT_MAX_CHARS && removeCount < items.length - 1)
-    ) {
-      totalChars -= items[removeCount]?.text.length ?? 0
-      removeCount += 1
-    }
-
-    if (removeCount === 0) {
-      return items
-    }
-
-    for (const entry of items.slice(0, removeCount)) {
-      if (entry.mergeKey) {
-        toolState?.delete(entry.mergeKey)
-      }
-    }
-    return items.slice(removeCount)
   }
 
   const auxiliaryAgentPaneRenderables = (agentId: string) => {
@@ -3333,7 +3306,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const currentAgentPaneEntries = (agentId: string) => {
-    if (splitAgentResponseMode() && agentId === primarySplitAgent()?.id) {
+    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
       return entries.filter(Boolean).map((entry) => ({ ...entry }))
     }
     return (agentPaneEntries()[agentId] ?? []).map((entry) => ({ ...entry }))
@@ -3489,7 +3462,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setAgentTranscriptEntries(
       agentId,
-      trimAgentTranscriptEntries([...currentEntries, nextEntry], auxiliaryAgentPaneTools(agentId)),
+      trimAgentPaneEntries({
+        entries: [...currentEntries, nextEntry],
+        maxEntries: LIVE_TRANSCRIPT_LIMIT,
+        maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+        onTrimmedMergeKey: (mergeKey) => {
+          auxiliaryAgentPaneTools(agentId).delete(mergeKey)
+        },
+      }),
     )
   }
 
@@ -3525,7 +3505,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             candidate.sourceText = normalizedSource
           }
         }
-        setAgentTranscriptEntries(agentId, trimAgentTranscriptEntries(nextEntries, auxiliaryAgentPaneTools(agentId)))
+        setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
+          entries: nextEntries,
+          maxEntries: LIVE_TRANSCRIPT_LIMIT,
+          maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+          onTrimmedMergeKey: (mergeKey) => {
+            auxiliaryAgentPaneTools(agentId).delete(mergeKey)
+          },
+        }))
         return
       }
     }
@@ -3533,7 +3520,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const last = nextEntries.at(-1)
     if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
       last.text += normalized
-      setAgentTranscriptEntries(agentId, trimAgentTranscriptEntries(nextEntries, auxiliaryAgentPaneTools(agentId)))
+      setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
+        entries: nextEntries,
+        maxEntries: LIVE_TRANSCRIPT_LIMIT,
+        maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+        onTrimmedMergeKey: (mergeKey) => {
+          auxiliaryAgentPaneTools(agentId).delete(mergeKey)
+        },
+      }))
       return
     }
 
@@ -3545,7 +3539,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ...(mergeKey ? { mergeKey } : {}),
       ...(normalizedSource !== undefined ? { sourceText: normalizedSource } : {}),
     })
-    setAgentTranscriptEntries(agentId, trimAgentTranscriptEntries(nextEntries, auxiliaryAgentPaneTools(agentId)))
+    setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
+      entries: nextEntries,
+      maxEntries: LIVE_TRANSCRIPT_LIMIT,
+      maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+      onTrimmedMergeKey: (mergeKey) => {
+        auxiliaryAgentPaneTools(agentId).delete(mergeKey)
+      },
+    }))
   }
 
   const appendToolUpdateToAgentPane = (agentId: string, chunk: string) => {
@@ -3568,7 +3569,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!isAttached()) {
       return
     }
-    const agentId = splitAgentResponseMode() ? primarySplitAgent()?.id ?? null : focusedAgentId()
+    const agentId = responsePrimaryAgent()?.id ?? null
     const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
     if (!agentId) {
       return
@@ -3581,66 +3582,39 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const refreshAgentPanes = async (session: RuntimeSession) => {
-    const previews: Record<string, string> = {}
-    const nextPaneEntries: Record<string, TranscriptEntry[]> = {}
-    const nextExpandedTurnIdsByAgent: Record<string, number[]> = {}
-    const nextFocusedAgentId = session.focused_agent_id ?? session.agents[0]?.id ?? null
-    const nextPrimaryAgentId = session.agents[0]?.id ?? null
-    const nextVisibleAgentId = resolveVisibleTranscriptAgentId(
-      splitAgentResponseMode(),
-      nextPrimaryAgentId,
-      nextFocusedAgentId,
-    )
-    let visibleEntries: TranscriptEntry[] = []
-    let visibleCursor: SessionHistoryCursor | null = null
-
-    for (const agent of session.agents) {
-      const historyPage = await getSessionHistory(client, session.id, null, agent.id)
-      let resolvedHistoryEntries = hydrateTranscriptEntries(historyPage.entries)
-      let nextResolvedCursor = historyPage.next_cursor
-      while (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user" && nextResolvedCursor !== null) {
-        const olderPage = await getSessionHistory(client, session.id, nextResolvedCursor, agent.id)
-        resolvedHistoryEntries = stitchPrependedHistory(hydrateTranscriptEntries(olderPage.entries), resolvedHistoryEntries)
-        nextResolvedCursor = olderPage.next_cursor
-      }
-
-      const availableTurnIds = new Set(
-        resolvedHistoryEntries
-          .map((entry) => entry.turnId)
-          .filter((turnId): turnId is number => typeof turnId === "number"),
-      )
-      const expandedTurnIds = (expandedTurnIdsByAgent()[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
-      if (expandedTurnIds.length > 0) {
-        nextExpandedTurnIdsByAgent[agent.id] = expandedTurnIds
-      }
-      const paneEntries = reindexTranscriptEntries(
-        applyExpandedTurns(
-          collapseHistoricalTurns(
-            resolvedHistoryEntries,
-            hasPromptWork(session),
-          ),
-          expandedTurnIds,
-        ),
-        0,
-      )
-      nextPaneEntries[agent.id] = paneEntries
-      previews[agent.id] = formatTranscriptPreview(paneEntries)
-      if (agent.id === nextVisibleAgentId) {
-        visibleEntries = paneEntries.map((entry) => ({ ...entry }))
-        visibleCursor = nextResolvedCursor
-      }
-    }
+    const nextPaneState = await refreshAgentPaneState<AgentInstance, SessionHistoryPageEntry, TranscriptEntry, SessionHistoryCursor>({
+      session,
+      hasPromptWork: hasPromptWork(session),
+      expandedTurnIdsByAgent: expandedTurnIdsByAgent(),
+      resolveVisibleAgentId: (agents, focusedAgentId) =>
+        selectResponsePaneAgents(agents, focusedAgentId, splitAgentResponseMode()).visibleTranscriptAgentId,
+      loadHistoryPage: async (agentId, cursor) => {
+        const historyPage = await getSessionHistory(client, session.id, cursor, agentId)
+        return {
+          entries: historyPage.entries,
+          nextCursor: historyPage.next_cursor,
+        }
+      },
+      hydrateEntries: hydrateTranscriptEntries,
+      stitchPrependedHistory,
+      collapseHistoricalTurns,
+      applyExpandedTurns,
+      reindexEntries: reindexTranscriptEntries,
+      formatPreview: formatTranscriptPreview,
+    })
 
     pruneAuxiliaryAgentPanes(session)
-    setExpandedTurnIdsByAgent(nextExpandedTurnIdsByAgent)
-    setAgentPanePreviews(previews)
-    setAgentPaneEntries(nextPaneEntries)
-    setNextHistoryCursor(visibleCursor)
-    replaceTranscriptEntries((nextVisibleAgentId ? nextPaneEntries[nextVisibleAgentId] : visibleEntries)?.map((entry) => ({ ...entry })) ?? [])
+    setExpandedTurnIdsByAgent(nextPaneState.expandedTurnIdsByAgent)
+    setAgentPanePreviews(nextPaneState.previews)
+    setAgentPaneEntries(nextPaneState.paneEntries)
+    setNextHistoryCursor(nextPaneState.visibleCursor)
+    replaceTranscriptEntries(
+      (nextPaneState.visibleAgentId ? nextPaneState.paneEntries[nextPaneState.visibleAgentId] : nextPaneState.visibleEntries)
+        ?.map((entry) => ({ ...entry })) ?? [],
+    )
     if (splitAgentResponseMode()) {
-      const secondaryAgentId = session.agents[1]?.id
-      if (secondaryAgentId) {
-        rebuildAuxiliaryAgentPane(secondaryAgentId)
+      for (const agentId of splitPaneAuxiliaryAgentIds(session.agents, true)) {
+        rebuildAuxiliaryAgentPane(agentId)
       }
     }
   }
@@ -5755,18 +5729,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   )
 }
 
-function reflectedDistance(index: number, length: number, frame: number): number {
-  if (length <= 1) {
-    return 0
-  }
-
-  const span = length - 1
-  const cycle = span * 2
-  const position = frame % cycle
-  const highlight = position <= span ? position : cycle - position
-  return Math.abs(index - highlight)
-}
-
 function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): TranscriptEntry[] {
   const mergedHistoryEntries = mergeAdjacentHistoryPageEntries(historyEntries)
   const entries: TranscriptEntry[] = []
@@ -5992,26 +5954,6 @@ function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"], text: 
             ? "Stat"
             : "Asst"
   return `${label}: ${normalized.split("\n")[0]}`
-}
-
-function agentPaneStatusBadge(
-  agent: AgentInstance | null,
-  activeLabel: string | null,
-  isStreaming = false,
-) {
-  if (!agent) {
-    return { label: "", tone: "idle" as const }
-  }
-  if (agent.state === "Error") {
-    return { label: "ERROR", tone: "error" as const }
-  }
-  if (activeLabel) {
-    return { label: getSessionStatusLabel("working", activeLabel), tone: "working" as const }
-  }
-  if (agent.is_processing || agent.state === "Working" || isStreaming) {
-    return { label: "WORKING", tone: "working" as const }
-  }
-  return { label: "IDLE", tone: "idle" as const }
 }
 
 function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPageEntry[]) {
@@ -6698,31 +6640,6 @@ function sessionResponseLayout(session: RuntimeSession | null | undefined, fallb
     ?? "individual"
 }
 
-function resolveAgentModelLabel(catalog: ProviderCatalog, agent: AgentInstance | null, fallbackModel?: string | null) {
-  if (!agent) {
-    return "No model"
-  }
-  const effectiveModel = agent.model ?? fallbackModel ?? null
-  const provider = catalog.all.find((entry) => entry.id === agent.provider)
-  const model = effectiveModel ? provider?.models?.[effectiveModel] : null
-  return model?.name ?? effectiveModel ?? "Default model"
-}
-
-function formatSplitPaneFooter(
-  agent: AgentInstance | null,
-  catalog: ProviderCatalog,
-  fallbackModel?: string | null,
-  fallbackVariant?: string | null,
-) {
-  if (!agent) {
-    return ""
-  }
-  const aliasLabel = agent.alias?.trim() || agent.agent_ref
-  const modelLabel = resolveAgentModelLabel(catalog, agent, fallbackModel)
-  const variantLabel = fallbackVariant?.trim() ? ` (${fallbackVariant})` : ""
-  return `${aliasLabel} • ${modelLabel}${variantLabel}`
-}
-
 function renderPromptTranscript(prompt: string) {
   const text = prompt.trimEnd()
   return text ? `${text}\n` : ""
@@ -6868,11 +6785,11 @@ async function bootstrapSession(
   await catchUpAttachedSession(client, session.id, attachment.id, attachedSession, getLogger("cli.main"))
   const hydratedSession = await getSessionState(client, session.id)
   const focusedAgentId = hydratedSession.focused_agent_id ?? hydratedSession.agents[0]?.id ?? null
-  const visibleAgentId = resolveVisibleTranscriptAgentId(
-    sessionResponseLayout(hydratedSession, preferences.ui?.multiAgentResponseLayout) === "split",
-    hydratedSession.agents[0]?.id ?? null,
+  const visibleAgentId = selectResponsePaneAgents(
+    hydratedSession.agents,
     focusedAgentId,
-  )
+    sessionResponseLayout(hydratedSession, preferences.ui?.multiAgentResponseLayout) === "split",
+  ).visibleTranscriptAgentId
   const historyPage = visibleAgentId
     ? await getSessionHistory(client, session.id, null, visibleAgentId)
     : { entries: [], next_cursor: null }

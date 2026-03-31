@@ -12,20 +12,25 @@ A lightweight, repo-native task board so contributors and future agents can cont
 
 ## In Progress
 
+- [ ] **M3-002** Close the OpenCode-first capability and local-runtime cycle
+  - Note: Finish the remaining shell/file/git/screenshot/transfer/schedule-facing productization and local slash-command UX without adding another provider family yet.
+- [ ] **M4-003** Stabilize the OpenCode-backed multi-agent runtime path
+  - Note: The current daemon integration suite still has multi-agent regressions in the OpenCode adapter path, including provider-run launch health-check failures and delayed local-response handling failures.
+- [ ] **M4-004** Expand the TypeScript CLI split-pane model beyond the current first slice
+  - Note: The daemon/runtime data model can handle more agents than the current visible split-pane surface; the current UI still centers on the primary transcript plus up to two auxiliary panes.
+- [ ] **M4-005** Add multi-machine session ownership and resume behavior on the OpenCode-first path
+  - Note: Close machine reassignment/resume semantics before moving to multi-platform clients or more providers.
+
 ## Backlog
 
-- [ ] **M3-002** Expand local capability surface after OpenCode baseline
-  - Note: Continue with richer OpenCode event rendering and broader TypeScript CLI integration tests, then move into slash-command-driven shell, file, git, screenshot, transfer, and schedule surfaces.
-- [ ] **M3-003** Add Claude Code and Codex provider support
-  - Note: Reuse the same daemon-managed local CLI model after OpenCode is proven.
-- [ ] **M4-001** Deliver manual multi-agent session runtime and split-pane CLI UX
-  - Note: Make session agents real execution targets with isolated prompt routing, per-agent history/runtime context, and visible pane switching via `Ctrl+A` and `/agent cycle`.
 - [ ] **M4-002** Add daemon-scheduled multi-agent workflow runtime
   - Note: Build circular-first workflow scheduling and structured handoffs on top of the same top-level session-agent runtime.
-- [ ] **M5-001** Add relay/web surfaces on top of the local daemon model
-  - Note: Remote relay and webapp come after the local CLI + provider path and workflow baseline.
-- [ ] **M6-001** Add provider switching, memory, compaction, and per-agent extension management
-  - Note: Defer control-lane-heavy features until after local runtime, provider support, and workflow foundations are working.
+- [ ] **M5-001** Polish the TypeScript CLI as the reference Arroba client
+  - Note: Finish the local UX, pane behavior, and command flow on the OpenCode-first path before adding more client surfaces.
+- [ ] **M6-001** Add multi-platform clients on the same daemon/protocol model
+  - Note: Web comes first, then iOS/Android, all reusing the semantics proven by the polished CLI.
+- [ ] **M7-001** Add Claude Code, Codex, and generalized provider-adapter/protocol support
+  - Note: Multi-provider expansion is intentionally the last major breadth step after OpenCode, harnessing, multi-machine behavior, and multi-platform clients are settled.
 
 ## Done
 
@@ -35,6 +40,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [x] **M3-001** Implement persistent session management and no-session CLI state
   - Note: Added explicit session deletion, resumable detached sessions, unattached landing state, and commit-like ids plus optional aliases.
   - Commit: _pending next commit_
+
+- [x] **M4-001** Deliver manual multi-agent session runtime and split-pane CLI UX
+  - Note: Landed real session-agent execution targets, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/view split|individual`, and the initial multi-agent split-pane TypeScript CLI surface.
+  - Commit: `23829c2`
 
 - [x] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
   - Note: Shipped one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.

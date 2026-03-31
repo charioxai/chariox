@@ -2,39 +2,49 @@
 
 ## Status
 
-Planning roadmap derived from `docs/spec-v1.md`.
+Roadmap derived from `docs/spec-v1.md` and updated to match the code currently in `main`.
+
+Current milestone status:
+
+- M0 completed on 2026-03-16
+- M1 completed on 2026-03-17
+- M2 completed on 2026-03-18
+- M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
+- M4 is now the OpenCode-first multi-agent and multi-machine phase: the first manual multi-agent runtime slice has landed, while stabilization and multi-machine session behavior remain open
 
 ## 1. Roadmap Goals
 
 - deliver a stable daemon-centered v1 runtime
-- ship a fully functioning local daemon + CLI path before expanding orchestration breadth
+- ship a fully functioning local daemon + CLI path with one provider before expanding orchestration breadth
 - preserve native provider UX while adding orchestration value
 - keep server lightweight with strict security boundaries
-- keep the runtime compatible with multi-agent workflow execution, structured handoffs, and isolated branch worktrees
-- deliver manual multi-agent session UX before daemon-scheduled workflow automation
+- close the OpenCode-first development cycle before adding more providers
+- finish agent harnessing and multi-machine session behavior before multi-platform and multi-provider expansion
+- keep the runtime compatible with later multi-agent workflow execution, structured handoffs, and isolated branch worktrees
 
 ## 2. Milestone Structure
 
 - M0: Foundations
 - M1: Core Session Runtime
 - M2: End-to-End Local OpenCode Baseline
-- M3: Local Capability Surface and Provider Expansion
-- M4: Multi-Agent Workflow Runtime
-- M5: Remote Access and Web Surfaces
-- M6: Provider Switching, Memory, and Agent Extensions
+- M3: OpenCode Completion and Local Capability Hardening
+- M4: OpenCode Agent Harnessing and Multi-Machine Sessions
+- M5: CLI Polish and Multi-Platform Clients
+- M6: Multi-Provider Expansion and Adapter Generalization
 - M7: v1 Stabilization and Launch
 
-## 2.1 Workflow Rollout Within v1
+## 2.1 Delivery Sequence Within v1
 
 Multi-agent workflow execution remains part of v1, but it is no longer the immediate implementation priority.
 
 Rollout priority:
 
 - first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
-- then expand local capability surface and additional providers
-- then deliver manually directed multi-agent session runtime and split-pane CLI behavior
-- then deliver workflow runtime foundations and concrete multi-agent execution
-- hierarchical topology remains later than circular topology inside the workflow milestone
+- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, and multi-machine session support
+- then polish the TypeScript CLI as the reference client
+- then add multi-platform clients on the same daemon/protocol model
+- then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
+- workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/multi-machine completion and fit inside the same long-term daemon architecture
 
 ## 3. Milestones
 
@@ -95,18 +105,13 @@ Exit criteria:
 - local CLI can create or attach to a session, launch OpenCode, submit a prompt, and stream output in real time
 - daemon remains the authority for session and PTY/provider-run lifecycle during that flow
 
-## M3 - Local Capability Surface and Provider Expansion
+## M3 - OpenCode Completion and Local Capability Hardening
 
 Status:
 
-- next implementation priority after M2 closure
-- currently in the late OpenCode stabilization, TypeScript CLI hardening, and persistent-session-management phase
-- transcript code-highlighting is now part of this same M3 stabilization phase, using terminal-native markdown/code rendering rather than LSP semantic coloring
-- explicit persistent session management now exists: delete semantics, no-session CLI state, and session id/alias resolution are in the baseline
-- richer OpenCode event rendering is now in the baseline too
-- early multi-agent session plumbing is now in the baseline too: session agent records, focused-agent state, `/agent ...` commands, and `Ctrl+A` cycling
-- next on the TypeScript CLI path is broader client-side integration coverage, then slash-command dispatch and capability wiring
-- slash-command dispatch and capability wiring follow after that client/runtime path is solid
+- M3 remains focused on closing the one-provider OpenCode cycle rather than expanding provider breadth
+- a large part of the local baseline hardening work has already landed: shared logging, persistent session management, richer transcript rendering, command-center work, and the early agent-management controls the M4 runtime now builds on
+- remaining M3 work is now the narrower OpenCode-first follow-on set: broader capability wiring, local UX hardening, and adapter/runtime stabilization without adding new provider families yet
 
 Outcomes:
 
@@ -122,59 +127,76 @@ Outcomes:
 - git/worktree inspection capability
 - file transfer + attach-transferred workflow
 - daemon-owned slash-command dispatch for Arroba capabilities
-- Claude Code and Codex provider support after the OpenCode baseline is solid
 - workflow-compatible local capability design so later multi-agent execution can reuse the same surfaces
-- explicitly stop short of split-pane multi-agent runtime delivery; the current agent commands are metadata/focus plumbing, not isolated per-agent execution yet
+- keep provider breadth intentionally fixed to OpenCode while this cycle is being closed
 
 Exit criteria:
 
 - capability failures remain isolated from the terminal lane
-- multiple supported providers can run through the same daemon-managed local CLI model
+- the OpenCode-first local daemon + CLI model is complete enough that new providers are no longer needed to shake out the primary runtime contract
 - local slash-command UX is usable enough to drive capabilities without a web surface
 - OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
 - detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
 
-## M4 - Multi-Agent Session Runtime and Workflow Foundations
+## M4 - OpenCode Agent Harnessing and Multi-Machine Sessions
+
+Status:
+
+- in progress as of 2026-03-31
+- the first manual multi-agent runtime slice is now in the codebase: top-level session agents are real execution targets, direct prompts route to the focused agent, provider runs are tracked per agent, agent-scoped history/output are recorded, and the TypeScript CLI supports `individual` and `split` multi-agent response modes
+- the current TypeScript CLI split view is still an initial slice, centered on the primary transcript plus up to two auxiliary panes
+- multi-machine session behavior is still pending as part of this same OpenCode-first completion phase
+- OpenCode-backed multi-agent runtime stabilization is still needed; the current daemon integration suite is not fully green
 
 Outcomes:
 
-- multiple top-level Arroba-managed agents inside one session, each with its own provider context, prompt target, history, and worktree assignment metadata
-- TypeScript CLI split response/transcript area into one sub-area per session agent
-- `Ctrl+A` and `/agent cycle` switch the active pane/agent, not only footer metadata
-- prompts and provider output route through the focused agent's runtime context
-- structured completion and handoff contracts suitable for multi-agent workflow scheduling
-- circular workflow topology delivered first
-- worktree-isolated parallel branches where required
-- daemon-owned workflow scheduling, routing, barriers, and aggregation state
-- explicit distinction between Arroba-managed top-level agents and provider-native subagents
+Delivered in the current M4 slice:
+
+- multiple top-level Arroba-managed agents inside one session, each with its own focused-agent targeting, provider-run ownership, and agent-scoped history/runtime metadata
+- `Ctrl+A` and `/agent cycle` switch the active agent for direct interaction, not only footer metadata
+- prompts and provider output route through the focused agent's runtime context for the local daemon + CLI path
+- TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
+- explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
+
+Still pending in M4:
+
+- OpenCode-path multi-agent stabilization
+- broader agent interactions for harnessing on top of the current focused-agent runtime
+- multi-machine session ownership, reassignment, and resume semantics on the same one-provider baseline
+- fuller pane/layout completion in the TypeScript CLI
 
 Exit criteria:
 
-- manual multi-agent session execution works locally through the daemon, with visible per-agent panes/history and correct focused-agent prompt routing
-- multi-agent workflow execution works locally through the daemon without breaking the single-agent path
-- workflow concurrency and worktree safety rules are enforced centrally
+- manual multi-agent session execution works locally through the daemon, with visible per-agent panes/history and correct focused-agent prompt routing, and the OpenCode-backed runtime path is stable under integration coverage
+- multi-machine session reassignment/resume behavior is coherent on the same OpenCode-first runtime model
+- the one-provider development cycle can be considered closed without depending on a second provider for validation
 
-## M5 - Remote Access and Web Surfaces
+## M5 - CLI Polish and Multi-Platform Clients
 
 Outcomes:
 
+- polished TypeScript CLI as the reference Arroba client
+- refined split-pane and multi-agent transcript UX
+- UX and interaction cleanup on the OpenCode-first path before surface expansion
 - server relay and discovery flows
 - machine registry and presence
 - session-scoped E2E encryption for user-generated in-transit payloads
 - operational metadata storage boundaries enforced
 - web client and relay-backed remote attachment path
+- iOS and Android clients on the same daemon/protocol model
 
 Exit criteria:
 
-- remote clients attach reliably via relay
-- relay operates without requiring plaintext user content
-- local CLI and web clients share the same daemon/protocol semantics
+- the TypeScript CLI is the polished reference client for the local/runtime model
+- web and mobile surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
 
-## M6 - Provider Switching, Memory, and Agent Extensions
+## M6 - Multi-Provider Expansion and Adapter Generalization
 
 Outcomes:
 
-- provider adapter abstraction hardened
+- provider adapter abstraction hardened after the OpenCode-first cycle closes
+- Claude Code and Codex support
+- generic protocol and adapter design hardened for later provider families
 - canonical control operations:
   - `attach_file`
   - `request_memory_update`
@@ -192,7 +214,7 @@ Outcomes:
 
 Exit criteria:
 
-- daemon can perform memory-refresh inquiry without using terminal prompt path
+- additional providers can fit the daemon/client contract without reshaping the OpenCode-first baseline
 - provider switching works without depending on provider-private hidden state
 - extension binding and MCP visibility are enforced per top-level agent
 

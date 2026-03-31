@@ -255,5 +255,3 @@ export interface AggregationState {
   aggregationPolicy: string;
   status: AggregationStatus;
 }
-
-export * from './layout.js';
