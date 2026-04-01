@@ -6,6 +6,9 @@ use crate::session::PromptAttachment;
 use super::{OpenCodeClient, RuntimeProviderRun};
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
 
+const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
+const OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
 #[derive(Debug, Default)]
 pub(super) struct OpenCodeRunSelection {
     pub model: Option<String>,
@@ -58,7 +61,10 @@ pub(super) fn initialize_opencode_runtime(
             "provider_session_id": session_id.clone(),
         }),
     );
-    let event_subscription = client.subscribe_events()?;
+    let event_subscription = client.subscribe_events_with_retry(
+        OPENCODE_EVENT_SUBSCRIBE_TIMEOUT,
+        OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
+    )?;
     crate::logging::info_with_fields(
         "daemon.provider.opencode",
         "subscribed to opencode events",

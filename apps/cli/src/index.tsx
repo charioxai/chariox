@@ -766,6 +766,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let providerRecoveryInFlight = false
   let subscribedSessionId: string | null = null
   let subscribedAttachmentId: string | null = null
+  let lastLoggedFocusedBadgeState: string | null = null
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let promptTextSnapshot = ""
@@ -914,6 +915,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ...fields,
     })
   }
+  const logVisibleTranscriptOutput = (
+    role: TranscriptEntry["role"],
+    text: string,
+    merged: boolean,
+    mergeKey?: string,
+  ) => {
+    if (!["assistant", "reasoning", "tool", "error", "status"].includes(role)) {
+      return
+    }
+    appLogger?.info("applied visible transcript output", {
+      role,
+      merged,
+      merge_key: mergeKey ?? null,
+      focused_agent_id: focusedAgentId(),
+      visible_agent_id: visibleTranscriptAgentId(),
+      preview: text.replace(/\s+/g, " ").trim().slice(0, 160),
+    })
+  }
+  const logFocusedBadgeChange = (label: string, tone: StatusBadgeTone) => {
+    const nextState = `${label}:${tone}`
+    if (lastLoggedFocusedBadgeState === nextState) {
+      return
+    }
+    lastLoggedFocusedBadgeState = nextState
+    appLogger?.info("focused status badge changed", {
+      label,
+      tone,
+      focused_agent_id: focusedAgentId(),
+      visible_agent_id: visibleTranscriptAgentId(),
+    })
+  }
   createEffect(() => {
     logViewDebug("state changed")
   })
@@ -1020,26 +1052,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return update.normalizedState
   }
   const activateWaitingRoom = async () => {
-    const decision = deriveWaitingRoomActivationDecision({
-      state: waitingRoomState(),
-      sessions: availableSessions(),
-      catalog: providerCatalogState(),
-      currentModel: options.model,
-    })
-    if (decision.action === "create") {
-      const root = options.workspace ?? process.cwd()
-      const session = await createSession(client, root, options.worktree ?? root)
-      await attachBinding(session, true, decision.launch)
-      flashFooter(`created session ${session.alias ?? session.id}`, "info")
-      return
-    }
-    if (decision.action === "join") {
-      await attachBinding(decision.session, false, decision.launch)
-      flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
-      return
-    }
-    if (decision.action === "error") {
-      flashFooter(decision.message, "error")
+    try {
+      const decision = deriveWaitingRoomActivationDecision({
+        state: waitingRoomState(),
+        sessions: availableSessions(),
+        catalog: providerCatalogState(),
+        currentModel: options.model,
+      })
+      if (decision.action === "create") {
+        const root = options.workspace ?? process.cwd()
+        const session = await createSession(client, root, options.worktree ?? root)
+        await attachBinding(session, true, decision.launch)
+        flashFooter(`created session ${session.alias ?? session.id}`, "info")
+        return
+      }
+      if (decision.action === "join") {
+        await attachBinding(decision.session, false, decision.launch)
+        flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
+        return
+      }
+      if (decision.action === "error") {
+        flashFooter(decision.message, "error")
+      }
+    } catch (error) {
+      appLogger?.warn("waiting room activation failed", {
+        error: formatError(error),
+      })
+      flashFooter(formatError(error), "error")
     }
   }
   const refreshWaitingRoomData = async () => {
@@ -2285,6 +2324,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }),
     )
     if (mergedEntryId !== undefined && mergedText !== undefined) {
+      logVisibleTranscriptOutput(role, mergedText, true, mergeKey)
       updateTranscriptEntry(mergedEntryId, mergedText, normalizedSource)
       enforceTranscriptRetention()
       return
@@ -2294,6 +2334,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setEntryCounter(nextId)
     mountTranscriptEntry(nextEntry)
+    logVisibleTranscriptOutput(role, nextEntry.text, false, mergeKey)
     enforceTranscriptRetention()
   }
 
@@ -2669,6 +2710,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const renderStatusIndicator = () => {
     ensureChromeRenderables()
     if (!isAttached()) {
+      lastLoggedFocusedBadgeState = null
       setTextRenderable(statusOpenText, "", theme.textMuted)
       for (const text of statusLabelTexts) {
         setTextRenderable(text, " ", theme.textMuted)
@@ -2678,6 +2720,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const badge = focusedStatusBadge()
+    logFocusedBadgeChange(badge.label, badge.tone)
     setTextRenderable(statusOpenText, "", theme.textMuted)
     renderStatusBadgeTexts(statusLabelTexts, badge.label, badge.tone)
     setTextRenderable(statusCloseText, "", theme.textMuted)
@@ -2840,7 +2883,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (transcriptScrollbox) {
       rebuildTranscript()
     }
-    for (const agentId of splitPaneAuxiliaryAgentIds(sessionState().agents, splitAgentResponseMode())) {
+    for (const agentId of splitPaneAuxiliaryAgentIds(sessionState().agents, focusedAgentId(), splitAgentResponseMode())) {
       rebuildAuxiliaryAgentPane(agentId)
     }
   }
@@ -3323,7 +3366,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ?.map((entry) => ({ ...entry })) ?? [],
     )
     if (splitAgentResponseMode()) {
-      for (const agentId of splitPaneAuxiliaryAgentIds(session.agents, true)) {
+      for (const agentId of splitPaneAuxiliaryAgentIds(session.agents, session.focused_agent_id, true)) {
         rebuildAuxiliaryAgentPane(agentId)
       }
     }
@@ -3707,6 +3750,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       scheduleShortViewportHistoryCheck()
     },
     detachAttachment: (attachmentId) => client.send(detachFromSessionRequest(attachmentId)).then(() => {}),
+    syncKernelEventSubscription,
+    formatError,
+    logWarning: (message, fields) => {
+      appLogger?.warn(message, fields)
+    },
     logAttachedProviderRun: (mode, run, fields) => {
       logProviderRunDebug(
         mode === "launched"
@@ -4548,7 +4596,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const syncKernelEventSubscription = async () => {
+  async function syncKernelEventSubscription() {
     if (!supportsKernelEventStream) {
       return
     }

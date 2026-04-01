@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeProviderRun};
+use crate::provider::{
+    AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeProviderRun,
+};
 
 impl DaemonApp {
     pub fn launch_provider(
@@ -72,9 +74,9 @@ impl DaemonApp {
                         "error": error.to_string(),
                     }),
                 );
-                let _ = self
-                    .providers
-                    .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                let _ =
+                    self.providers
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
                 if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
                     match self.providers.resume_run(
                         &mut self.sessions,

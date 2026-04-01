@@ -13,9 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
     accept_async,
-    tungstenite::protocol::{
-        frame::coding::CloseCode, CloseFrame, Message,
-    },
+    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
 };
 
 use crate::app::DaemonApp;
@@ -302,7 +300,10 @@ async fn handle_incoming_payload(
     };
 
     match frame {
-        KernelIncomingFrame::Request { request_id, request } => {
+        KernelIncomingFrame::Request {
+            request_id,
+            request,
+        } => {
             let response = {
                 let mut app = app.lock().await;
                 app.handle_local_request(request)
@@ -490,7 +491,8 @@ async fn run_subscription_loop(
                         Some(&subscription.session_id),
                         Some(&subscription.attachment_id),
                     )
-                    .await {
+                    .await
+                    {
                         break;
                     }
                 }
@@ -550,7 +552,10 @@ fn watch_subscription_state(
     tick: u64,
     previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)>,
 ) -> WatchResult {
-    if app.ensure_attachment_in_session(session_id, attachment_id).is_err() {
+    if app
+        .ensure_attachment_in_session(session_id, attachment_id)
+        .is_err()
+    {
         return WatchResult::Unavailable("Current session is no longer available.".to_string());
     }
 
@@ -576,7 +581,9 @@ fn watch_subscription_state(
         }
     };
 
-    let notices = app.terminal_mut().drain_notice_records(session_id, attachment_id);
+    let notices = app
+        .terminal_mut()
+        .drain_notice_records(session_id, attachment_id);
     let snapshot = if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
         match build_session_snapshot(app, session_id) {
             Ok(snapshot) => {
@@ -587,7 +594,9 @@ fn watch_subscription_state(
                 }
             }
             Err(DaemonError::SessionNotFound { .. }) => {
-                return WatchResult::Unavailable("Current session is no longer available.".to_string());
+                return WatchResult::Unavailable(
+                    "Current session is no longer available.".to_string(),
+                );
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -734,8 +743,12 @@ fn try_send_outgoing_frame(
 
 fn event_session_id(event: &KernelEvent) -> Option<&str> {
     match event {
-        KernelEvent::TerminalOutput { records } => records.first().map(|record| record.session_id.as_str()),
-        KernelEvent::RuntimeNotices { notices } => notices.first().map(|notice| notice.session_id.as_str()),
+        KernelEvent::TerminalOutput { records } => {
+            records.first().map(|record| record.session_id.as_str())
+        }
+        KernelEvent::RuntimeNotices { notices } => {
+            notices.first().map(|notice| notice.session_id.as_str())
+        }
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
@@ -746,11 +759,17 @@ fn event_session_id(event: &KernelEvent) -> Option<&str> {
 fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
     match event {
         KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
-            record.recipient_attachment_ids.iter().any(|id| id == attachment_id)
+            record
+                .recipient_attachment_ids
+                .iter()
+                .any(|id| id == attachment_id)
         }),
         KernelEvent::RuntimeNotices { notices } => notices.iter().any(|notice| {
             notice.recipient_attachment_ids.is_empty()
-                || notice.recipient_attachment_ids.iter().any(|id| id == attachment_id)
+                || notice
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|id| id == attachment_id)
         }),
         KernelEvent::SessionSnapshot { .. }
         | KernelEvent::SessionUnavailable { .. }
@@ -762,12 +781,24 @@ fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> 
 fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
-        DaemonError::AttachmentNotFound { .. } => kernel_error("attachment_not_found", error, false),
-        DaemonError::AttachmentNotInSession { .. } => kernel_error("attachment_not_in_session", error, false),
-        DaemonError::NoActiveProviderRun { .. } => kernel_error("no_active_provider_run", error, false),
-        DaemonError::ProviderRunNotFound { .. } => kernel_error("provider_run_not_found", error, false),
-        DaemonError::ProviderAdapterNotFound { .. } => kernel_error("provider_adapter_not_found", error, false),
-        DaemonError::ProviderProtocol { .. } => kernel_error("provider_protocol_error", error, true),
+        DaemonError::AttachmentNotFound { .. } => {
+            kernel_error("attachment_not_found", error, false)
+        }
+        DaemonError::AttachmentNotInSession { .. } => {
+            kernel_error("attachment_not_in_session", error, false)
+        }
+        DaemonError::NoActiveProviderRun { .. } => {
+            kernel_error("no_active_provider_run", error, false)
+        }
+        DaemonError::ProviderRunNotFound { .. } => {
+            kernel_error("provider_run_not_found", error, false)
+        }
+        DaemonError::ProviderAdapterNotFound { .. } => {
+            kernel_error("provider_adapter_not_found", error, false)
+        }
+        DaemonError::ProviderProtocol { .. } => {
+            kernel_error("provider_protocol_error", error, true)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),

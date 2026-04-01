@@ -7,6 +7,10 @@ use crate::terminal::TerminalOutputKind;
 
 use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage};
 
+const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
     pub chunks: Vec<OpenCodeOutputChunk>,
@@ -342,7 +346,10 @@ pub(super) fn drain_opencode_events(
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-                state.event_subscription = client.subscribe_events()?;
+                state.event_subscription = client.subscribe_events_with_retry(
+                    OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT,
+                    OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL,
+                )?;
                 if let Ok(snapshot) = client.snapshot(&state.session_id) {
                     if resolved_model.is_none() {
                         resolved_model = snapshot

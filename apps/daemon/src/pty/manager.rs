@@ -54,12 +54,10 @@ impl PtyManager {
             return Ok(());
         }
 
-        let program = run
-            .pty_program()
-            .ok_or_else(|| DaemonError::PtySpawn {
-                provider_run_id: run.id().to_string(),
-                message: "provider run does not define a managed PTY program".to_string(),
-            })?;
+        let program = run.pty_program().ok_or_else(|| DaemonError::PtySpawn {
+            provider_run_id: run.id().to_string(),
+            message: "provider run does not define a managed PTY program".to_string(),
+        })?;
 
         let request = PtySpawnRequest {
             provider_run_id: run.id().to_string(),

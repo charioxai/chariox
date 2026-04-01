@@ -573,6 +573,26 @@ impl OpenCodeClient {
         Ok(OpenCodeEventSubscription { receiver: rx, stop })
     }
 
+    pub fn subscribe_events_with_retry(
+        &self,
+        timeout: Duration,
+        retry_interval: Duration,
+    ) -> Result<OpenCodeEventSubscription, DaemonError> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None;
+
+        loop {
+            match self.subscribe_events() {
+                Ok(subscription) => return Ok(subscription),
+                Err(error) if Instant::now() < deadline => {
+                    last_error = Some(error);
+                    std::thread::sleep(retry_interval);
+                }
+                Err(error) => return Err(last_error.unwrap_or(error)),
+            }
+        }
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }

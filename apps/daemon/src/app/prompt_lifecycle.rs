@@ -3,9 +3,7 @@ use std::time::Instant;
 use crate::app::{ActivePromptState, DaemonApp};
 use crate::error::DaemonError;
 use crate::pty::PtyProcessState;
-use crate::session::{
-    PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
-};
+use crate::session::{PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome};
 
 impl DaemonApp {
     pub fn submit_prompt(
@@ -317,6 +315,10 @@ impl DaemonApp {
             let _ = self.pty.remove_process(provider_run_id)?;
             self.providers.clear_runtime(provider_run_id);
             return Ok(true);
+        }
+
+        if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
+            return Ok(false);
         }
 
         let process_running = match self.pty.poll_process_state(provider_run_id) {

@@ -2,3 +2,7 @@
 export ARROBA_OPENCODE_PORT=43111
 export ARROBA_OPENCODE_BIN=/Users/miguel/.opencode/bin/opencode
 cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-cli
+
+# kill all arroba-related processes
+pkill -f 'apps/daemon/target/debug/arroba-daemon'
+pkill -f 'apps/daemon/target/debug/arroba-cli'

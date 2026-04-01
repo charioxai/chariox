@@ -87,6 +87,9 @@ type SessionLifecycleDeps = {
   listSessions: () => Promise<RuntimeSession[]>
   scheduleShortViewportHistoryCheck: () => void
   detachAttachment: (attachmentId: string) => Promise<void>
+  syncKernelEventSubscription?: () => Promise<void>
+  formatError?: (error: unknown) => string
+  logWarning?: (message: string, fields?: Record<string, unknown>) => void
   logAttachedProviderRun?: (
     mode: "launched" | "loaded",
     run: RuntimeProviderRun | null,
@@ -95,6 +98,31 @@ type SessionLifecycleDeps = {
 }
 
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
+  const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
+
+  const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
+    const nextAttachedState = deps.deriveAttachedCliTransitionState({
+      session,
+      createdSession,
+      connectedStatus: deps.connectedStatus,
+    })
+    deps.setCreatedSessionState(nextAttachedState.createdSession)
+    deps.setSessionState(nextAttachedState.session)
+    deps.setCenterMode(nextAttachedState.centerMode)
+    deps.setAttachmentState(attachment)
+    deps.clearDirectoryTree()
+    deps.clearActiveToolLabels()
+    deps.setProviderActivityLabel(nextAttachedState.providerActivityLabel)
+    deps.setActiveStatusLabel(nextAttachedState.activeStatusLabel)
+    deps.setFatalError(nextAttachedState.fatalError)
+    deps.setDaemonDisconnected(nextAttachedState.daemonDisconnected)
+    deps.setSubmitting(nextAttachedState.submitting)
+    deps.setWorking(nextAttachedState.working)
+    deps.setStatusLine(nextAttachedState.statusLine)
+    deps.updateSessionChrome()
+    deps.focusPromptInput()
+  }
+
   const transitionToNoSession = async (message = "No session attached.") => {
     const nextDetachedState = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
@@ -184,33 +212,78 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       })
       deps.setProviderRunState(run)
     }
-    deps.setProviderCatalogState(await deps.getProviderCatalog())
+
+    applyAttachedState(attachedSession, attachment, createdSession)
+
+    try {
+      await deps.syncKernelEventSubscription?.()
+    } catch (error) {
+      deps.logWarning?.("failed to synchronize kernel event subscription after attach", {
+        session_id: session.id,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+    }
+
+    try {
+      deps.setProviderCatalogState(await deps.getProviderCatalog())
+    } catch (error) {
+      deps.logWarning?.("failed to refresh provider catalog after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
     deps.reconcileWaitingRoom(deps.waitingRoomState())
-    await deps.maybeResize(session.id)
-    await deps.catchUpAttachedSession(session.id, attachment.id, attachedSession)
-    const hydratedSession = await deps.getSessionState(session.id)
-    const nextAttachedState = deps.deriveAttachedCliTransitionState({
-      session: hydratedSession,
-      createdSession,
-      connectedStatus: deps.connectedStatus,
-    })
-    deps.setAttachmentState(attachment)
-    deps.setCreatedSessionState(nextAttachedState.createdSession)
-    deps.setSessionState(nextAttachedState.session)
-    deps.setCenterMode(nextAttachedState.centerMode)
-    deps.clearDirectoryTree()
-    deps.clearActiveToolLabels()
-    deps.setProviderActivityLabel(nextAttachedState.providerActivityLabel)
-    deps.setActiveStatusLabel(nextAttachedState.activeStatusLabel)
-    await deps.refreshAgentPanes(hydratedSession)
-    deps.setFatalError(nextAttachedState.fatalError)
-    deps.setDaemonDisconnected(nextAttachedState.daemonDisconnected)
-    deps.setSubmitting(nextAttachedState.submitting)
-    deps.setWorking(nextAttachedState.working)
-    deps.setStatusLine(nextAttachedState.statusLine)
-    deps.updateSessionChrome()
-    deps.focusPromptInput()
-    deps.setAvailableSessions(await deps.listSessions())
+
+    try {
+      await deps.maybeResize(session.id)
+    } catch (error) {
+      deps.logWarning?.("failed to resize attached session", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
+    try {
+      await deps.catchUpAttachedSession(session.id, attachment.id, attachedSession)
+    } catch (error) {
+      deps.logWarning?.("failed to catch up attached session", {
+        session_id: session.id,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+    }
+
+    let hydratedSession = attachedSession
+    try {
+      hydratedSession = await deps.getSessionState(session.id)
+      applyAttachedState(hydratedSession, attachment, createdSession)
+    } catch (error) {
+      deps.logWarning?.("failed to hydrate attached session after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
+    try {
+      await deps.refreshAgentPanes(hydratedSession)
+    } catch (error) {
+      deps.logWarning?.("failed to refresh agent panes after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
+    try {
+      deps.setAvailableSessions(await deps.listSessions())
+    } catch (error) {
+      deps.logWarning?.("failed to refresh session list after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
     deps.scheduleShortViewportHistoryCheck()
   }
 

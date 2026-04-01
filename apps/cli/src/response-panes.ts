@@ -41,20 +41,21 @@ export function selectResponsePaneAgents<T extends ResponsePaneAgent>(
   focusedAgentId: string | null | undefined,
   split: boolean,
 ): ResponsePaneSelection<T> {
-  const primary = agents[0] ?? null
-  const secondary = split ? (agents[1] ?? null) : null
-  const tertiary = split ? (agents[2] ?? null) : null
+  const firstAgent = agents[0] ?? null
 
   if (split) {
+    const focused = agents.find((agent) => agent.id === focusedAgentId) ?? firstAgent
+    const secondary = agents.find((agent) => agent.id !== focused?.id) ?? null
+    const tertiary = agents.find((agent) => agent.id !== focused?.id && agent.id !== secondary?.id) ?? null
     return {
-      primary,
+      primary: focused,
       secondary,
       tertiary,
-      visibleTranscriptAgentId: resolveVisibleTranscriptAgentId(true, primary?.id ?? null, focusedAgentId ?? null),
+      visibleTranscriptAgentId: resolveVisibleTranscriptAgentId(true, focused?.id ?? null, focusedAgentId ?? null),
     }
   }
 
-  const focused = agents.find((agent) => agent.id === focusedAgentId) ?? primary
+  const focused = agents.find((agent) => agent.id === focusedAgentId) ?? firstAgent
   return {
     primary: focused,
     secondary: null,
@@ -65,12 +66,14 @@ export function selectResponsePaneAgents<T extends ResponsePaneAgent>(
 
 export function splitPaneAuxiliaryAgentIds<T extends ResponsePaneAgent>(
   agents: readonly T[],
+  focusedAgentId: string | null | undefined,
   split: boolean,
 ) {
   if (!split) {
     return []
   }
-  return agents.slice(1, 3).map((agent) => agent.id)
+  const selection = selectResponsePaneAgents(agents, focusedAgentId, true)
+  return [selection.secondary?.id, selection.tertiary?.id].filter((agentId): agentId is string => Boolean(agentId))
 }
 
 export function computeSplitPaneGeometry(

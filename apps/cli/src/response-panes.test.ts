@@ -30,6 +30,15 @@ test("selectResponsePaneAgents falls back to the first agent when focus is missi
 
 test("selectResponsePaneAgents uses the first three agents in split mode", () => {
   assert.deepEqual(selectResponsePaneAgents(agents, "agent-c", true), {
+    primary: agents[2],
+    secondary: agents[0],
+    tertiary: agents[1],
+    visibleTranscriptAgentId: "agent-c",
+  })
+})
+
+test("selectResponsePaneAgents falls back to the first agent in split mode when focus is missing", () => {
+  assert.deepEqual(selectResponsePaneAgents(agents, "missing", true), {
     primary: agents[0],
     secondary: agents[1],
     tertiary: agents[2],
@@ -38,8 +47,9 @@ test("selectResponsePaneAgents uses the first three agents in split mode", () =>
 })
 
 test("splitPaneAuxiliaryAgentIds returns only the auxiliary split panes", () => {
-  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, true), ["agent-b", "agent-c"])
-  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, false), [])
+  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-c", true), ["agent-a", "agent-b"])
+  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-a", true), ["agent-b", "agent-c"])
+  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-c", false), [])
 })
 
 test("computeSplitPaneGeometry preserves the current two-column split behavior", () => {

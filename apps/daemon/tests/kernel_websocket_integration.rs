@@ -72,10 +72,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     )
     .await;
     let subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
-    assert_eq!(
-        subscribe_response["response"]["ok"].as_bool(),
-        Some(true)
-    );
+    assert_eq!(subscribe_response["response"]["ok"].as_bool(), Some(true));
     assert!(subscribe_response["response"]["resumed_from_event_id"].is_null());
 
     let snapshot_event = wait_for_event(&mut socket, "session_snapshot").await;
@@ -208,9 +205,7 @@ fn free_port() -> u16 {
         .port()
 }
 
-async fn connect_with_retry(
-    url: &str,
-) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
+async fn connect_with_retry(url: &str) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
     for _ in 0..20 {
         match connect_async(url).await {
             Ok((socket, _)) => return socket,
@@ -241,10 +236,7 @@ async fn send_request(
     wait_for_response(socket, request_id).await
 }
 
-async fn send_frame(
-    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    frame: Value,
-) {
+async fn send_frame(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>, frame: Value) {
     socket
         .send(Message::Text(frame.to_string().into()))
         .await
@@ -289,9 +281,7 @@ async fn wait_for_event(
     .expect("timed out waiting for kernel websocket event")
 }
 
-async fn next_json_frame(
-    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-) -> Value {
+async fn next_json_frame(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Value {
     loop {
         let message = socket
             .next()

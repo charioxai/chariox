@@ -467,6 +467,10 @@ impl DaemonApp {
             });
         }
 
+        if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
+            return Ok(());
+        }
+
         self.pty.resize(provider_run_id, cols, rows)
     }
 
@@ -636,21 +640,15 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        if let Err(error) = self.pty.drain_output(provider_run_id) {
-            if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
-                return Ok(Vec::new());
-            }
-            if matches!(error, DaemonError::PtyProcessNotFound { .. }) {
-                crate::logging::debug_with_fields(
-                    "daemon.app",
-                    "opencode pty was already gone; continuing with structured runtime polling",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "provider_run_id": provider_run_id,
-                    }),
-                );
-            } else {
-                return Err(error);
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
+            if let Err(error) = self.pty.drain_output(provider_run_id) {
+                if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
+                    return Ok(Vec::new());
+                }
+                if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
+                    return Err(error);
+                }
             }
         }
         let poll_result = match self.providers.poll_structured_output(provider_run_id) {

@@ -895,6 +895,234 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 }
 
 #[test]
+fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the_provider_run() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.disconnect_next_event_stream();
+    mock_server.fail_next_event_stream_attempts(2);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "prompt after transient reconnect failures\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: prompt after transient reconnect failures")
+                && app
+                    .providers()
+                    .get_run(run.id())
+                    .expect("run should remain queryable")
+                    .state()
+                    == ProviderRunState::Running
+        },
+    );
+
+    assert!(output.contains("fixture response: prompt after transient reconnect failures"));
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("run should remain available")
+            .state(),
+        ProviderRunState::Running
+    );
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    let previous_endpoint = env::var_os("ARROBA_OPENCODE_ENDPOINT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::remove_var("ARROBA_OPENCODE_PORT");
+    env::set_var(
+        "ARROBA_OPENCODE_ENDPOINT",
+        format!("http://127.0.0.1:{}", mock_server.port()),
+    );
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch against external endpoint");
+
+    app.resize_terminal(session.id(), 120, 40)
+        .expect("external endpoint resize should be a no-op");
+
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "prompt through external endpoint\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: prompt through external endpoint")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should remain available")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(output.contains("fixture response: prompt through external endpoint"));
+    assert!(session_state.active_prompt().is_none());
+    assert_eq!(session_state.active_provider_run_id(), Some(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    if let Some(previous_endpoint) = previous_endpoint {
+        env::set_var("ARROBA_OPENCODE_ENDPOINT", previous_endpoint);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_ENDPOINT");
+    }
+    mock_server.stop();
+}
+
+#[test]
+fn launch_retries_temporary_event_subscription_failures() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.fail_next_event_stream_attempts(2);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch after retrying event subscribe failures");
+
+    assert_eq!(run.state(), ProviderRunState::Running);
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -972,11 +1200,9 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
                     .is_none()
         },
     );
-    assert!(
-        default_records
-            .iter()
-            .all(|record| record.agent_id.as_deref() == Some(default_agent.id()))
-    );
+    assert!(default_records
+        .iter()
+        .all(|record| record.agent_id.as_deref() == Some(default_agent.id())));
 
     app.focus_agent(session.id(), reviewer.id())
         .expect("reviewer agent should focus");
@@ -1011,14 +1237,19 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
                     .is_none()
         },
     );
-    assert!(
-        reviewer_records
-            .iter()
-            .all(|record| record.agent_id.as_deref() == Some(reviewer.id()))
-    );
+    assert!(reviewer_records
+        .iter()
+        .all(|record| record.agent_id.as_deref() == Some(reviewer.id())));
 
     let default_history = app
-        .session_history_page(session.id(), Some(default_agent.id()), None, None, None, None)
+        .session_history_page(
+            session.id(),
+            Some(default_agent.id()),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("default history should load");
     let reviewer_history = app
         .session_history_page(session.id(), Some(reviewer.id()), None, None, None, None)
@@ -1049,7 +1280,10 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(session_state.focused_agent_id(), Some(reviewer.id()));
-    assert_eq!(session_state.active_provider_run_id(), Some(reviewer_run.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(reviewer_run.id())
+    );
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -1134,7 +1368,10 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(session_state.focused_agent_id(), Some(reviewer.id()));
-    assert_eq!(session_state.active_provider_run_id(), Some(default_run.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(default_run.id())
+    );
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
     let default_records = collect_provider_records_until(
@@ -1154,18 +1391,19 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
         },
     );
 
-    assert!(
-        default_records
-            .iter()
-            .any(|record| record.agent_id.as_deref() == Some(default_agent.id()))
-    );
+    assert!(default_records
+        .iter()
+        .any(|record| record.agent_id.as_deref() == Some(default_agent.id())));
 
     let settled_state = app
         .sessions()
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
-    assert_eq!(settled_state.active_provider_run_id(), Some(reviewer_run.id()));
+    assert_eq!(
+        settled_state.active_provider_run_id(),
+        Some(reviewer_run.id())
+    );
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -1624,6 +1862,7 @@ struct MockOpenCodeServer {
 struct MockOpenCodeState {
     abort_count: u64,
     disconnect_next_event_stream: bool,
+    fail_next_event_stream_attempts: u64,
     event_subscribers: Vec<mpsc::Sender<String>>,
     next_prompt_error: Option<String>,
     response_delay: Duration,
@@ -1653,6 +1892,7 @@ impl MockOpenCodeServer {
         let state = Arc::new(Mutex::new(MockOpenCodeState {
             abort_count: 0,
             disconnect_next_event_stream: false,
+            fail_next_event_stream_attempts: 0,
             event_subscribers: Vec::new(),
             next_prompt_error: None,
             response_delay,
@@ -1716,6 +1956,13 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .disconnect_next_event_stream = true;
+    }
+
+    fn fail_next_event_stream_attempts(&self, count: u64) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .fail_next_event_stream_attempts = count;
     }
 
     fn fail_next_prompt(&self, message: impl Into<String>) {
@@ -1858,13 +2105,25 @@ fn handle_mock_opencode_event_stream(
     stop: &Arc<AtomicBool>,
 ) {
     let (tx, rx) = mpsc::channel();
-    let disconnect_immediately = {
+    let (disconnect_immediately, fail_with_http_error) = {
         let mut state = state.lock().expect("mock state should not be poisoned");
-        state.event_subscribers.push(tx);
-        let disconnect = state.disconnect_next_event_stream;
-        state.disconnect_next_event_stream = false;
-        disconnect
+        if state.fail_next_event_stream_attempts > 0 {
+            state.fail_next_event_stream_attempts -= 1;
+            (false, true)
+        } else {
+            state.event_subscribers.push(tx);
+            let disconnect = state.disconnect_next_event_stream;
+            state.disconnect_next_event_stream = false;
+            (disconnect, false)
+        }
     };
+
+    if fail_with_http_error {
+        let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
 
     if write_sse_connected_response(&mut stream, disconnect_immediately).is_err() {
         return;

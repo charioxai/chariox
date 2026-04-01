@@ -6,7 +6,8 @@ use crate::error::DaemonError;
 
 pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
-    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError>;
+    fn connect(&self, request: &LaunchProviderRequest)
+        -> Result<ProviderLaunchResult, DaemonError>;
     fn park(&self, run: &RuntimeProviderRun);
     fn resume(&self, run: &RuntimeProviderRun);
     fn terminate(&self, run: &RuntimeProviderRun);
@@ -57,7 +58,10 @@ impl AgentEndpointAdapter for DevStubAdapter {
         Self::KEY
     }
 
-    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
         Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: format!(
@@ -93,7 +97,10 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         Self::KEY
     }
 
-    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = plan_opencode_launch()?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
@@ -126,7 +133,10 @@ impl AgentEndpointAdapter for FailingPtyAdapter {
         Self::KEY
     }
 
-    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
         Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: format!(
@@ -184,7 +194,10 @@ mod tests {
         let _ = fs::remove_file(&executable);
 
         let expected_program = executable.to_string_lossy().to_string();
-        assert_eq!(launch_result.pty_program.as_deref(), Some(expected_program.as_str()));
+        assert_eq!(
+            launch_result.pty_program.as_deref(),
+            Some(expected_program.as_str())
+        );
         assert_eq!(launch_result.working_directory, Some(PathBuf::from("/tmp")));
         assert_eq!(launch_result.pty_args[0], "serve");
         assert_eq!(launch_result.pty_args[1], "--hostname");

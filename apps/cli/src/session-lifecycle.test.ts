@@ -152,6 +152,7 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     },
     scheduleShortViewportHistoryCheck: () => calls.push("scheduleShortViewportHistoryCheck"),
     detachAttachment: async () => { calls.push("detachAttachment") },
+    syncKernelEventSubscription: async () => { calls.push("syncKernelEventSubscription") },
     logAttachedProviderRun: () => calls.push("logAttachedProviderRun"),
     ...overrides,
   }
@@ -281,6 +282,7 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     setStatusLine: () => events.push("setStatusLine"),
     updateSessionChrome: () => events.push("updateSessionChrome"),
     focusPromptInput: () => events.push("focusPromptInput"),
+    syncKernelEventSubscription: async () => { events.push("syncKernelEventSubscription") },
     setAvailableSessions: () => events.push("setAvailableSessions"),
     listSessions: async () => {
       events.push("listSessions")
@@ -301,21 +303,14 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "tryGetProviderRun",
     "logAttachedProviderRun",
     "setProviderRunState",
-    "getProviderCatalog",
-    "setProviderCatalogState",
-    "reconcileWaitingRoom",
-    "maybeResize",
-    "catchUpAttachedSession",
-    "getSessionState",
-    "setAttachmentState",
     "setCreatedSessionState",
     "setSessionState",
     "setCenterMode",
+    "setAttachmentState",
     "clearDirectoryTree",
     "clearActiveToolLabels",
     "setProviderActivityLabel",
     "setActiveStatusLabel",
-    "refreshAgentPanes",
     "setFatalError",
     "setDaemonDisconnected",
     "setSubmitting",
@@ -323,8 +318,191 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "setStatusLine",
     "updateSessionChrome",
     "focusPromptInput",
+    "syncKernelEventSubscription",
+    "getProviderCatalog",
+    "setProviderCatalogState",
+    "reconcileWaitingRoom",
+    "maybeResize",
+    "catchUpAttachedSession",
+    "getSessionState",
+    "setCreatedSessionState",
+    "setSessionState",
+    "setCenterMode",
+    "setAttachmentState",
+    "clearDirectoryTree",
+    "clearActiveToolLabels",
+    "setProviderActivityLabel",
+    "setActiveStatusLabel",
+    "setFatalError",
+    "setDaemonDisconnected",
+    "setSubmitting",
+    "setWorking",
+    "setStatusLine",
+    "updateSessionChrome",
+    "focusPromptInput",
+    "refreshAgentPanes",
     "listSessions",
     "setAvailableSessions",
     "scheduleShortViewportHistoryCheck",
   ])
+})
+
+test("attachBinding keeps the CLI attached when post-attach refresh steps fail", async () => {
+  const events: string[] = []
+  const warnings: string[] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-2",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: "run-2",
+    attachment_ids: ["att-2"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
+    getSessionState: async () => attachedSession,
+    tryGetProviderRun: async () => ({
+      id: "run-2",
+      session_id: "session-2",
+      agent_instance_id: "agent-a",
+      adapter_key: "opencode",
+      provider: "opencode",
+      account_profile: "default",
+      model: "gpt-5",
+      variant: "medium",
+      usage_tokens_total: null,
+      state: "Running",
+    }),
+    setAttachmentState: () => events.push("setAttachmentState"),
+    setCreatedSessionState: () => events.push("setCreatedSessionState"),
+    setSessionState: () => events.push("setSessionState"),
+    setCenterMode: () => events.push("setCenterMode"),
+    clearDirectoryTree: () => events.push("clearDirectoryTree"),
+    clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
+    setProviderActivityLabel: () => events.push("setProviderActivityLabel"),
+    setActiveStatusLabel: () => events.push("setActiveStatusLabel"),
+    setFatalError: () => events.push("setFatalError"),
+    setDaemonDisconnected: () => events.push("setDaemonDisconnected"),
+    setSubmitting: () => events.push("setSubmitting"),
+    setWorking: () => events.push("setWorking"),
+    setStatusLine: () => events.push("setStatusLine"),
+    updateSessionChrome: () => events.push("updateSessionChrome"),
+    focusPromptInput: () => events.push("focusPromptInput"),
+    syncKernelEventSubscription: async () => { throw new Error("subscribe failed") },
+    getProviderCatalog: async () => { throw new Error("catalog down") },
+    maybeResize: async () => { throw new Error("resize failed") },
+    catchUpAttachedSession: async () => { throw new Error("catch-up failed") },
+    refreshAgentPanes: async () => { throw new Error("pane refresh failed") },
+    listSessions: async () => { throw new Error("list failed") },
+    logWarning: (message: string) => warnings.push(message),
+  })
+
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-2" }, false)
+
+  assert.equal(events.includes("setAttachmentState"), true)
+  assert.equal(events.includes("setSessionState"), true)
+  assert.equal(events.includes("updateSessionChrome"), true)
+  assert.equal(events.includes("focusPromptInput"), true)
+  assert.deepEqual(warnings, [
+    "failed to synchronize kernel event subscription after attach",
+    "failed to refresh provider catalog after attach",
+    "failed to resize attached session",
+    "failed to catch up attached session",
+    "failed to refresh agent panes after attach",
+    "failed to refresh session list after attach",
+  ])
+})
+
+test("attachBinding synchronizes kernel event subscription immediately after applying attached state", async () => {
+  const events: string[] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-2",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: "run-2",
+    attachment_ids: ["att-2"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
+    getSessionState: async () => attachedSession,
+    tryGetProviderRun: async () => ({
+      id: "run-2",
+      session_id: "session-2",
+      agent_instance_id: "agent-a",
+      adapter_key: "opencode",
+      provider: "opencode",
+      account_profile: "default",
+      model: "gpt-5",
+      variant: "medium",
+      usage_tokens_total: null,
+      state: "Running",
+    }),
+    setCreatedSessionState: () => events.push("setCreatedSessionState"),
+    setSessionState: () => events.push("setSessionState"),
+    setCenterMode: () => events.push("setCenterMode"),
+    setAttachmentState: () => events.push("setAttachmentState"),
+    clearDirectoryTree: () => events.push("clearDirectoryTree"),
+    clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
+    setProviderActivityLabel: () => events.push("setProviderActivityLabel"),
+    setActiveStatusLabel: () => events.push("setActiveStatusLabel"),
+    setFatalError: () => events.push("setFatalError"),
+    setDaemonDisconnected: () => events.push("setDaemonDisconnected"),
+    setSubmitting: () => events.push("setSubmitting"),
+    setWorking: () => events.push("setWorking"),
+    setStatusLine: () => events.push("setStatusLine"),
+    updateSessionChrome: () => events.push("updateSessionChrome"),
+    focusPromptInput: () => events.push("focusPromptInput"),
+    syncKernelEventSubscription: async () => { events.push("syncKernelEventSubscription") },
+    getProviderCatalog: async () => ({}),
+    maybeResize: async () => {},
+    catchUpAttachedSession: async () => {},
+    refreshAgentPanes: async () => {},
+    listSessions: async () => [],
+  })
+
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-2" }, false)
+
+  assert.deepEqual(events.slice(0, 12), [
+    "setCreatedSessionState",
+    "setSessionState",
+    "setCenterMode",
+    "setAttachmentState",
+    "clearDirectoryTree",
+    "clearActiveToolLabels",
+    "setProviderActivityLabel",
+    "setActiveStatusLabel",
+    "setFatalError",
+    "setDaemonDisconnected",
+    "setSubmitting",
+    "setWorking",
+  ])
+  assert.equal(
+    events.indexOf("syncKernelEventSubscription") > events.indexOf("focusPromptInput"),
+    true,
+  )
 })
