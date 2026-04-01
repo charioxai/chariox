@@ -49,6 +49,30 @@ This document summarizes the current architectural decisions and constraints so 
    - Logs should go under the shared machine-local Arroba log root with structured correlation fields so daemon and client activity can be inspected together.
    - Default logs should be metadata-first; prompt/output content is opt-in debug material, not default logging.
 
+## Interaction Testing Guidance
+
+Transport and runtime changes MUST be validated with layered interaction tests, not only unit tests or compile checks.
+
+Required testing stack for kernel/CLI interaction work:
+
+1. CLI transport contract tests
+   - Keep request/response, subscribe/unsubscribe, and transport-close behavior covered in `apps/cli/src/ipc.test.ts`.
+   - Extend these tests first when the TypeScript client transport or frame protocol changes.
+
+2. Daemon kernel-transport integration tests
+   - Keep real kernel-WebSocket coverage in `apps/daemon/tests/kernel_websocket_integration.rs`.
+   - These tests should exercise the real daemon app plus the transport server and assert pushed kernel events, not only direct service calls.
+
+3. Live program smoke validation
+   - When changing transport, runtime fanout, or transcript update behavior, run the real daemon and CLI and verify the visible flow with logs enabled.
+   - At minimum, confirm attach/subscribe, prompt submission, pushed transcript updates, and clean session-unavailable handling when the active workspace/session disappears.
+
+4. Next coverage layer
+   - Prefer adding deterministic kernel/CLI transcript-flow integration tests before adding more ad hoc manual checks.
+   - PTY-driven CLI smoke tests are the next intended layer for visible terminal-state assertions.
+
+Future agents MUST extend this layered setup instead of introducing one-off scripts or compile-only validation for interaction changes.
+
 ## Daemon-First, API-First, Multi-Client Rule
 
 Arroba is daemon-first, API-first, and multi-client by design.

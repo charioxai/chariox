@@ -151,6 +151,10 @@ Status:
 - the first transport/alignment slice has now landed:
   - kernel-facing WebSocket transport for the TypeScript CLI
   - managed vs external OpenCode endpoint binding
+- layered interaction testing is now part of the M4 baseline:
+  - CLI transport contract tests
+  - daemon kernel-WebSocket integration coverage
+  - live daemon + CLI smoke validation when transport/runtime behavior changes
 - multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
@@ -165,12 +169,19 @@ Delivered in the current M4 slice:
 - explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
 - kernel-hosted WebSocket transport now exists for the primary TypeScript CLI path, while the older local IPC path remains for harnessing/tests
 - the first generic agent-endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
+- layered interaction testing now exists for the kernel/CLI path:
+  - TypeScript transport contract tests for request, subscribe, unsubscribe, and close behavior
+  - daemon-side kernel-WebSocket integration coverage for request/subscribe/session-unavailable flows
+  - manual live-program smoke runs are now an expected part of transport/runtime validation
 
 Still pending in M4:
 
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
 - event-driven kernel transport beyond request/response so local and relay-attached terminals/agents can participate in the same node/session domain without poll loops
+- broader automated interaction coverage:
+  - deterministic kernel/CLI transcript-flow integration tests
+  - PTY-driven terminal smoke tests for visible CLI behavior
 - relay-backed same-kernel remote member support for terminals and agents
 - generic external agent endpoint support beyond the current OpenCode path
 - workspace coordination baseline:
@@ -187,6 +198,7 @@ Exit criteria:
 - workspace coordination prevents or explicitly surfaces conflicting edits before shared integration
 - multi-machine session reassignment/resume behavior is coherent on the same OpenCode-first node model
 - the one-provider development cycle can be considered closed without depending on a second provider for validation
+- the primary kernel/CLI path has transport-contract, daemon-integration, and live smoke coverage strong enough that transport refactors do not depend on compile-only verification
 
 ## M5 - CLI Polish and Multi-Platform Clients
 

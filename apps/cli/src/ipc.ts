@@ -117,6 +117,23 @@ export class LocalIpcClient {
     }
   }
 
+  async close(): Promise<void> {
+    const socket = this.websocket
+    this.websocket = null
+    this.websocketConnectPromise = null
+    if (!socket) {
+      return
+    }
+    if (socket.readyState === WebSocket.CLOSED) {
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      socket.once("close", () => resolve())
+      socket.close()
+    })
+  }
+
   private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
     return new Promise<TResponse>((resolve, reject) => {
       const socket = net.createConnection(this.socketPath)
