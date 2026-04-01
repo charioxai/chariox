@@ -76,6 +76,10 @@ export type ApplyResponseLayoutRenderablesOptions = {
   subtleBorderColor: unknown
 }
 
+function resolveLayoutValue<T>(value: T | "auto"): T | undefined {
+  return value === "auto" ? undefined : value
+}
+
 export function requestRenderableTreeRender(
   renderable: RenderableTreeNode | null | undefined,
   seen: Set<string | number> = new Set(),
@@ -160,16 +164,16 @@ export function applyResponseLayoutRenderables(options: ApplyResponseLayoutRende
   renderables.responseTopRowBox.flexDirection = "row"
   renderables.responseTopRowBox.gap = geometry.topRowGap
   renderables.responseTopRowBox.flexGrow = 1
-  renderables.responseTopRowBox.width = "auto"
-  renderables.responseTopRowBox.flexBasis = geometry.topRowFlexBasis
+  renderables.responseTopRowBox.width = undefined
+  renderables.responseTopRowBox.flexBasis = resolveLayoutValue(geometry.topRowFlexBasis)
   renderables.responseTopRowBox.minHeight = geometry.topRowMinHeight
 
   renderables.responsePrimaryPane.border = split ? ["left", "top", "bottom"] : ["left"]
   renderables.responsePrimaryPane.borderColor = split ? (primaryFocused ? primaryBorderColor : subtleBorderColor) : subtleBorderColor
   renderables.responsePrimaryPane.backgroundColor = primaryBackground
   renderables.responsePrimaryPane.flexGrow = geometry.primaryFlexGrow
-  renderables.responsePrimaryPane.width = geometry.primaryWidth
-  renderables.responsePrimaryPane.flexBasis = geometry.primaryFlexBasis
+  renderables.responsePrimaryPane.width = resolveLayoutValue(geometry.primaryWidth)
+  renderables.responsePrimaryPane.flexBasis = resolveLayoutValue(geometry.primaryFlexBasis)
   renderables.responsePrimaryPane.minWidth = geometry.primaryMinWidth
   renderables.responsePrimaryPane.maxWidth = geometry.primaryMaxWidth
 
@@ -187,7 +191,7 @@ export function applyResponseLayoutRenderables(options: ApplyResponseLayoutRende
   renderables.responseSecondaryPane.paddingBottom = 0
 
   renderables.responseTertiaryPane.visible = geometry.showTertiaryPane
-  renderables.responseTertiaryPane.width = geometry.tertiaryWidth
+  renderables.responseTertiaryPane.width = resolveLayoutValue(geometry.tertiaryWidth)
   renderables.responseTertiaryPane.flexGrow = geometry.tertiaryFlexGrow
   renderables.responseTertiaryPane.flexBasis = geometry.tertiaryFlexBasis
   renderables.responseTertiaryPane.minHeight = geometry.tertiaryMinHeight

@@ -95,3 +95,30 @@ test("computeSplitPaneGeometry stacks the tertiary pane below the top row", () =
     tertiaryMinHeight: 0,
   })
 })
+
+test("computeSplitPaneGeometry keeps the primary pane visible in split mode without auxiliaries", () => {
+  assert.deepEqual(computeSplitPaneGeometry(120, true, false, false), {
+    showSecondaryPane: false,
+    showTertiaryPane: false,
+    splitPaneWidth: 56,
+    layoutDirection: "row",
+    layoutGap: 0,
+    topRowVisible: true,
+    topRowGap: 0,
+    topRowFlexBasis: "auto",
+    topRowMinHeight: null,
+    primaryFlexGrow: 1,
+    primaryWidth: 112,
+    primaryFlexBasis: 112,
+    primaryMinWidth: 112,
+    primaryMaxWidth: 112,
+    secondaryWidth: 0,
+    secondaryFlexBasis: 0,
+    secondaryMinWidth: 0,
+    secondaryMaxWidth: 0,
+    tertiaryWidth: 0,
+    tertiaryFlexGrow: 0,
+    tertiaryFlexBasis: 0,
+    tertiaryMinHeight: 0,
+  })
+})

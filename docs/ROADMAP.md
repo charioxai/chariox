@@ -10,17 +10,19 @@ Current milestone status:
 - M1 completed on 2026-03-17
 - M2 completed on 2026-03-18
 - M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
-- M4 is now the OpenCode-first multi-agent and multi-machine phase: the first manual multi-agent runtime slice has landed, while stabilization and multi-machine session behavior remain open
+- M4 is now the OpenCode-first multi-agent and node-connectivity phase: the first manual multi-agent runtime slice has landed, while stabilization, same-node remote connectivity, and multi-machine session behavior remain open
 
 ## 1. Roadmap Goals
 
 - deliver a stable daemon-centered v1 runtime
+- evolve the daemon into an explicit node runtime that can route both local and remote members in one session domain
 - ship a fully functioning local daemon + CLI path with one provider before expanding orchestration breadth
 - preserve native provider UX while adding orchestration value
 - keep server lightweight with strict security boundaries
 - close the OpenCode-first development cycle before adding more providers
 - finish agent harnessing and multi-machine session behavior before multi-platform and multi-provider expansion
 - keep the runtime compatible with later multi-agent workflow execution, structured handoffs, and isolated branch worktrees
+- add daemon-owned workspace coordination so multi-agent integration does not depend on a human manually resolving every conflict
 
 ## 2. Milestone Structure
 
@@ -28,7 +30,7 @@ Current milestone status:
 - M1: Core Session Runtime
 - M2: End-to-End Local OpenCode Baseline
 - M3: OpenCode Completion and Local Capability Hardening
-- M4: OpenCode Agent Harnessing and Multi-Machine Sessions
+- M4: OpenCode Agent Harnessing and Node Connectivity
 - M5: CLI Polish and Multi-Platform Clients
 - M6: Multi-Provider Expansion and Adapter Generalization
 - M7: v1 Stabilization and Launch
@@ -40,11 +42,11 @@ Multi-agent workflow execution remains part of v1, but it is no longer the immed
 Rollout priority:
 
 - first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
-- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, and multi-machine session support
+- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, same-node remote connectivity, and multi-machine session support
 - then polish the TypeScript CLI as the reference client
 - then add multi-platform clients on the same daemon/protocol model
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
-- workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/multi-machine completion and fit inside the same long-term daemon architecture
+- workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/node-connectivity completion and fit inside the same long-term daemon architecture
 
 ## 3. Milestones
 
@@ -138,15 +140,16 @@ Exit criteria:
 - OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
 - detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
 
-## M4 - OpenCode Agent Harnessing and Multi-Machine Sessions
+## M4 - OpenCode Agent Harnessing and Node Connectivity
 
 Status:
 
 - in progress as of 2026-03-31
 - the first manual multi-agent runtime slice is now in the codebase: top-level session agents are real execution targets, direct prompts route to the focused agent, provider runs are tracked per agent, agent-scoped history/output are recorded, and the TypeScript CLI supports `individual` and `split` multi-agent response modes
 - the current TypeScript CLI split view is still an initial slice, centered on the primary transcript plus up to two auxiliary panes
-- multi-machine session behavior is still pending as part of this same OpenCode-first completion phase
-- OpenCode-backed multi-agent runtime stabilization is still needed; the current daemon integration suite is not fully green
+- same-node remote connectivity for terminals and agents is still pending as part of this same OpenCode-first completion phase
+- multi-machine session behavior is still pending after that, on the same node-oriented architecture
+- OpenCode-backed multi-agent runtime stabilization is still needed
 
 Outcomes:
 
@@ -162,13 +165,20 @@ Still pending in M4:
 
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
-- multi-machine session ownership, reassignment, and resume semantics on the same one-provider baseline
+- unified daemon-node transport so local and relay-attached terminals/agents can participate in the same node/session domain
+- workspace coordination baseline:
+  - per-agent worktree or branch allocation
+  - file/workspace claim tracking
+  - mergeability/integration validation
+- multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
 - fuller pane/layout completion in the TypeScript CLI
 
 Exit criteria:
 
-- manual multi-agent session execution works locally through the daemon, with visible per-agent panes/history and correct focused-agent prompt routing, and the OpenCode-backed runtime path is stable under integration coverage
-- multi-machine session reassignment/resume behavior is coherent on the same OpenCode-first runtime model
+- manual multi-agent session execution works through the daemon node, with visible per-agent panes/history and correct focused-agent prompt routing, and the OpenCode-backed runtime path is stable under integration coverage
+- same-node local and relayed terminals/agents can attach through one daemon-owned protocol model without changing session authority
+- workspace coordination prevents or explicitly surfaces conflicting edits before shared integration
+- multi-machine session reassignment/resume behavior is coherent on the same OpenCode-first node model
 - the one-provider development cycle can be considered closed without depending on a second provider for validation
 
 ## M5 - CLI Polish and Multi-Platform Clients
@@ -236,11 +246,13 @@ Exit criteria:
 ## 4. Cross-Cutting Workstreams
 
 - Project-wide observability and debugging pipeline
+- Unified node transport for local and relayed members
 - Provider compatibility matrix and adapter conformance
 - Extension compatibility matrix and projection rules per provider
 - UX quality for slash-command completion, status, and transfer transparency
 - Security/privacy review and threat modeling
 - Performance targets for PTY throughput and capability latency
+- Workspace coordination and integration safety
 - Generic workflow-engine compatibility: directed-graph scheduling model, structured handoff/completion contracts, worktree isolation, and aggregation/barrier semantics
 
 ## 5. Risks and Mitigations

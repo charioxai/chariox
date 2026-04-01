@@ -6,6 +6,11 @@ Draft v1.
 
 This document defines the implementation target for Arroba v1. It is more specific than the high-level architecture summary in `agents/AGENTS.md` and is intended to guide code, schema, and protocol design.
 
+Terminology note:
+
+- the docs now use `Arroba Kernel` as the architectural term for the runtime authority hosted by the `arroba-daemon` process
+- the docs now use `workspace` as the target term for the persistent collaboration domain that is still mostly implemented as a `session` in the current code
+
 Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under **Implementation Choices (v1 baseline)**.
 Daemon v1 implementation language baseline is Rust.
 Current primary local CLI implementation baseline is TypeScript/OpenTUI, with the previous Rust-only CLI retained only as a phased-out compatibility fallback.
@@ -20,14 +25,15 @@ Current delivery sequence:
 
 ## 1. Product Definition
 
-Arroba v1 is a daemon-centered session orchestrator for native AI coding CLIs.
+Arroba v1 is an Arroba-Kernel-centered orchestrator for native AI coding CLIs and compatible agent runtimes.
 
 It provides:
 
 - native provider terminal passthrough
 - daemon-owned capabilities invoked outside normal provider input
 - lightweight provider integration where needed for file attachment
-- local-first session hosting with optional remote attachment through a relay server
+- local-first workspace hosting with optional remote attachment through a relay server
+- one Arroba Kernel owning a local runtime domain that may include both local and relay-attached clients or agents
 
 Arroba is a wrapper around provider CLIs, not a replacement for their execution engines.
 Arroba owns the slash-command surface and routes provider behavior through adapters.
@@ -35,7 +41,8 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 ## 2. Goals
 
 - Preserve native provider PTY behavior for ordinary prompt and terminal work.
-- Allow multiple local or remote clients to attach to the same session.
+- Allow multiple local or remote clients to attach to the same workspace.
+- Allow multiple local or remote runtime members, including clients and agents, to attach to the same kernel-owned runtime domain.
 - Finish one provider deeply before expanding provider breadth.
 - Support multiple top-level Arroba-managed agents inside one session, each with its own runtime context.
 - Let users invoke Arroba actions through daemon-owned slash commands.
@@ -44,6 +51,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Support transferring a file to the daemon host and attaching it to the active provider when the provider supports attachment.
 - Keep the provider control boundary intentionally small in v1.
 - Add memory management so users do not need to repeatedly restate durable project context across runs, providers, or machines.
+- Add daemon-owned workspace coordination so multi-agent edits can be integrated safely without assuming a human will manually resolve every conflict.
 
 ## 3. Non-Goals
 
@@ -57,8 +65,11 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Provider-native PTY first: provider terminal behavior must remain intact for ordinary non-command traffic.
 - Prefer the strongest provider-native contract: when a provider exposes a stable local structured protocol, Arroba should prefer that protocol over PTY-derived heuristics for prompt lifecycle, output ordering, and command discovery.
 - Slash-command ownership: Arroba owns `/...` command parsing and completion.
-- Daemon-centered runtime: the daemon is the source of truth for live session state.
-- Local-first execution: sessions run on the user's machine.
+- Kernel-centered runtime: the Arroba Kernel is the source of truth for live workspace state.
+- Node-centered routing: the kernel is the source of truth for routing between local and remote members attached to the same runtime domain.
+- Local-first execution: workspaces run on the user's machine.
+- Relay is transport, not authority: relay infrastructure may forward connections but must not become the authority for session/runtime state.
+- Directory is discovery, not relay: directory/discovery and relay/transport are separate concerns.
 - Graceful degradation: a provider without structured control support must still work through raw PTY passthrough.
 - Cross-platform consistency: terminal behavior should be consistent across web, CLI, desktop, and mobile clients by following a shared terminal protocol/conformance profile.
 - OpenCode-first sequencing: v1 should finish the full local development loop around `opencode` before broadening supported provider families.
@@ -104,22 +115,31 @@ Properties:
 - a user may register and use multiple machines for the same Arroba account
 - machines are the execution hosts for session workspaces, provider processes, and artifacts
 
-### 5.3 Daemon
+### 5.3 Arroba Kernel
 
-There is one daemon per machine OS user account.
+There is one Arroba Kernel per machine OS user account, hosted by the `arroba-daemon` process.
 
-The daemon is responsible for:
+The kernel is responsible for:
 
-- hosting sessions
+- hosting workspaces
+- routing workspace events and prompt lifecycle to attached local or remote members
 - launching and parking provider runs
 - managing PTYs
 - managing client attachments
+- managing agent endpoint attachments and bindings
 - executing capabilities
 - tracking worktrees and git state
 - running scheduled jobs
 - coordinating file transfer and file attachment
+- coordinating workspace claims, worktree allocation, and integration safety for top-level agents
 
-The daemon is the source of truth for live runtime state.
+The kernel is the source of truth for live runtime state.
+
+Node membership model:
+
+- a member of a kernel-owned runtime domain may be local or remote
+- local and remote members attached to the same kernel are in the same runtime domain
+- remote attachment is a transport detail; it does not create a second session authority
 
 ### 5.4 Server
 
@@ -137,6 +157,12 @@ Responsibilities:
 - operational metadata storage
 
 The server should not depend on interpreting user content.
+
+Near-term architectural role:
+
+- the server should evolve into relay infrastructure for kernel, client, and remote-agent connectivity
+- same-kernel remote connections should ideally preserve the illusion of direct kernel membership even when the physical path is relayed
+- directory and federation concerns remain later work and should stay intentionally lightweight in the current implementation phase
 
 Security boundary requirement:
 
@@ -211,6 +237,19 @@ OpenCode-specific v1.1 target:
 - PTY integration remains the fallback path for providers that do not expose a comparable structured surface
 - OpenCode remains the reference provider for the current development cycle; later provider adapters must fit behind the same daemon/client contract rather than forcing that contract to be generalized prematurely
 
+### 6.3.1 Node Transport Direction
+
+Current implementation baseline:
+
+- daemon-client communication is still local request/response IPC
+- daemon-OpenCode communication already combines local HTTP control with an event stream
+
+Target direction:
+
+- daemon-client and daemon-agent communication should converge toward one daemon-owned bidirectional node protocol
+- that protocol should support both local and relayed connections without changing session semantics
+- current transport differences are implementation history, not a long-term architectural principle
+
 ### 6.4 Slash Command System
 
 Arroba owns the slash-command namespace.
@@ -258,13 +297,52 @@ Extension visibility policies MAY include:
 
 - `agent_private`
 - `session_shared`
-- `workflow_shared`
-- `workspace_default`
-- `machine_default`
 
-No other canonical control events or RPCs are part of v1.
+## 7. Node and Agent Endpoint Model
 
-`request_memory_update` is a daemon-owned control event used to gather memory-relevant signals from the active provider run (for example after provider-side compaction or reset).
+Arroba should distinguish between the kernel's internal runtime model and provider-specific integration details.
+
+### 7.1 Node Members
+
+Possible members of the same kernel-owned runtime domain include:
+
+- local CLI clients
+- remote CLI clients attached through relay
+- local agent endpoints
+- remote agent endpoints attached through relay
+
+All such members may participate in the same workspace/workflow domain when attached to the same kernel.
+
+### 7.2 Agent Endpoint Modes
+
+Arroba should support both:
+
+- `managed` endpoints launched by the kernel
+- `external` endpoints discovered/configured and connected to by the kernel
+
+This allows:
+
+- first-party local convenience integrations
+- third-party agent runtimes Arroba does not ship itself
+- remote agent runtimes attached through relay while still belonging to the same kernel-owned runtime domain
+
+### 7.3 Workspace Coordination
+
+Multi-agent orchestration must not assume human-mediated conflict resolution as the only safety mechanism.
+
+The kernel should therefore evolve a workspace-coordination subsystem responsible for:
+
+- branch/worktree allocation per top-level agent
+- file or workspace claims
+- mergeability and integration validation
+- conflict detection before shared integration
+
+The baseline coordination strategy should begin with worktree/branch isolation and file-level coordination before any more advanced region-level locking.
+
+Scope rule:
+
+- coordination is workspace-scoped, not repo-scoped across every workspace on a machine
+- different workspaces may still collide later in the same way independent PRs can conflict
 `request_compaction_summary` is a daemon-owned control event used during Arroba-triggered compaction to request a compaction summary from the active provider run before warm-starting a fresh run.
 
 Implications:
@@ -440,9 +518,9 @@ Required rules:
 
 Future implementations MAY surface debug or telemetry metadata about provider-native subagents when a provider exposes stable support for that, but such subagents remain outside Arroba's orchestration model.
 
-### 7.3 Workflow Layer Above Sessions
+### 7.3 Workflow Layer Above Workspaces
 
-Arroba v1 MUST support both manually directed multi-agent sessions and a workflow layer above the single-agent session model.
+Arroba v1 MUST support both manually directed multi-agent workspaces and a workflow layer above the single-agent workspace model.
 
 Delivery priority inside v1:
 
@@ -451,8 +529,8 @@ Delivery priority inside v1:
 
 Normative rules:
 
-- A session MAY run in single-agent mode, multi-agent session mode, or multi-agent workflow mode.
-- Multi-agent session mode is user-directed: the user selects the active top-level agent and the daemon routes direct interaction to that agent.
+- A workspace MAY run in single-agent mode, multi-agent manual mode, or multi-agent workflow mode.
+- Multi-agent manual mode is user-directed: the user selects the active top-level agent and the kernel routes direct interaction to that agent.
 - Multi-agent execution MUST be modeled as a general directed workflow graph.
 - v1 validates only two workflow topologies:
   - circular
@@ -460,36 +538,66 @@ Normative rules:
 - The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer aggregation, and more advanced topologies can be added without redesigning the core workflow engine.
 - Contributors MUST NOT implement multi-agent behavior as topology-specific special cases scattered through unrelated codepaths.
 
-### 7.4 Coordinator Model
+### 7.4 Entry Node and Workflow Endpoint
 
-Every multi-agent workflow MUST have a designated coordinator node.
+Every workflow definition MUST have exactly one designed entry node.
 
-Coordinator rules:
+Rules:
 
-- the coordinator receives the initial user prompt
-- the coordinator may decide to continue, stop, or declare completion
-- in circular topology, the coordinator MUST be part of the cycle
-- in hierarchical topology, the coordinator MUST be the root
+- initial input enters the workflow through the entry node
+- the same logical workflow endpoint MAY be invoked by a terminal user or an external system
+- the workflow should be agnostic to the source of the initial input once it has been normalized into the workflow message model
 
 ### 7.5 Inter-Agent Communication Contract
 
-Inter-agent communication in workflow mode MUST be daemon-orchestrated.
+Inter-agent communication in workflow mode MUST be kernel-orchestrated.
 
 Required rules:
 
 - agents MUST NOT communicate directly
-- the daemon MUST own all routing and message passing between nodes
-- output from one node MUST be converted into a standardized structured handoff format before it is passed to the next node
+- the kernel MUST own all routing and message passing between nodes
 - inter-agent communication MUST NOT be modeled as raw terminal transcript forwarding
-- workflow scheduling MUST advance on structured node completion reports, not arbitrary provider turns
+- workflow progression MUST advance on kernel-owned message routing and turn state, not arbitrary provider turns
 
-Each node MUST emit a structured completion artifact/report containing at least:
+Message model:
 
-- `status`
-- `summary`
-- `artifacts` or changed files
-- `handoff_payload`
-- `stop_recommendation`
+- `message`
+- `recipients`
+- `artifacts`
+
+Rules:
+
+- the kernel should not impose richer semantic fields by default
+- artifacts may be text, JSON, files, paths, URLs, images, or lists of those
+- a sender may emit at most one message per recipient in one turn
+
+### 7.5.1 Queue and Turn Semantics
+
+Each workflow node/agent MUST have an inbound queue.
+
+Rules:
+
+- when an agent is idle and eligible, the kernel MAY start a turn
+- at turn start, the agent MUST use a kernel-owned tool to consume the currently available queued inputs for that turn
+- once a turn starts, the visible input set for that turn is fixed
+- messages arriving while a turn is running remain queued for a later turn
+- the running agent MUST NOT re-check the queue mid-turn
+
+Required kernel tools:
+
+- `consume_input_messages`
+- `validate_output_messages`
+
+### 7.5.2 Sync vs Async Workflow Execution
+
+The workflow model should support both:
+
+- `sync`
+  - validated messages are delivered when the turn ends
+- `async`
+  - validated messages are delivered as soon as they are produced during the turn
+
+In both modes, every delivered message is considered final. Arroba does not distinguish a separate intermediate-message type by default.
 
 ### 7.6 Circular Topology Rules
 

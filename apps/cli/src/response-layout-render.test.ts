@@ -201,3 +201,79 @@ test("applyResponseLayoutRenderables mutates pane geometry and visibility", () =
   assert.equal(summary.secondaryVisible, true)
   assert.equal(summary.tertiaryVisible, false)
 })
+
+test("applyResponseLayoutRenderables clears auto-sized pane widths", () => {
+  const renderables = {
+    responseLayoutBox: renderable("layout"),
+    responseTopRowBox: renderable("top"),
+    responsePrimaryPane: { ...renderable("primary"), width: 0, flexBasis: 0 },
+    responseSecondaryPane: renderable("secondary"),
+    responseTertiaryPane: { ...renderable("tertiary"), width: 0 },
+    historyLoadingBox: renderable("history"),
+    transcriptScrollbox: renderable("transcript"),
+    responseSecondaryScrollbox: {
+      ...renderable("secondary-scroll"),
+      getChildren() {
+        return []
+      },
+      remove() {},
+      add() {},
+    },
+    responseTertiaryScrollbox: {
+      ...renderable("tertiary-scroll"),
+      getChildren() {
+        return []
+      },
+      remove() {},
+      add() {},
+    },
+    responsePrimaryFooterBox: renderable("primary-footer"),
+    responseSecondaryFooterBox: renderable("secondary-footer"),
+    responseTertiaryFooterBox: renderable("tertiary-footer"),
+  }
+
+  applyResponseLayoutRenderables({
+    renderables,
+    geometry: {
+      showSecondaryPane: false,
+      showTertiaryPane: false,
+      splitPaneWidth: 56,
+      layoutDirection: "row",
+      layoutGap: 0,
+      topRowVisible: true,
+      topRowGap: 0,
+      topRowFlexBasis: "auto",
+      topRowMinHeight: null,
+      primaryFlexGrow: 1,
+      primaryWidth: "auto",
+      primaryFlexBasis: "auto",
+      primaryMinWidth: null,
+      primaryMaxWidth: null,
+      secondaryWidth: 0,
+      secondaryFlexBasis: 0,
+      secondaryMinWidth: 0,
+      secondaryMaxWidth: 0,
+      tertiaryWidth: "auto",
+      tertiaryFlexGrow: 0,
+      tertiaryFlexBasis: 0,
+      tertiaryMinHeight: 0,
+    },
+    split: false,
+    primaryFocused: false,
+    secondaryFocused: false,
+    tertiaryFocused: false,
+    primaryBackground: "primary-bg",
+    secondaryBackground: "secondary-bg",
+    tertiaryBackground: "tertiary-bg",
+    primaryBorderColor: "focus",
+    secondaryBorderColor: "focus",
+    tertiaryBorderColor: "focus",
+    subtleBorderColor: "subtle",
+  })
+
+  assert.equal(renderables.responseTopRowBox.width, undefined)
+  assert.equal(renderables.responseTopRowBox.flexBasis, undefined)
+  assert.equal(renderables.responsePrimaryPane.width, undefined)
+  assert.equal(renderables.responsePrimaryPane.flexBasis, undefined)
+  assert.equal(renderables.responseTertiaryPane.width, undefined)
+})

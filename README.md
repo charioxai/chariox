@@ -1,8 +1,8 @@
 # Arroba
 
-Arroba is a daemon-centered framework for running and orchestrating native AI coding CLIs through a shared terminal interface.
+Arroba is a daemon-centered framework for running and orchestrating native AI coding CLIs and compatible agent runtimes through a shared terminal interface.
 
-The project is intentionally local-first. A daemon owns live sessions on the user's machine, clients attach to those sessions, and a lightweight server can relay remote connections without becoming the authority for runtime state or provider behavior.
+The project is intentionally local-first. A daemon node owns live sessions on the user's machine, local or remote members attach to that node, and a lightweight server can relay remote connections without becoming the authority for runtime state or provider behavior.
 
 ## Status
 
@@ -40,7 +40,7 @@ The current codebase provides:
 
 Current implementation caveat:
 
-- the OpenCode-backed multi-agent path still needs stabilization; the daemon integration suite is not fully green
+- the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
 - daemon-scheduled workflow execution still remains the next major M4 step after this manual multi-agent runtime slice
 
@@ -71,6 +71,12 @@ The project specification and architecture remain the primary source of truth fo
 The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
 The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. The near-term plan is to close that one-provider cycle fully before broadening to more clients or more providers.
+
+Architecturally, the daemon is now better thought of as a node runtime:
+
+- it owns sessions and prompt routing
+- it will eventually route both local and relay-attached members in the same session domain
+- it will eventually own workspace coordination to reduce edit/integration conflicts between top-level agents
 
 The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
 

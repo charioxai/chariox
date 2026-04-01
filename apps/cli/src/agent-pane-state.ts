@@ -98,7 +98,7 @@ export async function refreshAgentPaneState<
       options.applyExpandedTurns(
         options.collapseHistoricalTurns(
           resolvedHistoryEntries,
-          options.hasPromptWork,
+          true,
         ),
         expandedTurnIds,
       ),

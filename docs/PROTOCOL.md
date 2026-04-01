@@ -10,10 +10,21 @@ This document defines message classes and protocol contracts between:
 
 - clients
 - server relay
-- daemon
+- kernel
 - provider adapters
 
-It is intentionally transport-agnostic at the message level (WebSocket recommended for remote relay).
+It is intentionally transport-agnostic at the message level.
+
+Current implementation baseline:
+
+- local daemon-client communication still uses Unix-socket request/response IPC
+- daemon-OpenCode communication uses native local HTTP control plus SSE events
+
+Target direction:
+
+- one kernel-owned bidirectional node protocol for clients and compatible agent endpoints
+- one transport shape for both local and remote node members, with relay as a forwarding layer rather than a second authority
+- WebSocket is the recommended future transport for that unified node protocol
 
 ## 2. Design Principles
 
@@ -28,6 +39,17 @@ Current sequencing note:
 - OpenCode is the reference provider for the current development cycle
 - protocol and adapter boundaries should stay future-compatible, but they should not be generalized prematurely at the expense of finishing the OpenCode-first runtime
 - web/mobile clients come before multi-provider expansion in the current rollout order
+- same-kernel remote clients and remote agents should fit the same kernel-owned protocol rather than a separate remote-only API
+
+## 2.1 Node Roles
+
+The protocol should distinguish at least these logical roles:
+
+- `client`
+- `agent_endpoint`
+- `relay_or_server`
+
+The kernel remains the workspace/runtime authority in all cases.
 
 ## 3. Protocol Lanes
 
@@ -43,6 +65,7 @@ Semantics:
 - byte-stream-like behavior
 - no requirement for structured parse by Arroba for ordinary non-command traffic
 - for providers with structured event streams, Arroba MAY render provider output into the client terminal without treating PTY bytes as the source of truth for turn lifecycle
+- for same-kernel remote clients, the terminal lane should still be kernel-routed; relay changes the path, not the workspace authority
 
 Suggested events:
 
@@ -54,7 +77,7 @@ OpenCode-specific note:
 
 - OpenCode should graduate from PTY-polled `terminal.output` to adapter-fed output derived from its local event stream
 - incremental assistant text should come from provider message-part delta events
-- terminal rendering remains daemon-owned even when the source is a structured provider event stream
+- terminal rendering remains kernel-owned even when the source is a structured provider event stream
 - the current protocol surface should be proven against OpenCode first before new provider families drive further adapter generalization
 
 ## 3.2 Capability Lane (Structured Daemon Actions)
@@ -118,6 +141,19 @@ OpenCode-specific structured adapter contract:
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
 
+## 3.3.1 Agent Endpoint Direction
+
+Longer-term agent runtimes compatible with Arroba should speak a daemon-facing endpoint contract rather than requiring the daemon to launch only local child processes.
+
+Required properties:
+
+- bidirectional messaging
+- explicit prompt or turn lifecycle
+- explicit tool/runtime events
+- health and capability advertisement
+
+Existing providers like OpenCode may continue to be adapted through their native protocols.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.
@@ -151,6 +187,14 @@ Common fields:
 - `target_node_id` or `target_node_run_id` when routing workflow handoffs
 - `payload`
 - `meta` (timestamps, source attachment id, trace id)
+
+Future unified node-transport fields should also allow:
+
+- `connection_id`
+- `attachment_id`
+- `member_role`
+- `event_id`
+- `resume_from_event_id`
 
 ## 4.1 Local Daemon API Baseline
 
@@ -225,6 +269,12 @@ Local cancellation policy:
 
 This local API MUST remain daemon-owned, local-first, and compatible with later workflow-mode runtime surfaces.
 
+Architectural note:
+
+- this request/response IPC surface is still the current code path
+- it is now best understood as a bootstrap transport, not the final node protocol shape
+- future kernel-client and kernel-agent communication should converge on one long-lived event-capable connection model
+
 Current M2 runtime note:
 
 - the local daemon transport is a daemon-owned Unix-socket IPC path on Unix-like systems
@@ -248,6 +298,24 @@ OpenCode current runtime note:
 - active-turn cancellation is routed through the OpenCode abort API and reconciled from provider events before queued prompts advance
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
+
+## 4.1.1 Unified Node-Transport Direction
+
+The intended node architecture now assumes that the kernel should eventually act as a general router for:
+
+- local clients
+- remote clients connected through relay
+- local agent endpoints
+- remote agent endpoints connected through relay
+
+Recommended direction:
+
+- one long-lived kernel-owned bidirectional protocol
+- request/response messages for control
+- pushed daemon events for prompt/session/provider updates
+- relay forwarding without changing daemon authority
+
+This does not require all provider adapters to use the same wire transport internally.
 
 ## 4.2 Planned Command-Dispatch Surface
 
@@ -291,6 +359,14 @@ Planned provider auth status fields:
 - optional `login_hint`
 - optional `detected_version`
 
+Planned node-transport and endpoint metadata fields:
+
+- `member_role` (`client` | `agent_endpoint`)
+- `connection_mode` (`local_direct` | `relayed`)
+- `endpoint_mode` (`managed` | `external`)
+- `protocol_version`
+- optional `resume_from_event_id`
+
 Planned extension metadata fields:
 
 - `extension_id`
@@ -302,6 +378,36 @@ Planned extension metadata fields:
 - `install_state`
 
 ## 5. Control Operations
+
+## 4.3 Workflow Message and Endpoint Direction
+
+The workflow model should use a minimal, general message envelope rather than predefined domain-specific fields.
+
+Logical workflow message fields:
+
+- `message`
+- `recipients`
+- `artifacts`
+
+Rules:
+
+- the workflow graph defines which recipients are valid from a given sender
+- artifacts are intentionally open-ended
+- the kernel validates message structure and routing before delivery
+- each sender may emit at most one message per recipient in a single turn
+
+Workflow endpoint direction:
+
+- every workflow definition should expose one logical entry point
+- that entry point may be invoked by a terminal user or by an external published API
+- once accepted by the kernel, the workflow should treat the resulting input message the same way regardless of source
+
+Queue and turn direction:
+
+- each workflow agent should have an inbound queue
+- turn start should use a kernel-owned `consume_input_messages` tool
+- output validation should use a kernel-owned `validate_output_messages` tool
+- a running turn should not re-open its input set mid-turn; newly arrived messages remain queued for a later turn
 
 ## 5.0 Capability API Baseline
 
@@ -341,6 +447,19 @@ Shell capability requests MUST be validated against the requesting attachment an
 
 Tree/file/git capability requests MUST remain scoped to the session worktree boundary and return structured results rather than raw transcript fragments.
 Screenshot capture MUST write only into daemon-chosen session artifact locations.
+
+## 5.0.1 Workspace Coordination Direction
+
+The protocol should reserve room for kernel-owned workspace coordination because multi-agent orchestration cannot rely on human PR review as the only conflict-management mechanism.
+
+Future coordination operations are expected to cover:
+
+- worktree or branch allocation
+- file/workspace claim requests
+- integration or mergeability validation
+- explicit conflict or claim-denial responses
+
+The exact wire surface is still open, but the kernel should remain the authority for these decisions.
 
 ## 5.1 `attach_file`
 

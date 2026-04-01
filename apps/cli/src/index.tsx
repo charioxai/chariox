@@ -552,7 +552,8 @@ type FooterFlash = {
   tone: "info" | "error"
 }
 
-const OPEN_CONSOLE_ON_ERROR = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
+const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
+const OPEN_CONSOLE_ON_ERROR = process.env.ARROBA_OPEN_CONSOLE_ON_ERROR === "1"
 let processLogger: ArrobaLogger | null = null
 let transcriptParsersRegistered = false
 
@@ -616,7 +617,7 @@ async function main() {
       reindexTranscriptEntries(
         collapseHistoricalTurns(
           hydrateTranscriptEntries(entries),
-          Boolean(session.active_prompt) || session.queued_prompts.length > 0,
+          true,
         ),
         0,
       ),
@@ -794,7 +795,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
-  const splitAgentResponseMode = () => isAttached() && multiAgentResponseLayout() === "split"
+  const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
   const responsePaneSelection = createMemo(() => selectResponsePaneAgents(
     sessionState().agents,
     focusedAgentId(),
@@ -918,7 +919,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
   const logViewDebug = (phase: string, fields: Record<string, unknown> = {}) => {
-    appLogger?.info(`view debug: ${phase}`, {
+    if (!DEBUG_LOGS_ENABLED) {
+      return
+    }
+    appLogger?.debug(`view debug: ${phase}`, {
       layout: multiAgentResponseLayout(),
       layout_is_split: multiAgentResponseLayout() === "split",
       split_active: splitAgentResponseMode(),
@@ -1434,12 +1438,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
   const collapseCompletedTurns = () => {
-    replaceTranscriptEntries(collapseHistoricalTurns(entries.filter(Boolean).map((entry) => ({ ...entry })), false))
+    replaceTranscriptEntries(collapseHistoricalTurns(entries.filter(Boolean).map((entry) => ({ ...entry })), true))
     for (const agent of sessionState().agents) {
       setAgentTranscriptEntries(
         agent.id,
         trimAgentPaneEntries({
-          entries: collapseHistoricalTurns(currentAgentPaneEntries(agent.id), false),
+          entries: collapseHistoricalTurns(currentAgentPaneEntries(agent.id), true),
           maxEntries: LIVE_TRANSCRIPT_LIMIT,
           maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
           onTrimmedMergeKey: (mergeKey) => {
@@ -2140,7 +2144,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const hotkeyDebug = (message: string) => {
     appLogger?.debug("hotkeys footer debug", { detail: message })
-    if ((process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() !== "debug") {
+    if (!DEBUG_LOGS_ENABLED) {
       return
     }
     flashFooter(`[hotkeys] ${message}`, "info")
@@ -2788,13 +2792,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingTranscriptRender = true
       return
     }
+    const seen = new Set<string | number>()
+    requestRenderableTreeRender(responseLayoutBox ?? transcriptScrollbox, seen)
+    requestRenderableTreeRender(historyLoadingBox, seen)
     transcriptScrollbox?.requestRender()
+    ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
   const flushDeferredUiUpdates = () => {
     if (pendingTranscriptRender) {
       pendingTranscriptRender = false
+      const seen = new Set<string | number>()
+      requestRenderableTreeRender(responseLayoutBox ?? transcriptScrollbox, seen)
+      requestRenderableTreeRender(historyLoadingBox, seen)
       transcriptScrollbox?.requestRender()
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
     }
     if (pendingSessionChromeUpdate) {
       pendingSessionChromeUpdate = false
@@ -3600,6 +3612,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ? buildEmptyTranscriptRenderable(renderer)
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
+      if (isAttached()) {
+        transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
+      }
     } else {
       for (const entry of visibleEntries.filter((candidate) => !candidate.historyDeferred)) {
         mountTranscriptEntry(entry, false)
@@ -3699,7 +3714,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousViewportHeight = transcriptScrollbox?.height ?? 0
     const nextCombinedEntries = collapseHistoricalTurns(
       stitchPrependedHistory(sanitizedEntries, currentEntries),
-      sessionHasPromptWork(sessionState()),
+      true,
     )
     currentTurnId = computeCurrentTurnId(nextCombinedEntries)
     nextTurnId = computeNextTurnId(nextCombinedEntries)
@@ -4661,7 +4676,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (/has no active provider run/i.test(message) && !sessionHasPromptWork(sessionState())) {
           setProviderRunState(null)
           updateSessionChrome()
-          void recoverProviderRun("terminal polling")
           return
         }
         throw error
@@ -4740,12 +4754,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!isAttached()) {
         return
       }
+      const previousSession = sessionState()
       const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
       recordDaemonActivity("session_state_poll")
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
       const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(payload.session)
+      const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(payload.session)
       applySessionState(payload.session)
-      if (shouldRefreshPanes) {
+      if (shouldRefreshPanes || promptJustCompleted) {
         await refreshAgentPanes(payload.session)
       }
       if (payload.session.active_provider_run_id) {
@@ -4781,7 +4797,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         })
         setProviderRunState(null)
         updateSessionChrome()
-        if (!sessionHasPromptWork(payload.session)) {
+        if (sessionHasPromptWork(payload.session)) {
           void recoverProviderRun("missing active provider run")
         }
       }
@@ -5963,11 +5979,11 @@ function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptE
 function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
-    flexGrow: 1,
     flexDirection: "column",
-    justifyContent: "center",
-    alignItems: "center",
     gap: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 2,
   })
   wrapper.add(
     new TextRenderable(renderer, {
@@ -5980,6 +5996,13 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
   wrapper.add(
     new TextRenderable(renderer, {
       content: "Type your first prompt below.",
+      fg: theme.textMuted,
+      wrapMode: "word",
+    }),
+  )
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: "Use /agent spawn to add another agent, or /view split once you have more than one.",
       fg: theme.textMuted,
       wrapMode: "word",
     }),
