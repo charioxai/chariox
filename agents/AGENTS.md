@@ -66,6 +66,7 @@ Required testing stack for kernel/CLI interaction work:
 3. Live program smoke validation
    - When changing transport, runtime fanout, or transcript update behavior, run the real daemon and CLI and verify the visible flow with logs enabled.
    - At minimum, confirm attach/subscribe, prompt submission, pushed transcript updates, and clean session-unavailable handling when the active workspace/session disappears.
+   - Clean up any daemon, CLI, and provider processes you started for the smoke run after verification. Stale live-run processes can exhaust PTY devices on macOS and make PTY-backed tests fail with `failed to openpty` even when the PTY manager is correct.
 
 4. Next coverage layer
    - Prefer adding deterministic kernel/CLI transcript-flow integration tests before adding more ad hoc manual checks.
