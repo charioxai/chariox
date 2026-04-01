@@ -2438,6 +2438,119 @@ fn fixture_script_contents(delay_seconds: u64) -> String {
     format!("#!/bin/sh\nsleep {delay_seconds}\n")
 }
 
+#[test]
+fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let _attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    // Create first agent and launch provider run
+    let first_agent = app
+        .spawn_agent(arroba_daemon::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .expect("first agent should spawn");
+    let first_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("first provider run should launch");
+
+    // Create second agent and launch provider run (this parks the first run)
+    let second_agent = app
+        .spawn_agent(
+            arroba_daemon::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("second"),
+        )
+        .expect("second agent should spawn");
+    let second_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(second_agent.id()),
+        )
+        .expect("second provider run should launch");
+
+    // Verify the first run is now parked
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should exist")
+            .state(),
+        ProviderRunState::Parked
+    );
+
+    // Verify the second run is active
+    assert_eq!(
+        app.providers()
+            .get_run(second_run.id())
+            .expect("second run should exist")
+            .state(),
+        ProviderRunState::Running
+    );
+
+    // Pump output from the parked run - this should NOT produce unexpected exit notices
+    let records = app
+        .pump_provider_output(
+            session.id(),
+            first_run.id(),
+            app.attachments().list_session_attachment_ids(session.id()),
+        )
+        .expect("pumping from parked run should succeed");
+    assert!(
+        records.is_empty(),
+        "parked runs should not emit transcript output while inactive"
+    );
+
+    // Verify the parked run is still parked (not ended)
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should exist")
+            .state(),
+        ProviderRunState::Parked,
+        "parked run should remain parked after pumping output"
+    );
+
+    // Check that no unexpected exit notices were recorded
+    let notices: Vec<_> = app
+        .terminal()
+        .notice_records()
+        .iter()
+        .filter(|record| record.message.contains("ended unexpectedly"))
+        .cloned()
+        .collect();
+
+    assert!(
+        notices.is_empty(),
+        "parked runs should not produce 'ended unexpectedly' notices, but got: {:?}",
+        notices.iter().map(|n| &n.message).collect::<Vec<_>>()
+    );
+}
+
 fn output_timeout_ms() -> u64 {
     env::var("ARROBA_HARNESS_OUTPUT_TIMEOUT_MS")
         .ok()

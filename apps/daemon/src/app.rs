@@ -528,6 +528,10 @@ impl DaemonApp {
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
             return Ok(Vec::new());
         }
+        // Parked runs should not be polled for output
+        if provider_run.state() == crate::provider::ProviderRunState::Parked {
+            return Ok(Vec::new());
+        }
 
         if provider_run.adapter_key() == "opencode" {
             return self.pump_opencode_output(
@@ -641,6 +645,10 @@ impl DaemonApp {
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        // Parked runs should not be polled for output
+        if provider_run.state() == crate::provider::ProviderRunState::Parked {
+            return Ok(Vec::new());
+        }
         if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
             if let Err(error) = self.pty.drain_output(provider_run_id) {
                 if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
