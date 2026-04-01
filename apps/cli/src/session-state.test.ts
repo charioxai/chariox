@@ -99,6 +99,44 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
   assert.equal(transition.nextAgentSignature, "agent-a,agent-b")
 })
 
+test("deriveSessionTransitionState keeps the active stream pinned while working settles", () => {
+  const currentSession = session({
+    focused_agent_id: "agent-a",
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "hello",
+      status: "running",
+    },
+    agents: [agent("agent-a", { is_processing: true, state: "Working" }), agent("agent-b")],
+  })
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    agents: [agent("agent-a"), agent("agent-b")],
+  })
+
+  const transition = deriveSessionTransitionState({
+    currentSession,
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-a",
+    currentAgentActivityLabels: {
+      "agent-a": "thinking",
+      "agent-b": null,
+    },
+    layoutPreference: "split",
+  })
+
+  assert.equal(transition.nextStreamingAgentId, "agent-a")
+  assert.equal(transition.nextFocusedActivityLabel, "thinking")
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-a": "thinking",
+    "agent-b": null,
+  })
+  assert.equal(transition.nextWorking, true)
+})
+
 test("deriveDetachedCliTransitionState resets waiting room and clears session-bound state", () => {
   const detached = deriveDetachedCliTransitionState({
     cliOptions: {

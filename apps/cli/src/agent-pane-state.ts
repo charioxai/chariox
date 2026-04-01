@@ -28,6 +28,31 @@ function countRenderablePaneEntries<TEntry extends { role: string }>(entries: re
   return entries.filter((entry) => entry.role !== "turn_summary" && entry.role !== "turn_toggle").length
 }
 
+function totalPaneTextLength<TEntry extends { text: string }>(entries: readonly TEntry[]) {
+  return entries.reduce((sum, entry) => sum + entry.text.length, 0)
+}
+
+function shouldPreferCurrentPaneEntries<TEntry extends { role: string; text: string }>(
+  currentEntries: readonly TEntry[],
+  refreshedEntries: readonly TEntry[],
+) {
+  if (currentEntries.length === 0) {
+    return false
+  }
+
+  const currentRenderableCount = countRenderablePaneEntries(currentEntries)
+  const refreshedRenderableCount = countRenderablePaneEntries(refreshedEntries)
+  if (currentRenderableCount > refreshedRenderableCount) {
+    return true
+  }
+
+  if (currentRenderableCount < refreshedRenderableCount) {
+    return false
+  }
+
+  return totalPaneTextLength(currentEntries) > totalPaneTextLength(refreshedEntries)
+}
+
 export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: string }>(options: {
   entries: TEntry[]
   maxEntries: number
@@ -62,7 +87,7 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
 export async function refreshAgentPaneState<
   TAgent extends { id: string },
   THistoryEntry,
-  TEntry extends { role: string; turnId?: number },
+  TEntry extends { role: string; text: string; turnId?: number },
   TCursor,
 >(options: {
   session: AgentPaneSession<TAgent>
@@ -89,10 +114,11 @@ export async function refreshAgentPaneState<
   let visibleCursor: TCursor | null = null
 
   for (const agent of options.session.agents) {
+    const currentPaneEntries = options.currentPaneEntriesByAgent?.[agent.id] ?? []
     const historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     let nextResolvedCursor = historyPage.nextCursor
-    const desiredEntryCount = countRenderablePaneEntries(options.currentPaneEntriesByAgent?.[agent.id] ?? [])
+    const desiredEntryCount = countRenderablePaneEntries(currentPaneEntries)
     while (
       (
         (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user")
@@ -118,7 +144,7 @@ export async function refreshAgentPaneState<
       expandedTurnIdsByAgent[agent.id] = expandedTurnIds
     }
 
-    const nextPaneEntries = options.reindexEntries(
+    let nextPaneEntries = options.reindexEntries(
       options.applyExpandedTurns(
         options.collapseHistoricalTurns(
           resolvedHistoryEntries,
@@ -128,6 +154,9 @@ export async function refreshAgentPaneState<
       ),
       0,
     )
+    if (options.hasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
+      nextPaneEntries = currentPaneEntries.map((entry) => ({ ...entry }))
+    }
     paneEntries[agent.id] = nextPaneEntries
     previews[agent.id] = options.formatPreview(nextPaneEntries)
 

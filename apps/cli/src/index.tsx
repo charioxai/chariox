@@ -1460,6 +1460,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     batch(() => {
       activeToolLabels.clear()
+      setAgentActivityLabels({})
+      setStreamingAgentId(null)
       setSubmitting(false)
       setProviderActivityLabel(null)
       setActiveStatusLabel(null)

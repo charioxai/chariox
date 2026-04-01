@@ -111,15 +111,20 @@ export function deriveSessionTransitionState(
   const nextFocusedAgentId =
     options.nextSession.focused_agent_id ?? options.nextSession.agents[0]?.id ?? null
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
-  const nextStreamingAgentId = resolveStreamingAgentId(
+  const resolvedStreamingAgentId = resolveStreamingAgentId(
     options.nextSession.agents,
     options.nextSession.active_prompt?.target_agent_id ?? null,
     nextHasPromptWork,
     options.currentStreamingAgentId,
   )
-  const nextFocusedActivityLabel = nextFocusedAgentId
-    ? options.currentAgentActivityLabels[nextFocusedAgentId] ?? null
-    : null
+  const nextStreamingAgentId = resolvedStreamingAgentId
+    ?? (
+      options.currentWorking
+      && options.currentStreamingAgentId
+      && options.nextSession.agents.some((agent) => agent.id === options.currentStreamingAgentId)
+        ? options.currentStreamingAgentId
+        : null
+    )
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
     nextAgentActivityLabels[agent.id] =
@@ -127,6 +132,9 @@ export function deriveSessionTransitionState(
         ? (options.currentAgentActivityLabels[agent.id] ?? null)
         : null
   }
+  const nextFocusedActivityLabel = nextFocusedAgentId
+    ? nextAgentActivityLabels[nextFocusedAgentId] ?? null
+    : null
 
   return {
     nextFocusedAgentId,

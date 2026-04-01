@@ -130,7 +130,12 @@ test("refreshAgentPaneState preserves completed turns when collapse is disabled"
 
 test("refreshAgentPaneState backfills enough history to preserve the current pane depth", async () => {
   const requestedCursors: Array<string | null> = []
-  const result = await refreshAgentPaneState({
+  const result = await refreshAgentPaneState<
+    { id: string },
+    { role: string; turnId?: number; text: string },
+    { id?: number; role: string; turnId?: number; text: string },
+    string
+  >({
     session: {
       agents: [{ id: "agent-a" }],
       focused_agent_id: "agent-a",
@@ -178,4 +183,46 @@ test("refreshAgentPaneState backfills enough history to preserve the current pan
     result.visibleEntries.map((entry) => entry.text),
     ["first question", "first answer", "second question", "second answer"],
   )
+})
+
+test("refreshAgentPaneState preserves richer live pane entries while prompt work is active", async () => {
+  const result = await refreshAgentPaneState<
+    { id: string },
+    { role: string; turnId?: number; text: string },
+    { id?: number; role: string; turnId?: number; text: string },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "question" },
+        { role: "assistant", turnId: 1, text: "partial answer still streaming" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        { role: "user", turnId: 1, text: "question" },
+        { role: "assistant", turnId: 1, text: "partial" },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["question", "partial answer still streaming"],
+  )
+  assert.equal(result.previews["agent-a"], "question | partial answer still streaming")
 })
