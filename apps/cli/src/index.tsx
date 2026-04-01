@@ -45,7 +45,7 @@ import {
   type ParsedSlashCommand,
 } from "./commands.js"
 import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
-import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
@@ -592,10 +592,7 @@ async function main() {
     },
     prepareHistoryEntries: (entries, session) =>
       reindexTranscriptEntries(
-        collapseHistoricalTurns(
-          hydrateTranscriptEntries(entries),
-          true,
-        ),
+        hydrateTranscriptEntries(entries),
         0,
       ),
   })
@@ -777,11 +774,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
-  const responsePaneSelection = createMemo(() => selectResponsePaneAgents(
+  const responsePaneSelection = () => selectResponsePaneAgents(
     sessionState().agents,
     focusedAgentId(),
     splitAgentResponseMode(),
-  ))
+  )
   const responsePrimaryAgent = () => responsePaneSelection().primary
   const responseSecondaryAgent = () => responsePaneSelection().secondary
   const responseTertiaryAgent = () => responsePaneSelection().tertiary
@@ -1456,29 +1453,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingTurnCompletion = undefined
     }
   }
-  const collapseCompletedTurns = () => {
-    replaceTranscriptEntries(collapseHistoricalTurns(entries.filter(Boolean).map((entry) => ({ ...entry })), true))
-    for (const agent of sessionState().agents) {
-      setAgentTranscriptEntries(
-        agent.id,
-        trimAgentPaneEntries({
-          entries: collapseHistoricalTurns(currentAgentPaneEntries(agent.id), true),
-          maxEntries: LIVE_TRANSCRIPT_LIMIT,
-          maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-          onTrimmedMergeKey: (mergeKey) => {
-            auxiliaryAgentPaneTools(agent.id).delete(mergeKey)
-          },
-        }),
-      )
-    }
-  }
   const finalizeTurnCompletion = () => {
     cancelPendingTurnCompletion()
     if (sessionHasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
       return
     }
     batch(() => {
-      collapseCompletedTurns()
       activeToolLabels.clear()
       setSubmitting(false)
       setProviderActivityLabel(null)
@@ -2077,7 +2057,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       updateSessionChrome()
       return
     }
-    collapseTurn(currentTurnId)
     const turnId = nextTurnId
     nextTurnId += 1
     currentTurnId = turnId
@@ -3059,10 +3038,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const currentAgentPaneEntries = (agentId: string) => {
-    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
-      return entries.filter(Boolean).map((entry) => ({ ...entry }))
-    }
-    return (agentPaneEntries()[agentId] ?? []).map((entry) => ({ ...entry }))
+    return selectCurrentAgentPaneEntries({
+      agentId,
+      visibleAgentId: visibleTranscriptAgentId(),
+      visibleEntries: entries.filter(Boolean),
+      paneEntriesByAgent: agentPaneEntries(),
+    })
   }
 
   const expandLatestPaneTurnForLiveUpdate = (items: TranscriptEntry[]) => {
@@ -3339,6 +3320,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       session,
       hasPromptWork: sessionHasPromptWork(session),
       expandedTurnIdsByAgent: expandedTurnIdsByAgent(),
+      currentPaneEntriesByAgent: Object.fromEntries(
+        session.agents.map((agent) => [agent.id, currentAgentPaneEntries(agent.id)]),
+      ),
       resolveVisibleAgentId: (agents, focusedAgentId) =>
         selectResponsePaneAgents(agents, focusedAgentId, splitAgentResponseMode()).visibleTranscriptAgentId,
       loadHistoryPage: async (agentId, cursor) => {
@@ -3350,7 +3334,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       },
       hydrateEntries: hydrateTranscriptEntries,
       stitchPrependedHistory,
-      collapseHistoricalTurns,
+      collapseHistoricalTurns: (entries) => entries,
       applyExpandedTurns,
       reindexEntries: reindexTranscriptEntries,
       formatPreview: formatTranscriptPreview,
@@ -3598,10 +3582,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousScrollHeight = transcriptScrollbox?.scrollHeight ?? 0
     const previousScrollTop = transcriptScrollbox?.scrollTop ?? 0
     const previousViewportHeight = transcriptScrollbox?.height ?? 0
-    const nextCombinedEntries = collapseHistoricalTurns(
-      stitchPrependedHistory(sanitizedEntries, currentEntries),
-      true,
-    )
+    const nextCombinedEntries = stitchPrependedHistory(sanitizedEntries, currentEntries)
     currentTurnId = computeCurrentTurnId(nextCombinedEntries)
     nextTurnId = computeNextTurnId(nextCombinedEntries)
     setEntries(reconcile(nextCombinedEntries))

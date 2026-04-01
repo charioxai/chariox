@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -20,6 +20,32 @@ test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge key
 
   assert.deepEqual(entries.map((entry) => entry.id), [2, 3])
   assert.deepEqual(trimmedMergeKeys, ["tool-1"])
+})
+
+test("selectCurrentAgentPaneEntries prefers the live visible transcript over stale pane cache", () => {
+  const result = selectCurrentAgentPaneEntries({
+    agentId: "agent-a",
+    visibleAgentId: "agent-a",
+    visibleEntries: [
+      { id: 1, role: "user", text: "first question" },
+      { id: 2, role: "assistant", text: "first answer" },
+      { id: 3, role: "user", text: "second question" },
+      { id: 4, role: "assistant", text: "second answer" },
+    ],
+    paneEntriesByAgent: {
+      "agent-a": [
+        { id: 1, role: "user", text: "first question" },
+        { id: 2, role: "assistant", text: "first answer" },
+      ],
+    },
+  })
+
+  assert.deepEqual(result.map((entry) => entry.text), [
+    "first question",
+    "first answer",
+    "second question",
+    "second answer",
+  ])
 })
 
 test("refreshAgentPaneState backfills older history until a user turn and keeps only valid expanded turns", async () => {
@@ -63,4 +89,93 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["other", "toggle"])
   assert.equal(result.previews["agent-a"], "question | answer")
   assert.equal(result.visibleCursor, null)
+})
+
+test("refreshAgentPaneState preserves completed turns when collapse is disabled", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {},
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        { role: "user", turnId: 1, text: "first question" },
+        { role: "assistant", turnId: 1, text: "first answer" },
+        { role: "user", turnId: 2, text: "second question" },
+        { role: "assistant", turnId: 2, text: "second answer" },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.equal(result.visibleAgentId, "agent-a")
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["first question", "first answer", "second question", "second answer"],
+  )
+  assert.equal(
+    result.previews["agent-a"],
+    "first question | first answer | second question | second answer",
+  )
+})
+
+test("refreshAgentPaneState backfills enough history to preserve the current pane depth", async () => {
+  const requestedCursors: Array<string | null> = []
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "first question" },
+        { role: "assistant", turnId: 1, text: "first answer" },
+        { role: "user", turnId: 2, text: "second question" },
+        { role: "assistant", turnId: 2, text: "second answer" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (_agentId, cursor) => {
+      requestedCursors.push(cursor)
+      if (cursor === null) {
+        return {
+          entries: [
+            { role: "user", turnId: 2, text: "second question" },
+            { role: "assistant", turnId: 2, text: "second answer" },
+          ],
+          nextCursor: "older",
+        }
+      }
+      return {
+        entries: [
+          { role: "user", turnId: 1, text: "first question" },
+          { role: "assistant", turnId: 1, text: "first answer" },
+        ],
+        nextCursor: null,
+      }
+    },
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(requestedCursors, [null, "older"])
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["first question", "first answer", "second question", "second answer"],
+  )
 })

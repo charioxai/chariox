@@ -28,12 +28,12 @@ test("selectResponsePaneAgents falls back to the first agent when focus is missi
   })
 })
 
-test("selectResponsePaneAgents uses the first three agents in split mode", () => {
+test("selectResponsePaneAgents keeps split panes bound to the first three agents", () => {
   assert.deepEqual(selectResponsePaneAgents(agents, "agent-c", true), {
-    primary: agents[2],
-    secondary: agents[0],
-    tertiary: agents[1],
-    visibleTranscriptAgentId: "agent-c",
+    primary: agents[0],
+    secondary: agents[1],
+    tertiary: agents[2],
+    visibleTranscriptAgentId: "agent-a",
   })
 })
 
@@ -47,7 +47,7 @@ test("selectResponsePaneAgents falls back to the first agent in split mode when 
 })
 
 test("splitPaneAuxiliaryAgentIds returns only the auxiliary split panes", () => {
-  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-c", true), ["agent-a", "agent-b"])
+  assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-c", true), ["agent-b", "agent-c"])
   assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-a", true), ["agent-b", "agent-c"])
   assert.deepEqual(splitPaneAuxiliaryAgentIds(agents, "agent-c", false), [])
 })

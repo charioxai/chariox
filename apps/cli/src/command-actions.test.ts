@@ -1,8 +1,53 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance } from "./cli-types.js"
+import { createCommandActionHandlers, formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
+import type { AgentInstance, RuntimeAttachment, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+
+function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "openai/gpt-5",
+    worktree_id: "worktree-1",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    alias: null,
+    workspace_id: "workspace-1",
+    worktree_id: "worktree-1",
+    created_at_ms: 0,
+    status: "Running",
+    active_provider_run_id: null,
+    attachment_ids: ["attachment-1"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 6,
+    agents: [makeAgent()],
+    config_state: {
+      version: 0,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
 
 test("parseRequestedViewLayout handles summary, invalid, and set cases", () => {
   assert.deepEqual(parseRequestedViewLayout("", "split"), { kind: "summary" })
@@ -39,4 +84,112 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
     formatAgentListSummary(agents),
     "1 agent: agent-1 (planner) [Idle]",
   )
+})
+
+test("agent spawn refreshes session state after launching the provider run", async () => {
+  const firstAgent = makeAgent()
+  const secondAgent = makeAgent({
+    id: "agent-2",
+    agent_ref: "agent-2",
+    alias: "review",
+    state: "Focused",
+  })
+  let currentSession = makeSession()
+  const spawnedSession = makeSession({
+    focused_agent_id: secondAgent.id,
+    agents: [firstAgent, secondAgent],
+  })
+  const refreshedSession = {
+    ...spawnedSession,
+    active_provider_run_id: "provider-run-2",
+  }
+  const appliedProviderRunIds: Array<string | null> = []
+  const refreshedPaneProviderRunIds: Array<string | null> = []
+  let splitPaneRefreshCount = 0
+  let flashedMessage = ""
+
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => currentSession,
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun => ({
+      id: "provider-run-1",
+      session_id: "session-1",
+      agent_instance_id: "agent-1",
+      adapter_key: "opencode",
+      provider: "opencode",
+      account_profile: "default",
+      model: "openai/gpt-5",
+      variant: "medium",
+      usage_tokens_total: null,
+      state: "running",
+    }),
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    focusedAgentId: () => currentSession.focused_agent_id,
+    multiAgentResponseLayout: () => "split",
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: currentSession,
+      config: currentSession.config_state,
+    }),
+    applySessionState: (session) => {
+      currentSession = session
+      appliedProviderRunIds.push(session.active_provider_run_id)
+    },
+    refreshAgentPanes: async (session) => {
+      refreshedPaneProviderRunIds.push(session.active_provider_run_id)
+    },
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: currentSession }),
+    launchAgentProviderRun: async () => ({
+      id: "provider-run-2",
+      session_id: "session-1",
+      agent_instance_id: "agent-2",
+      adapter_key: "opencode",
+      provider: "opencode",
+      account_profile: "default",
+      model: "openai/gpt-5",
+      variant: "medium",
+      usage_tokens_total: null,
+      state: "running",
+    }),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => refreshedSession,
+    spawnAgent: async () => ({ agent: secondAgent, session: spawnedSession }),
+    destroyAgent: async () => currentSession,
+    focusAgent: async () => ({ agent: secondAgent, session: currentSession }),
+    resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => { splitPaneRefreshCount += 1 },
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn review",
+    args: ["spawn", "review"],
+  })
+
+  assert.deepEqual(appliedProviderRunIds, [null, "provider-run-2"])
+  assert.deepEqual(refreshedPaneProviderRunIds, [null, "provider-run-2"])
+  assert.equal(splitPaneRefreshCount, 1)
+  assert.equal(flashedMessage, "spawned agent agent-2 (review)")
 })

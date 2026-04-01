@@ -16,6 +16,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Note: Finish the remaining shell/file/git/screenshot/transfer/schedule-facing productization and local slash-command UX without adding another provider family yet.
 - [ ] **M4-003** Stabilize the OpenCode-backed multi-agent runtime path
   - Note: The core daemon integration suite is green again, but the OpenCode-first path still needs further stabilization around transcript/pane UX and deeper live runtime drills.
+  - Progress: queued prompts now stay bound to their target agent run, and queued work can advance onto another healthy agent run after the active run exits unexpectedly.
   - Future transport drills still pending:
     - deeper live replay/catch-up validation during active streaming output
     - long-idle heartbeat/liveness validation on the kernel WebSocket path

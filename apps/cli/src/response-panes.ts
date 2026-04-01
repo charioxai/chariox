@@ -44,14 +44,14 @@ export function selectResponsePaneAgents<T extends ResponsePaneAgent>(
   const firstAgent = agents[0] ?? null
 
   if (split) {
-    const focused = agents.find((agent) => agent.id === focusedAgentId) ?? firstAgent
-    const secondary = agents.find((agent) => agent.id !== focused?.id) ?? null
-    const tertiary = agents.find((agent) => agent.id !== focused?.id && agent.id !== secondary?.id) ?? null
+    const primary = firstAgent
+    const secondary = agents[1] ?? null
+    const tertiary = agents[2] ?? null
     return {
-      primary: focused,
+      primary,
       secondary,
       tertiary,
-      visibleTranscriptAgentId: resolveVisibleTranscriptAgentId(true, focused?.id ?? null, focusedAgentId ?? null),
+      visibleTranscriptAgentId: resolveVisibleTranscriptAgentId(true, primary?.id ?? null, focusedAgentId ?? null),
     }
   }
 

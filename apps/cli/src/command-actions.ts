@@ -270,15 +270,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const provider = deps.providerRunState()?.provider ?? "opencode"
         try {
           const payload = await deps.spawnAgent(provider, alias, model)
+          deps.applySessionState(payload.session)
+          await deps.refreshAgentPanes(payload.session)
           const run = await deps.launchAgentProviderRun(
             model ?? deps.currentModelId(),
             deps.currentVariantId(),
             payload.agent.id,
           )
           deps.setProviderRunState(run)
-          deps.applySessionState(payload.session)
-          await deps.refreshAgentPanes(payload.session)
+          const refreshedSession = await deps.refreshSessionState(payload.session.id)
+          deps.applySessionState(refreshedSession)
+          await deps.refreshAgentPanes(refreshedSession)
           deps.rebuildTranscript()
+          deps.refreshSplitPaneFocusRepaint()
           deps.flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}`, "info")
         } catch (error) {
           deps.flashFooter(deps.formatError(error), "error")

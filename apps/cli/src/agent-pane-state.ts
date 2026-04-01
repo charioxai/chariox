@@ -12,6 +12,22 @@ export type AgentPaneRefreshResult<TEntry, TCursor> = {
   visibleCursor: TCursor | null
 }
 
+export function selectCurrentAgentPaneEntries<TEntry extends object>(options: {
+  agentId: string
+  visibleAgentId: string | null
+  visibleEntries: readonly TEntry[]
+  paneEntriesByAgent: Record<string, TEntry[]>
+}) {
+  if (options.agentId === options.visibleAgentId) {
+    return options.visibleEntries.map((entry) => ({ ...entry }))
+  }
+  return (options.paneEntriesByAgent[options.agentId] ?? []).map((entry) => ({ ...entry }))
+}
+
+function countRenderablePaneEntries<TEntry extends { role: string }>(entries: readonly TEntry[]) {
+  return entries.filter((entry) => entry.role !== "turn_summary" && entry.role !== "turn_toggle").length
+}
+
 export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: string }>(options: {
   entries: TEntry[]
   maxEntries: number
@@ -52,6 +68,7 @@ export async function refreshAgentPaneState<
   session: AgentPaneSession<TAgent>
   hasPromptWork: boolean
   expandedTurnIdsByAgent: Record<string, number[]>
+  currentPaneEntriesByAgent?: Record<string, TEntry[]>
   resolveVisibleAgentId: (agents: readonly TAgent[], focusedAgentId: string | null) => string | null
   loadHistoryPage: (agentId: string, cursor: TCursor | null) => Promise<{ entries: THistoryEntry[]; nextCursor: TCursor | null }>
   hydrateEntries: (entries: THistoryEntry[]) => TEntry[]
@@ -75,7 +92,14 @@ export async function refreshAgentPaneState<
     const historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     let nextResolvedCursor = historyPage.nextCursor
-    while (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user" && nextResolvedCursor !== null) {
+    const desiredEntryCount = countRenderablePaneEntries(options.currentPaneEntriesByAgent?.[agent.id] ?? [])
+    while (
+      (
+        (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user")
+        || countRenderablePaneEntries(resolvedHistoryEntries) < desiredEntryCount
+      )
+      && nextResolvedCursor !== null
+    ) {
       const olderPage = await options.loadHistoryPage(agent.id, nextResolvedCursor)
       resolvedHistoryEntries = options.stitchPrependedHistory(
         options.hydrateEntries(olderPage.entries),

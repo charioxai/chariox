@@ -1420,6 +1420,169 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
 }
 
 #[test]
+fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_its_own_run() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let default_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(default_agent.id()),
+        )
+        .expect("default provider run should launch");
+    let reviewer = app
+        .spawn_agent(
+            arroba_daemon::agent::CreateAgentRequest::new(session.id(), "opencode")
+                .with_alias("reviewer"),
+        )
+        .expect("reviewer agent should spawn");
+    let reviewer_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(reviewer.id()),
+        )
+        .expect("reviewer provider run should launch");
+
+    app.focus_agent(session.id(), default_agent.id())
+        .expect("default agent should focus");
+    let first_submission = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "default agent prompt stays active\n",
+            Vec::new(),
+        )
+        .expect("default prompt should start");
+    match first_submission {
+        PromptSubmissionOutcome::Started { prompt } => {
+            assert_eq!(prompt.target_agent_id(), default_agent.id());
+        }
+        _ => panic!("expected default prompt to start immediately"),
+    }
+
+    app.focus_agent(session.id(), reviewer.id())
+        .expect("reviewer agent should focus while default agent is running");
+    let second_submission = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "reviewer prompt should queue\n",
+            Vec::new(),
+        )
+        .expect("reviewer prompt should queue");
+    match second_submission {
+        PromptSubmissionOutcome::Queued { prompt } => {
+            assert_eq!(prompt.target_agent_id(), reviewer.id());
+        }
+        _ => panic!("expected reviewer prompt to queue"),
+    }
+
+    let queued_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(queued_state.focused_agent_id(), Some(reviewer.id()));
+    assert_eq!(queued_state.active_provider_run_id(), Some(default_run.id()));
+    assert_eq!(
+        queued_state
+            .active_prompt()
+            .expect("default prompt should still be active")
+            .target_agent_id(),
+        default_agent.id()
+    );
+    assert_eq!(
+        queued_state
+            .queued_prompts()
+            .front()
+            .expect("reviewer prompt should remain queued")
+            .target_agent_id(),
+        reviewer.id()
+    );
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let default_records = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        default_run.id(),
+        recipients.clone(),
+        |records, app| {
+            let text = render_terminal_output(records);
+            text.contains("fixture response: default agent prompt stays active")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_provider_run_id()
+                    == Some(reviewer_run.id())
+        },
+    );
+    assert!(default_records
+        .iter()
+        .all(|record| record.agent_id.as_deref() == Some(default_agent.id())));
+
+    let reviewer_records = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        reviewer_run.id(),
+        recipients,
+        |records, app| {
+            let text = render_terminal_output(records);
+            text.contains("fixture response: reviewer prompt should queue")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+    assert!(reviewer_records
+        .iter()
+        .all(|record| record.agent_id.as_deref() == Some(reviewer.id())));
+
+    let settled_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
+    assert_eq!(settled_state.active_provider_run_id(), Some(reviewer_run.id()));
+    assert!(settled_state.queued_prompts().is_empty());
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -1501,6 +1664,159 @@ fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
         });
 
     assert!(output.contains("fixture response: prompt survives detach"));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(1);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let default_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(default_agent.id()),
+        )
+        .expect("default provider run should launch");
+    let reviewer = app
+        .spawn_agent(
+            arroba_daemon::agent::CreateAgentRequest::new(session.id(), "opencode")
+                .with_alias("reviewer"),
+        )
+        .expect("reviewer agent should spawn");
+    let reviewer_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(reviewer.id()),
+        )
+        .expect("reviewer provider run should launch");
+
+    app.focus_agent(session.id(), default_agent.id())
+        .expect("default agent should focus");
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "first exit prompt on default\n",
+            Vec::new(),
+        )
+        .expect("first prompt should start");
+
+    app.focus_agent(session.id(), reviewer.id())
+        .expect("reviewer agent should focus");
+    let _ = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "reviewer prompt after default exit\n",
+            Vec::new(),
+        )
+        .expect("reviewer prompt should queue");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let timeout_ms = output_timeout_ms().max(4_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut default_output = Vec::new();
+    let mut reviewer_output = Vec::new();
+    let mut saw_reviewer_run_become_active = false;
+
+    loop {
+        for record in app
+            .pump_provider_output(session.id(), default_run.id(), recipients.clone())
+            .expect("default provider output should pump")
+        {
+            default_output.extend(record.bytes);
+        }
+        for record in app
+            .pump_provider_output(session.id(), reviewer_run.id(), recipients.clone())
+            .expect("reviewer provider output should pump")
+        {
+            reviewer_output.extend(record.bytes);
+        }
+
+        let default_text = String::from_utf8_lossy(&default_output).into_owned();
+        let reviewer_text = String::from_utf8_lossy(&reviewer_output).into_owned();
+        let session_state = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        let default_run_state = app
+            .providers()
+            .get_run(default_run.id())
+            .expect("default run should remain queryable")
+            .state();
+        if session_state.active_provider_run_id() == Some(reviewer_run.id()) {
+            saw_reviewer_run_become_active = true;
+        }
+
+        if default_text.contains("fixture response: first exit prompt on default")
+            && reviewer_text.contains("fixture response: reviewer prompt after default exit")
+            && default_run_state == ProviderRunState::Ended
+            && session_state.active_prompt().is_none()
+        {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for multi-agent provider exit recovery after {timeout_ms}ms: default={default_text:?} reviewer={reviewer_text:?} active_run={:?} active_prompt={:?}",
+            session_state.active_provider_run_id(),
+            session_state.active_prompt().map(|prompt| prompt.id().to_string()),
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let default_output = String::from_utf8_lossy(&default_output).into_owned();
+    let reviewer_output = String::from_utf8_lossy(&reviewer_output).into_owned();
+    assert!(default_output.contains("fixture response: first exit prompt on default"));
+    assert!(reviewer_output.contains("fixture response: reviewer prompt after default exit"));
+
+    let settled_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
+    assert!(saw_reviewer_run_become_active);
+    assert!(settled_state.queued_prompts().is_empty());
+    assert_eq!(
+        app.providers()
+            .get_run(default_run.id())
+            .expect("default run should remain queryable")
+            .state(),
+        ProviderRunState::Ended
+    );
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);

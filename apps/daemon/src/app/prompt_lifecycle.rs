@@ -22,9 +22,19 @@ impl DaemonApp {
                 agent_id: "no focused agent".to_string(),
             })?
             .to_string();
-
-        let provider_run_id =
-            self.ensure_active_provider_run_for_agent(session_id, &target_agent_id)?;
+        let queued_while_active = session_before.active_prompt().is_some();
+        let provider_run_id = if queued_while_active {
+            self.providers
+                .get_run_for_agent(session_id, &target_agent_id)
+                .map(|run| run.id().to_string())
+                .or_else(|| {
+                    session_before
+                        .active_provider_run_id()
+                        .map(str::to_string)
+                })
+        } else {
+            Some(self.ensure_active_provider_run_for_agent(session_id, &target_agent_id)?)
+        };
 
         self.append_user_prompt_history(
             session_id,
@@ -44,16 +54,21 @@ impl DaemonApp {
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
+                let provider_run_id = provider_run_id.as_deref().ok_or_else(|| {
+                    DaemonError::NoActiveProviderRun {
+                        session_id: session_id.to_string(),
+                    }
+                })?;
                 self.echo_prompt_to_other_attachments(
                     session_id,
-                    &provider_run_id,
+                    provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                     prompt.attachments(),
                 );
                 if let Err(error) = self.dispatch_prompt_to_provider(
                     session_id,
-                    &provider_run_id,
+                    provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                     prompt.attachments(),
@@ -65,16 +80,18 @@ impl DaemonApp {
                 self.note_prompt_started(session_id);
             }
             PromptSubmissionOutcome::Queued { prompt } => {
-                self.echo_prompt_to_other_attachments(
-                    session_id,
-                    &provider_run_id,
-                    prompt.source_attachment_id(),
-                    prompt.prompt(),
-                    prompt.attachments(),
-                );
+                if let Some(provider_run_id) = provider_run_id.as_deref() {
+                    self.echo_prompt_to_other_attachments(
+                        session_id,
+                        provider_run_id,
+                        prompt.source_attachment_id(),
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    );
+                }
                 self.record_notice(
                     session_id,
-                    Some(&provider_run_id),
+                    provider_run_id.as_deref(),
                     self.other_attachment_ids(session_id, attachment_id),
                     format!(
                         "A queued message from attachment `{}` was added to session `{}` as `{}`. Queue depth is now {}.",
@@ -173,20 +190,30 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-
         loop {
             let (_session, next_candidate) = self.sessions.pop_next_queued_prompt(session_id)?;
             let Some(next) = next_candidate else {
                 return Ok(None);
             };
+            let target_agent_id = next.target_agent_id().to_string();
+            let provider_run_id =
+                match self.ensure_active_provider_run_for_agent(session_id, &target_agent_id) {
+                    Ok(provider_run_id) => provider_run_id,
+                    Err(error) => {
+                        self.record_notice(
+                            session_id,
+                            None,
+                            self.attachments.list_session_attachment_ids(session_id),
+                            format!(
+                                "Skipped queued prompt `{}` because Arroba could not activate the provider run for agent `{}`: {}",
+                                next.id(),
+                                target_agent_id,
+                                error
+                            ),
+                        );
+                        continue;
+                    }
+                };
 
             if let Err(error) =
                 self.ensure_attachment_in_session(session_id, next.source_attachment_id())
@@ -357,6 +384,14 @@ impl DaemonApp {
             self.clear_prompt_activity(session_id);
         }
         self.providers.clear_runtime(provider_run_id);
+        let started_next = if had_active_prompt {
+            self.advance_next_queued_prompt(session_id)?
+        } else {
+            None
+        };
+        if started_next.is_none() {
+            self.sync_focused_provider_run_if_idle(session_id)?;
+        }
 
         self.record_notice(
             session_id,
@@ -367,7 +402,11 @@ impl DaemonApp {
                 provider_run_id,
                 ended_run.provider(),
                 if had_active_prompt {
-                    "The active prompt was closed without starting the queued backlog."
+                    if started_next.is_some() {
+                        "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
+                    } else {
+                        "The active prompt was closed without starting the queued backlog."
+                    }
                 } else {
                     "No active prompt was running."
                 }

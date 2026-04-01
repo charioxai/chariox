@@ -42,11 +42,21 @@ impl AgentStore {
     }
 
     pub fn get_by_session(&self, session_id: &str) -> Vec<AgentInstance> {
-        self.agents
+        let mut agents = self
+            .agents
             .values()
             .filter(|agent| agent.session_id() == session_id)
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        agents.sort_by(|left, right| {
+            left.position()
+                .row
+                .cmp(&right.position().row)
+                .then_with(|| left.position().col.cmp(&right.position().col))
+                .then_with(|| left.created_at_ms().cmp(&right.created_at_ms()))
+                .then_with(|| left.id().cmp(right.id()))
+        });
+        agents
     }
 
     pub fn count_by_session(&self, session_id: &str) -> usize {

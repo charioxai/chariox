@@ -791,6 +791,14 @@ mod tests {
             session_state
                 .agents()
                 .iter()
+                .map(|agent| agent.id())
+                .collect::<Vec<_>>(),
+            vec![default_agent.id(), spawned.id()]
+        );
+        assert_eq!(
+            session_state
+                .agents()
+                .iter()
                 .find(|agent| agent.id() == default_agent.id())
                 .expect("default agent should still exist")
                 .state(),
@@ -846,6 +854,10 @@ mod tests {
         };
 
         assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed.iter().map(|agent| agent.id()).collect::<Vec<_>>(),
+            vec![default_agent.id(), spawned.id()]
+        );
         assert_eq!(
             listed
                 .iter()

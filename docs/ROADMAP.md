@@ -165,6 +165,9 @@ Status:
   - slow-consumer/backpressure validation is done
   - missed-event replay/catch-up validation after reconnect still needs a deeper streaming-focused live drill
   - long-idle heartbeat/liveness validation is still pending
+- recent OpenCode multi-agent stabilization now covers:
+  - queued prompts preserving their target agent run even while another agent is actively working
+  - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
 - multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
