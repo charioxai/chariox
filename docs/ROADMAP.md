@@ -148,6 +148,9 @@ Status:
 - the first manual multi-agent runtime slice is now in the codebase: top-level session agents are real execution targets, direct prompts route to the focused agent, provider runs are tracked per agent, agent-scoped history/output are recorded, and the TypeScript CLI supports `individual` and `split` multi-agent response modes
 - the current TypeScript CLI split view is still an initial slice, centered on the primary transcript plus up to two auxiliary panes
 - same-node remote connectivity for terminals and agents is still pending as part of this same OpenCode-first completion phase
+- the first transport/alignment slice has now landed:
+  - kernel-facing WebSocket transport for the TypeScript CLI
+  - managed vs external OpenCode endpoint binding
 - multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
@@ -160,12 +163,16 @@ Delivered in the current M4 slice:
 - prompts and provider output route through the focused agent's runtime context for the local daemon + CLI path
 - TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
 - explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
+- kernel-hosted WebSocket transport now exists for the primary TypeScript CLI path, while the older local IPC path remains for harnessing/tests
+- the first generic agent-endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
 
 Still pending in M4:
 
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
-- unified daemon-node transport so local and relay-attached terminals/agents can participate in the same node/session domain
+- event-driven kernel transport beyond request/response so local and relay-attached terminals/agents can participate in the same node/session domain without poll loops
+- relay-backed same-kernel remote member support for terminals and agents
+- generic external agent endpoint support beyond the current OpenCode path
 - workspace coordination baseline:
   - per-agent worktree or branch allocation
   - file/workspace claim tracking

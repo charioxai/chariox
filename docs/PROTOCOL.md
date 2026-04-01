@@ -196,9 +196,16 @@ Future unified node-transport fields should also allow:
 - `event_id`
 - `resume_from_event_id`
 
-## 4.1 Local Daemon API Baseline
+## 4.1 Current Kernel Transport Baseline
 
-For the current local baseline, the daemon exposes a local-first request/response surface over local IPC.
+For the current local baseline, the kernel exposes a request/response surface over a daemon-owned WebSocket transport.
+
+Current implementation notes:
+
+- the TypeScript CLI now defaults to `ws://127.0.0.1:${ARROBA_KERNEL_PORT:-43118}/kernel`
+- the Rust daemon process hosts that WebSocket listener directly
+- the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
+- the current wire shape is still request/response over one long-lived connection; server-pushed kernel events are the next transport step
 
 Minimum request set:
 

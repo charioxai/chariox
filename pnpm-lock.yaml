@@ -26,6 +26,9 @@ importers:
       solid-js:
         specifier: ^1.9.9
         version: 1.9.11
+      ws:
+        specifier: ^8.18.3
+        version: 8.20.0
     devDependencies:
       '@babel/core':
         specifier: ^7.28.0
@@ -33,6 +36,9 @@ importers:
       '@babel/preset-typescript':
         specifier: ^7.27.1
         version: 7.27.1(@babel/core@7.28.0)
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       babel-preset-solid:
         specifier: ^1.9.9
         version: 1.9.9(@babel/core@7.28.0)(solid-js@1.9.11)
@@ -381,6 +387,9 @@ packages:
 
   '@types/node@22.19.15':
     resolution: {integrity: sha512-F0R/h2+dsy5wJAUe3tAU6oqa2qbWY5TpNfL/RGmo1y38hiyO1w3x2jPtt76wmuaJI4DQnOBu21cNXQ2STIUUWg==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@webgpu/types@0.1.69':
     resolution: {integrity: sha512-RPmm6kgRbI8e98zSD3RVACvnuktIja5+yLgDAkTmxLr90BEwdTXRQWNLF3ETTTyH/8mKhznZuN5AveXYFEsMGQ==}
@@ -932,6 +941,18 @@ packages:
       '@types/emscripten':
         optional: true
 
+  ws@8.20.0:
+    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xml-parse-from-string@1.0.1:
     resolution: {integrity: sha512-ErcKwJTF54uRzzNMXq2X5sMIy88zJvfN2DmdoQvy7PAFJ+tPRU6ydWuOKNMyfmOjdyBQTFREi60s0Y0SyI0G0g==}
 
@@ -1445,6 +1466,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.19.15
+
   '@webgpu/types@0.1.69':
     optional: true
 
@@ -1957,6 +1982,8 @@ snapshots:
       pako: 1.0.11
 
   web-tree-sitter@0.25.10: {}
+
+  ws@8.20.0: {}
 
   xml-parse-from-string@1.0.1: {}
 

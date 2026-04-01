@@ -71,6 +71,7 @@ impl TerminalStreamService {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fan_out_output(
         &mut self,
         session_id: &str,

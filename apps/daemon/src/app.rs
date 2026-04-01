@@ -724,12 +724,12 @@ impl DaemonApp {
             "arroba daemon {} ready on machine {} ({})",
             self.config.daemon_id,
             self.config.host_machine_id,
-            self.config.local_socket_path.display()
+            self.config.kernel_websocket_url()
         )
     }
 
     pub async fn run(self) -> Result<(), DaemonError> {
-        crate::local::run_local_ipc_server(self, async {
+        crate::kernel_transport::run_kernel_websocket_server(self, async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await

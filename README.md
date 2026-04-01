@@ -84,7 +84,7 @@ The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-c
 
 This package is the new local terminal client. It uses the same OpenTUI stack as OpenCode and intentionally borrows the OpenCode prompt/transcript visual language: a boxed transcript pane, sticky bottom scrolling, a visible side scrollbar, and a boxed multiline prompt composer.
 
-The CLI remains daemon-first: it is still only a transport client over the local IPC surface, not a second runtime authority.
+The CLI remains daemon-first: it is only a transport client over the kernel-owned transport surface, not a second runtime authority.
 
 ### `apps/server`
 

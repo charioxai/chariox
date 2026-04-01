@@ -363,7 +363,7 @@ impl DaemonApp {
             LocalDaemonRequest::CreateSession(request) => {
                 let (mut session, agent) = self.create_session(request)?;
                 // Populate agents list
-                let agents = self.agents().get_session_agents(&session.id());
+                let agents = self.agents().get_session_agents(session.id());
                 session.set_agents(agents);
                 crate::logging::info_with_fields(
                     "daemon.session",
@@ -403,7 +403,7 @@ impl DaemonApp {
                 let sessions_with_agents: Vec<_> = sessions
                     .into_iter()
                     .map(|mut session| {
-                        let agents = self.agents().get_session_agents(&session.id());
+                        let agents = self.agents().get_session_agents(session.id());
                         session.set_agents(agents);
                         session
                     })
@@ -416,7 +416,7 @@ impl DaemonApp {
                 let mut session = self
                     .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
                 // Populate agents list
-                let agents = self.agents().get_session_agents(&session.id());
+                let agents = self.agents().get_session_agents(session.id());
                 session.set_agents(agents);
                 Ok(LocalDaemonResponse::SessionResolved { session })
             }

@@ -10,6 +10,8 @@ pub struct DaemonConfig {
     pub host_machine_id: String,
     pub os_user: String,
     pub local_socket_path: PathBuf,
+    pub kernel_websocket_host: String,
+    pub kernel_websocket_port: u16,
     pub session_history_root: PathBuf,
 }
 
@@ -20,6 +22,12 @@ impl DaemonConfig {
             local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
+            kernel_websocket_host: env::var("ARROBA_KERNEL_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".to_string()),
+            kernel_websocket_port: env::var("ARROBA_KERNEL_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(43118),
             session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
@@ -40,6 +48,8 @@ impl DaemonConfig {
         let daemon_id = daemon_id.into();
         Self {
             local_socket_path: Self::default_local_socket_path(&daemon_id),
+            kernel_websocket_host: "127.0.0.1".to_string(),
+            kernel_websocket_port: 43118,
             session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
@@ -75,6 +85,13 @@ impl DaemonConfig {
         self
     }
 
+    pub fn kernel_websocket_url(&self) -> String {
+        format!(
+            "ws://{}:{}/kernel",
+            self.kernel_websocket_host, self.kernel_websocket_port
+        )
+    }
+
     pub fn default_local_socket_path(daemon_id: &str) -> PathBuf {
         default_runtime_dir().join(format!("{daemon_id}.sock"))
     }
@@ -91,6 +108,13 @@ impl DaemonConfig {
             return Err(DaemonError::InvalidConfig {
                 field: "local_socket_path",
                 message: "value must not be empty",
+            });
+        }
+        validate_non_empty("kernel_websocket_host", &self.kernel_websocket_host)?;
+        if self.kernel_websocket_port == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_websocket_port",
+                message: "value must not be zero",
             });
         }
         if self.session_history_root.as_os_str().is_empty() {

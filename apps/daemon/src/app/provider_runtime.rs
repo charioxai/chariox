@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{LaunchProviderRequest, ProviderRunState, RuntimeProviderRun};
+use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeProviderRun};
 
 impl DaemonApp {
     pub fn launch_provider(
@@ -53,59 +53,62 @@ impl DaemonApp {
         let run = self.providers.launch_run(&mut self.sessions, request)?;
         crate::logging::info_with_fields(
             "daemon.app",
-            "spawned provider run metadata",
+            "prepared provider run endpoint metadata",
             serde_json::json!({
                 "provider_run_id": run.id(),
+                "endpoint_mode": run.endpoint_mode().to_string(),
                 "session_id": run.session_id(),
                 "provider": run.provider(),
             }),
         );
-        if let Err(error) = self.pty.spawn_for_run(&run) {
-            crate::logging::error_with_fields(
-                "daemon.app",
-                "PTY spawn failed for provider run",
-                serde_json::json!({
-                    "provider_run_id": run.id(),
-                    "session_id": run.session_id(),
-                    "error": error.to_string(),
-                }),
-            );
-            let _ = self
-                .providers
-                .terminate_run(&mut self.sessions, run.session_id(), run.id());
-            if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
-                match self.providers.resume_run(
-                    &mut self.sessions,
-                    run.session_id(),
-                    previous_active_run_id,
-                ) {
-                    Ok(resumed_run) => {
-                        self.record_notice(
-                            run.session_id(),
-                            Some(resumed_run.id()),
-                            recipients,
-                            format!(
-                                "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+        if run.endpoint_mode() == AgentEndpointMode::Managed {
+            if let Err(error) = self.pty.spawn_for_run(&run) {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "PTY spawn failed for provider run",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                let _ = self
+                    .providers
+                    .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
+                    match self.providers.resume_run(
+                        &mut self.sessions,
+                        run.session_id(),
+                        previous_active_run_id,
+                    ) {
+                        Ok(resumed_run) => {
+                            self.record_notice(
                                 run.session_id(),
-                                resumed_run.id()
-                            ),
-                        );
-                    }
-                    Err(resume_error) => {
-                        self.record_notice(
-                            run.session_id(),
-                            None,
-                            recipients,
-                            format!(
-                                "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                Some(resumed_run.id()),
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+                                    run.session_id(),
+                                    resumed_run.id()
+                                ),
+                            );
+                        }
+                        Err(resume_error) => {
+                            self.record_notice(
                                 run.session_id(),
-                                resume_error
-                            ),
-                        );
+                                None,
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                    run.session_id(),
+                                    resume_error
+                                ),
+                            );
+                        }
                     }
                 }
+                return Err(error);
             }
-            return Err(error);
         }
         crate::logging::info_with_fields(
             "daemon.app",

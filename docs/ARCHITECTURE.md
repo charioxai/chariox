@@ -717,19 +717,22 @@ This section captures current implementation choices for v1 so engineering work 
 
 ### 10.6 Transport and Local IPC
 
-- WebSockets for remote relay transport
-- Unix socket on Unix-like systems for local client-daemon communication
-- named pipe on Windows for local client-daemon communication
+- WebSockets for kernel-facing client transport
+- relay transport later forwards the same logical client/kernel protocol
+- Unix socket on Unix-like systems remains as a local compatibility and harness path
+- named pipe on Windows remains a later local compatibility follow-up
 
 Current M2 runtime note:
 
-- the Unix-socket local transport is now implemented for the daemon + local CLI baseline
-- Windows local transport remains a later follow-up
+- the daemon now hosts a kernel WebSocket listener directly and the TypeScript CLI uses that path by default
+- the Unix-socket local transport remains implemented for local harnessing/tests and backward-compatible tooling
+- Windows local compatibility transport remains a later follow-up
 
 ### 10.6.1 OpenCode Integration Strategy
 
 - M2 baseline: PTY-launched OpenCode wrapper path
 - current M3 direction: daemon-launched `opencode serve` plus local HTTP/SSE adapter
+- current implementation also supports an external OpenCode endpoint via `ARROBA_OPENCODE_ENDPOINT`, which is the first concrete `external agent endpoint` path in the codebase
 - adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
 
 ### 10.7 Governance

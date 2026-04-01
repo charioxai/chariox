@@ -1,11 +1,12 @@
 use super::{
-    plan_opencode_launch, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    plan_opencode_launch, AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+    RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
-pub trait ProviderAdapter: Send + Sync {
+pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
-    fn launch(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError>;
+    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError>;
     fn park(&self, run: &RuntimeProviderRun);
     fn resume(&self, run: &RuntimeProviderRun);
     fn terminate(&self, run: &RuntimeProviderRun);
@@ -31,7 +32,7 @@ impl ProviderRegistry {
         }
     }
 
-    pub fn resolve(&self, key: &str) -> Option<&'static dyn ProviderAdapter> {
+    pub fn resolve(&self, key: &str) -> Option<&'static dyn AgentEndpointAdapter> {
         match key {
             DevStubAdapter::KEY => Some(&DEV_STUB_ADAPTER),
             OpenCodeAdapter::KEY => Some(&OPENCODE_ADAPTER),
@@ -51,19 +52,20 @@ impl DevStubAdapter {
 
 static DEV_STUB_ADAPTER: DevStubAdapter = DevStubAdapter;
 
-impl ProviderAdapter for DevStubAdapter {
+impl AgentEndpointAdapter for DevStubAdapter {
     fn key(&self) -> &'static str {
         Self::KEY
     }
 
-    fn launch(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
         Ok(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
             process_label: format!(
                 "dev-stub:{}:{}:{}",
                 request.provider, request.account_profile, request.model
             ),
             pty_target: Some(format!("stub-pty:{}", request.session_id)),
-            pty_program: "/bin/sh".to_string(),
+            pty_program: Some("/bin/sh".to_string()),
             pty_args: vec!["-lc".to_string(), "cat".to_string()],
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
@@ -86,12 +88,12 @@ impl OpenCodeAdapter {
 
 static OPENCODE_ADAPTER: OpenCodeAdapter = OpenCodeAdapter;
 
-impl ProviderAdapter for OpenCodeAdapter {
+impl AgentEndpointAdapter for OpenCodeAdapter {
     fn key(&self) -> &'static str {
         Self::KEY
     }
 
-    fn launch(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = plan_opencode_launch()?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
@@ -119,19 +121,20 @@ impl FailingPtyAdapter {
 static FAILING_PTY_ADAPTER: FailingPtyAdapter = FailingPtyAdapter;
 
 #[cfg(test)]
-impl ProviderAdapter for FailingPtyAdapter {
+impl AgentEndpointAdapter for FailingPtyAdapter {
     fn key(&self) -> &'static str {
         Self::KEY
     }
 
-    fn launch(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
+    fn connect(&self, request: &LaunchProviderRequest) -> Result<ProviderLaunchResult, DaemonError> {
         Ok(ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
             process_label: format!(
                 "dev-invalid-pty:{}:{}:{}",
                 request.provider, request.account_profile, request.model
             ),
             pty_target: Some(format!("invalid-pty:{}", request.session_id)),
-            pty_program: "/definitely/not/a/real/provider".to_string(),
+            pty_program: Some("/definitely/not/a/real/provider".to_string()),
             pty_args: Vec::new(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
@@ -173,14 +176,15 @@ mod tests {
         let launch_result = ProviderRegistry::new()
             .resolve("opencode")
             .expect("opencode adapter should exist")
-            .launch(&request)
+            .connect(&request)
             .expect("opencode launch should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
         let _ = fs::remove_file(&executable);
 
-        assert_eq!(launch_result.pty_program, executable.display().to_string());
+        let expected_program = executable.to_string_lossy().to_string();
+        assert_eq!(launch_result.pty_program.as_deref(), Some(expected_program.as_str()));
         assert_eq!(launch_result.working_directory, Some(PathBuf::from("/tmp")));
         assert_eq!(launch_result.pty_args[0], "serve");
         assert_eq!(launch_result.pty_args[1], "--hostname");

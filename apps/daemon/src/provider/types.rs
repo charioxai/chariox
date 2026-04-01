@@ -11,6 +11,23 @@ pub enum ProviderRunState {
     Ended,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentEndpointMode {
+    Managed,
+    External,
+}
+
+impl fmt::Display for AgentEndpointMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Managed => "managed",
+            Self::External => "external",
+        };
+
+        write!(f, "{value}")
+    }
+}
+
 impl fmt::Display for ProviderRunState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -77,9 +94,10 @@ impl LaunchProviderRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderLaunchResult {
+    pub endpoint_mode: AgentEndpointMode,
     pub process_label: String,
     pub pty_target: Option<String>,
-    pub pty_program: String,
+    pub pty_program: Option<String>,
     pub pty_args: Vec<String>,
     pub working_directory: Option<PathBuf>,
     pub structured_endpoint: Option<String>,
@@ -97,9 +115,10 @@ pub struct RuntimeProviderRun {
     variant: Option<String>,
     usage_tokens_total: Option<u64>,
     state: ProviderRunState,
+    endpoint_mode: AgentEndpointMode,
     process_label: String,
     pty_target: Option<String>,
-    pty_program: String,
+    pty_program: Option<String>,
     pty_args: Vec<String>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
@@ -122,6 +141,7 @@ impl RuntimeProviderRun {
             variant: request.variant.clone(),
             usage_tokens_total: None,
             state: ProviderRunState::Starting,
+            endpoint_mode: launch_result.endpoint_mode,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
@@ -179,14 +199,17 @@ impl RuntimeProviderRun {
     pub fn state(&self) -> ProviderRunState {
         self.state
     }
+    pub fn endpoint_mode(&self) -> AgentEndpointMode {
+        self.endpoint_mode
+    }
     pub fn process_label(&self) -> &str {
         &self.process_label
     }
     pub fn pty_target(&self) -> Option<&str> {
         self.pty_target.as_deref()
     }
-    pub fn pty_program(&self) -> &str {
-        &self.pty_program
+    pub fn pty_program(&self) -> Option<&str> {
+        self.pty_program.as_deref()
     }
     pub fn pty_args(&self) -> &[String] {
         &self.pty_args

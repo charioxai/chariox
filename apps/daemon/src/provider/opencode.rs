@@ -2,10 +2,11 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
-use crate::provider::ProviderLaunchResult;
+use crate::provider::{AgentEndpointMode, ProviderLaunchResult};
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
 const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
+const OPENCODE_ENDPOINT_OVERRIDE: &str = "ARROBA_OPENCODE_ENDPOINT";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(OPENCODE_ENV_OVERRIDE).map(PathBuf::from) {
@@ -27,14 +28,30 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
 }
 
 pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
+    if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
+        let endpoint = endpoint.to_string_lossy().trim().to_string();
+        if !endpoint.is_empty() {
+            return Ok(ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "opencode:endpoint".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some(endpoint),
+            });
+        }
+    }
+
     let executable = resolve_opencode_executable()?;
     let port = resolve_opencode_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
 
     Ok(ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed,
         process_label: "opencode:serve".to_string(),
         pty_target: None,
-        pty_program: executable.display().to_string(),
+        pty_program: Some(executable.display().to_string()),
         pty_args: vec![
             "serve".to_string(),
             "--hostname".to_string(),
@@ -48,6 +65,13 @@ pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
 }
 
 pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
+    if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
+        let endpoint = endpoint.to_string_lossy().trim().to_string();
+        if !endpoint.is_empty() {
+            return Ok(endpoint);
+        }
+    }
+
     let port = resolve_opencode_port()?;
     Ok(format!("http://127.0.0.1:{port}"))
 }
@@ -95,6 +119,8 @@ mod tests {
 
     use crate::DaemonError;
 
+    use crate::provider::AgentEndpointMode;
+
     use super::{plan_opencode_launch, resolve_opencode_executable};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -136,7 +162,11 @@ mod tests {
         std::env::remove_var("ARROBA_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
-        assert_eq!(launch.pty_program, path.display().to_string());
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_eq!(
+            launch.pty_program.as_deref(),
+            Some(path.to_string_lossy().as_ref())
+        );
         assert_eq!(launch.pty_args[0], "serve");
         assert_eq!(launch.pty_args[1], "--hostname");
         assert_eq!(launch.pty_args[2], "127.0.0.1");
@@ -189,5 +219,25 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn resolves_external_opencode_endpoint_without_launching_process() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        std::env::set_var("ARROBA_OPENCODE_ENDPOINT", "http://127.0.0.1:43119");
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+
+        let launch = plan_opencode_launch().expect("external endpoint should resolve");
+
+        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
+        assert_eq!(launch.pty_program, None);
+        assert_eq!(launch.pty_args, Vec::<String>::new());
+        assert_eq!(
+            launch.structured_endpoint.as_deref(),
+            Some("http://127.0.0.1:43119")
+        );
     }
 }

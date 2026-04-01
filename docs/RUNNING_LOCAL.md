@@ -60,7 +60,7 @@ cargo run --manifest-path apps/daemon/Cargo.toml --bin arroba-daemon
 What it does:
 
 - boots the daemon runtime
-- resolves the local IPC socket path
+- binds the kernel WebSocket listener
 - manages sessions and provider runs
 - launches and supervises the local OpenCode server path
 
@@ -76,15 +76,18 @@ What it does:
 
 - ensures the TypeScript CLI is built
 - launches the `apps/cli` OpenTUI client through Bun
-- connects that client to the daemon over local IPC
+- connects that client to the daemon over the kernel WebSocket transport
 
 Common direct CLI options:
+
+- `--kernel-url URL`
+  - connect to a specific kernel WebSocket URL instead of the default derived one
 
 - `--session ID`
   - attach to a specific session ref by full id, unique id prefix, alias, or unique alias prefix
 
 - `--socket PATH`
-  - connect to a specific daemon socket instead of the default derived path
+  - legacy compatibility path for the older local socket transport
 
 - `--create-session`
   - force creation of a new session instead of auto-attach
@@ -274,18 +277,23 @@ Notes:
 ### 12.2 OpenCode
 
 - `ARROBA_OPENCODE_PORT`
-  - required today
+  - required for the managed OpenCode launch path
   - local port used for `opencode serve`
 
 - `ARROBA_OPENCODE_BIN`
   - optional
   - overrides the `opencode` executable path
 
+- `ARROBA_OPENCODE_ENDPOINT`
+  - optional
+  - treats OpenCode as an external agent endpoint instead of a daemon-launched managed process
+
 Examples:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
 export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
+export ARROBA_OPENCODE_ENDPOINT=http://127.0.0.1:43111
 ```
 
 ### 12.2 Bun / CLI Launcher
@@ -300,17 +308,29 @@ Example:
 export BUN_BIN=/absolute/path/to/bun
 ```
 
-### 12.3 Daemon Socket
+### 12.3 Kernel Transport
 
 - `ARROBA_DAEMON_SOCKET`
   - optional
-  - overrides the local IPC socket path used by both daemon and CLI
+  - legacy compatibility override for the older local IPC socket path
 
 - `ARROBA_DAEMON_ID`
   - optional
   - affects the default socket filename when no explicit socket path is set
 
-If you override the socket path, both processes must use the same value.
+- `ARROBA_KERNEL_URL`
+  - optional
+  - explicit kernel WebSocket URL for the CLI, for example `ws://127.0.0.1:43118/kernel`
+
+- `ARROBA_KERNEL_HOST`
+  - optional
+  - host bound by the daemon kernel WebSocket listener when `ARROBA_KERNEL_URL` is not used on the CLI
+
+- `ARROBA_KERNEL_PORT`
+  - optional
+  - port bound by the daemon kernel WebSocket listener and used by the CLI default URL derivation
+
+If you override the kernel host/port, both processes must use the same values or the CLI must be launched with a matching `ARROBA_KERNEL_URL`.
 
 Example:
 
@@ -319,6 +339,13 @@ export ARROBA_DAEMON_SOCKET=/tmp/arroba-demo.sock
 ```
 
 Then run both the daemon and the CLI in shells that share that env var.
+
+For the default kernel WebSocket path:
+
+```bash
+export ARROBA_KERNEL_HOST=127.0.0.1
+export ARROBA_KERNEL_PORT=43118
+```
 
 ### 12.4 Logging
 

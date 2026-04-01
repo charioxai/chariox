@@ -22,7 +22,7 @@ import {
 test("describeCliError prefers structured error messages", () => {
   assert.equal(
     describeCliError(new LocalIpcError("connect local socket", "timed out")),
-    "local transport `connect local socket` failed: timed out",
+    "kernel transport `connect local socket` failed: timed out",
   )
   assert.equal(describeCliError(new Error("boom")), "boom")
   assert.equal(describeCliError("plain"), "plain")

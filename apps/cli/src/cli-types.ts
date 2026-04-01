@@ -154,6 +154,7 @@ export type ReadDirectoryTreeResult = {
 }
 
 export type CliOptions = {
+  kernelUrl?: string
   socketPath?: string
   sessionId?: string
   createSession?: boolean

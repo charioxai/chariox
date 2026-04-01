@@ -350,3 +350,9 @@ impl AgentService {
         &self.store
     }
 }
+
+impl Default for AgentService {
+    fn default() -> Self {
+        Self::new()
+    }
+}

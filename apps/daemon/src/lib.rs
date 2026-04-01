@@ -5,6 +5,7 @@ pub mod capability;
 pub mod config;
 pub mod error;
 pub mod history;
+pub mod kernel_transport;
 pub mod local;
 pub mod logging;
 pub mod prompt_transcript;
@@ -45,7 +46,7 @@ mod tests {
             app.startup_message(),
             format!(
                 "arroba daemon daemon-test ready on machine machine-test ({})",
-                config.local_socket_path.display()
+                config.kernel_websocket_url()
             )
         );
     }

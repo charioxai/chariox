@@ -54,9 +54,16 @@ impl PtyManager {
             return Ok(());
         }
 
+        let program = run
+            .pty_program()
+            .ok_or_else(|| DaemonError::PtySpawn {
+                provider_run_id: run.id().to_string(),
+                message: "provider run does not define a managed PTY program".to_string(),
+            })?;
+
         let request = PtySpawnRequest {
             provider_run_id: run.id().to_string(),
-            program: run.pty_program().to_string(),
+            program: program.to_string(),
             args: run.pty_args().to_vec(),
             working_directory: run.working_directory().cloned(),
             cols: 120,
@@ -288,7 +295,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::provider::{LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
 
     use super::PtyManager;
 
@@ -303,9 +312,10 @@ mod tests {
                 "sonnet",
             ),
             ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
                 process_label: "dev-stub:test".to_string(),
                 pty_target: Some("stub-pty:session-1".to_string()),
-                pty_program: "/bin/sh".to_string(),
+                pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
                 working_directory: None,
                 structured_endpoint: None,

@@ -49,7 +49,7 @@ import { refreshAgentPaneState, trimAgentPaneEntries } from "./agent-pane-state.
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
-import { LocalIpcClient } from "./ipc.js"
+import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import {
   attachToSessionRequest,
   cancelActivePromptRequest,
@@ -579,8 +579,8 @@ async function main() {
   if (!options.effort.trim()) {
     options.effort = preferences.providers?.opencode?.effort ?? options.effort
   }
-  const socketPath = options.socketPath ?? defaultSocketPath()
-  const client = new LocalIpcClient(socketPath)
+  const kernelEndpoint = options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
+  const client = new LocalIpcClient(kernelEndpoint)
   const workspace = options.workspace ?? process.cwd()
   const worktree = options.worktree ?? workspace
   if (options.deleteSessionRef) {
@@ -588,7 +588,7 @@ async function main() {
     return
   }
   getLogger("cli.main")?.info("bootstrapping cli session", {
-    socket_path: socketPath,
+    kernel_endpoint: kernelEndpoint,
     workspace_id: workspace,
     worktree_id: worktree,
     client_id: options.clientId,
@@ -659,6 +659,7 @@ function ensureTranscriptParsersRegistered() {
 
 function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const { client, options } = props.bootstrap
+  const supportsKernelEventStream = client.supportsKernelEvents()
   const initialBinding = props.bootstrap.binding
   const initialSession = initialBinding?.session ?? buildDetachedSessionState(options)
   const appLogger = getLogger("cli.app", {
@@ -786,6 +787,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let consecutiveSilentPolls = 0
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
   let providerRecoveryInFlight = false
+  let subscribedSessionId: string | null = null
+  let subscribedAttachmentId: string | null = null
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let promptTextSnapshot = ""
@@ -4603,6 +4606,126 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const applyKernelSessionSnapshot = async (
+    nextSession: RuntimeSession,
+    nextProviderRun: RuntimeProviderRun | null,
+  ) => {
+    const previousSession = sessionState()
+    const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(nextSession)
+    const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(nextSession)
+
+    applySessionState(nextSession)
+
+    const activeRun = providerRunState()
+    if (nextProviderRun) {
+      if (!activeRun || !sameProviderRun(activeRun, nextProviderRun)) {
+        logProviderRunDebug("kernel event refreshed provider run", nextProviderRun, {
+          session_id: nextSession.id,
+          previous_provider_run_id: activeRun?.id ?? null,
+        })
+        setProviderRunState(nextProviderRun)
+        updateSessionChrome()
+      }
+    } else if (activeRun) {
+      logProviderRunDebug("kernel event cleared provider run", activeRun, {
+        session_id: nextSession.id,
+      })
+      setProviderRunState(null)
+      updateSessionChrome()
+      if (!supportsKernelEventStream && sessionHasPromptWork(nextSession)) {
+        void recoverProviderRun("missing active provider run")
+      }
+    }
+
+    if (shouldRefreshPanes || promptJustCompleted) {
+      await refreshAgentPanes(nextSession)
+    }
+  }
+
+  const handleKernelEvent = async (event: KernelEvent) => {
+    switch (event.event) {
+      case "terminal_output":
+        recordDaemonActivity("kernel_terminal_output")
+        queueTerminalOutputRecords(event.records as TerminalOutputRecord[])
+        return
+      case "runtime_notices":
+        recordDaemonActivity("kernel_runtime_notices")
+        for (const notice of event.notices as RuntimeNoticeRecord[]) {
+          appendNotice(notice.message)
+        }
+        return
+      case "session_snapshot":
+        recordDaemonActivity("kernel_session_snapshot")
+        await applyKernelSessionSnapshot(
+          event.session as RuntimeSession,
+          (event.provider_run as RuntimeProviderRun | null) ?? null,
+        )
+        return
+      case "session_unavailable":
+        await transitionToNoSession(event.message)
+        return
+      case "transport_closed":
+        setDaemonDisconnected(true)
+        setStatusLine("Lost connection to the Arroba daemon.")
+        updateSessionChrome()
+        appendNotice(event.message, "warning")
+        return
+    }
+  }
+
+  const syncKernelEventSubscription = async () => {
+    if (!supportsKernelEventStream) {
+      return
+    }
+
+    const attachment = attachmentState()
+    const sessionId = attachment ? sessionState().id : null
+    appLogger?.debug("evaluating kernel event subscription", {
+      session_id: sessionId,
+      attachment_id: attachment?.id ?? null,
+      subscribed_session_id: subscribedSessionId,
+      subscribed_attachment_id: subscribedAttachmentId,
+      attached: Boolean(attachment),
+    })
+
+    if (!attachment || !sessionId) {
+      if (subscribedAttachmentId) {
+        try {
+          await client.unsubscribeFromKernelEvents()
+        } catch (error) {
+          appLogger?.warn("failed to unsubscribe from kernel events", {
+            error: formatError(error),
+          })
+        }
+        subscribedAttachmentId = null
+        subscribedSessionId = null
+      }
+      return
+    }
+
+    if (subscribedAttachmentId === attachment.id && subscribedSessionId === sessionId) {
+      return
+    }
+
+    try {
+      await client.subscribeToKernelEvents(sessionId, attachment.id)
+      subscribedAttachmentId = attachment.id
+      subscribedSessionId = sessionId
+      appLogger?.info("subscribed to kernel events", {
+        session_id: sessionId,
+        attachment_id: attachment.id,
+      })
+    } catch (error) {
+      appLogger?.error("kernel event subscription failed", {
+        session_id: sessionId,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+      setFatalError(formatError(error))
+      updateSessionChrome()
+    }
+  }
+
   // Check if connection appears stale (working but no data received)
   const checkConnectionHealth = () => {
     const decision = evaluateConnectionHealth({
@@ -4828,10 +4951,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
     process.stdout.on("resize", onResize)
-    appLogger?.info("starting background pollers")
-    void pollOutput()
-    void pollNotices()
-    void pollSessionState()
+    if (supportsKernelEventStream) {
+      appLogger?.info("starting kernel event stream")
+      void syncKernelEventSubscription()
+    } else {
+      appLogger?.info("starting background pollers")
+      void pollOutput()
+      void pollNotices()
+      void pollSessionState()
+    }
     startConnectionWatchdog()
   }
 
@@ -4847,6 +4975,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (pendingTurnCompletion) {
       clearTimeout(pendingTurnCompletion)
     }
+  })
+
+  const disposeKernelEventHandler = supportsKernelEventStream
+    ? client.onKernelEvent((event) => {
+      void handleKernelEvent(event)
+    })
+    : () => {}
+
+  createEffect(() => {
+    void attachmentState()
+    void sessionState().id
+    void syncKernelEventSubscription()
+  })
+
+  onCleanup(() => {
+    disposeKernelEventHandler()
+    void client.unsubscribeFromKernelEvents().catch(() => {
+      // Ignore teardown errors while closing the TUI.
+    })
   })
 
   const transcriptScrollMonitor = startInterval(() => {
@@ -6278,6 +6425,9 @@ function parseArgs(args: string[]): CliOptions {
       case "--socket":
         options.socketPath = next()
         break
+      case "--kernel-url":
+        options.kernelUrl = next()
+        break
       case "--session":
         options.sessionId = next()
         break
@@ -6493,14 +6643,13 @@ function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProviderRun) {
     && left.state === right.state
 }
 
-function defaultSocketPath(): string {
-  const daemonId = process.env.ARROBA_DAEMON_ID ?? "daemon-local"
-  const runtimeDir = process.env.XDG_RUNTIME_DIR
-    ? path.join(process.env.XDG_RUNTIME_DIR, "arroba")
-    : homedir()
-      ? path.join(homedir(), ".arroba", "run")
-      : path.join(process.cwd(), ".arroba", "run")
-  return process.env.ARROBA_DAEMON_SOCKET ?? path.join(runtimeDir, `${daemonId}.sock`)
+function defaultKernelEndpoint(): string {
+  if (process.env.ARROBA_KERNEL_URL) {
+    return process.env.ARROBA_KERNEL_URL
+  }
+  const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
+  const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
+  return `ws://${host}:${port}/kernel`
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
@@ -6524,7 +6673,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Ctrl+A)\n  Ctrl+A                keyboard shortcut to cycle to next agent\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Ctrl+A)\n  Ctrl+A                keyboard shortcut to cycle to next agent\n",
   )
 }
 

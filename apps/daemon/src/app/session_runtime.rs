@@ -93,16 +93,14 @@ impl DaemonApp {
         let remaining_attachment_ids = self
             .attachments
             .list_session_attachment_ids(attachment.session_id());
-        if remaining_attachment_ids.is_empty() {
-            if session_after_detach.active_prompt().is_none() {
-                let terminated_runs = self
-                    .providers
-                    .terminate_session_runs(&mut self.sessions, attachment.session_id())?;
-                for run in terminated_runs {
-                    self.pty.remove_process(run.id())?;
-                }
-                self.prompt_activity.remove(attachment.session_id());
+        if remaining_attachment_ids.is_empty() && session_after_detach.active_prompt().is_none() {
+            let terminated_runs = self
+                .providers
+                .terminate_session_runs(&mut self.sessions, attachment.session_id())?;
+            for run in terminated_runs {
+                self.pty.remove_process(run.id())?;
             }
+            self.prompt_activity.remove(attachment.session_id());
         }
 
         crate::logging::info_with_fields(

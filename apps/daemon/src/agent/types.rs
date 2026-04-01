@@ -44,6 +44,7 @@ pub struct AgentInstance {
 }
 
 impl AgentInstance {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
         agent_ref: impl Into<String>,

@@ -61,7 +61,7 @@ impl ProviderProcessService {
         })?;
 
         let run_id = self.next_run_id();
-        let launch_result = adapter.launch(&request)?;
+        let launch_result = adapter.connect(&request)?;
         let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
         run.mark_running();
 
@@ -391,7 +391,7 @@ impl ProviderProcessService {
     fn adapter_for(
         &self,
         adapter_key: &str,
-    ) -> Result<&'static dyn super::ProviderAdapter, DaemonError> {
+    ) -> Result<&'static dyn super::AgentEndpointAdapter, DaemonError> {
         self.registry
             .resolve(adapter_key)
             .ok_or_else(|| DaemonError::ProviderAdapterNotFound {
