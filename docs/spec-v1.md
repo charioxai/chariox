@@ -246,8 +246,9 @@ Current implementation baseline:
 
 Target direction:
 
-- daemon-client and daemon-agent communication should converge toward one daemon-owned bidirectional node protocol
-- that protocol should support both local and relayed connections without changing session semantics
+- daemon-client communication should use one daemon-owned bidirectional transport that supports both local and relayed connections without changing workspace semantics
+- daemon-agent communication remains adapter-specific for now, with OpenCode as the reference structured integration
+- a generic agent transport protocol is intentionally deferred until Arroba has integrated more than one concrete agent family
 - current transport differences are implementation history, not a long-term architectural principle
 
 ### 6.4 Slash Command System

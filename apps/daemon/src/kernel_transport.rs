@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
 const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
+const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
+const RECENT_EVENT_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -33,10 +36,19 @@ enum KernelIncomingFrame {
         request_id: String,
         session_id: String,
         attachment_id: String,
+        #[serde(default)]
+        resume_from_event_id: Option<u64>,
     },
     Unsubscribe {
         request_id: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct KernelTransportError {
+    code: String,
+    message: String,
+    retryable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +57,7 @@ enum KernelOutgoingFrame {
     Response {
         request_id: String,
         response: Box<Option<Value>>,
-        error: Option<String>,
+        error: Option<KernelTransportError>,
     },
     Event {
         event_id: u64,
@@ -67,7 +79,15 @@ enum KernelEvent {
         provider_run: Box<Option<RuntimeProviderRun>>,
     },
     SessionUnavailable {
+        session_id: String,
         message: String,
+    },
+    Heartbeat {
+        session_id: String,
+    },
+    TransportResumed {
+        session_id: String,
+        resumed_from_event_id: Option<u64>,
     },
 }
 
@@ -75,6 +95,18 @@ enum KernelEvent {
 struct KernelSubscription {
     session_id: String,
     attachment_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct PersistedKernelEvent {
+    event_id: u64,
+    event: KernelEvent,
+}
+
+#[derive(Debug, Default)]
+struct KernelTransportRuntime {
+    event_counter: AtomicU64,
+    recent_events: Mutex<BTreeMap<String, VecDeque<PersistedKernelEvent>>>,
 }
 
 #[derive(Debug)]
@@ -96,6 +128,7 @@ where
             message: error.to_string(),
         })?;
     let app = Arc::new(Mutex::new(app));
+    let runtime = Arc::new(KernelTransportRuntime::default());
 
     tokio::pin!(shutdown);
 
@@ -108,8 +141,9 @@ where
                     message: error.to_string(),
                 })?;
                 let app = Arc::clone(&app);
+                let runtime = Arc::clone(&runtime);
                 tokio::spawn(async move {
-                    let _ = handle_kernel_connection(app, stream).await;
+                    let _ = handle_kernel_connection(app, runtime, stream).await;
                 });
             }
         }
@@ -118,6 +152,7 @@ where
 
 async fn handle_kernel_connection(
     app: Arc<Mutex<DaemonApp>>,
+    runtime: Arc<KernelTransportRuntime>,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
     let socket = accept_async(stream)
@@ -129,7 +164,6 @@ async fn handle_kernel_connection(
 
     let (mut writer, mut reader) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<KernelOutgoingFrame>();
-    let event_counter = Arc::new(AtomicU64::new(0));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         subscription: None,
         watch_task: None,
@@ -162,9 +196,9 @@ async fn handle_kernel_connection(
             Message::Text(payload) => {
                 handle_incoming_payload(
                     &app,
+                    &runtime,
                     &connection_state,
                     &outgoing_tx,
-                    &event_counter,
                     payload.as_bytes(),
                 )
                 .await;
@@ -172,9 +206,9 @@ async fn handle_kernel_connection(
             Message::Binary(payload) => {
                 handle_incoming_payload(
                     &app,
+                    &runtime,
                     &connection_state,
                     &outgoing_tx,
-                    &event_counter,
                     &payload,
                 )
                 .await;
@@ -198,9 +232,9 @@ async fn handle_kernel_connection(
 
 async fn handle_incoming_payload(
     app: &Arc<Mutex<DaemonApp>>,
+    runtime: &Arc<KernelTransportRuntime>,
     connection_state: &Arc<Mutex<ConnectionState>>,
     outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
-    event_counter: &Arc<AtomicU64>,
     payload: &[u8],
 ) {
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
@@ -209,7 +243,11 @@ async fn handle_incoming_payload(
             let _ = outgoing_tx.send(KernelOutgoingFrame::Response {
                 request_id: "unknown".to_string(),
                 response: Box::new(None),
-                error: Some(format!("invalid kernel transport payload: {error}")),
+                error: Some(KernelTransportError {
+                    code: "invalid_frame".to_string(),
+                    message: format!("invalid kernel transport payload: {error}"),
+                    retryable: false,
+                }),
             });
             return;
         }
@@ -230,7 +268,7 @@ async fn handle_incoming_payload(
                 Err(error) => KernelOutgoingFrame::Response {
                     request_id,
                     response: Box::new(None),
-                    error: Some(error.to_string()),
+                    error: Some(map_kernel_error(&error)),
                 },
             };
             let _ = outgoing_tx.send(outgoing);
@@ -239,6 +277,7 @@ async fn handle_incoming_payload(
             request_id,
             session_id,
             attachment_id,
+            resume_from_event_id,
         } => {
             crate::logging::info_with_fields(
                 "daemon.kernel_transport",
@@ -246,8 +285,17 @@ async fn handle_incoming_payload(
                 serde_json::json!({
                     "session_id": session_id,
                     "attachment_id": attachment_id,
+                    "resume_from_event_id": resume_from_event_id,
                 }),
             );
+            replay_recent_events(
+                runtime,
+                outgoing_tx,
+                &session_id,
+                &attachment_id,
+                resume_from_event_id,
+            )
+            .await;
             {
                 let mut state = connection_state.lock().await;
                 if let Some(task) = state.watch_task.take() {
@@ -259,8 +307,8 @@ async fn handle_incoming_payload(
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
                     Arc::clone(app),
+                    Arc::clone(runtime),
                     outgoing_tx.clone(),
-                    Arc::clone(event_counter),
                     KernelSubscription {
                         session_id,
                         attachment_id,
@@ -269,7 +317,10 @@ async fn handle_incoming_payload(
             }
             let _ = outgoing_tx.send(KernelOutgoingFrame::Response {
                 request_id,
-                response: Box::new(Some(serde_json::json!({ "ok": true }))),
+                response: Box::new(Some(serde_json::json!({
+                    "ok": true,
+                    "resumed_from_event_id": resume_from_event_id,
+                }))),
                 error: None,
             });
         }
@@ -297,8 +348,8 @@ async fn handle_incoming_payload(
 
 async fn run_subscription_loop(
     app: Arc<Mutex<DaemonApp>>,
+    runtime: Arc<KernelTransportRuntime>,
     outgoing_tx: mpsc::UnboundedSender<KernelOutgoingFrame>,
-    event_counter: Arc<AtomicU64>,
     subscription: KernelSubscription,
 ) {
     let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
@@ -323,33 +374,54 @@ async fn run_subscription_loop(
                 snapshot,
             } => {
                 if !records.is_empty() {
-                    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-                        event_id: next_event_id(&event_counter),
-                        event: Box::new(KernelEvent::TerminalOutput { records }),
-                    });
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        KernelEvent::TerminalOutput { records },
+                    )
+                    .await;
                 }
                 if !notices.is_empty() {
-                    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-                        event_id: next_event_id(&event_counter),
-                        event: Box::new(KernelEvent::RuntimeNotices { notices }),
-                    });
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        KernelEvent::RuntimeNotices { notices },
+                    )
+                    .await;
                 }
                 if let Some(snapshot) = *snapshot {
                     previous_snapshot = Some(snapshot.clone());
-                    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-                        event_id: next_event_id(&event_counter),
-                        event: Box::new(KernelEvent::SessionSnapshot {
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        KernelEvent::SessionSnapshot {
                             session: Box::new(snapshot.0),
                             provider_run: Box::new(snapshot.1),
-                        }),
-                    });
+                        },
+                    )
+                    .await;
+                }
+                if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS) {
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        KernelEvent::Heartbeat {
+                            session_id: subscription.session_id.clone(),
+                        },
+                    )
+                    .await;
                 }
             }
             WatchResult::Unavailable(message) => {
-                let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-                    event_id: next_event_id(&event_counter),
-                    event: Box::new(KernelEvent::SessionUnavailable { message }),
-                });
+                emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    KernelEvent::SessionUnavailable {
+                        session_id: subscription.session_id.clone(),
+                        message,
+                    },
+                )
+                .await;
                 break;
             }
         }
@@ -435,6 +507,119 @@ fn watch_subscription_state(
         records,
         notices,
         snapshot,
+    }
+}
+
+async fn emit_kernel_event(
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
+    event: KernelEvent,
+) {
+    let event_id = next_event_id(&runtime.event_counter);
+    if let Some(session_id) = event_session_id(&event) {
+        let mut recent_events = runtime.recent_events.lock().await;
+        let entry = recent_events.entry(session_id.to_string()).or_default();
+        entry.push_back(PersistedKernelEvent {
+            event_id,
+            event: event.clone(),
+        });
+        while entry.len() > RECENT_EVENT_LIMIT {
+            entry.pop_front();
+        }
+    }
+    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
+        event_id,
+        event: Box::new(event),
+    });
+}
+
+async fn replay_recent_events(
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
+    session_id: &str,
+    attachment_id: &str,
+    resume_from_event_id: Option<u64>,
+) {
+    let Some(cursor) = resume_from_event_id else {
+        return;
+    };
+    let recent_events = runtime.recent_events.lock().await;
+    let Some(events) = recent_events.get(session_id) else {
+        return;
+    };
+
+    for persisted in events {
+        if persisted.event_id <= cursor {
+            continue;
+        }
+        if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
+            continue;
+        }
+        let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
+            event_id: persisted.event_id,
+            event: Box::new(persisted.event.clone()),
+        });
+    }
+
+    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
+        event_id: next_event_id(&runtime.event_counter),
+        event: Box::new(KernelEvent::TransportResumed {
+            session_id: session_id.to_string(),
+            resumed_from_event_id: Some(cursor),
+        }),
+    });
+}
+
+fn event_session_id(event: &KernelEvent) -> Option<&str> {
+    match event {
+        KernelEvent::TerminalOutput { records } => records.first().map(|record| record.session_id.as_str()),
+        KernelEvent::RuntimeNotices { notices } => notices.first().map(|notice| notice.session_id.as_str()),
+        KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
+        KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
+        KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
+    }
+}
+
+fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
+    match event {
+        KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
+            record.recipient_attachment_ids.iter().any(|id| id == attachment_id)
+        }),
+        KernelEvent::RuntimeNotices { notices } => notices.iter().any(|notice| {
+            notice.recipient_attachment_ids.is_empty()
+                || notice.recipient_attachment_ids.iter().any(|id| id == attachment_id)
+        }),
+        KernelEvent::SessionSnapshot { .. }
+        | KernelEvent::SessionUnavailable { .. }
+        | KernelEvent::Heartbeat { .. }
+        | KernelEvent::TransportResumed { .. } => true,
+    }
+}
+
+fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
+    match error {
+        DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
+        DaemonError::AttachmentNotFound { .. } => kernel_error("attachment_not_found", error, false),
+        DaemonError::AttachmentNotInSession { .. } => kernel_error("attachment_not_in_session", error, false),
+        DaemonError::NoActiveProviderRun { .. } => kernel_error("no_active_provider_run", error, false),
+        DaemonError::ProviderRunNotFound { .. } => kernel_error("provider_run_not_found", error, false),
+        DaemonError::ProviderAdapterNotFound { .. } => kernel_error("provider_adapter_not_found", error, false),
+        DaemonError::ProviderProtocol { .. } => kernel_error("provider_protocol_error", error, true),
+        DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
+        DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
+        DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
+        DaemonError::PtyWrite { .. } => kernel_error("pty_write_failed", error, true),
+        DaemonError::PtyResize { .. } => kernel_error("pty_resize_failed", error, true),
+        _ => kernel_error("kernel_request_failed", error, false),
+    }
+}
+
+fn kernel_error(code: &str, error: &DaemonError, retryable: bool) -> KernelTransportError {
+    KernelTransportError {
+        code: code.to_string(),
+        message: error.to_string(),
+        retryable,
     }
 }
 

@@ -88,6 +88,7 @@ test("LocalIpcClient uses websocket request and subscription frames", async (t) 
   assert.equal(receivedFrames[0]?.type, "request")
   assert.equal(receivedFrames[1]?.type, "subscribe")
   assert.equal(receivedFrames[2]?.type, "unsubscribe")
+  assert.equal(receivedFrames[1]?.resume_from_event_id, null)
   assert.deepEqual(events, [
     {
       event: "session_snapshot",
@@ -130,4 +131,65 @@ test("LocalIpcClient emits transport_closed when websocket closes", async (t) =>
 
   await new Promise((resolve) => setTimeout(resolve, 25))
   assert.equal(events.at(-1)?.event, "transport_closed")
+})
+
+test("LocalIpcClient reconnects and resubscribes with the last received event id", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  const subscribeFrames: Array<Record<string, unknown>> = []
+  let connectionCount = 0
+  server.on("connection", (socket) => {
+    connectionCount += 1
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      if (frame.type === "subscribe") {
+        subscribeFrames.push(frame)
+        socket.send(JSON.stringify({
+          type: "response",
+          request_id: frame.request_id,
+          response: { ok: true },
+          error: null,
+        }))
+        socket.send(JSON.stringify({
+          type: "event",
+          event_id: connectionCount,
+          event: {
+            event: "heartbeat",
+            session_id: frame.session_id,
+          },
+        }))
+        if (connectionCount === 1) {
+          setTimeout(() => socket.close(), 10)
+        }
+      }
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint)
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => {
+    events.push(event)
+  })
+  t.after(() => {
+    dispose()
+  })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  await client.subscribeToKernelEvents("session-1", "attachment-1")
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.equal(subscribeFrames.length >= 2, true)
+  assert.equal(subscribeFrames[0]?.resume_from_event_id, null)
+  assert.equal(subscribeFrames[1]?.resume_from_event_id, 1)
+  assert.equal(events.some((event) => event.event === "transport_closed"), true)
+  assert.equal(events.some((event) => event.event === "transport_resumed"), true)
 })

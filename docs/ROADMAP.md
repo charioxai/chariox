@@ -151,10 +151,20 @@ Status:
 - the first transport/alignment slice has now landed:
   - kernel-facing WebSocket transport for the TypeScript CLI
   - managed vs external OpenCode endpoint binding
+- kernel-CLI transport hardening is now part of the delivered slice:
+  - durable pushed `event_id` values
+  - resumable subscribe via `resume_from_event_id`
+  - heartbeat/liveness events
+  - client reconnect/resubscribe behavior
 - layered interaction testing is now part of the M4 baseline:
   - CLI transport contract tests
   - daemon kernel-WebSocket integration coverage
   - live daemon + CLI smoke validation when transport/runtime behavior changes
+- transport resiliency drills are still pending once the next functionality slices are in place:
+  - forced live disconnect with CLI reconnect/resubscribe validation
+  - missed-event replay/catch-up validation after reconnect
+  - long-idle heartbeat/liveness validation
+  - slow-consumer/backpressure validation
 - multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
@@ -168,7 +178,7 @@ Delivered in the current M4 slice:
 - TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
 - explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
 - kernel-hosted WebSocket transport now exists for the primary TypeScript CLI path, while the older local IPC path remains for harnessing/tests
-- the first generic agent-endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
+- the first OpenCode-specific endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
 - layered interaction testing now exists for the kernel/CLI path:
   - TypeScript transport contract tests for request, subscribe, unsubscribe, and close behavior
   - daemon-side kernel-WebSocket integration coverage for request/subscribe/session-unavailable flows
@@ -178,12 +188,12 @@ Still pending in M4:
 
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
-- event-driven kernel transport beyond request/response so local and relay-attached terminals/agents can participate in the same node/session domain without poll loops
+- same-kernel remote terminal connectivity on top of the hardened kernel-CLI WebSocket transport
 - broader automated interaction coverage:
   - deterministic kernel/CLI transcript-flow integration tests
   - PTY-driven terminal smoke tests for visible CLI behavior
 - relay-backed same-kernel remote member support for terminals and agents
-- generic external agent endpoint support beyond the current OpenCode path
+- generic agent transport remains deferred until after additional agent integrations beyond OpenCode
 - workspace coordination baseline:
   - per-agent worktree or branch allocation
   - file/workspace claim tracking

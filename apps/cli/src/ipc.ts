@@ -14,13 +14,19 @@ type KernelTransportResponseFrame<TResponse> = {
   type: "response"
   request_id: string
   response: TResponse | null
-  error: string | null
+  error: KernelTransportError | null
 }
 
 type KernelTransportEventFrame<TEvent> = {
   type: "event"
   event_id: number
   event: TEvent
+}
+
+type KernelTransportError = {
+  code: string
+  message: string
+  retryable: boolean
 }
 
 type PendingRequest<TResponse> = {
@@ -45,7 +51,17 @@ export type KernelEvent =
   }
   | {
     event: "session_unavailable"
+    session_id: string
     message: string
+  }
+  | {
+    event: "heartbeat"
+    session_id: string
+  }
+  | {
+    event: "transport_resumed"
+    session_id: string
+    resumed_from_event_id: number | null
   }
   | {
     event: "transport_closed"
@@ -53,10 +69,20 @@ export type KernelEvent =
   }
 
 export class LocalIpcError extends Error {
-  constructor(readonly operation: string, message: string) {
+  constructor(
+    readonly operation: string,
+    message: string,
+    readonly code: string | null = null,
+    readonly retryable = false,
+  ) {
     super(`kernel transport \`${operation}\` failed: ${message}`)
     this.name = "LocalIpcError"
   }
+}
+
+type KernelSubscriptionState = {
+  sessionId: string
+  attachmentId: string
 }
 
 export class LocalIpcClient {
@@ -65,6 +91,11 @@ export class LocalIpcClient {
   private websocketConnectPromise: Promise<WebSocket> | null = null
   private pending = new Map<string, PendingRequest<unknown>>()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
+  private activeKernelSubscription: KernelSubscriptionState | null = null
+  private reconnectTimeout: NodeJS.Timeout | null = null
+  private reconnectDelayMs = 250
+  private lastReceivedEventId: number | null = null
+  private suppressNextCloseEvent = false
 
   constructor(endpoint: string) {
     this.socketPath = endpoint
@@ -85,17 +116,30 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
-    await this.sendWebSocket<Record<string, unknown>>({
-      __kernel_transport: {
-        type: "subscribe",
-        session_id: sessionId,
-        attachment_id: attachmentId,
-      },
-    })
+    this.activeKernelSubscription = { sessionId, attachmentId }
+    try {
+      await this.sendWebSocket<Record<string, unknown>>({
+        __kernel_transport: {
+          type: "subscribe",
+          session_id: sessionId,
+          attachment_id: attachmentId,
+          resume_from_event_id: this.lastReceivedEventId,
+        },
+      })
+      this.clearReconnectState()
+    } catch (error) {
+      this.scheduleReconnect()
+      throw error
+    }
   }
 
   async unsubscribeFromKernelEvents(): Promise<void> {
     if (!this.supportsKernelEvents()) {
+      return
+    }
+    this.activeKernelSubscription = null
+    this.clearReconnectState()
+    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
       return
     }
     await this.sendWebSocket<Record<string, unknown>>({
@@ -103,6 +147,20 @@ export class LocalIpcClient {
         type: "unsubscribe",
       },
     })
+  }
+
+  async restartKernelEventStream(): Promise<void> {
+    if (!this.supportsKernelEvents() || !this.activeKernelSubscription) {
+      return
+    }
+    this.clearReconnectState()
+    if (this.websocket && this.websocket.readyState !== WebSocket.CLOSED) {
+      this.suppressNextCloseEvent = true
+      this.websocket.terminate()
+      this.websocket = null
+      this.websocketConnectPromise = null
+    }
+    this.scheduleReconnect(25)
   }
 
   onKernelEvent(handler: (event: KernelEvent) => void) {
@@ -118,6 +176,8 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.activeKernelSubscription = null
+    this.clearReconnectState()
     const socket = this.websocket
     this.websocket = null
     this.websocketConnectPromise = null
@@ -129,6 +189,7 @@ export class LocalIpcClient {
     }
 
     await new Promise<void>((resolve) => {
+      this.suppressNextCloseEvent = true
       socket.once("close", () => resolve())
       socket.close()
     })
@@ -229,7 +290,7 @@ export class LocalIpcClient {
     return new Promise<TResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(requestId)
-        reject(new LocalIpcError("handle kernel response", "timed out"))
+        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
       }, IPC_TIMEOUT_MS)
 
       this.pending.set(requestId, {
@@ -243,7 +304,7 @@ export class LocalIpcClient {
       } catch (error) {
         clearTimeout(timeout)
         this.pending.delete(requestId)
-        reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error)))
+        reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
       }
     })
   }
@@ -273,24 +334,35 @@ export class LocalIpcClient {
         settled = true
         this.websocket = socket
         this.websocketConnectPromise = null
+        this.suppressNextCloseEvent = false
         socket.on("message", (data: WebSocket.RawData) => {
           this.handleWebSocketMessage(data)
         })
         socket.once("close", () => {
+          const suppressed = this.suppressNextCloseEvent
+          this.suppressNextCloseEvent = false
           this.rejectPending("kernel websocket closed")
           this.websocket = null
-          this.emitSyntheticEvent({
-            event: "transport_closed",
-            message: "kernel websocket closed",
-          })
+          if (!suppressed) {
+            this.emitSyntheticEvent({
+              event: "transport_closed",
+              message: "kernel websocket closed",
+            })
+            this.scheduleReconnect()
+          }
         })
         socket.once("error", (error: Error) => {
+          const suppressed = this.suppressNextCloseEvent
+          this.suppressNextCloseEvent = false
           this.rejectPending(error.message)
           this.websocket = null
-          this.emitSyntheticEvent({
-            event: "transport_closed",
-            message: error.message,
-          })
+          if (!suppressed) {
+            this.emitSyntheticEvent({
+              event: "transport_closed",
+              message: error.message,
+            })
+            this.scheduleReconnect()
+          }
         })
         resolve(socket)
       })
@@ -311,6 +383,7 @@ export class LocalIpcClient {
     }
 
     if (frame.type === "event") {
+      this.lastReceivedEventId = frame.event_id
       for (const handler of this.eventHandlers) {
         handler(frame.event)
       }
@@ -325,7 +398,7 @@ export class LocalIpcClient {
     this.pending.delete(frame.request_id)
 
     if (frame.error) {
-      pending.reject(new LocalIpcError("handle kernel response", frame.error))
+      pending.reject(new LocalIpcError("handle kernel response", frame.error.message, frame.error.code, frame.error.retryable))
       return
     }
     if (frame.response == null) {
@@ -341,13 +414,59 @@ export class LocalIpcClient {
     this.pending.clear()
     for (const pending of pendingEntries) {
       clearTimeout(pending.timeout)
-      pending.reject(new LocalIpcError("kernel websocket", message))
+      pending.reject(new LocalIpcError("kernel websocket", message, "connection_closed", true))
     }
   }
 
   private emitSyntheticEvent(event: KernelEvent) {
     for (const handler of this.eventHandlers) {
       handler(event)
+    }
+  }
+
+  private clearReconnectState() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+    this.reconnectDelayMs = 250
+  }
+
+  private scheduleReconnect(delayMs = this.reconnectDelayMs) {
+    if (!this.activeKernelSubscription || this.eventHandlers.size === 0 || this.reconnectTimeout) {
+      return
+    }
+
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectTimeout = null
+      void this.resumeKernelSubscription()
+    }, delayMs)
+    this.reconnectDelayMs = Math.min(Math.max(delayMs * 2, 250), 5_000)
+  }
+
+  private async resumeKernelSubscription() {
+    const subscription = this.activeKernelSubscription
+    if (!subscription || this.eventHandlers.size === 0) {
+      return
+    }
+
+    try {
+      await this.sendWebSocket<Record<string, unknown>>({
+        __kernel_transport: {
+          type: "subscribe",
+          session_id: subscription.sessionId,
+          attachment_id: subscription.attachmentId,
+          resume_from_event_id: this.lastReceivedEventId,
+        },
+      })
+      this.clearReconnectState()
+      this.emitSyntheticEvent({
+        event: "transport_resumed",
+        session_id: subscription.sessionId,
+        resumed_from_event_id: this.lastReceivedEventId,
+      })
+    } catch {
+      this.scheduleReconnect()
     }
   }
 }
@@ -364,6 +483,7 @@ function normalizeWebSocketRequest(requestId: string, request: unknown) {
       request_id: requestId,
       session_id: transportRequest.session_id,
       attachment_id: transportRequest.attachment_id,
+      resume_from_event_id: transportRequest.resume_from_event_id ?? null,
     }
   }
   if (transportRequest?.type === "unsubscribe") {
@@ -380,7 +500,7 @@ function normalizeWebSocketRequest(requestId: string, request: unknown) {
 }
 
 function extractTransportRequest(request: unknown):
-  | { type: "subscribe"; session_id: string; attachment_id: string }
+  | { type: "subscribe"; session_id: string; attachment_id: string; resume_from_event_id?: number | null }
   | { type: "unsubscribe" }
   | null {
   if (!request || typeof request !== "object") {
@@ -400,6 +520,8 @@ function extractTransportRequest(request: unknown):
       type: "subscribe",
       session_id: transport.session_id,
       attachment_id: transport.attachment_id,
+      resume_from_event_id:
+        typeof transport.resume_from_event_id === "number" ? transport.resume_from_event_id : null,
     }
   }
   if (transport.type === "unsubscribe") {

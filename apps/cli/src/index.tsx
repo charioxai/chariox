@@ -4661,12 +4661,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           (event.provider_run as RuntimeProviderRun | null) ?? null,
         )
         return
+      case "heartbeat":
+        recordDaemonActivity("kernel_heartbeat")
+        return
       case "session_unavailable":
         await transitionToNoSession(event.message)
         return
+      case "transport_resumed":
+        recordDaemonActivity("kernel_transport_resumed")
+        setDaemonDisconnected(false)
+        setStatusLine(DEFAULT_CONNECTED_STATUS)
+        updateSessionChrome()
+        appendNotice("Reconnected to the Arroba kernel.")
+        return
       case "transport_closed":
         setDaemonDisconnected(true)
-        setStatusLine("Lost connection to the Arroba daemon.")
+        setStatusLine("Lost connection to the Arroba kernel.")
         updateSessionChrome()
         appendNotice(event.message, "warning")
         return
@@ -4721,7 +4731,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         attachment_id: attachment.id,
         error: formatError(error),
       })
-      setFatalError(formatError(error))
+      setDaemonDisconnected(true)
+      setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      appendNotice(`Kernel event subscription failed: ${formatError(error)}`, "warning")
       updateSessionChrome()
     }
   }
@@ -4744,7 +4756,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         consecutive_silent_polls: consecutiveSilentPolls,
         time_since_last_activity_ms: decision.timeSinceLastActivityMs,
       })
-      void recoverProviderRun("stale connection - no activity received")
+      if (supportsKernelEventStream) {
+        void client.restartKernelEventStream().catch((error) => {
+          appLogger?.warn("kernel event stream restart failed", {
+            error: formatError(error),
+          })
+        })
+      } else {
+        void recoverProviderRun("stale connection - no activity received")
+      }
       consecutiveSilentPolls = 0
     }
   }

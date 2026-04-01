@@ -17,14 +17,16 @@ It is intentionally transport-agnostic at the message level.
 
 Current implementation baseline:
 
-- local daemon-client communication still uses Unix-socket request/response IPC
+- local daemon-client communication now defaults to a daemon-owned WebSocket transport with pushed events
+- the older Unix-socket request/response IPC path still exists for harnessing/tests and compatibility
 - daemon-OpenCode communication uses native local HTTP control plus SSE events
 
 Target direction:
 
-- one kernel-owned bidirectional node protocol for clients and compatible agent endpoints
-- one transport shape for both local and remote node members, with relay as a forwarding layer rather than a second authority
-- WebSocket is the recommended future transport for that unified node protocol
+- one kernel-owned bidirectional transport for terminal clients
+- one transport shape for both local and remote terminal members, with relay as a forwarding layer rather than a second authority
+- generic agent-facing transport remains deferred; current agent integrations continue to use native/provider-specific adapter protocols
+- WebSocket is the current and recommended transport for the kernel-client path
 
 ## 2. Design Principles
 
@@ -39,7 +41,8 @@ Current sequencing note:
 - OpenCode is the reference provider for the current development cycle
 - protocol and adapter boundaries should stay future-compatible, but they should not be generalized prematurely at the expense of finishing the OpenCode-first runtime
 - web/mobile clients come before multi-provider expansion in the current rollout order
-- same-kernel remote clients and remote agents should fit the same kernel-owned protocol rather than a separate remote-only API
+- same-kernel remote clients should fit the same kernel-owned protocol rather than a separate remote-only API
+- same-kernel remote agents remain part of the architecture, but their generic transport contract is intentionally deferred until Arroba has integrated more than one concrete agent family
 
 ## 2.1 Node Roles
 
@@ -198,14 +201,18 @@ Future unified node-transport fields should also allow:
 
 ## 4.1 Current Kernel Transport Baseline
 
-For the current local baseline, the kernel exposes a request/response surface over a daemon-owned WebSocket transport.
+For the current local baseline, the kernel exposes a request/response plus pushed-event surface over a daemon-owned WebSocket transport.
 
 Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${ARROBA_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
 - the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
-- the current wire shape is still request/response over one long-lived connection; server-pushed kernel events are the next transport step
+- the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
+- subscriptions carry optional `resume_from_event_id`
+- the kernel emits durable `event_id` values on pushed events
+- heartbeat events are part of the current transport so the CLI can detect and recover stale connections
+- reconnect/resubscribe is now part of the intended local CLI behavior
 
 Minimum request set:
 
@@ -366,13 +373,18 @@ Planned provider auth status fields:
 - optional `login_hint`
 - optional `detected_version`
 
-Planned node-transport and endpoint metadata fields:
+Current kernel-client metadata fields:
 
-- `member_role` (`client` | `agent_endpoint`)
+- `member_role` (`client`)
 - `connection_mode` (`local_direct` | `relayed`)
-- `endpoint_mode` (`managed` | `external`)
 - `protocol_version`
 - optional `resume_from_event_id`
+
+Deferred agent-endpoint note:
+
+- OpenCode remains adapter-owned and continues to use native local HTTP control plus SSE events
+- managed vs external OpenCode endpoint binding is the current agent-endpoint abstraction boundary in code
+- a generic WebSocket transport for agent endpoints is explicitly deferred until after Arroba has integrated more than one agent family and can derive a better common denominator from real integrations
 
 Planned extension metadata fields:
 

@@ -32,6 +32,7 @@ The current codebase provides:
 - a shared domain package for workflow-oriented core v1 entities
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
+- a kernel-hosted WebSocket transport for the TypeScript CLI, including pushed events, resumable subscriptions, heartbeat/liveness, and reconnect-friendly behavior
 - a real manual multi-agent session slice in the daemon and TypeScript CLI: agent records, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/agent ...` management commands, `Ctrl+A` focus cycling, and `individual`/`split` response views
 - a Rust compatibility launcher for the TypeScript CLI
 - a local daemon smoke harness for managed-session flows
@@ -43,6 +44,7 @@ Current implementation caveat:
 - the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
 - daemon-scheduled workflow execution still remains the next major M4 step after this manual multi-agent runtime slice
+- generic agent transport is intentionally deferred for now; OpenCode continues to use its native local HTTP + SSE adapter path
 
 The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
 

@@ -69,11 +69,21 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
         }),
     )
     .await;
-    let _subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+    let subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+    assert_eq!(
+        subscribe_response["response"]["ok"].as_bool(),
+        Some(true)
+    );
+    assert!(subscribe_response["response"]["resumed_from_event_id"].is_null());
 
     let snapshot_event = wait_for_event(&mut socket, "session_snapshot").await;
     assert_eq!(
         snapshot_event["event"]["session"]["id"].as_str(),
+        Some(session_id.as_str())
+    );
+    let heartbeat_event = wait_for_event(&mut socket, "heartbeat").await;
+    assert_eq!(
+        heartbeat_event["event"]["session_id"].as_str(),
         Some(session_id.as_str())
     );
 

@@ -157,9 +157,10 @@ Required subsystem roles:
 - `WorkspaceRouter`
   - authoritative routing/fanout of prompt lifecycle, notices, provider output, and workflow handoffs
 - `TransportGateway`
-  - accepts local and remote terminal/agent connections and normalizes them into kernel-owned attachments or endpoint bindings
+  - accepts local and remote terminal connections and normalizes them into kernel-owned attachments
+  - current agent integrations remain adapter-owned and do not yet share this transport
 - `AgentEndpointManager`
-  - connects to managed or external agent endpoints and normalizes their protocol into kernel events
+  - connects to managed or external agent endpoints and normalizes their native/provider-specific protocols into kernel events
 - `WorkspaceCoordinator`
   - manages worktree/branch allocation, file or workspace claims, and integration/merge safety checks inside one workspace
 
@@ -167,7 +168,8 @@ Current implementation note:
 
 - the current codebase has pieces of these responsibilities inside the daemon crate, but not yet as a unified bidirectional node transport
 - the current OpenCode adapter is already a provider-endpoint integration example
-- the current local CLI transport is still request/response IPC rather than a long-lived workspace subscription
+- the current local CLI transport is now a long-lived WebSocket subscription with pushed kernel events
+- a generic WebSocket transport for agent endpoints is still intentionally deferred
 
 ### 3.3.2 Workflow Model
 
@@ -727,6 +729,7 @@ Current M2 runtime note:
 - the daemon now hosts a kernel WebSocket listener directly and the TypeScript CLI uses that path by default
 - the Unix-socket local transport remains implemented for local harnessing/tests and backward-compatible tooling
 - Windows local compatibility transport remains a later follow-up
+- kernel-client transport hardening now includes event ids, resumable subscribe, heartbeat events, and reconnect-friendly client behavior
 
 ### 10.6.1 OpenCode Integration Strategy
 
@@ -734,6 +737,7 @@ Current M2 runtime note:
 - current M3 direction: daemon-launched `opencode serve` plus local HTTP/SSE adapter
 - current implementation also supports an external OpenCode endpoint via `ARROBA_OPENCODE_ENDPOINT`, which is the first concrete `external agent endpoint` path in the codebase
 - adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
+- OpenCode remains the only agent-side structured transport that Arroba is currently tightening closely against; a generic agent WebSocket protocol is intentionally deferred until more agent integrations exist
 
 ### 10.7 Governance
 
