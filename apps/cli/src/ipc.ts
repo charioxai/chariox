@@ -338,15 +338,18 @@ export class LocalIpcClient {
         socket.on("message", (data: WebSocket.RawData) => {
           this.handleWebSocketMessage(data)
         })
-        socket.once("close", () => {
+        socket.once("close", (code: number, reason: Buffer) => {
           const suppressed = this.suppressNextCloseEvent
           this.suppressNextCloseEvent = false
           this.rejectPending("kernel websocket closed")
           this.websocket = null
+          const closeMessage = reason.length > 0
+            ? reason.toString("utf8")
+            : `kernel websocket closed${code ? ` (${code})` : ""}`
           if (!suppressed) {
             this.emitSyntheticEvent({
               event: "transport_closed",
-              message: "kernel websocket closed",
+              message: closeMessage,
             })
             this.scheduleReconnect()
           }

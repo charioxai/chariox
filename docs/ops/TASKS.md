@@ -15,7 +15,10 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [ ] **M3-002** Close the OpenCode-first capability and local-runtime cycle
   - Note: Finish the remaining shell/file/git/screenshot/transfer/schedule-facing productization and local slash-command UX without adding another provider family yet.
 - [ ] **M4-003** Stabilize the OpenCode-backed multi-agent runtime path
-  - Note: The current daemon integration suite still has multi-agent regressions in the OpenCode adapter path, including provider-run launch health-check failures and delayed local-response handling failures.
+  - Note: The core daemon integration suite is green again, but the OpenCode-first path still needs further stabilization around transcript/pane UX and deeper live runtime drills.
+  - Future transport drills still pending:
+    - deeper live replay/catch-up validation during active streaming output
+    - long-idle heartbeat/liveness validation on the kernel WebSocket path
 - [ ] **M4-004** Expand the TypeScript CLI split-pane model beyond the current first slice
   - Note: The daemon/runtime data model can handle more agents than the current visible split-pane surface; the current UI still centers on the primary transcript plus up to two auxiliary panes.
 - [ ] **M4-005** Add multi-machine session ownership and resume behavior on the OpenCode-first path

@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server;
-use arroba_daemon::local::{AttachToSessionRequest, DeleteSessionRequest, LocalDaemonRequest};
+use arroba_daemon::local::{
+    AttachToSessionRequest, DeleteSessionRequest, GetSessionStateRequest, LocalDaemonRequest,
+};
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
 use futures_util::{SinkExt, StreamExt};
@@ -101,6 +103,94 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     assert_eq!(
         unavailable_event["event"]["message"].as_str(),
         Some("Current session is no longer available.")
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflows() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    config.kernel_websocket_queue_capacity = 2;
+    config.kernel_websocket_write_delay_ms = 200;
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(app, async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-kernel-overflow",
+            "worktree-kernel-overflow",
+        )),
+    )
+    .await;
+    let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-overflow-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-session",
+            "session_id": session_id,
+            "attachment_id": attachment_id,
+        }),
+    )
+    .await;
+    let _subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+    let _snapshot_event = wait_for_event(&mut socket, "session_snapshot").await;
+
+    for index in 0..8 {
+        send_frame(
+            &mut socket,
+            json!({
+                "type": "request",
+                "request_id": format!("state-{index}"),
+                "request": LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+                    session_id: session_id.clone(),
+                }),
+            }),
+        )
+        .await;
+    }
+
+    let close_frame = wait_for_close(&mut socket).await;
+    assert_eq!(close_frame.0, Some(1008));
+    assert_eq!(
+        close_frame.1.as_deref(),
+        Some("kernel transport overloaded; reconnecting")
     );
 
     let _ = shutdown_tx.send(());
@@ -223,6 +313,30 @@ async fn next_json_frame(
             Message::Frame(_) => {}
         }
     }
+}
+
+async fn wait_for_close(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+) -> (Option<u16>, Option<String>) {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .expect("kernel websocket should yield a frame")
+                .expect("kernel websocket frame should decode");
+
+            if let Message::Close(frame) = message {
+                return (
+                    frame.as_ref().map(|frame| u16::from(frame.code)),
+                    frame.as_ref().map(|frame| frame.reason.to_string()),
+                );
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for kernel websocket close")
 }
 
 fn response_variant<'a>(frame: &'a Value, variant: &str) -> &'a Value {

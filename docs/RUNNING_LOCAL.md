@@ -404,6 +404,6 @@ tail -f ~/.local/state/arroba/logs/*.ndjson
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
 - OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.
 - the previous Rust-only CLI has been removed; the supported local client paths are `arroba-cli` and direct `apps/cli` development
-- The OpenCode-backed multi-agent runtime path is not fully stable yet; the daemon integration suite still has failing multi-agent adapter scenarios.
+- The OpenCode-backed multi-agent runtime path still needs more stabilization work, but the current daemon integration suite is green again.
 - The current split-pane UI is still limited to the primary transcript plus up to two auxiliary panes even though the runtime model now tracks more session agents than that.
 - Slash-command capability work, broader provider support, and daemon-scheduled workflow execution remain open beyond the current manual multi-agent slice.

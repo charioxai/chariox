@@ -12,6 +12,8 @@ pub struct DaemonConfig {
     pub local_socket_path: PathBuf,
     pub kernel_websocket_host: String,
     pub kernel_websocket_port: u16,
+    pub kernel_websocket_queue_capacity: usize,
+    pub kernel_websocket_write_delay_ms: u64,
     pub session_history_root: PathBuf,
 }
 
@@ -28,6 +30,15 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43118),
+            kernel_websocket_queue_capacity: env::var("ARROBA_KERNEL_QUEUE_CAPACITY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(128),
+            kernel_websocket_write_delay_ms: env::var("ARROBA_KERNEL_WRITE_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
             session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
@@ -50,6 +61,8 @@ impl DaemonConfig {
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,
+            kernel_websocket_queue_capacity: 128,
+            kernel_websocket_write_delay_ms: 0,
             session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
@@ -114,6 +127,12 @@ impl DaemonConfig {
         if self.kernel_websocket_port == 0 {
             return Err(DaemonError::InvalidConfig {
                 field: "kernel_websocket_port",
+                message: "value must not be zero",
+            });
+        }
+        if self.kernel_websocket_queue_capacity == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_websocket_queue_capacity",
                 message: "value must not be zero",
             });
         }

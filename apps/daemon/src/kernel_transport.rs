@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +11,12 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{
+    accept_async,
+    tungstenite::protocol::{
+        frame::coding::CloseCode, CloseFrame, Message,
+    },
+};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -24,6 +29,7 @@ const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RECENT_EVENT_LIMIT: usize = 256;
+const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -115,6 +121,11 @@ struct ConnectionState {
     watch_task: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone)]
+struct ConnectionCloseCommand {
+    reason: String,
+}
+
 pub async fn run_kernel_websocket_server<F>(app: DaemonApp, shutdown: F) -> Result<(), DaemonError>
 where
     F: Future<Output = ()>,
@@ -161,22 +172,46 @@ async fn handle_kernel_connection(
             operation: "accept kernel websocket handshake",
             message: error.to_string(),
         })?;
+    let (queue_capacity, write_delay_ms) = {
+        let app = app.lock().await;
+        (
+            app.config().kernel_websocket_queue_capacity,
+            app.config().kernel_websocket_write_delay_ms,
+        )
+    };
 
     let (mut writer, mut reader) = socket.split();
-    let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<KernelOutgoingFrame>();
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
+    let (close_tx, mut close_rx) = mpsc::unbounded_channel::<ConnectionCloseCommand>();
+    let close_requested = Arc::new(AtomicBool::new(false));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         subscription: None,
         watch_task: None,
     }));
 
     let writer_task = tokio::spawn(async move {
-        while let Some(frame) = outgoing_rx.recv().await {
-            let payload = match serialize_frame(&frame) {
-                Ok(payload) => payload,
-                Err(_) => break,
-            };
-            if writer.send(Message::Text(payload.into())).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                Some(command) = close_rx.recv() => {
+                    let _ = writer.send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: command.reason.into(),
+                    }))).await;
+                    break;
+                }
+                Some(frame) = outgoing_rx.recv() => {
+                    let payload = match serialize_frame(&frame) {
+                        Ok(payload) => payload,
+                        Err(_) => break,
+                    };
+                    if write_delay_ms > 0 {
+                        sleep(Duration::from_millis(write_delay_ms)).await;
+                    }
+                    if writer.send(Message::Text(payload.into())).await.is_err() {
+                        break;
+                    }
+                }
+                else => break,
             }
         }
     });
@@ -199,6 +234,8 @@ async fn handle_kernel_connection(
                     &runtime,
                     &connection_state,
                     &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
                     payload.as_bytes(),
                 )
                 .await;
@@ -209,6 +246,8 @@ async fn handle_kernel_connection(
                     &runtime,
                     &connection_state,
                     &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
                     &payload,
                 )
                 .await;
@@ -234,21 +273,30 @@ async fn handle_incoming_payload(
     app: &Arc<Mutex<DaemonApp>>,
     runtime: &Arc<KernelTransportRuntime>,
     connection_state: &Arc<Mutex<ConnectionState>>,
-    outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
+    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
     payload: &[u8],
 ) {
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
         Ok(frame) => frame,
         Err(error) => {
-            let _ = outgoing_tx.send(KernelOutgoingFrame::Response {
-                request_id: "unknown".to_string(),
-                response: Box::new(None),
-                error: Some(KernelTransportError {
-                    code: "invalid_frame".to_string(),
-                    message: format!("invalid kernel transport payload: {error}"),
-                    retryable: false,
-                }),
-            });
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelOutgoingFrame::Response {
+                    request_id: "unknown".to_string(),
+                    response: Box::new(None),
+                    error: Some(KernelTransportError {
+                        code: "invalid_frame".to_string(),
+                        message: format!("invalid kernel transport payload: {error}"),
+                        retryable: false,
+                    }),
+                },
+                None,
+                None,
+            );
             return;
         }
     };
@@ -271,7 +319,14 @@ async fn handle_incoming_payload(
                     error: Some(map_kernel_error(&error)),
                 },
             };
-            let _ = outgoing_tx.send(outgoing);
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                outgoing,
+                None,
+                None,
+            );
         }
         KernelIncomingFrame::Subscribe {
             request_id,
@@ -291,6 +346,8 @@ async fn handle_incoming_payload(
             replay_recent_events(
                 runtime,
                 outgoing_tx,
+                close_tx,
+                close_requested,
                 &session_id,
                 &attachment_id,
                 resume_from_event_id,
@@ -309,20 +366,29 @@ async fn handle_incoming_payload(
                     Arc::clone(app),
                     Arc::clone(runtime),
                     outgoing_tx.clone(),
+                    close_tx.clone(),
+                    Arc::clone(close_requested),
                     KernelSubscription {
-                        session_id,
-                        attachment_id,
+                        session_id: session_id.clone(),
+                        attachment_id: attachment_id.clone(),
                     },
                 )));
             }
-            let _ = outgoing_tx.send(KernelOutgoingFrame::Response {
-                request_id,
-                response: Box::new(Some(serde_json::json!({
-                    "ok": true,
-                    "resumed_from_event_id": resume_from_event_id,
-                }))),
-                error: None,
-            });
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelOutgoingFrame::Response {
+                    request_id,
+                    response: Box::new(Some(serde_json::json!({
+                        "ok": true,
+                        "resumed_from_event_id": resume_from_event_id,
+                    }))),
+                    error: None,
+                },
+                Some(&session_id),
+                Some(&attachment_id),
+            );
         }
         KernelIncomingFrame::Unsubscribe { request_id } => {
             crate::logging::info_with_fields(
@@ -337,11 +403,18 @@ async fn handle_incoming_payload(
                     task.abort();
                 }
             }
-            let _ = outgoing_tx.send(KernelOutgoingFrame::Response {
-                request_id,
-                response: Box::new(Some(serde_json::json!({ "ok": true }))),
-                error: None,
-            });
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelOutgoingFrame::Response {
+                    request_id,
+                    response: Box::new(Some(serde_json::json!({ "ok": true }))),
+                    error: None,
+                },
+                None,
+                None,
+            );
         }
     }
 }
@@ -349,7 +422,9 @@ async fn handle_incoming_payload(
 async fn run_subscription_loop(
     app: Arc<Mutex<DaemonApp>>,
     runtime: Arc<KernelTransportRuntime>,
-    outgoing_tx: mpsc::UnboundedSender<KernelOutgoingFrame>,
+    outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: Arc<AtomicBool>,
     subscription: KernelSubscription,
 ) {
     let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
@@ -373,53 +448,81 @@ async fn run_subscription_loop(
                 notices,
                 snapshot,
             } => {
-                if !records.is_empty() {
-                    emit_kernel_event(
+                if !records.is_empty()
+                    && !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
                         KernelEvent::TerminalOutput { records },
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
                     )
-                    .await;
+                    .await
+                {
+                    break;
                 }
-                if !notices.is_empty() {
-                    emit_kernel_event(
+                if !notices.is_empty()
+                    && !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
                         KernelEvent::RuntimeNotices { notices },
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
                     )
-                    .await;
+                    .await
+                {
+                    break;
                 }
                 if let Some(snapshot) = *snapshot {
                     previous_snapshot = Some(snapshot.clone());
-                    emit_kernel_event(
+                    if !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
                         KernelEvent::SessionSnapshot {
                             session: Box::new(snapshot.0),
                             provider_run: Box::new(snapshot.1),
                         },
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
                     )
-                    .await;
+                    .await {
+                        break;
+                    }
                 }
-                if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS) {
-                    emit_kernel_event(
+                if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS)
+                    && !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
                         KernelEvent::Heartbeat {
                             session_id: subscription.session_id.clone(),
                         },
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
                     )
-                    .await;
+                    .await
+                {
+                    break;
                 }
             }
             WatchResult::Unavailable(message) => {
-                emit_kernel_event(
+                let _ = emit_kernel_event(
                     &runtime,
                     &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
                     KernelEvent::SessionUnavailable {
                         session_id: subscription.session_id.clone(),
                         message,
                     },
+                    Some(&subscription.session_id),
+                    Some(&subscription.attachment_id),
                 )
                 .await;
                 break;
@@ -512,9 +615,13 @@ fn watch_subscription_state(
 
 async fn emit_kernel_event(
     runtime: &Arc<KernelTransportRuntime>,
-    outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
+    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
     event: KernelEvent,
-) {
+    session_id: Option<&str>,
+    attachment_id: Option<&str>,
+) -> bool {
     let event_id = next_event_id(&runtime.event_counter);
     if let Some(session_id) = event_session_id(&event) {
         let mut recent_events = runtime.recent_events.lock().await;
@@ -527,15 +634,24 @@ async fn emit_kernel_event(
             entry.pop_front();
         }
     }
-    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-        event_id,
-        event: Box::new(event),
-    });
+    try_send_outgoing_frame(
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        KernelOutgoingFrame::Event {
+            event_id,
+            event: Box::new(event),
+        },
+        session_id,
+        attachment_id,
+    )
 }
 
 async fn replay_recent_events(
     runtime: &Arc<KernelTransportRuntime>,
-    outgoing_tx: &mpsc::UnboundedSender<KernelOutgoingFrame>,
+    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
     session_id: &str,
     attachment_id: &str,
     resume_from_event_id: Option<u64>,
@@ -555,19 +671,65 @@ async fn replay_recent_events(
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }
-        let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-            event_id: persisted.event_id,
-            event: Box::new(persisted.event.clone()),
-        });
+        if !try_send_outgoing_frame(
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            KernelOutgoingFrame::Event {
+                event_id: persisted.event_id,
+                event: Box::new(persisted.event.clone()),
+            },
+            Some(session_id),
+            Some(attachment_id),
+        ) {
+            return;
+        }
     }
 
-    let _ = outgoing_tx.send(KernelOutgoingFrame::Event {
-        event_id: next_event_id(&runtime.event_counter),
-        event: Box::new(KernelEvent::TransportResumed {
-            session_id: session_id.to_string(),
-            resumed_from_event_id: Some(cursor),
-        }),
-    });
+    let _ = try_send_outgoing_frame(
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        KernelOutgoingFrame::Event {
+            event_id: next_event_id(&runtime.event_counter),
+            event: Box::new(KernelEvent::TransportResumed {
+                session_id: session_id.to_string(),
+                resumed_from_event_id: Some(cursor),
+            }),
+        },
+        Some(session_id),
+        Some(attachment_id),
+    );
+}
+
+fn try_send_outgoing_frame(
+    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    frame: KernelOutgoingFrame,
+    session_id: Option<&str>,
+    attachment_id: Option<&str>,
+) -> bool {
+    match outgoing_tx.try_send(frame) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            if !close_requested.swap(true, Ordering::SeqCst) {
+                crate::logging::warn_with_fields(
+                    "daemon.kernel_transport",
+                    "kernel websocket connection overflowed; closing slow consumer",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                    }),
+                );
+                let _ = close_tx.send(ConnectionCloseCommand {
+                    reason: BACKPRESSURE_CLOSE_REASON.to_string(),
+                });
+            }
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 fn event_session_id(event: &KernelEvent) -> Option<&str> {

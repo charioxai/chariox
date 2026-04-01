@@ -133,6 +133,44 @@ test("LocalIpcClient emits transport_closed when websocket closes", async (t) =>
   assert.equal(events.at(-1)?.event, "transport_closed")
 })
 
+test("LocalIpcClient preserves websocket close reasons in transport_closed events", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  server.on("connection", (socket) => {
+    socket.close(1008, "kernel transport overloaded; reconnecting")
+  })
+
+  const client = new LocalIpcClient(endpoint)
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => {
+    events.push(event)
+  })
+  t.after(() => {
+    dispose()
+  })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  await assert.rejects(
+    client.send({ hello: "world" }),
+    /kernel transport `connect kernel websocket` failed|kernel transport `kernel websocket` failed/,
+  )
+
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.deepEqual(events.at(-1), {
+    event: "transport_closed",
+    message: "kernel transport overloaded; reconnecting",
+  })
+})
+
 test("LocalIpcClient reconnects and resubscribes with the last received event id", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")

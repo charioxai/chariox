@@ -895,6 +895,293 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
 }
 
 #[test]
+fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let default_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(default_agent.id()),
+        )
+        .expect("default provider run should launch");
+    let reviewer = app
+        .spawn_agent(
+            arroba_daemon::agent::CreateAgentRequest::new(session.id(), "opencode")
+                .with_alias("reviewer"),
+        )
+        .expect("reviewer agent should spawn");
+    let reviewer_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(reviewer.id()),
+        )
+        .expect("reviewer provider run should launch");
+
+    app.focus_agent(session.id(), default_agent.id())
+        .expect("default agent should focus");
+    let first_submission = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "default agent prompt\n",
+            Vec::new(),
+        )
+        .expect("default prompt should start");
+    match first_submission {
+        PromptSubmissionOutcome::Started { prompt } => {
+            assert_eq!(prompt.target_agent_id(), default_agent.id());
+        }
+        _ => panic!("expected default prompt to start immediately"),
+    }
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let default_records = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        default_run.id(),
+        recipients.clone(),
+        |records, app| {
+            let text = render_terminal_output(records);
+            text.contains("fixture response: default agent prompt")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+    assert!(
+        default_records
+            .iter()
+            .all(|record| record.agent_id.as_deref() == Some(default_agent.id()))
+    );
+
+    app.focus_agent(session.id(), reviewer.id())
+        .expect("reviewer agent should focus");
+    let second_submission = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "review agent prompt\n",
+            Vec::new(),
+        )
+        .expect("review prompt should start");
+    match second_submission {
+        PromptSubmissionOutcome::Started { prompt } => {
+            assert_eq!(prompt.target_agent_id(), reviewer.id());
+        }
+        _ => panic!("expected review prompt to start immediately"),
+    }
+
+    let reviewer_records = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        reviewer_run.id(),
+        recipients,
+        |records, app| {
+            let text = render_terminal_output(records);
+            text.contains("fixture response: review agent prompt")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+    assert!(
+        reviewer_records
+            .iter()
+            .all(|record| record.agent_id.as_deref() == Some(reviewer.id()))
+    );
+
+    let default_history = app
+        .session_history_page(session.id(), Some(default_agent.id()), None, None, None, None)
+        .expect("default history should load");
+    let reviewer_history = app
+        .session_history_page(session.id(), Some(reviewer.id()), None, None, None, None)
+        .expect("reviewer history should load");
+
+    let default_text = default_history
+        .entries
+        .iter()
+        .map(|entry| entry.entry.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let reviewer_text = reviewer_history
+        .entries
+        .iter()
+        .map(|entry| entry.entry.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(default_text.contains("default agent prompt"));
+    assert!(default_text.contains("fixture response: default agent prompt"));
+    assert!(!default_text.contains("review agent prompt"));
+    assert!(reviewer_text.contains("review agent prompt"));
+    assert!(reviewer_text.contains("fixture response: review agent prompt"));
+    assert!(!reviewer_text.contains("default agent prompt"));
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.focused_agent_id(), Some(reviewer.id()));
+    assert_eq!(session_state.active_provider_run_id(), Some(reviewer_run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
+fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active() {
+    let _guard = OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let fixture_path = create_opencode_fixture_script(10);
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let default_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(default_agent.id()),
+        )
+        .expect("default provider run should launch");
+    let reviewer = app
+        .spawn_agent(
+            arroba_daemon::agent::CreateAgentRequest::new(session.id(), "opencode")
+                .with_alias("reviewer"),
+        )
+        .expect("reviewer agent should spawn");
+    let reviewer_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_agent_id(reviewer.id()),
+        )
+        .expect("reviewer provider run should launch");
+
+    app.focus_agent(session.id(), default_agent.id())
+        .expect("default agent should focus");
+    let started = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            "keep streaming while focus changes\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+    match started {
+        PromptSubmissionOutcome::Started { prompt } => {
+            assert_eq!(prompt.target_agent_id(), default_agent.id());
+        }
+        _ => panic!("expected prompt to start immediately"),
+    }
+
+    app.focus_agent(session.id(), reviewer.id())
+        .expect("reviewer agent should focus");
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.focused_agent_id(), Some(reviewer.id()));
+    assert_eq!(session_state.active_provider_run_id(), Some(default_run.id()));
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let default_records = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        default_run.id(),
+        recipients,
+        |records, app| {
+            let text = render_terminal_output(records);
+            text.contains("fixture response: keep streaming while focus changes")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+
+    assert!(
+        default_records
+            .iter()
+            .any(|record| record.agent_id.as_deref() == Some(default_agent.id()))
+    );
+
+    let settled_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
+    assert_eq!(settled_state.active_provider_run_id(), Some(reviewer_run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+    let _ = fs::remove_file(&fixture_path);
+}
+
+#[test]
 fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -1282,6 +1569,51 @@ where
     }
 }
 
+fn collect_provider_records_until<F>(
+    app: &mut DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    recipient_attachment_ids: Vec<String>,
+    done: F,
+) -> Vec<arroba_daemon::terminal::TerminalOutputRecord>
+where
+    F: Fn(&[arroba_daemon::terminal::TerminalOutputRecord], &DaemonApp) -> bool,
+{
+    let timeout_ms = output_timeout_ms().max(4_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut records = Vec::new();
+
+    loop {
+        let next = app
+            .pump_provider_output(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+            )
+            .expect("provider output should fan out");
+        records.extend(next);
+
+        if done(&records, app) {
+            return records;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for provider records after {timeout_ms}ms: {}",
+            render_terminal_output(&records)
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn render_terminal_output(records: &[arroba_daemon::terminal::TerminalOutputRecord]) -> String {
+    let mut output = Vec::new();
+    for record in records {
+        output.extend_from_slice(&record.bytes);
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
 struct MockOpenCodeServer {
     port: u16,
     stop: Arc<AtomicBool>,
@@ -1296,10 +1628,14 @@ struct MockOpenCodeState {
     next_prompt_error: Option<String>,
     response_delay: Duration,
     omit_session_status: bool,
-    status: String,
-    session_id: String,
-    messages: Vec<Value>,
+    sessions: BTreeMap<String, MockOpenCodeSessionState>,
+    next_session_number: u64,
     next_message_number: u64,
+}
+
+struct MockOpenCodeSessionState {
+    status: String,
+    messages: Vec<Value>,
 }
 
 impl MockOpenCodeServer {
@@ -1321,9 +1657,8 @@ impl MockOpenCodeServer {
             next_prompt_error: None,
             response_delay,
             omit_session_status: false,
-            status: "idle".to_string(),
-            session_id: "mock-session-1".to_string(),
-            messages: Vec::new(),
+            sessions: BTreeMap::new(),
+            next_session_number: 0,
             next_message_number: 0,
         }));
         let state_for_thread = state.clone();
@@ -1417,11 +1752,19 @@ fn handle_mock_opencode_request(
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/global/health") => json!({ "healthy": true, "version": "test" }),
         ("POST", "/session") => {
-            let session_id = state
-                .lock()
-                .expect("mock state should not be poisoned")
-                .session_id
-                .clone();
+            let session_id = {
+                let mut state = state.lock().expect("mock state should not be poisoned");
+                state.next_session_number += 1;
+                let session_id = format!("mock-session-{}", state.next_session_number);
+                state.sessions.insert(
+                    session_id.clone(),
+                    MockOpenCodeSessionState {
+                        status: "idle".to_string(),
+                        messages: Vec::new(),
+                    },
+                );
+                session_id
+            };
             json!({ "id": session_id })
         }
         ("GET", "/session/status") => {
@@ -1429,16 +1772,34 @@ fn handle_mock_opencode_request(
             if state.omit_session_status {
                 json!({})
             } else {
-                json!({
-                    state.session_id.clone(): {
-                        "type": state.status,
-                    }
-                })
+                let status_map = state
+                    .sessions
+                    .iter()
+                    .map(|(session_id, session_state)| {
+                        (
+                            session_id.clone(),
+                            json!({
+                                "type": session_state.status,
+                            }),
+                        )
+                    })
+                    .collect::<serde_json::Map<String, Value>>();
+                Value::Object(status_map)
             }
         }
         ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
             let state = state.lock().expect("mock state should not be poisoned");
-            Value::Array(state.messages.clone())
+            let session_id = path
+                .strip_prefix("/session/")
+                .and_then(|value| value.strip_suffix("/message"))
+                .unwrap_or_default();
+            Value::Array(
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|session| session.messages.clone())
+                    .unwrap_or_default(),
+            )
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/prompt_async") => {
             let payload: Value =
@@ -1448,27 +1809,38 @@ fn handle_mock_opencode_request(
                 .expect("prompt should include a text part")
                 .trim_end_matches('\n')
                 .to_string();
-            schedule_mock_response(state.clone(), prompt);
+            let session_id = path
+                .strip_prefix("/session/")
+                .and_then(|value| value.strip_suffix("/prompt_async"))
+                .expect("prompt path should include a session id")
+                .to_string();
+            schedule_mock_response(state.clone(), session_id, prompt);
             write_http_empty_response(&mut stream, 204);
             return;
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/abort") => {
             let mut state = state.lock().expect("mock state should not be poisoned");
             state.abort_count += 1;
-            state.status = "idle".to_string();
-            let session_id = state.session_id.clone();
-            publish_mock_event(
-                &mut state,
-                json!({
-                    "type": "session.status",
-                    "properties": {
-                        "sessionID": session_id,
-                        "status": {
-                            "type": "idle"
+            let session_id = path
+                .strip_prefix("/session/")
+                .and_then(|value| value.strip_suffix("/abort"))
+                .expect("abort path should include a session id")
+                .to_string();
+            if let Some(session_state) = state.sessions.get_mut(&session_id) {
+                session_state.status = "idle".to_string();
+                publish_mock_event(
+                    &mut state,
+                    json!({
+                        "type": "session.status",
+                        "properties": {
+                            "sessionID": session_id,
+                            "status": {
+                                "type": "idle"
+                            }
                         }
-                    }
-                }),
-            );
+                    }),
+                );
+            }
             json!(true)
         }
         _ => {
@@ -1556,11 +1928,16 @@ fn write_sse_event(stream: &mut std::net::TcpStream, payload: &str) -> std::io::
     stream.flush()
 }
 
-fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) {
+fn schedule_mock_response(
+    state: Arc<Mutex<MockOpenCodeState>>,
+    session_id: String,
+    prompt: String,
+) {
     {
         let mut state = state.lock().expect("mock state should not be poisoned");
-        state.status = "busy".to_string();
-        let session_id = state.session_id.clone();
+        if let Some(session_state) = state.sessions.get_mut(&session_id) {
+            session_state.status = "busy".to_string();
+        }
         publish_mock_event(
             &mut state,
             json!({
@@ -1584,8 +1961,9 @@ fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) 
 
         let mut state = state.lock().expect("mock state should not be poisoned");
         if let Some(error_message) = state.next_prompt_error.take() {
-            state.status = "idle".to_string();
-            let session_id = state.session_id.clone();
+            if let Some(session_state) = state.sessions.get_mut(&session_id) {
+                session_state.status = "idle".to_string();
+            }
             publish_mock_event(
                 &mut state,
                 json!({
@@ -1616,31 +1994,32 @@ fn schedule_mock_response(state: Arc<Mutex<MockOpenCodeState>>, prompt: String) 
         state.next_message_number += 1;
         let message_id = format!("assistant-message-{}", state.next_message_number);
         let part_id = format!("assistant-part-{}", state.next_message_number);
-        let session_id = state.session_id.clone();
         let response_text = format!("fixture response: {prompt}\n");
-        state.messages.push(json!({
-            "info": {
-                "id": message_id.clone(),
-                "sessionID": session_id.clone(),
-                "role": "assistant",
-                "time": {
-                    "completed": 1,
-                }
-            },
-            "parts": [
-                {
-                    "id": part_id.clone(),
+        if let Some(session_state) = state.sessions.get_mut(&session_id) {
+            session_state.messages.push(json!({
+                "info": {
+                    "id": message_id.clone(),
                     "sessionID": session_id.clone(),
-                    "messageID": message_id.clone(),
-                    "type": "text",
-                    "text": response_text.clone(),
+                    "role": "assistant",
                     "time": {
-                        "end": 1
+                        "completed": 1,
                     }
-                }
-            ]
-        }));
-        state.status = "idle".to_string();
+                },
+                "parts": [
+                    {
+                        "id": part_id.clone(),
+                        "sessionID": session_id.clone(),
+                        "messageID": message_id.clone(),
+                        "type": "text",
+                        "text": response_text.clone(),
+                        "time": {
+                            "end": 1
+                        }
+                    }
+                ]
+            }));
+            session_state.status = "idle".to_string();
+        }
         publish_mock_event(
             &mut state,
             json!({

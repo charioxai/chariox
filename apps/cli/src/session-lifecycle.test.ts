@@ -209,3 +209,122 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
     "requestRender",
   ])
 })
+
+test("attachBinding reattaches, catches up, and refreshes panes before restoring the attached state", async () => {
+  const events: string[] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-2",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: "run-2",
+    attachment_ids: ["att-2"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    clearPendingPromptAttachments: () => events.push("clearPendingPromptAttachments"),
+    bumpHistoryLoadGeneration: () => events.push("bumpHistoryLoadGeneration"),
+    attachToSession: async () => {
+      events.push("attachToSession")
+      return { id: "att-2", session_id: "session-2" }
+    },
+    getSessionState: async () => {
+      events.push("getSessionState")
+      return attachedSession
+    },
+    tryGetProviderRun: async () => {
+      events.push("tryGetProviderRun")
+      return {
+        id: "run-2",
+        session_id: "session-2",
+        agent_instance_id: "agent-a",
+        adapter_key: "opencode",
+        provider: "opencode",
+        account_profile: "default",
+        model: "gpt-5",
+        variant: "medium",
+        usage_tokens_total: null,
+        state: "Running",
+      }
+    },
+    setProviderRunState: () => events.push("setProviderRunState"),
+    setProviderCatalogState: () => events.push("setProviderCatalogState"),
+    getProviderCatalog: async () => {
+      events.push("getProviderCatalog")
+      return {}
+    },
+    reconcileWaitingRoom: () => events.push("reconcileWaitingRoom"),
+    maybeResize: async () => { events.push("maybeResize") },
+    catchUpAttachedSession: async () => { events.push("catchUpAttachedSession") },
+    refreshAgentPanes: async () => { events.push("refreshAgentPanes") },
+    setAttachmentState: () => events.push("setAttachmentState"),
+    setCreatedSessionState: () => events.push("setCreatedSessionState"),
+    setSessionState: () => events.push("setSessionState"),
+    setCenterMode: () => events.push("setCenterMode"),
+    clearDirectoryTree: () => events.push("clearDirectoryTree"),
+    clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
+    setProviderActivityLabel: () => events.push("setProviderActivityLabel"),
+    setActiveStatusLabel: () => events.push("setActiveStatusLabel"),
+    setFatalError: () => events.push("setFatalError"),
+    setDaemonDisconnected: () => events.push("setDaemonDisconnected"),
+    setSubmitting: () => events.push("setSubmitting"),
+    setWorking: () => events.push("setWorking"),
+    setStatusLine: () => events.push("setStatusLine"),
+    updateSessionChrome: () => events.push("updateSessionChrome"),
+    focusPromptInput: () => events.push("focusPromptInput"),
+    setAvailableSessions: () => events.push("setAvailableSessions"),
+    listSessions: async () => {
+      events.push("listSessions")
+      return [attachedSession]
+    },
+    scheduleShortViewportHistoryCheck: () => events.push("scheduleShortViewportHistoryCheck"),
+    logAttachedProviderRun: () => events.push("logAttachedProviderRun"),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-2" }, false)
+
+  assert.deepEqual(events, [
+    "clearPendingPromptAttachments",
+    "bumpHistoryLoadGeneration",
+    "attachToSession",
+    "getSessionState",
+    "tryGetProviderRun",
+    "logAttachedProviderRun",
+    "setProviderRunState",
+    "getProviderCatalog",
+    "setProviderCatalogState",
+    "reconcileWaitingRoom",
+    "maybeResize",
+    "catchUpAttachedSession",
+    "getSessionState",
+    "setAttachmentState",
+    "setCreatedSessionState",
+    "setSessionState",
+    "setCenterMode",
+    "clearDirectoryTree",
+    "clearActiveToolLabels",
+    "setProviderActivityLabel",
+    "setActiveStatusLabel",
+    "refreshAgentPanes",
+    "setFatalError",
+    "setDaemonDisconnected",
+    "setSubmitting",
+    "setWorking",
+    "setStatusLine",
+    "updateSessionChrome",
+    "focusPromptInput",
+    "listSessions",
+    "setAvailableSessions",
+    "scheduleShortViewportHistoryCheck",
+  ])
+})

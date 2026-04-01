@@ -4,6 +4,18 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-03-31
 
+### Kernel transport hardening follow-up
+
+- Landed resumable kernel WebSocket transport hardening for the TypeScript CLI: durable event ids, resumable subscribe, reconnect/resubscribe, heartbeat events, and bounded slow-consumer handling.
+- Added layered coverage for the hardened transport:
+  - TypeScript client transport contract tests
+  - daemon kernel-WebSocket integration tests
+  - live forced-disconnect and slow-consumer drills
+- The remaining transport drills are narrower now:
+  - deeper live replay/catch-up validation during active streaming output
+  - long-idle heartbeat/liveness validation
+- Extracted CLI live-event application and transcript-history seams so incremental pushed-event behavior and reattach catch-up can be tested directly instead of only through manual PTY runs.
+
 ### Manual multi-agent session runtime slice
 
 - Landed the first real M4 runtime slice instead of keeping agent handling as footer/chrome-only plumbing.

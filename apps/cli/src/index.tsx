@@ -50,6 +50,7 @@ import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
+import { createKernelEventController } from "./kernel-event-controller.js"
 import {
   attachToSessionRequest,
   cancelActivePromptRequest,
@@ -94,6 +95,13 @@ import {
   selectConfiguredModel,
   type ProviderCatalog,
 } from "./provider-catalog.js"
+import {
+  applyHistoryDeferral,
+  hydrateTranscriptEntries,
+  markDeferredHistoryEntries,
+  mergeAdjacentHistoryPageEntries,
+  previewLineForHistoryEntry,
+} from "./transcript-history.js"
 import { computeSplitPaneGeometry, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
 import {
   STATUS_BADGE_WIDTH,
@@ -278,37 +286,6 @@ type TranscriptEntryRenderable = {
 }
 
 type TranscriptSurfaceTone = "default" | "focused" | "faded"
-
-function shouldDeferHistoryEntry(entry: TranscriptEntry) {
-  return entry.historyFragmentStart !== undefined && entry.historyFragmentStart > 0
-}
-
-function applyHistoryDeferral(entry: TranscriptEntry) {
-  const deferred = shouldDeferHistoryEntry(entry)
-  if (deferred) {
-    entry.historyDeferred = true
-  } else {
-    delete entry.historyDeferred
-  }
-  return entry
-}
-
-function markDeferredHistoryEntries(items: TranscriptEntry[]) {
-  if (items.length === 0) {
-    return items
-  }
-  return items.map((entry, index) => {
-    if (index === 0) {
-      return applyHistoryDeferral({ ...entry })
-    }
-    if (!entry.historyDeferred) {
-      return entry
-    }
-    const next = { ...entry }
-    delete next.historyDeferred
-    return next
-  })
-}
 
 function collapseHistoricalTurns(entries: TranscriptEntry[], keepLatestExpanded = true) {
   const normalizedEntries = normalizeTranscriptTurnIds(entries)
@@ -2340,144 +2317,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
-    recordDaemonActivity("terminal_record")
-    const text = Buffer.from(record.bytes).toString("utf8")
-    const recordAgentId = resolveTerminalRecordAgentId(record)
-    if (recordAgentId && record.kind !== "prompt_echo") {
-      setStreamingAgentId(recordAgentId)
-    }
-    if (splitAgentResponseMode() && recordAgentId) {
-      if (record.kind === "provider_status") {
-        const activityLabel = getProviderActivityLabel(text)
-        setAgentActivityLabel(recordAgentId, activityLabel)
-        if (recordAgentId === focusedAgentId()) {
-          const nextFocusedActivityLabel = activityLabel ?? agentActivityLabel(recordAgentId)
-          setProviderActivityLabel(nextFocusedActivityLabel)
-          applyProviderActivity(nextFocusedActivityLabel !== null)
-          if (activityLabel !== null) {
-            syncVisibleActivityLabel()
-          }
-        }
-      }
-      switch (record.kind) {
-        case "prompt_echo": {
-          if (hasTrailingUserPrompt(recordAgentId, text)) {
-            break
-          }
-          const paneEntries = currentAgentPaneEntries(recordAgentId)
-          appendTranscriptEntryToAgentPane(recordAgentId, {
-            role: "user",
-            text: trimSingleTrailingNewline(text),
-            turnId: computeNextTurnId(paneEntries),
-          })
-          break
-        }
-        case "provider_reasoning":
-          appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key)
-          break
-        case "provider_tool":
-          appendToolUpdateToAgentPane(recordAgentId, text)
-          break
-        case "provider_error": {
-          const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-          if (normalized) {
-            appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error" })
-          }
-          break
-        }
-        case "provider_status":
-          if (shouldRenderProviderStatus(text)) {
-            appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__")
-          }
-          break
-        default:
-          appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key)
-          break
-      }
-      return
-    }
-    const mainTranscriptAgentId = visibleTranscriptAgentId()
-    const isVisibleRecord = !recordAgentId || recordAgentId === mainTranscriptAgentId
-    if (!isVisibleRecord) {
-      if (recordAgentId) {
-        switch (record.kind) {
-          case "prompt_echo": {
-            if (hasTrailingUserPrompt(recordAgentId, text)) {
-              break
-            }
-            const paneEntries = currentAgentPaneEntries(recordAgentId)
-            appendTranscriptEntryToAgentPane(recordAgentId, {
-              role: "user",
-              text: trimSingleTrailingNewline(text),
-              turnId: computeNextTurnId(paneEntries),
-            })
-            break
-          }
-          case "provider_reasoning":
-            appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key)
-            break
-          case "provider_tool":
-            appendToolUpdateToAgentPane(recordAgentId, text)
-            break
-          case "provider_error": {
-            const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-            if (normalized) {
-              appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error" })
-          }
-          break
-        }
-        case "provider_status":
-          setAgentActivityLabel(recordAgentId, getProviderActivityLabel(text))
-          if (shouldRenderProviderStatus(text)) {
-            appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__")
-          }
-          break
-          default:
-            appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key)
-            break
-        }
-        return
-      }
-      appendAgentPanePreview(recordAgentId, previewLineForTerminalRecord(record.kind, text))
-      return
-    }
-    switch (record.kind) {
-      case "prompt_echo":
-        appendEntry({ role: "user", text: trimSingleTrailingNewline(text) })
-        syncVisibleTranscriptPreview()
-        break
-      case "provider_reasoning":
-        appendProviderChunk("reasoning", text, record.merge_key)
-        syncVisibleTranscriptPreview()
-        break
-      case "provider_tool":
-        appendToolUpdate(text)
-        syncVisibleTranscriptPreview()
-        break
-      case "provider_error":
-        appendProviderError(text)
-        syncVisibleTranscriptPreview()
-        break
-      case "provider_status": {
-        const activityLabel = getProviderActivityLabel(text)
-        setAgentActivityLabel(recordAgentId, activityLabel)
-        const nextFocusedActivityLabel = activityLabel ?? agentActivityLabel(recordAgentId)
-        setProviderActivityLabel(nextFocusedActivityLabel)
-        applyProviderActivity(nextFocusedActivityLabel !== null)
-        if (activityLabel !== null) {
-          syncVisibleActivityLabel()
-        }
-        if (shouldRenderProviderStatus(text)) {
-          appendProviderChunk("status", text, "__provider_status__")
-          syncVisibleTranscriptPreview()
-        }
-        break
-      }
-      default:
-        appendProviderChunk("assistant", text, record.merge_key)
-        syncVisibleTranscriptPreview()
-        break
-    }
+    kernelEventController.processTerminalOutputRecord(record)
   }
 
   const flushPendingTerminalRecords = () => {
@@ -4606,6 +4446,41 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const kernelEventController = createKernelEventController({
+    recordDaemonActivity,
+    resolveTerminalRecordAgentId,
+    setStreamingAgentId,
+    splitAgentResponseMode,
+    visibleTranscriptAgentId,
+    focusedAgentId,
+    hasTrailingUserPrompt,
+    currentAgentPaneEntries,
+    computeNextTurnId,
+    appendTranscriptEntryToAgentPane,
+    appendProviderChunkToAgentPane,
+    appendToolUpdateToAgentPane,
+    setAgentActivityLabel,
+    agentActivityLabel,
+    setProviderActivityLabel,
+    applyProviderActivity,
+    syncVisibleActivityLabel,
+    getProviderActivityLabel,
+    shouldRenderProviderStatus,
+    appendEntry,
+    appendProviderChunk,
+    appendToolUpdate,
+    appendProviderError,
+    syncVisibleTranscriptPreview,
+    appendAgentPanePreview,
+    previewLineForTerminalRecord,
+    trimSingleTrailingNewline,
+    setDaemonDisconnected,
+    setStatusLine,
+    updateSessionChrome,
+    appendNotice: (message, tone) => appendNotice(message, tone === "warning" ? "warning" : "muted"),
+    connectedStatusLine: DEFAULT_CONNECTED_STATUS,
+  })
+
   const applyKernelSessionSnapshot = async (
     nextSession: RuntimeSession,
     nextProviderRun: RuntimeProviderRun | null,
@@ -4649,10 +4524,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         queueTerminalOutputRecords(event.records as TerminalOutputRecord[])
         return
       case "runtime_notices":
-        recordDaemonActivity("kernel_runtime_notices")
-        for (const notice of event.notices as RuntimeNoticeRecord[]) {
-          appendNotice(notice.message)
-        }
+        kernelEventController.applyRuntimeNotices(event.notices as RuntimeNoticeRecord[])
         return
       case "session_snapshot":
         recordDaemonActivity("kernel_session_snapshot")
@@ -4668,17 +4540,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         await transitionToNoSession(event.message)
         return
       case "transport_resumed":
-        recordDaemonActivity("kernel_transport_resumed")
-        setDaemonDisconnected(false)
-        setStatusLine(DEFAULT_CONNECTED_STATUS)
-        updateSessionChrome()
-        appendNotice("Reconnected to the Arroba kernel.")
+        kernelEventController.applyTransportResumed()
         return
       case "transport_closed":
-        setDaemonDisconnected(true)
-        setStatusLine("Lost connection to the Arroba kernel.")
-        updateSessionChrome()
-        appendNotice(event.message, "warning")
+        kernelEventController.applyTransportClosed(event.message)
         return
     }
   }
@@ -5534,151 +5399,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   )
 }
 
-function hydrateTranscriptEntries(historyEntries: SessionHistoryPageEntry[]): TranscriptEntry[] {
-  const mergedHistoryEntries = mergeAdjacentHistoryPageEntries(historyEntries)
-  const entries: TranscriptEntry[] = []
-  const tools = new Map<string, ToolTranscriptUpdate>()
-  let nextId = 0
-  let currentTurnId = 0
-
-  const appendTranscriptEntry = (
-    role: TranscriptEntry["role"],
-    chunk: string,
-    options: {
-      mergeKey?: string
-      sourceText?: string
-      emphasis?: TranscriptEntry["emphasis"]
-      historyEntryIndex?: number
-      historyFragmentStart?: number
-      historyFragmentEnd?: number
-      historyTotalChars?: number
-      turnId?: number
-    } = {},
-  ) => {
-    const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    if (!normalized) {
-      return
-    }
-
-    if (options.mergeKey) {
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const candidate = entries[index]
-        if (candidate?.role === role && candidate.mergeKey === options.mergeKey) {
-          if (role === "assistant" || role === "reasoning") {
-            candidate.text += normalized
-            if (options.sourceText !== undefined) {
-              candidate.sourceText = `${candidate.sourceText ?? ""}${options.sourceText}`
-            }
-          } else {
-            candidate.text = normalized
-            if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
-          }
-          if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
-          if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
-          if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
-          if (options.historyFragmentEnd !== undefined) candidate.historyFragmentEnd = options.historyFragmentEnd
-          if (options.historyTotalChars !== undefined) candidate.historyTotalChars = options.historyTotalChars
-          return
-        }
-      }
-    }
-
-    const last = entries.at(-1)
-    if (!options.mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
-      last.text += normalized
-      return
-    }
-
-    nextId += 1
-    const nextEntry: TranscriptEntry = { id: nextId, role, text: normalized }
-    if (options.mergeKey) {
-      nextEntry.mergeKey = options.mergeKey
-    }
-    if (options.sourceText !== undefined) nextEntry.sourceText = options.sourceText
-    if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
-    if (options.historyEntryIndex !== undefined) nextEntry.historyEntryIndex = options.historyEntryIndex
-    if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
-    if (options.historyFragmentEnd !== undefined) nextEntry.historyFragmentEnd = options.historyFragmentEnd
-    if (options.historyTotalChars !== undefined) nextEntry.historyTotalChars = options.historyTotalChars
-    if (options.turnId !== undefined) nextEntry.turnId = options.turnId
-    entries.push(nextEntry)
-  }
-
-  for (const pageEntry of mergedHistoryEntries) {
-    const options: {
-      historyEntryIndex: number
-      historyFragmentStart: number
-      historyFragmentEnd: number
-      historyTotalChars: number
-      turnId?: number
-    } = {
-      historyEntryIndex: pageEntry.entry_index,
-      historyFragmentStart: pageEntry.fragment_start,
-      historyFragmentEnd: pageEntry.fragment_end,
-      historyTotalChars: pageEntry.total_chars,
-    }
-    if (currentTurnId > 0) options.turnId = currentTurnId
-    switch (pageEntry.entry.kind) {
-      case "user_prompt":
-        currentTurnId = Math.max(currentTurnId + 1, (pageEntry.entry_index ?? 0) + 1)
-        appendTranscriptEntry("user", trimSingleTrailingNewline(pageEntry.entry.text), {
-          ...options,
-          turnId: currentTurnId,
-        })
-        break
-      case "provider_reasoning":
-        appendTranscriptEntry("reasoning", pageEntry.entry.text, {
-          ...options,
-          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
-        })
-        break
-      case "provider_tool": {
-        const parsed = parseToolTranscriptUpdate(pageEntry.entry.text)
-        if (!parsed) {
-          appendTranscriptEntry("tool", pageEntry.entry.text, {
-            ...options,
-            sourceText: pageEntry.entry.text,
-          })
-          break
-        }
-        const merged = mergeToolTranscriptUpdate(tools.get(parsed.id) ?? null, parsed)
-        tools.set(parsed.id, merged)
-        appendTranscriptEntry("tool", formatToolTranscriptUpdate(merged), {
-          ...options,
-          mergeKey: parsed.id,
-          sourceText: pageEntry.entry.text,
-        })
-        break
-      }
-      case "provider_error":
-        appendTranscriptEntry("error", pageEntry.entry.text, {
-          ...options,
-          emphasis: "error",
-        })
-        break
-      case "provider_status":
-        if (shouldRenderProviderStatus(pageEntry.entry.text)) {
-          appendTranscriptEntry("status", pageEntry.entry.text, {
-            ...options,
-            mergeKey: "__provider_status__",
-          })
-        }
-        break
-      case "notice":
-        appendTranscriptEntry("notice", pageEntry.entry.text, options)
-        break
-      default:
-        appendTranscriptEntry("assistant", pageEntry.entry.text, {
-          ...options,
-          ...(pageEntry.entry.merge_key ? { mergeKey: pageEntry.entry.merge_key } : {}),
-        })
-        break
-    }
-  }
-
-  return markDeferredHistoryEntries(entries)
-}
-
 function appendPreviewLine(current: string, line: string) {
   const combined = current ? `${current}\n${line}` : line
   const lines = combined.split("\n")
@@ -5698,27 +5418,6 @@ function formatTranscriptPreview(transcriptEntries: TranscriptEntry[]) {
     .map(previewLineForTranscriptEntry)
     .filter(Boolean) as string[]
   return lines.slice(-14).join("\n")
-}
-
-function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
-  const text = entry.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!text) {
-    return null
-  }
-  const label = entry.kind === "user_prompt"
-    ? "You"
-    : entry.kind === "provider_reasoning"
-      ? "Think"
-      : entry.kind === "provider_tool"
-        ? "Tool"
-        : entry.kind === "provider_error"
-          ? "Err"
-          : entry.kind === "provider_status"
-            ? "Stat"
-            : entry.kind === "notice"
-              ? "Note"
-              : "Asst"
-  return `${label}: ${text.split("\n")[0]}`
 }
 
 function previewLineForTranscriptEntry(entry: TranscriptEntry) {
@@ -5759,38 +5458,6 @@ function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"], text: 
             ? "Stat"
             : "Asst"
   return `${label}: ${normalized.split("\n")[0]}`
-}
-
-function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPageEntry[]) {
-  const merged: SessionHistoryPageEntry[] = []
-
-  for (const entry of historyEntries) {
-    const previous = merged.at(-1)
-    if (
-      previous
-      && previous.entry_index === entry.entry_index
-      && previous.entry.kind === entry.entry.kind
-      && previous.fragment_end === entry.fragment_start
-    ) {
-      previous.fragment_end = entry.fragment_end
-      previous.entry.text += entry.entry.text
-      previous.total_chars = Math.max(previous.total_chars, entry.total_chars)
-      continue
-    }
-
-    merged.push({
-      entry_index: entry.entry_index,
-      fragment_start: entry.fragment_start,
-      fragment_end: entry.fragment_end,
-      total_chars: entry.total_chars,
-      entry: {
-        kind: entry.entry.kind,
-        text: entry.entry.text,
-      },
-    })
-  }
-
-  return merged
 }
 
 function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {

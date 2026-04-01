@@ -160,11 +160,11 @@ Status:
   - CLI transport contract tests
   - daemon kernel-WebSocket integration coverage
   - live daemon + CLI smoke validation when transport/runtime behavior changes
-- transport resiliency drills are still pending once the next functionality slices are in place:
-  - forced live disconnect with CLI reconnect/resubscribe validation
-  - missed-event replay/catch-up validation after reconnect
-  - long-idle heartbeat/liveness validation
-  - slow-consumer/backpressure validation
+- transport resiliency drills are now partly complete:
+  - forced live disconnect with CLI reconnect/resubscribe validation is done
+  - slow-consumer/backpressure validation is done
+  - missed-event replay/catch-up validation after reconnect still needs a deeper streaming-focused live drill
+  - long-idle heartbeat/liveness validation is still pending
 - multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
