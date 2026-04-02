@@ -181,6 +181,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
+    selectWorkflowCanvas: () => {},
     createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     listWorkflows: async () => [],
     resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
@@ -289,6 +290,7 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
+    selectWorkflowCanvas: () => {},
     createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     listWorkflows: async () => [],
     resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
@@ -315,6 +317,7 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
 test("workflow command opens the workflow screen and manages local workflows", async () => {
   let flashedMessage = ""
   let shownWorkflowScreen = 0
+  const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const handlers = createCommandActionHandlers({
     workspace: "workspace-1",
@@ -361,6 +364,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
     resolveSessionAgent: () => ({ agent: makeAgent() }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => { shownWorkflowScreen += 1 },
+    selectWorkflowCanvas: (workflowId) => { selectedWorkflowIds.push(workflowId ?? "null") },
     createWorkflow: async (alias) => {
       const workflow = { id: "workflow-1", alias: alias ?? null }
       const session = makeSession({ workflows: [workflow] })
@@ -429,6 +433,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow new review", args: ["new", "review"] })
   assert.equal(flashedMessage, "created workflow workflow-1 (review)")
+  assert.deepEqual(selectedWorkflowIds, ["workflow-1"])
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")

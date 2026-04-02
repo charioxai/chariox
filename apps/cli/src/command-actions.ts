@@ -122,6 +122,7 @@ type CommandActionDeps = {
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   workflowScreenActive: () => boolean
   showWorkflowScreen: () => void
+  selectWorkflowCanvas: (workflowId: string | null) => void
   createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
@@ -487,6 +488,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       const payload = await deps.resolveWorkflow(workflowRef)
+      deps.selectWorkflowCanvas(payload.workflow.id)
+      deps.showWorkflowScreen()
       deps.flashFooter(
         `workflow ${payload.workflow.id}${payload.workflow.alias ? ` (${payload.workflow.alias})` : ""}`,
         "info",
@@ -496,6 +499,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
     if (subcommand === "new") {
       const payload = await deps.createWorkflow(args[1] ?? null)
+      deps.selectWorkflowCanvas(payload.workflow.id)
       deps.showWorkflowScreen()
       deps.applySessionState(payload.session)
       deps.flashFooter(

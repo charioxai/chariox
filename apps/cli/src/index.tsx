@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, VRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -131,7 +131,6 @@ import {
   responsePaneRowSlots,
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
-  workflowCanvasPaneIndices,
 } from "./response-panes.js"
 import {
   navigatePromptHistory,
@@ -223,6 +222,17 @@ import {
   toggleWorkspaceScreenMode,
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
+import {
+  DEFAULT_WORKFLOW_ZOOM_INDEX,
+  buildWorkflowGraphLayout,
+  cycleWorkflowNodeId,
+  derivePointerAnchoredViewport,
+  deriveWorkflowZoomIndex,
+  resolveSelectedWorkflow,
+  resolveSelectedWorkflowNodeId,
+  resolveWorkflowZoomMetrics,
+  type WorkflowGraphLayout,
+} from "./workflow-graph.js"
 import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -260,7 +270,7 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
 const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
-  { keys: "Tab", description: "Cycle focus to the next agent." },
+  { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
   { keys: "Ctrl+Tab", description: "Toggle between the agent screens and workflow canvas." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
@@ -721,6 +731,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
+  const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
+  const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
+  const [workflowZoomIndex, setWorkflowZoomIndex] = createSignal(DEFAULT_WORKFLOW_ZOOM_INDEX)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   let stopRequestInFlight = false
@@ -810,6 +823,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
   const workflowScreenActive = () => isAttached() && workspaceScreenMode() === "workflow"
+  const selectedWorkflow = () => resolveSelectedWorkflow(sessionState().workflows ?? [], selectedWorkflowId())
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
   const responsePaneSelection = () => selectResponsePaneAgents(
     sessionState().agents,
@@ -823,13 +837,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workspaceScreenMode(),
     responsePaneSelection().visibleTranscriptAgentId,
   )
-  const responseWorkflowCanvasSlots = () => workflowCanvasPaneIndices({
-    split: splitAgentResponseMode(),
-    visibleAgentCount: responsePaneSelection().visibleAgents.length,
-    screenIndex: responsePaneSelection().screenIndex,
-    screenCount: responsePaneSelection().screenCount,
-    maxAgentsPerScreen: maxAgentsPerScreen(),
-  })
   const responsePaneRows = () => responsePaneRowSlots(maxAgentsPerScreen())
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
@@ -861,6 +868,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     return nextSession.focused_agent_id !== focusedAgentId()
   }
+
+  createEffect(() => {
+    const workflow = selectedWorkflow()
+    const nextWorkflowId = workflow?.id ?? null
+    if (selectedWorkflowId() !== nextWorkflowId) {
+      setSelectedWorkflowId(nextWorkflowId)
+    }
+    const nextNodeId = resolveSelectedWorkflowNodeId(workflow, selectedWorkflowNodeId())
+    if (selectedWorkflowNodeId() !== nextNodeId) {
+      setSelectedWorkflowNodeId(nextNodeId)
+    }
+  })
   const agentPanePreview = (agentId: string) => agentPanePreviews()[agentId] ?? ""
   const agentActivityLabel = (agentId: string | null | undefined) => (agentId ? agentActivityLabels()[agentId] ?? null : null)
   const focusedAgent = () => sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null
@@ -2788,7 +2807,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const split = splitAgentResponseMode()
     const visibleAgents = responseVisibleAgents()
-    const workflowCanvasSlots = responseWorkflowCanvasSlots()
     const paneRows = responsePaneRows()
     const showWorkflowScreen = workflowScreenActive()
 
@@ -2847,7 +2865,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (paneIndex === 0) {
           return true
         }
-        return split && (Boolean(visibleAgents[paneIndex]) || workflowCanvasSlots.includes(paneIndex))
+        return split && Boolean(visibleAgents[paneIndex])
       }).length
       rowBox.visible = rowIndex === 0 || (split && rowVisibleCount > 0)
       rowBox.flexDirection = "row"
@@ -2879,7 +2897,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           continue
         }
         const auxiliaryIndex = paneIndex - 1
-        const showWorkflowCanvas = workflowCanvasSlots.includes(paneIndex)
         layoutPane(
           responseAuxiliaryPanes[auxiliaryIndex],
           responseAuxiliaryFooterBoxes[auxiliaryIndex],
@@ -2887,7 +2904,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           agent,
           rowVisibleCount,
           Boolean(focused),
-          !showWorkflowScreen && split && (Boolean(agent) || showWorkflowCanvas),
+          !showWorkflowScreen && split && Boolean(agent),
           Boolean(agent),
           theme.backgroundElement,
         )
@@ -2914,11 +2931,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           agentTranscriptScrollboxes.set(agentId, scrollbox)
         },
         rebuildAuxiliaryAgentPane,
-        buildEmptyTranscriptRenderable: () => (
-          !showWorkflowScreen && workflowCanvasSlots.includes(paneIndex)
-            ? buildWorkflowCanvasRenderable(renderer)
-            : buildEmptyTranscriptRenderable(renderer)
-        ),
+        buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
       })
     }
 
@@ -3578,7 +3591,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
         ? (workflowScreenActive()
-            ? buildWorkflowCanvasRenderableWithList(renderer, sessionState().workflows ?? [])
+            ? buildWorkflowCanvasRenderable(renderer, {
+                workflows: sessionState().workflows ?? [],
+                agents: sessionState().agents,
+                selectedWorkflowId: selectedWorkflowId(),
+                selectedNodeId: selectedWorkflowNodeId(),
+                zoomIndex: workflowZoomIndex(),
+                onSelectNode: (nodeId) => {
+                  setSelectedWorkflowNodeId(nodeId)
+                  rebuildTranscript()
+                },
+                onZoom: (direction, event) => {
+                  if (!transcriptScrollbox) {
+                    return
+                  }
+                  zoomWorkflowCanvas(
+                    direction,
+                    event.x - transcriptScrollbox.x,
+                    event.y - transcriptScrollbox.y,
+                  )
+                },
+              })
             : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
@@ -4026,6 +4059,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     },
     workflowScreenActive,
     showWorkflowScreen,
+    selectWorkflowCanvas,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
@@ -4496,6 +4530,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript()
     applyResponseLayout()
   }
+  function selectWorkflowCanvas(workflowId: string | null) {
+    setSelectedWorkflowId(workflowId)
+    setSelectedWorkflowNodeId(null)
+    if (workflowScreenActive()) {
+      rebuildTranscript()
+    }
+  }
+  function cycleWorkflowCanvasNode(step = 1) {
+    const nextNodeId = cycleWorkflowNodeId(selectedWorkflow(), selectedWorkflowNodeId(), step)
+    if (nextNodeId === selectedWorkflowNodeId()) {
+      return
+    }
+    setSelectedWorkflowNodeId(nextNodeId)
+    if (workflowScreenActive()) {
+      rebuildTranscript()
+    }
+  }
   async function createWorkflow(alias?: string | null) {
     const response = await client.send<Record<string, unknown>>(
       createWorkflowRequest(sessionState().id, alias),
@@ -4505,6 +4556,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       "WorkflowCreated",
     )
     setSessionState(payload.session)
+    setSelectedWorkflowId(payload.workflow.id)
+    setSelectedWorkflowNodeId(null)
     rebuildTranscript()
     applyResponseLayout()
     return payload
@@ -4615,6 +4668,47 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       "WorkflowEdgeRemoved",
     )
   }
+  function zoomWorkflowCanvas(direction: "in" | "out", pointerX: number, pointerY: number) {
+    if (!workflowScreenActive() || !transcriptScrollbox) {
+      return
+    }
+    const workflow = selectedWorkflow()
+    if (!workflow) {
+      return
+    }
+    const nextZoomIndex = deriveWorkflowZoomIndex(workflowZoomIndex(), direction)
+    if (nextZoomIndex === workflowZoomIndex()) {
+      return
+    }
+    const previousLayout = buildWorkflowGraphLayout({
+      workflow,
+      agents: sessionState().agents,
+      selectedNodeId: selectedWorkflowNodeId(),
+      zoomIndex: workflowZoomIndex(),
+    })
+    const nextLayout = buildWorkflowGraphLayout({
+      workflow,
+      agents: sessionState().agents,
+      selectedNodeId: selectedWorkflowNodeId(),
+      zoomIndex: nextZoomIndex,
+    })
+    const viewport = derivePointerAnchoredViewport({
+      viewportWidth: transcriptScrollbox.width,
+      viewportHeight: transcriptScrollbox.height,
+      pointerX,
+      pointerY,
+      scrollLeft: transcriptScrollbox.scrollLeft,
+      scrollTop: transcriptScrollbox.scrollTop,
+      previousContentWidth: previousLayout.width,
+      previousContentHeight: previousLayout.height,
+      nextContentWidth: nextLayout.width,
+      nextContentHeight: nextLayout.height,
+    })
+    setWorkflowZoomIndex(nextZoomIndex)
+    rebuildTranscript()
+    transcriptScrollbox.scrollTo(viewport)
+    transcriptScrollbox.requestRender()
+  }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (!event) {
@@ -4646,7 +4740,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       if (isAttached()) {
-        void handleCycleAgentFocus()
+        if (workflowScreenActive()) {
+          cycleWorkflowCanvasNode()
+        } else {
+          void handleCycleAgentFocus()
+        }
       }
       return
     }
@@ -6149,44 +6247,211 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
   return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
 }
 
-function buildWorkflowCanvasRenderable(renderer: ReturnType<typeof useRenderer>) {
-  return buildWorkflowCanvasRenderableWithList(renderer, [])
-}
-
-function buildWorkflowCanvasRenderableWithList(
+function buildWorkflowCanvasRenderable(
   renderer: ReturnType<typeof useRenderer>,
-  workflows: WorkflowDefinition[],
+  options: {
+    workflows: WorkflowDefinition[]
+    agents: AgentInstance[]
+    selectedWorkflowId: string | null
+    selectedNodeId: string | null
+    zoomIndex: number
+    onSelectNode: (nodeId: string | null) => void
+    onZoom: (direction: "in" | "out", event: { x: number; y: number }) => void
+  },
 ) {
-  const wrapper = buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
-  if (workflows.length === 0) {
-    return wrapper
+  const selectedWorkflow = resolveSelectedWorkflow(options.workflows, options.selectedWorkflowId)
+  if (!selectedWorkflow) {
+    return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
   }
-  const list = new BoxRenderable(renderer, {
-    flexDirection: "column",
-    gap: 0,
-    marginTop: 1,
-    alignItems: "center",
-    width: "100%",
+
+  const selectedNodeId = resolveSelectedWorkflowNodeId(selectedWorkflow, options.selectedNodeId)
+  const layout = buildWorkflowGraphLayout({
+    workflow: selectedWorkflow,
+    agents: options.agents,
+    selectedNodeId,
+    zoomIndex: options.zoomIndex,
   })
-  list.add(
+  const metrics = resolveWorkflowZoomMetrics(options.zoomIndex)
+  const wrapper = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 1,
+    width: layout.width,
+    minWidth: layout.width,
+    height: layout.height + 4,
+    minHeight: layout.height + 4,
+    paddingTop: 1,
+    paddingBottom: 1,
+  })
+
+  const handleMouseScroll = (event: { scroll?: { direction: "up" | "down" | "left" | "right" }; preventDefault: () => void; stopPropagation: () => void; x: number; y: number }) => {
+    if (!event.scroll) {
+      return
+    }
+    if (event.scroll.direction !== "up" && event.scroll.direction !== "down") {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    options.onZoom(event.scroll.direction === "up" ? "in" : "out", { x: event.x, y: event.y })
+  }
+  wrapper.onMouseScroll = handleMouseScroll
+
+  wrapper.add(
     new TextRenderable(renderer, {
-      content: "workflows",
-      fg: theme.secondary,
+      content: selectedWorkflow.alias
+        ? `${layout.workflowId} (${selectedWorkflow.alias})`
+        : layout.workflowId,
+      fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
     }),
   )
-  for (const workflow of workflows) {
-    list.add(
+  wrapper.add(
+    new TextRenderable(renderer, {
+      content: `Tab cycles nodes • wheel zooms • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }),
+  )
+
+  const graphArea = new BoxRenderable(renderer, {
+    width: layout.width,
+    minWidth: layout.width,
+    height: layout.height,
+    minHeight: layout.height,
+    position: "relative",
+  })
+  graphArea.onMouseScroll = handleMouseScroll
+
+  const edgeLayer = new VRenderable(renderer, {
+    width: layout.width,
+    height: layout.height,
+    position: "absolute",
+    left: 0,
+    top: 0,
+    render(buffer) {
+      drawWorkflowGraphLayer(buffer, layout)
+    },
+  })
+  edgeLayer.onMouseScroll = handleMouseScroll
+  graphArea.add(edgeLayer)
+
+  for (const node of layout.nodes) {
+    const nodeBox = new BoxRenderable(renderer, {
+      position: "absolute",
+      left: node.x,
+      top: node.y,
+      width: node.width,
+      minWidth: node.width,
+      height: node.height,
+      minHeight: node.height,
+      flexDirection: "column",
+      border: ["left", "top", "right", "bottom"],
+      borderColor: node.missing ? theme.error : node.selected ? theme.primary : theme.borderSubtle,
+      backgroundColor: node.selected ? theme.backgroundPanel : theme.backgroundElement,
+      paddingLeft: 1,
+      paddingRight: 1,
+      paddingTop: 0,
+      paddingBottom: 0,
+    })
+    nodeBox.onMouseUp = (event) => {
+      if (event.button !== MouseButton.LEFT) {
+        return
+      }
+      event.stopPropagation()
+      options.onSelectNode(node.id)
+    }
+    nodeBox.onMouseScroll = handleMouseScroll
+    for (const [lineIndex, line] of node.lines.entries()) {
+      nodeBox.add(
+        new TextRenderable(renderer, {
+          content: line,
+          fg: lineIndex === 0 ? theme.text : theme.textMuted,
+          attributes: lineIndex === 0 ? TextAttributes.BOLD : TextAttributes.NONE,
+          wrapMode: "none",
+        }),
+      )
+    }
+    graphArea.add(nodeBox)
+  }
+
+  const footer = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 0,
+    marginTop: 1,
+  })
+  if (options.workflows.length > 1) {
+    footer.add(
       new TextRenderable(renderer, {
-        content: workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id,
-        fg: theme.text,
-        wrapMode: "none",
+        content: `workflows: ${options.workflows.map((workflow) => workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id).join(", ")}`,
+        fg: theme.secondary,
+        wrapMode: "word",
       }),
     )
   }
-  wrapper.add(list)
+  if (layout.nodes.length === 0) {
+    footer.add(
+      new TextRenderable(renderer, {
+        content: "Add nodes with /workflow node add <workflow-ref> <agent-id>.",
+        fg: theme.warning,
+        wrapMode: "word",
+      }),
+    )
+  }
+
+  wrapper.add(graphArea)
+  if (footer.getChildrenCount() > 0) {
+    wrapper.add(footer)
+  }
+
   return wrapper
+}
+
+function drawWorkflowGraphLayer(buffer: {
+  drawText: (text: string, x: number, y: number, fg: RGBA, bg?: RGBA, attributes?: number) => void
+  setCell: (x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number) => void
+}, layout: WorkflowGraphLayout) {
+  for (const endpoint of layout.endpoints) {
+    buffer.drawText(endpoint.label, endpoint.labelX, endpoint.labelY, theme.secondary)
+    buffer.setCell(endpoint.markerX, endpoint.markerY, "o", theme.warning, theme.backgroundPanel)
+    if (endpoint.markerY + 1 < layout.height) {
+      buffer.setCell(endpoint.markerX, endpoint.markerY + 1, "|", theme.warning, theme.backgroundPanel)
+    }
+  }
+  for (const edge of layout.edges) {
+    drawWorkflowEdge(buffer, edge.points)
+  }
+}
+
+function drawWorkflowEdge(
+  buffer: {
+    setCell: (x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number) => void
+  },
+  points: Array<{ x: number; y: number }>,
+) {
+  if (points.length < 2) {
+    return
+  }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index]!
+    const next = points[index + 1]!
+    if (current.x === next.x) {
+      const fromY = Math.min(current.y, next.y)
+      const toY = Math.max(current.y, next.y)
+      for (let y = fromY; y <= toY; y += 1) {
+        const char = y === toY && index === points.length - 2 ? "v" : "|"
+        buffer.setCell(current.x, y, char, theme.secondary, theme.backgroundPanel)
+      }
+      continue
+    }
+    if (current.y === next.y) {
+      const fromX = Math.min(current.x, next.x)
+      const toX = Math.max(current.x, next.x)
+      for (let x = fromX; x <= toX; x += 1) {
+        buffer.setCell(x, current.y, "-", theme.secondary, theme.backgroundPanel)
+      }
+    }
+  }
 }
 
 function buildAsciiCanvasRenderable(
@@ -6737,7 +7002,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle to next agent\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
   )
 }
 

@@ -153,7 +153,7 @@ test("deriveAttachedFooterSummary includes focused agent, view mode, and hotkey 
 
   assert.equal(
     summary,
-    "Session feature-refactor • 2 CLIs connected • 2 agents in session • Agent: review (QA) [working] • View: split • Ctrl+C to stop • Tab cycles agents • Ctrl+Tab opens workflow • Ctrl+T hotkeys",
+    "Session feature-refactor • 2 CLIs connected • 2 agents in session • Agent: review (QA) [working] • View: split • Ctrl+C to stop • Tab cycles focus • Ctrl+Tab opens workflow • Ctrl+T hotkeys",
   )
 })
 
