@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
   nextWaitingRoomIntroStep,
   shouldLoadShortViewportHistory,
@@ -72,4 +73,22 @@ test("nextWaitingRoomIntroStep advances only while detached and below the cap", 
   assert.equal(nextWaitingRoomIntroStep(false, 3), 4)
   assert.equal(nextWaitingRoomIntroStep(false, 12), null)
   assert.equal(nextWaitingRoomIntroStep(true, 3), null)
+})
+
+test("computeTranscriptRebuildScrollTop keeps the transcript pinned to bottom when it was already there", () => {
+  assert.equal(computeTranscriptRebuildScrollTop({
+    previousScrollTop: 20,
+    previousScrollHeight: 40,
+    nextScrollHeight: 80,
+    viewportHeight: 20,
+  }), 60)
+})
+
+test("computeTranscriptRebuildScrollTop preserves the prior viewport offset when not at the bottom", () => {
+  assert.equal(computeTranscriptRebuildScrollTop({
+    previousScrollTop: 8,
+    previousScrollHeight: 60,
+    nextScrollHeight: 75,
+    viewportHeight: 20,
+  }), 8)
 })

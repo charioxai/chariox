@@ -138,6 +138,9 @@ export function syncAuxiliaryPane<TChild extends AuxiliaryPaneChild, TScrollbox 
 
   options.assignCurrentAgentId(nextAgentId)
   options.registerAgentScrollbox(nextAgentId, scrollbox)
+  if (currentAgentId === nextAgentId) {
+    return
+  }
   options.rebuildAuxiliaryAgentPane(nextAgentId)
 }
 

@@ -100,6 +100,15 @@ export function splitPaneAuxiliaryAgentIds<T extends ResponsePaneAgent>(
     .map((agent) => agent.id)
 }
 
+export function responsePaneBindingsMatch<T extends ResponsePaneAgent>(
+  left: Pick<ResponsePaneSelection<T>, "visibleAgents" | "visibleTranscriptAgentId">,
+  right: Pick<ResponsePaneSelection<T>, "visibleAgents" | "visibleTranscriptAgentId">,
+) {
+  return left.visibleTranscriptAgentId === right.visibleTranscriptAgentId
+    && left.visibleAgents.length === right.visibleAgents.length
+    && left.visibleAgents.every((agent, index) => agent.id === right.visibleAgents[index]?.id)
+}
+
 export function responsePaneRowSlots(maxAgentsPerScreen: number) {
   const slotCount = Math.max(1, Math.floor(maxAgentsPerScreen))
   const rows: number[][] = []

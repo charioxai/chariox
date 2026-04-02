@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
 import type {
@@ -35,6 +35,7 @@ import {
   createCommandActionHandlers,
 } from "./command-actions.js"
 import {
+  computeTranscriptRebuildScrollTop,
   evaluateTranscriptScrollMonitor,
   nextWaitingRoomIntroStep,
   shouldLoadShortViewportHistory,
@@ -86,7 +87,9 @@ import {
   mergeUiPreferences,
   resolveMaxAgentsPerScreen,
   saveProviderPreferences,
+  saveSessionPromptHistory,
   saveUiPreferences,
+  sessionPromptHistoryEntries,
   type ArrobaPreferences,
   type MultiAgentResponseLayout,
 } from "./preferences.js"
@@ -111,7 +114,11 @@ import {
   previewLineForHistoryEntry,
 } from "./transcript-history.js"
 import { responsePaneRowSlots, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
-import { navigatePromptHistory, pushPromptHistoryEntry } from "./prompt-history.js"
+import {
+  navigatePromptHistory,
+  promptHistoryDirectionForKey,
+  pushPromptHistoryEntry,
+} from "./prompt-history.js"
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
@@ -120,6 +127,7 @@ import {
   getPollRecoveryDecision,
   getProviderActivityLabel,
   getSessionStatusLabel,
+  getTurnCompletionDelayMs,
   getToolActivityLabel,
   shouldEndSessionOnCliExit,
 } from "./runtime.js"
@@ -213,7 +221,7 @@ const HISTORY_PAGE_ROUND_COUNT = 1
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
 const STREAM_BATCH_WINDOW_MS = 16
-const TURN_COMPLETION_SETTLE_MS = 150
+const TURN_COMPLETION_QUIET_MS = 1_500
 const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
 const HOTKEY_DIALOG_WIDTH = 72
@@ -655,6 +663,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialSessions = props.bootstrap.sessions
   const initialProviderCatalog = props.bootstrap.providerCatalog
   const initialPreferences = props.bootstrap.preferences
+  const initialPromptHistory = initialBinding?.session
+    ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
+    : []
   const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
   const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
   const [sessionState, setSessionState] = createSignal(initialSession)
@@ -692,7 +703,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [working, setWorking] = createSignal(Boolean(initialSession.active_prompt) || initialSession.queued_prompts.length > 0)
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
   const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
-  const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>([])
+  const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>(initialPromptHistory)
   const [promptHistoryIndex, setPromptHistoryIndex] = createSignal<number | null>(null)
   const [promptHistoryDraft, setPromptHistoryDraft] = createSignal<string | null>(null)
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
@@ -764,6 +775,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingTurnCompletion: ReturnType<typeof startTimeout> | undefined
   // Connection resilience tracking
   let lastDaemonActivityAt = Date.now()
+  let lastTurnActivityAt = Date.now()
   let connectionWatchdogTimeout: ReturnType<typeof startTimeout> | undefined
   let consecutiveSilentPolls = 0
   const SILENT_POLL_THRESHOLD = 8 // ~2 seconds of no activity (8 * 250ms polling interval)
@@ -773,6 +785,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let lastLoggedFocusedBadgeState: string | null = null
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
+  let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
+  let hydratedPromptHistorySessionId: string | null | undefined
   let promptTextSnapshot = ""
   let promptTextMuting = false
   let promptDropPending = false
@@ -1461,9 +1475,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingTurnCompletion = undefined
     }
   }
+  const recordTurnActivity = (_activityType: string) => {
+    lastTurnActivityAt = Date.now()
+    cancelPendingTurnCompletion()
+  }
+  const turnCompletionDelayMs = () => getTurnCompletionDelayMs({
+    sessionHasPromptWork: sessionHasPromptWork(sessionState()),
+    pendingTerminalRecordCount: pendingTerminalRecords.length,
+    pendingTerminalRecordFlush: Boolean(pendingTerminalRecordFlush),
+    lastTurnActivityAt,
+    now: Date.now(),
+    quietWindowMs: TURN_COMPLETION_QUIET_MS,
+  })
   const finalizeTurnCompletion = () => {
     cancelPendingTurnCompletion()
-    if (sessionHasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
+    const delayMs = turnCompletionDelayMs()
+    if (delayMs === null) {
+      return
+    }
+    if (delayMs > 0) {
+      scheduleTurnCompletion()
       return
     }
     batch(() => {
@@ -1482,13 +1513,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const scheduleTurnCompletion = () => {
     cancelPendingTurnCompletion()
-    if (sessionHasPromptWork(sessionState()) || pendingTerminalRecords.length > 0 || pendingTerminalRecordFlush) {
+    const delayMs = turnCompletionDelayMs()
+    if (delayMs === null) {
       return
     }
     pendingTurnCompletion = startTimeout(() => {
       pendingTurnCompletion = undefined
       finalizeTurnCompletion()
-    }, TURN_COMPLETION_SETTLE_MS)
+    }, delayMs)
   }
   const sessionStatusMode = (): SessionStatusMode => {
     return deriveSessionStatusMode({
@@ -1508,6 +1540,27 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
   const promptPlaceholder = () => (isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER)
+  const restorePromptHistory = (sessionId: string | null) => {
+    const nextEntries = sessionId
+      ? sessionPromptHistoryEntries(untrack(preferencesState), sessionId)
+      : []
+    setPromptHistoryEntries(nextEntries)
+    setPromptHistoryIndex(null)
+    setPromptHistoryDraft(null)
+  }
+  const persistPromptHistory = async (sessionId: string, entries: readonly string[]) => {
+    setPreferencesState((current) => ({
+      ...current,
+      sessions: {
+        ...(current.sessions ?? {}),
+        [sessionId]: {
+          ...(current.sessions?.[sessionId] ?? {}),
+          promptHistory: [...entries],
+        },
+      },
+    }))
+    await saveSessionPromptHistory(sessionId, entries)
+  }
   const syncPromptTextSnapshot = () => {
     promptTextSnapshot = promptInput?.plainText ?? ""
   }
@@ -1585,6 +1638,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
+  createEffect(() => {
+    const attachedSessionId = attachmentState()?.session_id ?? null
+    if (attachedSessionId === hydratedPromptHistorySessionId) {
+      return
+    }
+    hydratedPromptHistorySessionId = attachedSessionId
+    restorePromptHistory(attachedSessionId)
+  })
   const attachmentTokenKind = (kind: PromptAttachmentKind) => (kind === "image" ? "image" : kind === "pdf" ? "pdf" : "file")
   const hotkeySections = (): HotkeySection[] => [
     { title: "Global", items: GLOBAL_HOTKEYS },
@@ -2093,6 +2154,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const appendUserPrompt = (text: string, agentId?: string | null) => {
+    recordTurnActivity("prompt_submit")
     const targetAgentId = agentId ?? focusedAgentId()
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
       const paneEntries = agentPaneEntries()[targetAgentId] ?? []
@@ -2878,11 +2940,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
     }
 
-    if (transcriptScrollbox) {
-      rebuildTranscript()
-    }
-    for (const agent of visibleAgents.slice(1)) {
-      rebuildAuxiliaryAgentPane(agent.id)
+    const nextVisibleTranscriptAgentId = responsePaneSelection().visibleTranscriptAgentId
+    if (
+      nextVisibleTranscriptAgentId
+      && nextVisibleTranscriptAgentId !== mountedTranscriptAgentId
+      && agentPaneEntries()[nextVisibleTranscriptAgentId]
+    ) {
+      replaceTranscriptEntries(
+        agentPaneEntries()[nextVisibleTranscriptAgentId]!.map((entry) => ({ ...entry })),
+        nextVisibleTranscriptAgentId,
+      )
     }
 
     scheduleResponsePaneRepaint()
@@ -2917,20 +2984,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout()
   })
 
-  const rebuildSplitPaneTranscripts = () => {
-    if (transcriptScrollbox) {
-      rebuildTranscript()
-    }
-    for (const agentId of splitPaneAuxiliaryAgentIds(
-      sessionState().agents,
-      focusedAgentId(),
-      splitAgentResponseMode(),
-      maxAgentsPerScreen(),
-    )) {
-      rebuildAuxiliaryAgentPane(agentId)
-    }
-  }
-
   const refreshSplitPaneFocusRepaint = () => {
     if (!splitAgentResponseMode()) {
       return
@@ -2942,7 +2995,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       applyResponseLayout()
-      rebuildSplitPaneTranscripts()
       scheduleResponsePaneRepaint()
     }
 
@@ -3070,7 +3122,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }))
     setAgentPanePreview(agentId, formatTranscriptPreview(sanitizedEntries))
     if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
-      replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })))
+      replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
     }
     if (splitAgentResponseMode() && splitPaneAuxiliaryAgentIds(
       sessionState().agents,
@@ -3221,12 +3273,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const syncVisibleTranscriptPreview = () => {
-    const agentId = visibleTranscriptAgentId()
+  const syncVisibleTranscriptPreview = (
+    agentId: string | null = visibleTranscriptAgentId(),
+    previewEntries: readonly TranscriptEntry[] = entries.filter(Boolean),
+  ) => {
     if (!agentId) {
       return
     }
-    setAgentPanePreview(agentId, formatTranscriptPreview(entries.filter(Boolean)))
+    setAgentPanePreview(agentId, formatTranscriptPreview([...previewEntries]))
   }
 
   const appendAgentPanePreview = (agentId: string | null | undefined, line: string) => {
@@ -3366,7 +3420,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     const agentId = responsePrimaryAgent()?.id ?? null
     const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
-    if (!agentId) {
+    if (!agentId || agentId !== mountedTranscriptAgentId) {
       return
     }
     setAgentPaneEntries((current) => ({
@@ -3414,6 +3468,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     replaceTranscriptEntries(
       (nextPaneState.visibleAgentId ? nextPaneState.paneEntries[nextPaneState.visibleAgentId] : nextPaneState.visibleEntries)
         ?.map((entry) => ({ ...entry })) ?? [],
+      nextPaneState.visibleAgentId,
     )
     if (splitAgentResponseMode()) {
       for (const agentId of splitPaneAuxiliaryAgentIds(
@@ -3570,7 +3625,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const replaceTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
+  const replaceTranscriptEntries = (
+    nextEntries: TranscriptEntry[],
+    transcriptAgentId: string | null = visibleTranscriptAgentId(),
+  ) => {
+    const scrollbox = transcriptScrollbox
+    const previousScrollTop = scrollbox?.scrollTop ?? 0
+    const previousScrollHeight = scrollbox?.scrollHeight ?? 0
+    const previousViewportHeight = scrollbox?.height ?? 0
     const sanitizedEntries = nextEntries.filter(Boolean)
     tools.clear()
     currentTurnId = computeCurrentTurnId(sanitizedEntries)
@@ -3578,8 +3640,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setEntries(reconcile(sanitizedEntries))
     setEntryCounter(sanitizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     rebuildTranscript()
-    lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? 0
-    syncVisibleTranscriptPreview()
+    mountedTranscriptAgentId = transcriptAgentId
+    if (scrollbox && transcriptScrollbox === scrollbox) {
+      const nextScrollTop = computeTranscriptRebuildScrollTop({
+        previousScrollTop,
+        previousScrollHeight,
+        nextScrollHeight: scrollbox.scrollHeight,
+        viewportHeight: previousViewportHeight,
+      })
+      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
+      scrollbox.requestRender()
+      lastTranscriptScrollTop = scrollbox.scrollTop
+    } else {
+      lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? 0
+    }
+    syncVisibleTranscriptPreview(transcriptAgentId, sanitizedEntries)
   }
 
   const mergeHistoryFragments = (older: TranscriptEntry, newer: TranscriptEntry): TranscriptEntry => {
@@ -3767,6 +3842,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     focusPromptInput: () => {
       promptInput?.focus()
     },
+    layoutPreference: () => preferencesState().ui?.multiAgentResponseLayout ?? null,
+    setMultiAgentResponseLayout,
     setAttachmentState,
     setProviderRunState,
     setCenterMode,
@@ -3873,6 +3950,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     currentVariantId,
     focusedAgentId,
     multiAgentResponseLayout,
+    maxAgentsPerScreen,
     flashFooter,
     appendNotice,
     formatError,
@@ -4260,11 +4338,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           : "Prompt submitted.",
       )
       updateSessionChrome()
-      setPromptHistoryEntries((entries) => {
-        return pushPromptHistoryEntry(entries, rawPrompt)
-      })
+      const promptHistorySessionId = sessionState().id
+      const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
+      setPromptHistoryEntries(nextPromptHistoryEntries)
       setPromptHistoryIndex(null)
       setPromptHistoryDraft(null)
+      void persistPromptHistory(promptHistorySessionId, nextPromptHistoryEntries).catch((error) => {
+        appLogger?.warn("failed to persist prompt history", {
+          session_id: promptHistorySessionId,
+          error: formatError(error),
+        })
+      })
       promptInput.clear()
       syncPromptTextSnapshot()
       clearPendingPromptAttachments()
@@ -4342,32 +4426,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     preventDefault?: () => void
     stopPropagation?: () => void
   }) => {
-    if (!isAttached() || !promptInput?.focused) {
+    const direction = promptHistoryDirectionForKey({
+      attached: isAttached(),
+      promptFocused: Boolean(promptInput?.focused),
+      commandCenterOpen: commandCenterOpen(),
+      keyName: event.name,
+      eventType: event.eventType,
+      ctrl: event.ctrl,
+      meta: event.meta,
+      alt: event.alt,
+      shift: event.shift,
+    })
+    if (!direction) {
       return false
     }
-    if (event.eventType === "release") {
+    if (direction === "next" && promptHistoryIndex() === null) {
       return false
     }
-    if (event.ctrl || event.meta || event.alt || event.shift) {
-      return false
+    const handled = navigatePromptHistoryInput(direction)
+    if (handled) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
     }
-    if (event.name === "up") {
-      const handled = navigatePromptHistoryInput("previous")
-      if (handled) {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-      }
-      return handled
-    }
-    if (event.name === "down" && promptHistoryIndex() !== null) {
-      const handled = navigatePromptHistoryInput("next")
-      if (handled) {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-      }
-      return handled
-    }
-    return false
+    return handled
   }
   const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
     if (!isAttached() || centerMode() !== "transcript" || event.eventType === "release") {
@@ -4596,6 +4677,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const kernelEventController = createKernelEventController({
     recordDaemonActivity,
+    recordTurnActivity,
     resolveTerminalRecordAgentId,
     setStreamingAgentId,
     splitAgentResponseMode,
@@ -5311,10 +5393,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   maxHeight={promptInputMaxHeight()}
                   keyBindings={PROMPT_KEYBINDINGS}
                   onKeyDown={(event) => {
-                    if (handlePromptHistoryKey(event)) {
+                    if (handleCommandCenterKey(event)) {
                       return
                     }
-                    if (handleCommandCenterKey(event)) {
+                    if (handlePromptHistoryKey(event)) {
                       return
                     }
                     handleHotkeysToggleShortcut("textarea", event)
@@ -5349,10 +5431,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   maxHeight={promptInputMaxHeight()}
                   keyBindings={PROMPT_KEYBINDINGS}
                   onKeyDown={(event) => {
-                    if (handlePromptHistoryKey(event)) {
+                    if (handleCommandCenterKey(event)) {
                       return
                     }
-                    if (handleCommandCenterKey(event)) {
+                    if (handlePromptHistoryKey(event)) {
                       return
                     }
                     handleHotkeysToggleShortcut("textarea", event)
@@ -5930,6 +6012,8 @@ function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptE
 }
 
 function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
+  const art = arrobaArtFrame(12)
+  const prompt = centerTextToWidth("Type your first prompt below.", maxLineWidth(art))
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
     flexDirection: "column",
@@ -5938,29 +6022,43 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
     paddingRight: 2,
     paddingTop: 2,
   })
-  wrapper.add(
+  const artContainer = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 1,
+    alignItems: "center",
+    width: "100%",
+  })
+  artContainer.add(
     new TextRenderable(renderer, {
-      content: arrobaArtFrame(12),
+      content: art,
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
     }),
   )
-  wrapper.add(
+  artContainer.add(
     new TextRenderable(renderer, {
-      content: "Type your first prompt below.",
+      content: prompt,
       fg: theme.textMuted,
-      wrapMode: "word",
+      wrapMode: "none",
     }),
   )
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: "Use /agent spawn to add another agent, or /view split once you have more than one.",
-      fg: theme.textMuted,
-      wrapMode: "word",
-    }),
-  )
+  wrapper.add(artContainer)
   return wrapper
+}
+
+function maxLineWidth(content: string) {
+  return content.split("\n").reduce((width, line) => Math.max(width, line.length), 0)
+}
+
+function centerTextToWidth(content: string, width: number) {
+  if (content.length >= width) {
+    return content
+  }
+  const padding = width - content.length
+  const leftPadding = Math.floor(padding / 2)
+  const rightPadding = padding - leftPadding
+  return `${" ".repeat(leftPadding)}${content}${" ".repeat(rightPadding)}`
 }
 
 function buildNoSessionRenderable(

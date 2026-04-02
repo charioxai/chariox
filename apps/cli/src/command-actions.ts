@@ -7,6 +7,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
+import { responsePaneBindingsMatch, selectResponsePaneAgents } from "./response-panes.js"
 import type { SessionListEntry } from "./sessions.js"
 
 type FooterTone = "info" | "error"
@@ -47,6 +48,7 @@ type CommandActionDeps = {
   currentVariantId: () => string
   focusedAgentId: () => string | null
   multiAgentResponseLayout: () => MultiAgentResponseLayout
+  maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   formatError: (error: unknown) => string
@@ -226,10 +228,27 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     try {
+      const previousSession = deps.sessionState()
+      const previousSelection = selectResponsePaneAgents(
+        previousSession.agents,
+        previousSession.focused_agent_id,
+        deps.multiAgentResponseLayout() === "split",
+        deps.maxAgentsPerScreen(),
+      )
       const payload = await deps.cycleAgentFocus()
       const nextSession = payload.session
+      const nextSelection = selectResponsePaneAgents(
+        nextSession.agents,
+        nextSession.focused_agent_id,
+        deps.multiAgentResponseLayout() === "split",
+        deps.maxAgentsPerScreen(),
+      )
+      const shouldRefreshPaneContents = deps.multiAgentResponseLayout() !== "split"
+        || !responsePaneBindingsMatch(previousSelection, nextSelection)
       deps.applySessionState(nextSession)
-      await deps.refreshAgentPanes(nextSession)
+      if (shouldRefreshPaneContents) {
+        await deps.refreshAgentPanes(nextSession)
+      }
       if (!nextSession.active_provider_run_id && payload.agent) {
         const run = await deps.launchAgentProviderRun(
           payload.agent.model ?? deps.currentModelId(),
@@ -318,8 +337,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         try {
           const payload = await deps.focusAgent(agentId)
           const nextSession = payload.session
+          const previousSession = deps.sessionState()
+          const previousSelection = selectResponsePaneAgents(
+            previousSession.agents,
+            previousSession.focused_agent_id,
+            deps.multiAgentResponseLayout() === "split",
+            deps.maxAgentsPerScreen(),
+          )
+          const nextSelection = selectResponsePaneAgents(
+            nextSession.agents,
+            nextSession.focused_agent_id,
+            deps.multiAgentResponseLayout() === "split",
+            deps.maxAgentsPerScreen(),
+          )
+          const shouldRefreshPaneContents = deps.multiAgentResponseLayout() !== "split"
+            || !responsePaneBindingsMatch(previousSelection, nextSelection)
           deps.applySessionState(nextSession)
-          await deps.refreshAgentPanes(nextSession)
+          if (shouldRefreshPaneContents) {
+            await deps.refreshAgentPanes(nextSession)
+          }
           if (!nextSession.active_provider_run_id) {
             const run = await deps.launchAgentProviderRun(
               payload.agent.model ?? deps.currentModelId(),

@@ -131,6 +131,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
     currentVariantId: () => "medium",
     focusedAgentId: () => currentSession.focused_agent_id,
     multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
     flashFooter: (message) => { flashedMessage = message },
     appendNotice: () => {},
     formatError: (error) => String(error),
@@ -192,4 +193,94 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.deepEqual(refreshedPaneProviderRunIds, [null, "provider-run-2"])
   assert.equal(splitPaneRefreshCount, 1)
   assert.equal(flashedMessage, "spawned agent agent-2 (review)")
+})
+
+test("cycle agent focus keeps split pane contents stable within the same screen", async () => {
+  const agentA = makeAgent({ id: "agent-a", agent_ref: "agent-a" })
+  const agentB = makeAgent({ id: "agent-b", agent_ref: "agent-b" })
+  const agentC = makeAgent({ id: "agent-c", agent_ref: "agent-c" })
+  let currentSession = makeSession({
+    focused_agent_id: "agent-a",
+    agents: [agentA, agentB, agentC],
+  })
+  let refreshCount = 0
+  let flashedMessage = ""
+
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => currentSession,
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun | null => ({
+      id: "provider-run-1",
+      session_id: "session-1",
+      agent_instance_id: "agent-a",
+      adapter_key: "opencode",
+      provider: "opencode",
+      account_profile: "default",
+      model: "openai/gpt-5",
+      variant: "medium",
+      usage_tokens_total: null,
+      state: "running",
+    }),
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    focusedAgentId: () => currentSession.focused_agent_id,
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: currentSession,
+      config: currentSession.config_state,
+    }),
+    applySessionState: (session) => {
+      currentSession = session
+    },
+    refreshAgentPanes: async () => {
+      refreshCount += 1
+    },
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({
+      agent: agentB,
+      session: {
+        ...currentSession,
+        active_provider_run_id: "provider-run-1",
+        focused_agent_id: "agent-b",
+      },
+    }),
+    launchAgentProviderRun: async () => {
+      throw new Error("should not launch a new run")
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => ({ agent: agentB, session: currentSession }),
+    destroyAgent: async () => currentSession,
+    focusAgent: async () => ({ agent: agentB, session: currentSession }),
+    resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleCycleAgentFocus()
+
+  assert.equal(refreshCount, 0)
+  assert.equal(flashedMessage, "cycled to agent agent-b")
+  assert.equal(currentSession.focused_agent_id, "agent-b")
 })

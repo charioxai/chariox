@@ -121,6 +121,52 @@ test("syncAuxiliaryPane clears stale panes and mounts the empty split placeholde
   assert.deepEqual(scrollbox.children.map((child) => child.id), ["empty"])
 })
 
+test("syncAuxiliaryPane keeps an unchanged agent pane mounted without rebuilding it", () => {
+  const scrollbox = {
+    children: [] as Array<{ id: string; destroyRecursively?: () => void }>,
+    getChildren() {
+      return this.children
+    },
+    remove() {
+      throw new Error("should not remove")
+    },
+    add() {
+      throw new Error("should not add")
+    },
+    requestRender() {},
+  }
+  const registered: string[] = []
+  let rebuildCount = 0
+  let assigned: string | null = null
+
+  syncAuxiliaryPane({
+    scrollbox,
+    nextAgentId: "agent-a",
+    currentAgentId: "agent-a",
+    splitMode: true,
+    clearAuxiliaryAgentPane: () => {
+      throw new Error("should not clear")
+    },
+    unregisterAgentScrollbox: () => {
+      throw new Error("should not unregister")
+    },
+    assignCurrentAgentId: (value) => {
+      assigned = value
+    },
+    registerAgentScrollbox: (agentId) => {
+      registered.push(agentId)
+    },
+    rebuildAuxiliaryAgentPane: () => {
+      rebuildCount += 1
+    },
+    buildEmptyTranscriptRenderable: () => ({ id: "empty" }),
+  })
+
+  assert.equal(assigned, "agent-a")
+  assert.deepEqual(registered, ["agent-a"])
+  assert.equal(rebuildCount, 0)
+})
+
 test("applyResponseLayoutRenderables mutates pane geometry and visibility", () => {
   const renderables = {
     responseLayoutBox: renderable("layout"),

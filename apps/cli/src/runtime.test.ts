@@ -7,6 +7,7 @@ import {
   MAX_TRANSIENT_POLL_FAILURES,
   chooseVisibleActivityLabel,
   describeCliError,
+  getTurnCompletionDelayMs,
   getExitCleanupDecision,
   getProviderActivityLabel,
   isProviderIdleStatus,
@@ -127,6 +128,33 @@ test("provider status labels map to active badge text", () => {
   assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
   assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
   assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
+})
+
+test("turn completion waits for a real quiet window after turn activity", () => {
+  assert.equal(getTurnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), 1_400)
+  assert.equal(getTurnCompletionDelayMs({
+    sessionHasPromptWork: false,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 0,
+    now: 1_500,
+    quietWindowMs: 1_500,
+  }), 0)
+  assert.equal(getTurnCompletionDelayMs({
+    sessionHasPromptWork: true,
+    pendingTerminalRecordCount: 0,
+    pendingTerminalRecordFlush: false,
+    lastTurnActivityAt: 900,
+    now: 1_000,
+    quietWindowMs: 1_500,
+  }), null)
 })
 
 test("visible transcript follows focus in individual mode and primary pane in split mode", () => {

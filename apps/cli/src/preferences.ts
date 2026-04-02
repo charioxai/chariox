@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 export type ArrobaPreferences = {
   providers?: Record<string, ProviderPreferences>
   ui?: UiPreferences
+  sessions?: Record<string, SessionPreferences>
 }
 
 export type ProviderPreferences = {
@@ -17,6 +18,10 @@ export type MultiAgentResponseLayout = "individual" | "split"
 export type UiPreferences = {
   multiAgentResponseLayout?: MultiAgentResponseLayout
   maxAgentsPerScreen?: number
+}
+
+export type SessionPreferences = {
+  promptHistory?: string[]
 }
 
 export const DEFAULT_MAX_AGENTS_PER_SCREEN = 6
@@ -39,6 +44,30 @@ export function mergeUiPreferences(
       ...next,
     },
   }
+}
+
+export function mergeSessionPromptHistory(
+  current: ArrobaPreferences,
+  sessionId: string,
+  entries: readonly string[],
+): ArrobaPreferences {
+  return {
+    ...current,
+    sessions: {
+      ...(current.sessions ?? {}),
+      [sessionId]: {
+        ...(current.sessions?.[sessionId] ?? {}),
+        promptHistory: normalizePromptHistoryEntries(entries),
+      },
+    },
+  }
+}
+
+export function sessionPromptHistoryEntries(
+  current: ArrobaPreferences,
+  sessionId: string,
+): string[] {
+  return normalizePromptHistoryEntries(current.sessions?.[sessionId]?.promptHistory ?? [])
 }
 
 export async function loadPreferences() {
@@ -67,6 +96,11 @@ export async function saveUiPreferences(next: UiPreferences) {
   await savePreferences(mergeUiPreferences(current, next))
 }
 
+export async function saveSessionPromptHistory(sessionId: string, entries: readonly string[]) {
+  const current = await loadPreferences()
+  await savePreferences(mergeSessionPromptHistory(current, sessionId, entries))
+}
+
 export function preferencesPath() {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) {
@@ -90,4 +124,11 @@ async function savePreferences(next: ArrobaPreferences) {
       2,
     ),
   )
+}
+
+function normalizePromptHistoryEntries(entries: readonly string[]) {
+  return entries
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trimEnd())
+    .filter((entry) => entry.length > 0)
 }

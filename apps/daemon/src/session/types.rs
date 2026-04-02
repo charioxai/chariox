@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
 
+pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
@@ -322,7 +324,7 @@ impl RuntimeSession {
             status: SessionStatus::Created,
             active_provider_run_id: None,
             focused_agent_id: None,
-            max_agents: 6,
+            max_agents: DEFAULT_SESSION_MAX_AGENTS,
             agents: Vec::new(),
             attachment_ids: BTreeSet::new(),
             active_prompt: None,

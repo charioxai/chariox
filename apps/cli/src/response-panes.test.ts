@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   computeSplitPaneGeometry,
+  responsePaneBindingsMatch,
   responsePaneRowSlots,
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
@@ -79,6 +80,15 @@ test("selectResponsePaneAgents pages panes by focused agent and max agents per s
     screenIndex: 1,
     screenCount: 2,
   })
+})
+
+test("responsePaneBindingsMatch ignores focus changes within the same split screen", () => {
+  const left = selectResponsePaneAgents(agents, "agent-a", true, 3)
+  const right = selectResponsePaneAgents(agents, "agent-c", true, 3)
+  const nextScreen = selectResponsePaneAgents(agents, "agent-d", true, 2)
+
+  assert.equal(responsePaneBindingsMatch(left, right), true)
+  assert.equal(responsePaneBindingsMatch(left, nextScreen), false)
 })
 
 test("responsePaneRowSlots lays out two panes per row up to the configured screen size", () => {

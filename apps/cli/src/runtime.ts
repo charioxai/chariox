@@ -24,6 +24,15 @@ export type ExitCleanupDecision = {
   message: string
 }
 
+export type TurnCompletionDelayOptions = {
+  sessionHasPromptWork: boolean
+  pendingTerminalRecordCount: number
+  pendingTerminalRecordFlush: boolean
+  lastTurnActivityAt: number
+  now: number
+  quietWindowMs: number
+}
+
 export function reconcileWorkingStateFromSession(currentWorking: boolean, sessionHasPromptWork: boolean) {
   return sessionHasPromptWork ? true : currentWorking
 }
@@ -120,6 +129,17 @@ export function describeCliError(error: unknown): string {
     return error.message
   }
   return String(error)
+}
+
+export function getTurnCompletionDelayMs(options: TurnCompletionDelayOptions) {
+  if (
+    options.sessionHasPromptWork
+    || options.pendingTerminalRecordCount > 0
+    || options.pendingTerminalRecordFlush
+  ) {
+    return null
+  }
+  return Math.max(0, options.quietWindowMs - Math.max(0, options.now - options.lastTurnActivityAt))
 }
 
 export function getPollRecoveryDecision(

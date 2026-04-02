@@ -185,39 +185,25 @@ impl CreateAgentRequest {
 /// - 2 agents: split vertically (1x2)
 /// - 3 agents: split horizontally, leave 1 empty (2x2 with 1 slot)
 /// - 4 agents: fill 2x2 grid
-/// - 5 agents: add column, leave 1 empty (2x3 with 1 slot)
-/// - 6 agents: fill 2x3 grid
+/// - 5+ agents: expand the two-row grid horizontally as needed
 pub fn calculate_agent_layout(agent_count: usize) -> Vec<GridPosition> {
     match agent_count {
         1 => vec![GridPosition::new(0, 0, 2, 2)],
         2 => vec![GridPosition::new(0, 0, 2, 1), GridPosition::new(0, 1, 2, 1)],
-        3 => vec![
-            GridPosition::new(0, 0, 1, 1),
-            GridPosition::new(0, 1, 1, 1),
-            GridPosition::new(1, 0, 1, 1),
-        ],
-        4 => vec![
-            GridPosition::new(0, 0, 1, 1),
-            GridPosition::new(0, 1, 1, 1),
-            GridPosition::new(1, 0, 1, 1),
-            GridPosition::new(1, 1, 1, 1),
-        ],
-        5 => vec![
-            GridPosition::new(0, 0, 1, 1),
-            GridPosition::new(0, 1, 1, 1),
-            GridPosition::new(0, 2, 1, 1),
-            GridPosition::new(1, 0, 1, 1),
-            GridPosition::new(1, 1, 1, 1),
-        ],
-        6 => vec![
-            GridPosition::new(0, 0, 1, 1),
-            GridPosition::new(0, 1, 1, 1),
-            GridPosition::new(0, 2, 1, 1),
-            GridPosition::new(1, 0, 1, 1),
-            GridPosition::new(1, 1, 1, 1),
-            GridPosition::new(1, 2, 1, 1),
-        ],
-        _ => panic!("Agent count {} exceeds maximum of 6", agent_count),
+        count => {
+            let column_count = count.div_ceil(2);
+            let mut positions = Vec::with_capacity(count);
+            for index in 0..count {
+                let row = if index < column_count { 0 } else { 1 };
+                let col = if index < column_count {
+                    index
+                } else {
+                    index - column_count
+                };
+                positions.push(GridPosition::new(row as u32, col as u32, 1, 1));
+            }
+            positions
+        }
     }
 }
 
@@ -240,4 +226,25 @@ pub fn generate_agent_ref() -> String {
         .map(|n| std::char::from_digit(n, 16).unwrap())
         .collect();
     hex_chars.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{calculate_agent_layout, GridPosition};
+
+    #[test]
+    fn calculate_agent_layout_expands_past_six_agents() {
+        assert_eq!(
+            calculate_agent_layout(7),
+            vec![
+                GridPosition::new(0, 0, 1, 1),
+                GridPosition::new(0, 1, 1, 1),
+                GridPosition::new(0, 2, 1, 1),
+                GridPosition::new(0, 3, 1, 1),
+                GridPosition::new(1, 0, 1, 1),
+                GridPosition::new(1, 1, 1, 1),
+                GridPosition::new(1, 2, 1, 1),
+            ]
+        );
+    }
 }

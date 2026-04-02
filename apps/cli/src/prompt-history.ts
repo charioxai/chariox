@@ -14,7 +14,41 @@ export type PromptHistoryNavigationResult = {
   navigationDraft: string | null
 }
 
-const PROMPT_HISTORY_LIMIT = 100
+export type PromptHistoryKeyPolicy = {
+  attached: boolean
+  promptFocused: boolean
+  commandCenterOpen: boolean
+  keyName: string
+  eventType?: string | undefined
+  ctrl?: boolean | undefined
+  meta?: boolean | undefined
+  alt?: boolean | undefined
+  shift?: boolean | undefined
+}
+
+export function promptHistoryDirectionForKey(
+  options: PromptHistoryKeyPolicy,
+): PromptHistoryDirection | null {
+  if (
+    !options.attached
+    || !options.promptFocused
+    || options.commandCenterOpen
+    || options.eventType === "release"
+    || options.ctrl
+    || options.meta
+    || options.alt
+    || options.shift
+  ) {
+    return null
+  }
+  if (options.keyName === "up") {
+    return "previous"
+  }
+  if (options.keyName === "down") {
+    return "next"
+  }
+  return null
+}
 
 export function pushPromptHistoryEntry(
   entries: readonly string[],
@@ -24,10 +58,9 @@ export function pushPromptHistoryEntry(
   if (!normalized) {
     return [...entries]
   }
-  const nextEntries = entries.at(-1) === normalized
+  return entries.at(-1) === normalized
     ? [...entries]
     : [...entries, normalized]
-  return nextEntries.slice(-PROMPT_HISTORY_LIMIT)
 }
 
 export function navigatePromptHistory(

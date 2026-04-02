@@ -22,6 +22,13 @@ type ShortViewportHistoryOptions = {
   viewportHeight: number
 }
 
+type TranscriptRebuildScrollOptions = {
+  previousScrollTop: number
+  previousScrollHeight: number
+  nextScrollHeight: number
+  viewportHeight: number
+}
+
 export function evaluateTranscriptScrollMonitor(
   options: TranscriptScrollMonitorOptions,
 ): TranscriptScrollMonitorDecision {
@@ -54,6 +61,18 @@ export function shouldLoadShortViewportHistory(
     return false
   }
   return options.scrollTop === 0 && options.scrollHeight <= options.viewportHeight
+}
+
+export function computeTranscriptRebuildScrollTop(
+  options: TranscriptRebuildScrollOptions,
+): number {
+  const previousMaxScrollTop = Math.max(0, options.previousScrollHeight - options.viewportHeight)
+  const nextMaxScrollTop = Math.max(0, options.nextScrollHeight - options.viewportHeight)
+  const wasAtBottom = previousMaxScrollTop === 0 || options.previousScrollTop >= previousMaxScrollTop - 1
+  if (wasAtBottom) {
+    return nextMaxScrollTop
+  }
+  return Math.max(0, Math.min(options.previousScrollTop, nextMaxScrollTop))
 }
 
 export function nextWaitingRoomIntroStep(

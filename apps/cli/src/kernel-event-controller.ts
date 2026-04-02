@@ -3,6 +3,7 @@ import { isProviderIdleStatus } from "./runtime.js"
 
 type KernelEventControllerDeps = {
   recordDaemonActivity: (source: string) => void
+  recordTurnActivity: (source: string) => void
   resolveTerminalRecordAgentId: (record: TerminalOutputRecord) => string | null
   setStreamingAgentId: (agentId: string) => void
   splitAgentResponseMode: () => boolean
@@ -50,6 +51,7 @@ type KernelEventControllerDeps = {
 export function createKernelEventController(deps: KernelEventControllerDeps) {
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
     deps.recordDaemonActivity("terminal_record")
+    deps.recordTurnActivity("terminal_record")
     const text = Buffer.from(record.bytes).toString("utf8")
     const recordAgentId = deps.resolveTerminalRecordAgentId(record)
     if (recordAgentId && record.kind !== "prompt_echo") {

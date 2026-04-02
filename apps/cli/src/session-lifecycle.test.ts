@@ -102,6 +102,8 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     syncPromptTextSnapshot: () => calls.push("syncPromptTextSnapshot"),
     blurPromptInput: () => calls.push("blurPromptInput"),
     focusPromptInput: () => calls.push("focusPromptInput"),
+    layoutPreference: () => null,
+    setMultiAgentResponseLayout: () => calls.push("setMultiAgentResponseLayout"),
     setAttachmentState: () => calls.push("setAttachmentState"),
     setProviderRunState: () => calls.push("setProviderRunState"),
     setCenterMode: () => calls.push("setCenterMode"),
@@ -282,6 +284,7 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     setStatusLine: () => events.push("setStatusLine"),
     updateSessionChrome: () => events.push("updateSessionChrome"),
     focusPromptInput: () => events.push("focusPromptInput"),
+    setMultiAgentResponseLayout: () => events.push("setMultiAgentResponseLayout"),
     syncKernelEventSubscription: async () => { events.push("syncKernelEventSubscription") },
     setAvailableSessions: () => events.push("setAvailableSessions"),
     listSessions: async () => {
@@ -303,6 +306,7 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "tryGetProviderRun",
     "logAttachedProviderRun",
     "setProviderRunState",
+    "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
     "setCenterMode",
@@ -325,6 +329,8 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "maybeResize",
     "catchUpAttachedSession",
     "getSessionState",
+    "refreshAgentPanes",
+    "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
     "setCenterMode",
@@ -340,7 +346,6 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "setStatusLine",
     "updateSessionChrome",
     "focusPromptInput",
-    "refreshAgentPanes",
     "listSessions",
     "setAvailableSessions",
     "scheduleShortViewportHistoryCheck",
@@ -475,6 +480,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     setStatusLine: () => events.push("setStatusLine"),
     updateSessionChrome: () => events.push("updateSessionChrome"),
     focusPromptInput: () => events.push("focusPromptInput"),
+    setMultiAgentResponseLayout: () => events.push("setMultiAgentResponseLayout"),
     syncKernelEventSubscription: async () => { events.push("syncKernelEventSubscription") },
     getProviderCatalog: async () => ({}),
     maybeResize: async () => {},
@@ -487,7 +493,8 @@ test("attachBinding synchronizes kernel event subscription immediately after app
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events.slice(0, 12), [
+  assert.deepEqual(events.slice(0, 14), [
+    "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
     "setCenterMode",
@@ -500,9 +507,51 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     "setDaemonDisconnected",
     "setSubmitting",
     "setWorking",
+    "setStatusLine",
   ])
   assert.equal(
     events.indexOf("syncKernelEventSubscription") > events.indexOf("focusPromptInput"),
     true,
   )
+})
+
+test("attachBinding adopts the attached session response layout immediately", async () => {
+  const appliedLayouts: string[] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-2",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: "run-2",
+    attachment_ids: ["att-2"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [],
+    config_state: {
+      version: 1,
+      values: { "ui.multiAgentResponseLayout": "split" },
+      updated_by_attachment_id: null,
+    },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    layoutPreference: () => "individual",
+    attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
+    getSessionState: async () => attachedSession,
+    tryGetProviderRun: async () => null,
+    refreshAgentPanes: async () => {},
+    setMultiAgentResponseLayout: (layout: string) => {
+      appliedLayouts.push(layout)
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-2" }, false)
+
+  assert.deepEqual(appliedLayouts, ["split", "split"])
 })

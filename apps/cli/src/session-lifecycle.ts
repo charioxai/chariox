@@ -9,6 +9,8 @@ import type {
   AttachedCliTransitionState,
   DetachedCliTransitionState,
 } from "./session-state.js"
+import { sessionResponseLayout } from "./session-state.js"
+import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room.js"
 
 type ProviderCatalog = Record<string, unknown>
@@ -43,6 +45,8 @@ type SessionLifecycleDeps = {
   syncPromptTextSnapshot: () => void
   blurPromptInput: () => void
   focusPromptInput: () => void
+  layoutPreference?: () => MultiAgentResponseLayout | null | undefined
+  setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   setAttachmentState: (attachment: RuntimeAttachment | null) => void
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   setCenterMode: (mode: "transcript") => void
@@ -106,6 +110,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       createdSession,
       connectedStatus: deps.connectedStatus,
     })
+    deps.setMultiAgentResponseLayout(sessionResponseLayout(session, deps.layoutPreference?.() ?? null))
     deps.setCreatedSessionState(nextAttachedState.createdSession)
     deps.setSessionState(nextAttachedState.session)
     deps.setCenterMode(nextAttachedState.centerMode)
@@ -258,7 +263,6 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     let hydratedSession = attachedSession
     try {
       hydratedSession = await deps.getSessionState(session.id)
-      applyAttachedState(hydratedSession, attachment, createdSession)
     } catch (error) {
       deps.logWarning?.("failed to hydrate attached session after attach", {
         session_id: session.id,
@@ -274,6 +278,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         error: formatError(error),
       })
     }
+
+    applyAttachedState(hydratedSession, attachment, createdSession)
 
     try {
       deps.setAvailableSessions(await deps.listSessions())

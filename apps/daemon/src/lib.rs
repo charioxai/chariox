@@ -25,6 +25,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use super::agent::CreateAgentRequest;
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::LaunchProviderRequest;
     use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -169,6 +170,28 @@ mod tests {
         assert!(app.terminal().notice_records()[0]
             .recipient_attachment_ids
             .contains(&first.id().to_string()));
+    }
+
+    #[test]
+    fn spawning_a_seventh_agent_in_one_session_succeeds() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        for index in 0..6 {
+            let agent = app
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "opencode")
+                        .with_alias(format!("agent-{index}"))
+                        .with_worktree("worktree-1"),
+                )
+                .expect("agent spawn should succeed");
+            assert_eq!(agent.session_id(), session.id());
+        }
+
+        assert_eq!(app.list_session_agents(session.id()).len(), 7);
     }
 
     #[test]

@@ -11,6 +11,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
 
   const deps = {
     recordDaemonActivity: (source: string) => calls.push(`activity:${source}`),
+    recordTurnActivity: (source: string) => calls.push(`turn-activity:${source}`),
     resolveTerminalRecordAgentId: (record: TerminalOutputRecord) => record.agent_id ?? null,
     setStreamingAgentId: (agentId: string) => calls.push(`streaming:${agentId}`),
     splitAgentResponseMode: () => false,
@@ -85,6 +86,7 @@ test("off-focus agent output updates the agent pane and preview without mutating
 
   assert.deepEqual(calls, [
     "activity:terminal_record",
+    "turn-activity:terminal_record",
     "streaming:agent-b",
     "pane-chunk:agent-b:assistant:hello from b\n:reply-1",
     "preview:agent-b:provider_output:hello from b",
@@ -105,6 +107,7 @@ test("visible provider status updates activity and appends renderable status chu
 
   assert.deepEqual(calls, [
     "activity:terminal_record",
+    "turn-activity:terminal_record",
     "streaming:agent-a",
     "agent-activity:agent-a:Thinking",
     "provider-activity:Thinking",
@@ -130,6 +133,7 @@ test("idle provider status is ignored so it cannot demote a live turn to idle", 
 
   assert.deepEqual(calls, [
     "activity:terminal_record",
+    "turn-activity:terminal_record",
     "streaming:agent-a",
   ])
 })
@@ -183,5 +187,6 @@ test("duplicate trailing prompt echo is ignored for split-agent panes", () => {
 
   assert.deepEqual(calls, [
     "activity:terminal_record",
+    "turn-activity:terminal_record",
   ])
 })
