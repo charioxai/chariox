@@ -6296,10 +6296,9 @@ function buildWorkflowCanvasRenderable(
   const wrapper = new BoxRenderable(renderer, {
     flexDirection: "column",
     gap: 1,
-    width: layout.width,
+    width: "100%",
     minWidth: layout.width,
-    height: layout.height + 4,
-    minHeight: layout.height + 4,
+    minHeight: layout.height + 6,
     paddingTop: 1,
     paddingBottom: 1,
   })
@@ -6323,7 +6322,7 @@ function buildWorkflowCanvasRenderable(
   const agentLabels = uniqueAgentIds.map((agentId) => {
     const agent = options.agents.find((a) => a.id === agentId)
     if (!agent) return agentId
-    return agent.alias ? `${agentId} (${agent.alias})` : agentId
+    return agent.agent_ref ?? agent.id
   })
 
   const workflowLabel = selectedWorkflow.alias
@@ -6336,14 +6335,14 @@ function buildWorkflowCanvasRenderable(
       content: `workflow: ${workflowLabel}${agentsLabel}`,
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
-      wrapMode: "none",
+      wrapMode: "word",
     }),
   )
   wrapper.add(
     new TextRenderable(renderer, {
       content: `Tab cycles nodes • wheel zooms • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,
       fg: theme.textMuted,
-      wrapMode: "none",
+      wrapMode: "word",
     }),
   )
 
