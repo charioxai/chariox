@@ -8,5 +8,6 @@ pub use types::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
-    SessionStatus, WorktreeIsolationMode,
+    SessionStatus, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
+    WorkflowNodeDefinition, WorktreeIsolationMode,
 };

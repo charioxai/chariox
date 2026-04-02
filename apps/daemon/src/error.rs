@@ -31,6 +31,54 @@ pub enum DaemonError {
         session_ref: String,
         matches: Vec<String>,
     },
+    #[error("workflow `{workflow_id}` was not found in session `{session_id}`")]
+    WorkflowNotFound {
+        session_id: String,
+        workflow_id: String,
+    },
+    #[error("workflow endpoint `{endpoint_id}` was not found in workflow `{workflow_id}` for session `{session_id}`")]
+    WorkflowEndpointNotFound {
+        session_id: String,
+        workflow_id: String,
+        endpoint_id: String,
+    },
+    #[error("workflow node `{node_id}` was not found in workflow `{workflow_id}` for session `{session_id}`")]
+    WorkflowNodeNotFound {
+        session_id: String,
+        workflow_id: String,
+        node_id: String,
+    },
+    #[error("workflow edge `{edge_id}` was not found in workflow `{workflow_id}` for session `{session_id}`")]
+    WorkflowEdgeNotFound {
+        session_id: String,
+        workflow_id: String,
+        edge_id: String,
+    },
+    #[error("workflow alias `{alias}` is invalid: {message}")]
+    InvalidWorkflowAlias {
+        alias: String,
+        message: &'static str,
+    },
+    #[error("workflow alias `{alias}` is already in use for session `{session_id}`")]
+    WorkflowAliasConflict { session_id: String, alias: String },
+    #[error("workflow endpoint alias `{alias}` is invalid: {message}")]
+    InvalidWorkflowEndpointAlias {
+        alias: String,
+        message: &'static str,
+    },
+    #[error("workflow endpoint alias `{alias}` is already in use for workflow `{workflow_id}` in session `{session_id}`")]
+    WorkflowEndpointAliasConflict {
+        session_id: String,
+        workflow_id: String,
+        alias: String,
+    },
+    #[error("workflow graph reference `{reference}` is invalid in workflow `{workflow_id}` for session `{session_id}`: {message}")]
+    InvalidWorkflowGraphReference {
+        session_id: String,
+        workflow_id: String,
+        reference: String,
+        message: &'static str,
+    },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {
         session_id: String,

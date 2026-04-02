@@ -18,6 +18,7 @@ export type RuntimeSession = {
   max_agents: number
   agents: AgentInstance[]
   config_state: SessionConfigState
+  workflows?: WorkflowDefinition[]
 }
 
 export type SessionConfigState = {
@@ -150,6 +151,26 @@ export type TranscriptEntry = {
 export type WorkflowDefinition = {
   id: string
   alias: string | null
+  nodes?: WorkflowNodeDefinition[]
+  edges?: WorkflowEdgeDefinition[]
+  endpoints?: WorkflowEndpointDefinition[]
+}
+
+export type WorkflowEndpointDefinition = {
+  id: string
+  alias: string | null
+  entry_node_id: string
+}
+
+export type WorkflowNodeDefinition = {
+  id: string
+  agent_id: string
+}
+
+export type WorkflowEdgeDefinition = {
+  id: string
+  from_node_id: string
+  to_node_id: string
 }
 
 export type ReadDirectoryTreeResult = {

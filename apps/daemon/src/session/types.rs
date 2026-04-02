@@ -9,6 +9,209 @@ use crate::agent::AgentInstance;
 pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEndpointDefinition {
+    id: String,
+    alias: Option<String>,
+    entry_node_id: String,
+}
+
+impl WorkflowEndpointDefinition {
+    pub fn new(
+        id: impl Into<String>,
+        alias: Option<String>,
+        entry_node_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            alias,
+            entry_node_id: entry_node_id.into(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn entry_node_id(&self) -> &str {
+        &self.entry_node_id
+    }
+
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+    }
+
+    pub fn set_entry_node_id(&mut self, entry_node_id: impl Into<String>) {
+        self.entry_node_id = entry_node_id.into();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowNodeDefinition {
+    id: String,
+    agent_id: String,
+}
+
+impl WorkflowNodeDefinition {
+    pub fn new(id: impl Into<String>, agent_id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            agent_id: agent_id.into(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEdgeDefinition {
+    id: String,
+    from_node_id: String,
+    to_node_id: String,
+}
+
+impl WorkflowEdgeDefinition {
+    pub fn new(
+        id: impl Into<String>,
+        from_node_id: impl Into<String>,
+        to_node_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            from_node_id: from_node_id.into(),
+            to_node_id: to_node_id.into(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn from_node_id(&self) -> &str {
+        &self.from_node_id
+    }
+
+    pub fn to_node_id(&self) -> &str {
+        &self.to_node_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDefinition {
+    id: String,
+    alias: Option<String>,
+    nodes: Vec<WorkflowNodeDefinition>,
+    edges: Vec<WorkflowEdgeDefinition>,
+    endpoints: Vec<WorkflowEndpointDefinition>,
+}
+
+impl WorkflowDefinition {
+    pub fn new(id: impl Into<String>, alias: Option<String>) -> Self {
+        Self {
+            id: id.into(),
+            alias,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn nodes(&self) -> &[WorkflowNodeDefinition] {
+        &self.nodes
+    }
+
+    pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
+        &self.edges
+    }
+
+    pub fn endpoints(&self) -> &[WorkflowEndpointDefinition] {
+        &self.endpoints
+    }
+
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+    }
+
+    pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {
+        self.nodes.push(node.clone());
+        node
+    }
+
+    pub fn node(&self, node_id: &str) -> Option<&WorkflowNodeDefinition> {
+        self.nodes.iter().find(|node| node.id() == node_id)
+    }
+
+    pub fn remove_node(&mut self, node_id: &str) -> Option<WorkflowNodeDefinition> {
+        let index = self.nodes.iter().position(|node| node.id() == node_id)?;
+        let removed = self.nodes.remove(index);
+        self.edges
+            .retain(|edge| edge.from_node_id() != node_id && edge.to_node_id() != node_id);
+        self.endpoints
+            .retain(|endpoint| endpoint.entry_node_id() != node_id);
+        Some(removed)
+    }
+
+    pub fn add_edge(&mut self, edge: WorkflowEdgeDefinition) -> WorkflowEdgeDefinition {
+        self.edges.push(edge.clone());
+        edge
+    }
+
+    pub fn edge(&self, edge_id: &str) -> Option<&WorkflowEdgeDefinition> {
+        self.edges.iter().find(|edge| edge.id() == edge_id)
+    }
+
+    pub fn remove_edge(&mut self, edge_id: &str) -> Option<WorkflowEdgeDefinition> {
+        let index = self.edges.iter().position(|edge| edge.id() == edge_id)?;
+        Some(self.edges.remove(index))
+    }
+
+    pub fn add_endpoint(
+        &mut self,
+        endpoint: WorkflowEndpointDefinition,
+    ) -> WorkflowEndpointDefinition {
+        self.endpoints.push(endpoint.clone());
+        endpoint
+    }
+
+    pub fn endpoint(&self, endpoint_id: &str) -> Option<&WorkflowEndpointDefinition> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| endpoint.id() == endpoint_id)
+    }
+
+    pub fn endpoint_mut(&mut self, endpoint_id: &str) -> Option<&mut WorkflowEndpointDefinition> {
+        self.endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.id() == endpoint_id)
+    }
+
+    pub fn remove_endpoint(&mut self, endpoint_id: &str) -> Option<WorkflowEndpointDefinition> {
+        let index = self
+            .endpoints
+            .iter()
+            .position(|endpoint| endpoint.id() == endpoint_id)?;
+        Some(self.endpoints.remove(index))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
     pub worktree_id: String,
@@ -298,6 +501,7 @@ pub struct RuntimeSession {
     scheduler_state: SchedulerState,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
+    workflows: Vec<WorkflowDefinition>,
 }
 
 impl RuntimeSession {
@@ -337,6 +541,7 @@ impl RuntimeSession {
                 format!("session/{id}"),
                 WorktreeIsolationMode::SharedSession,
             )],
+            workflows: Vec::new(),
         }
     }
 
@@ -403,6 +608,9 @@ impl RuntimeSession {
     pub fn worktree_assignments(&self) -> &[RuntimeWorktreeAssignment] {
         &self.worktree_assignments
     }
+    pub fn workflows(&self) -> &[WorkflowDefinition] {
+        &self.workflows
+    }
 
     pub fn has_attachment(&self, attachment_id: &str) -> bool {
         self.attachment_ids.contains(attachment_id)
@@ -422,6 +630,21 @@ impl RuntimeSession {
 
     pub fn set_focused_agent(&mut self, agent_id: Option<String>) {
         self.focused_agent_id = agent_id;
+    }
+
+    pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {
+        self.workflows.push(workflow.clone());
+        workflow
+    }
+
+    pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
+        self.workflows.iter().find(|workflow| workflow.id() == workflow_id)
+    }
+
+    pub fn workflow_mut(&mut self, workflow_id: &str) -> Option<&mut WorkflowDefinition> {
+        self.workflows
+            .iter_mut()
+            .find(|workflow| workflow.id() == workflow_id)
     }
 
     pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {

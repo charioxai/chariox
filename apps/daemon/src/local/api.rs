@@ -14,7 +14,8 @@ use crate::error::DaemonError;
 use crate::provider::{OpenCodeProviderCatalog, RuntimeProviderRun};
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
-    PromptSubmissionOutcome, RuntimeSession, SessionConfigState,
+    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -217,6 +218,83 @@ pub struct ListAgentsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowRequest {
+    pub session_id: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub entry_node_id: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    pub entry_node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowNodeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowNodeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowEdgeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowEdgeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub edge_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -249,6 +327,17 @@ pub enum LocalDaemonRequest {
     FocusAgent(FocusAgentRequest),
     CycleAgentFocus(CycleAgentFocusRequest),
     ListAgents(ListAgentsRequest),
+    CreateWorkflow(CreateWorkflowRequest),
+    AliasWorkflow(AliasWorkflowRequest),
+    ListWorkflows(ListWorkflowsRequest),
+    ResolveWorkflow(ResolveWorkflowRequest),
+    CreateWorkflowEndpoint(CreateWorkflowEndpointRequest),
+    AliasWorkflowEndpoint(AliasWorkflowEndpointRequest),
+    BindWorkflowEndpoint(BindWorkflowEndpointRequest),
+    AddWorkflowNode(AddWorkflowNodeRequest),
+    RemoveWorkflowNode(RemoveWorkflowNodeRequest),
+    AddWorkflowEdge(AddWorkflowEdgeRequest),
+    RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,9 +441,65 @@ pub enum LocalDaemonResponse {
     AgentsListed {
         agents: Vec<AgentInstance>,
     },
+    WorkflowCreated {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowAliased {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowsListed {
+        workflows: Vec<WorkflowDefinition>,
+    },
+    WorkflowResolved {
+        workflow: WorkflowDefinition,
+    },
+    WorkflowEndpointCreated {
+        endpoint: WorkflowEndpointDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowEndpointAliased {
+        endpoint: WorkflowEndpointDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowEndpointBound {
+        endpoint: WorkflowEndpointDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeAdded {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeRemoved {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowEdgeAdded {
+        edge: WorkflowEdgeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowEdgeRemoved {
+        edge: WorkflowEdgeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
 }
 
 impl DaemonApp {
+    fn local_api_session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        let mut session = self.sessions().get_session(session_id)?;
+        let agents = self.agents().get_session_agents(session_id);
+        session.set_agents(agents);
+        Ok(session)
+    }
+
     pub fn handle_local_request(
         &mut self,
         request: LocalDaemonRequest,
@@ -608,6 +753,156 @@ impl DaemonApp {
                 let agents = self.list_session_agents(&request.session_id);
                 Ok(LocalDaemonResponse::AgentsListed { agents })
             }
+            LocalDaemonRequest::CreateWorkflow(request) => {
+                let workflow = self
+                    .sessions_mut()
+                    .create_workflow(&request.session_id, request.alias)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
+            }
+            LocalDaemonRequest::AliasWorkflow(request) => {
+                let workflow = self.sessions_mut().assign_workflow_alias(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    request.alias,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
+            }
+            LocalDaemonRequest::ListWorkflows(request) => Ok(LocalDaemonResponse::WorkflowsListed {
+                workflows: self.sessions().list_workflows(&request.session_id)?,
+            }),
+            LocalDaemonRequest::ResolveWorkflow(request) => Ok(LocalDaemonResponse::WorkflowResolved {
+                workflow: self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
+            }),
+            LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
+                let endpoint = self.sessions_mut().create_workflow_endpoint(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.entry_node_id,
+                    request.alias,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowEndpointCreated {
+                    endpoint,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::AliasWorkflowEndpoint(request) => {
+                let endpoint = self.sessions_mut().assign_workflow_endpoint_alias(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    request.alias,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowEndpointAliased {
+                    endpoint,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::BindWorkflowEndpoint(request) => {
+                let endpoint = self.sessions_mut().bind_workflow_endpoint(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    &request.entry_node_id,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowEndpointBound {
+                    endpoint,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::AddWorkflowNode(request) => {
+                let agent_exists = self
+                    .agents()
+                    .get_session_agents(&request.session_id)
+                    .into_iter()
+                    .any(|agent| agent.id() == request.agent_id);
+                if !agent_exists {
+                    return Err(DaemonError::AgentNotFound {
+                        agent_id: request.agent_id,
+                    });
+                }
+                let node = self.sessions_mut().add_workflow_node(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.agent_id,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeAdded {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::RemoveWorkflowNode(request) => {
+                let node = self.sessions_mut().remove_workflow_node(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.node_id,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeRemoved {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::AddWorkflowEdge(request) => {
+                let edge = self.sessions_mut().add_workflow_edge(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.from_node_id,
+                    &request.to_node_id,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowEdgeAdded {
+                    edge,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::RemoveWorkflowEdge(request) => {
+                let edge = self.sessions_mut().remove_workflow_edge(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.edge_id,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowEdgeRemoved {
+                    edge,
+                    workflow,
+                    session,
+                })
+            }
         }
     }
 }
@@ -623,11 +918,16 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
+        AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
+        AliasWorkflowRequest,
         AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
-        CompletePromptRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+        CycleAgentFocusRequest, DeleteSessionRequest,
         DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
         GetSessionStateRequest, InspectGitCapabilityRequest, LaunchProviderRunRequest,
-        ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+        ListAgentsRequest, ListSessionsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+        ResolveWorkflowRequest,
         PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
         ResolveSessionRequest, RunShellCapabilityRequest, SpawnAgentRequest,
         StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
@@ -866,6 +1166,179 @@ mod tests {
                 .state(),
             crate::agent::AgentState::Focused
         );
+    }
+
+    #[test]
+    fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("review".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+
+        let listed = match app
+            .handle_local_request(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("workflow list should succeed")
+        {
+            LocalDaemonResponse::WorkflowsListed { workflows } => workflows,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(listed.len(), 1);
+
+        let resolved = match app
+            .handle_local_request(LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: "review".to_string(),
+            }))
+            .expect("workflow resolve should succeed")
+        {
+            LocalDaemonResponse::WorkflowResolved { workflow } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(resolved.id(), workflow.id());
+
+        let node_a = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: session.agents()[0].id().to_string(),
+            }))
+            .expect("first workflow node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+
+        let spawned = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "opencode".to_string(),
+                model: None,
+                worktree_id: None,
+            }))
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
+        let node_b = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: spawned.id().to_string(),
+            }))
+            .expect("second workflow node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: node_a.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("workflow endpoint should be created")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(endpoint.entry_node_id(), node_a.id());
+
+        let aliased_workflow = match app
+            .handle_local_request(LocalDaemonRequest::AliasWorkflow(AliasWorkflowRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                alias: "qa".to_string(),
+            }))
+            .expect("workflow alias should succeed")
+        {
+            LocalDaemonResponse::WorkflowAliased { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(aliased_workflow.alias(), Some("qa"));
+
+        let aliased_endpoint = match app
+            .handle_local_request(LocalDaemonRequest::AliasWorkflowEndpoint(
+                AliasWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    alias: "start".to_string(),
+                },
+            ))
+            .expect("workflow endpoint alias should succeed")
+        {
+            LocalDaemonResponse::WorkflowEndpointAliased { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(aliased_endpoint.alias(), Some("start"));
+
+        let edge = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: node_a.id().to_string(),
+                to_node_id: node_b.id().to_string(),
+            }))
+            .expect("workflow edge should be added")
+        {
+            LocalDaemonResponse::WorkflowEdgeAdded { edge, .. } => edge,
+            _ => panic!("unexpected local response"),
+        };
+
+        match app
+            .handle_local_request(LocalDaemonRequest::RemoveWorkflowEdge(
+                RemoveWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    edge_id: edge.id().to_string(),
+                },
+            ))
+            .expect("workflow edge should be removed")
+        {
+            LocalDaemonResponse::WorkflowEdgeRemoved { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+
+        match app
+            .handle_local_request(LocalDaemonRequest::RemoveWorkflowNode(
+                RemoveWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    node_id: node_a.id().to_string(),
+                },
+            ))
+            .expect("workflow node should be removed")
+        {
+            LocalDaemonResponse::WorkflowNodeRemoved { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
     }
 
     #[test]

@@ -876,7 +876,7 @@ mod tests {
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
             .expect("first drain should succeed");
-        assert_eq!(first.prompt_completed, false);
+        assert!(!first.prompt_completed);
         assert_eq!(
             first.completions,
             vec![OpenCodeAssistantCompletion {
@@ -888,7 +888,7 @@ mod tests {
         state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
         let second = drain_opencode_events(&mut state, "provider-run-1")
             .expect("second drain should succeed");
-        assert_eq!(second.prompt_completed, true);
+        assert!(second.prompt_completed);
     }
 
     #[test]
@@ -934,7 +934,7 @@ mod tests {
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
             .expect("first drain should succeed");
-        assert_eq!(first.prompt_completed, false);
+        assert!(!first.prompt_completed);
         assert!(first
             .chunks
             .iter()
@@ -942,7 +942,7 @@ mod tests {
 
         let second = drain_opencode_events(&mut state, "provider-run-1")
             .expect("second drain should succeed");
-        assert_eq!(second.prompt_completed, false);
+        assert!(!second.prompt_completed);
 
         tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
             part: Box::new(OpenCodePart {
@@ -968,12 +968,12 @@ mod tests {
 
         let third = drain_opencode_events(&mut state, "provider-run-1")
             .expect("third drain should succeed");
-        assert_eq!(third.prompt_completed, false);
+        assert!(!third.prompt_completed);
 
         state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
         let fourth = drain_opencode_events(&mut state, "provider-run-1")
             .expect("fourth drain should succeed");
-        assert_eq!(fourth.prompt_completed, true);
+        assert!(fourth.prompt_completed);
     }
 
     #[test]
@@ -998,11 +998,11 @@ mod tests {
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
             .expect("first drain should succeed");
-        assert_eq!(first.prompt_completed, false);
+        assert!(!first.prompt_completed);
 
         let second = drain_opencode_events(&mut state, "provider-run-1")
             .expect("second drain should succeed");
-        assert_eq!(second.prompt_completed, false);
+        assert!(!second.prompt_completed);
         assert!(state.pending_prompt_completion_quiet_since.is_some());
 
         tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
@@ -1021,19 +1021,19 @@ mod tests {
 
         let third = drain_opencode_events(&mut state, "provider-run-1")
             .expect("third drain should succeed");
-        assert_eq!(third.prompt_completed, false);
+        assert!(!third.prompt_completed);
         assert_eq!(third.chunks.len(), 1);
         assert_eq!(state.pending_prompt_completion_quiet_since, None);
 
         let fourth = drain_opencode_events(&mut state, "provider-run-1")
             .expect("fourth drain should succeed");
-        assert_eq!(fourth.prompt_completed, false);
+        assert!(!fourth.prompt_completed);
         assert!(state.pending_prompt_completion_quiet_since.is_some());
 
         state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
         let fifth = drain_opencode_events(&mut state, "provider-run-1")
             .expect("fifth drain should succeed");
-        assert_eq!(fifth.prompt_completed, true);
+        assert!(fifth.prompt_completed);
     }
 
     fn elapsed_quiet_since() -> Instant {

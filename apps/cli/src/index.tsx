@@ -31,6 +31,9 @@ import type {
   TerminalOutputRecord,
   TranscriptEntry,
   WorkflowDefinition,
+  WorkflowEdgeDefinition,
+  WorkflowEndpointDefinition,
+  WorkflowNodeDefinition,
 } from "./cli-types.js"
 import {
   createCommandActionHandlers,
@@ -58,6 +61,8 @@ import {
   cancelActivePromptRequest,
   captureScreenshotRequest,
   createSessionRequest,
+  createWorkflowRequest,
+  createWorkflowEndpointRequest,
   cycleAgentFocusRequest,
   deleteSessionRequest,
   destroyAgentRequest,
@@ -69,11 +74,20 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  listWorkflowsRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   resolveSessionRequest,
+  resolveWorkflowRequest,
+  aliasWorkflowRequest,
+  aliasWorkflowEndpointRequest,
+  bindWorkflowEndpointRequest,
+  addWorkflowNodeRequest,
+  removeWorkflowNodeRequest,
+  addWorkflowEdgeRequest,
+  removeWorkflowEdgeRequest,
   spawnAgentRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
@@ -707,7 +721,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
-  const [workflows, setWorkflows] = createSignal<WorkflowDefinition[]>([])
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   let stopRequestInFlight = false
@@ -3565,7 +3578,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
         ? (workflowScreenActive()
-            ? buildWorkflowCanvasRenderableWithList(renderer, workflows())
+            ? buildWorkflowCanvasRenderableWithList(renderer, sessionState().workflows ?? [])
             : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
@@ -3779,9 +3792,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearActiveToolLabels: () => {
       activeToolLabels.clear()
     },
-    clearWorkflows: () => {
-      setWorkflows([])
-    },
+    clearWorkflows: () => {},
     clearAgentPaneRuntime,
     clearDirectoryTree: () => setDirectoryTreeState(null),
     clearTranscript: () => replaceTranscriptEntries([]),
@@ -4016,7 +4027,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workflowScreenActive,
     showWorkflowScreen,
     createWorkflow,
+    listWorkflows,
+    resolveWorkflow,
     assignWorkflowAlias,
+    createWorkflowEndpoint,
+    assignWorkflowEndpointAlias,
+    bindWorkflowEndpoint,
+    addWorkflowNode,
+    removeWorkflowNode,
+    addWorkflowEdge,
+    removeWorkflowEdge,
     formatAgentLabel,
     refreshSplitPaneFocusRepaint,
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
@@ -4476,41 +4496,124 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript()
     applyResponseLayout()
   }
-  function createWorkflow(alias?: string | null) {
-    let created: WorkflowDefinition = { id: generateWorkflowId(), alias: alias?.trim() ? alias.trim() : null }
-    setWorkflows((current) => {
-      const existingIds = new Set(current.map((workflow) => workflow.id))
-      let nextId = generateWorkflowId()
-      while (existingIds.has(nextId)) {
-        nextId = generateWorkflowId()
-      }
-      created = {
-        id: nextId,
-        alias: alias?.trim() ? alias.trim() : null,
-      }
-      return [...current, created]
-    })
+  async function createWorkflow(alias?: string | null) {
+    const response = await client.send<Record<string, unknown>>(
+      createWorkflowRequest(sessionState().id, alias),
+    )
+    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowCreated",
+    )
+    setSessionState(payload.session)
     rebuildTranscript()
     applyResponseLayout()
-    return { workflow: created }
+    return payload
   }
-  function assignWorkflowAlias(workflowId: string, alias: string) {
-    let updated: WorkflowDefinition | null = null
-    setWorkflows((current) => current.map((workflow) => {
-      if (workflow.id !== workflowId) {
-        return workflow
-      }
-      updated = {
-        ...workflow,
-        alias: alias.trim(),
-      }
-      return updated
-    }))
-    if (updated) {
+  async function listWorkflows() {
+    const response = await client.send<Record<string, unknown>>(
+      listWorkflowsRequest(sessionState().id),
+    )
+    const payload = expectVariant<{ workflows: WorkflowDefinition[] }>(
+      response,
+      "WorkflowsListed",
+    )
+    return payload.workflows
+  }
+  async function resolveWorkflow(workflowRef: string) {
+    const response = await client.send<Record<string, unknown>>(
+      resolveWorkflowRequest(sessionState().id, workflowRef),
+    )
+    return expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
+  }
+  async function assignWorkflowAlias(workflowId: string, alias: string) {
+    const response = await client.send<Record<string, unknown>>(
+      aliasWorkflowRequest(sessionState().id, workflowId, alias),
+    )
+    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowAliased",
+    )
+    setSessionState(payload.session)
+    if (payload.workflow) {
       rebuildTranscript()
       applyResponseLayout()
     }
-    return updated
+    return payload.workflow
+  }
+  async function createWorkflowEndpoint(
+    workflowRef: string,
+    entryNodeId: string,
+    alias?: string | null,
+  ) {
+    const response = await client.send<Record<string, unknown>>(
+      createWorkflowEndpointRequest(sessionState().id, workflowRef, entryNodeId, alias),
+    )
+    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowEndpointCreated",
+    )
+  }
+  async function assignWorkflowEndpointAlias(
+    workflowRef: string,
+    endpointRef: string,
+    alias: string,
+  ) {
+    const response = await client.send<Record<string, unknown>>(
+      aliasWorkflowEndpointRequest(sessionState().id, workflowRef, endpointRef, alias),
+    )
+    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowEndpointAliased",
+    )
+  }
+  async function bindWorkflowEndpoint(
+    workflowRef: string,
+    endpointRef: string,
+    entryNodeId: string,
+  ) {
+    const response = await client.send<Record<string, unknown>>(
+      bindWorkflowEndpointRequest(sessionState().id, workflowRef, endpointRef, entryNodeId),
+    )
+    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowEndpointBound",
+    )
+  }
+  async function addWorkflowNode(workflowRef: string, agentId: string) {
+    const response = await client.send<Record<string, unknown>>(
+      addWorkflowNodeRequest(sessionState().id, workflowRef, agentId),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeAdded",
+    )
+  }
+  async function removeWorkflowNode(workflowRef: string, nodeId: string) {
+    const response = await client.send<Record<string, unknown>>(
+      removeWorkflowNodeRequest(sessionState().id, workflowRef, nodeId),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeRemoved",
+    )
+  }
+  async function addWorkflowEdge(workflowRef: string, fromNodeId: string, toNodeId: string) {
+    const response = await client.send<Record<string, unknown>>(
+      addWorkflowEdgeRequest(sessionState().id, workflowRef, fromNodeId, toNodeId),
+    )
+    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowEdgeAdded",
+    )
+  }
+  async function removeWorkflowEdge(workflowRef: string, edgeId: string) {
+    const response = await client.send<Record<string, unknown>>(
+      removeWorkflowEdgeRequest(sessionState().id, workflowRef, edgeId),
+    )
+    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowEdgeRemoved",
+    )
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
@@ -6628,17 +6731,13 @@ function trimSingleTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text
 }
 
-function generateWorkflowId(): string {
-  return randomBytes(8).toString("hex")
-}
-
 function formatError(error: unknown): string {
   return describeCliError(error)
 }
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  Tab                   keyboard shortcut to cycle to next agent\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle to next agent\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
   )
 }
 

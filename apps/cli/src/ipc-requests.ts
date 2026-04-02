@@ -66,6 +66,136 @@ export function getSessionStateRequest(sessionId: string) {
   }
 }
 
+export function createWorkflowRequest(sessionId: string, alias?: string | null) {
+  return {
+    CreateWorkflow: {
+      session_id: sessionId,
+      alias: alias ?? null,
+    },
+  }
+}
+
+export function aliasWorkflowRequest(sessionId: string, workflowId: string, alias: string) {
+  return {
+    AliasWorkflow: {
+      session_id: sessionId,
+      workflow_ref: workflowId,
+      alias,
+    },
+  }
+}
+
+export function listWorkflowsRequest(sessionId: string) {
+  return {
+    ListWorkflows: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function resolveWorkflowRequest(sessionId: string, workflowRef: string) {
+  return {
+    ResolveWorkflow: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+    },
+  }
+}
+
+export function createWorkflowEndpointRequest(
+  sessionId: string,
+  workflowRef: string,
+  entryNodeId: string,
+  alias?: string | null,
+) {
+  return {
+    CreateWorkflowEndpoint: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      entry_node_id: entryNodeId,
+      alias: alias ?? null,
+    },
+  }
+}
+
+export function aliasWorkflowEndpointRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  alias: string,
+) {
+  return {
+    AliasWorkflowEndpoint: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      alias,
+    },
+  }
+}
+
+export function bindWorkflowEndpointRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  entryNodeId: string,
+) {
+  return {
+    BindWorkflowEndpoint: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      entry_node_id: entryNodeId,
+    },
+  }
+}
+
+export function addWorkflowNodeRequest(sessionId: string, workflowRef: string, agentId: string) {
+  return {
+    AddWorkflowNode: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      agent_id: agentId,
+    },
+  }
+}
+
+export function removeWorkflowNodeRequest(sessionId: string, workflowRef: string, nodeId: string) {
+  return {
+    RemoveWorkflowNode: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+    },
+  }
+}
+
+export function addWorkflowEdgeRequest(
+  sessionId: string,
+  workflowRef: string,
+  fromNodeId: string,
+  toNodeId: string,
+) {
+  return {
+    AddWorkflowEdge: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      from_node_id: fromNodeId,
+      to_node_id: toNodeId,
+    },
+  }
+}
+
+export function removeWorkflowEdgeRequest(sessionId: string, workflowRef: string, edgeId: string) {
+  return {
+    RemoveWorkflowEdge: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      edge_id: edgeId,
+    },
+  }
+}
+
 export function updateSessionConfigRequest(
   sessionId: string,
   attachmentId: string,

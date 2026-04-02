@@ -40,6 +40,7 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     focused_agent_id: "agent-1",
     max_agents: 6,
     agents: [makeAgent()],
+    workflows: [],
     config_state: {
       version: 0,
       values: {},
@@ -180,8 +181,17 @@ test("agent spawn refreshes session state after launching the provider run", asy
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
-    createWorkflow: () => ({ workflow: { id: "workflow-1", alias: null } }),
-    assignWorkflowAlias: () => null,
+    createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    listWorkflows: async () => [],
+    resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    assignWorkflowEndpointAlias: async () => ({ endpoint: { id: "endpoint-1", alias: "entry", entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    bindWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => { splitPaneRefreshCount += 1 },
     formatSessionList: () => "",
@@ -279,8 +289,17 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
-    createWorkflow: () => ({ workflow: { id: "workflow-1", alias: null } }),
-    assignWorkflowAlias: () => null,
+    createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    listWorkflows: async () => [],
+    resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    assignWorkflowEndpointAlias: async () => ({ endpoint: { id: "endpoint-1", alias: "entry", entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    bindWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
     formatSessionList: () => "",
@@ -342,12 +361,21 @@ test("workflow command opens the workflow screen and manages local workflows", a
     resolveSessionAgent: () => ({ agent: makeAgent() }),
     workflowScreenActive: () => false,
     showWorkflowScreen: () => { shownWorkflowScreen += 1 },
-    createWorkflow: (alias) => {
+    createWorkflow: async (alias) => {
       const workflow = { id: "workflow-1", alias: alias ?? null }
+      const session = makeSession({ workflows: [workflow] })
       workflows.set(workflow.id, workflow)
+      return { workflow, session }
+    },
+    listWorkflows: async () => [...workflows.values()],
+    resolveWorkflow: async (workflowRef) => {
+      const workflow = [...workflows.values()].find((item) => item.id === workflowRef || item.alias === workflowRef)
+      if (!workflow) {
+        throw new Error(`unknown workflow: ${workflowRef}`)
+      }
       return { workflow }
     },
-    assignWorkflowAlias: (workflowId, alias) => {
+    assignWorkflowAlias: async (workflowId, alias) => {
       const workflow = workflows.get(workflowId)
       if (!workflow) {
         return null
@@ -356,6 +384,41 @@ test("workflow command opens the workflow screen and manages local workflows", a
       workflows.set(workflowId, next)
       return next
     },
+    createWorkflowEndpoint: async (workflowRef, entryNodeId, alias) => ({
+      endpoint: { id: "endpoint-1", alias: alias ?? null, entry_node_id: entryNodeId },
+      workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
+      session: makeSession(),
+    }),
+    assignWorkflowEndpointAlias: async (_workflowRef, endpointRef, alias) => ({
+      endpoint: { id: endpointRef, alias, entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    bindWorkflowEndpoint: async (_workflowRef, endpointRef, entryNodeId) => ({
+      endpoint: { id: endpointRef, alias: null, entry_node_id: entryNodeId },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    addWorkflowNode: async (_workflowRef, agentId) => ({
+      node: { id: "node-1", agent_id: agentId },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    removeWorkflowNode: async (_workflowRef, nodeId) => ({
+      node: { id: nodeId, agent_id: "agent-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    addWorkflowEdge: async (_workflowRef, fromNodeId, toNodeId) => ({
+      edge: { id: "edge-1", from_node_id: fromNodeId, to_node_id: toNodeId },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    removeWorkflowEdge: async (_workflowRef, edgeId) => ({
+      edge: { id: edgeId, from_node_id: "node-1", to_node_id: "node-2" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
     formatSessionList: () => "",
@@ -369,6 +432,15 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow node add workflow-1 agent-1", args: ["node", "add", "workflow-1", "agent-1"] })
+  assert.equal(flashedMessage, "added workflow node node-1 for agent agent-1")
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
+  assert.equal(flashedMessage, "added workflow edge edge-1")
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow endpoint new workflow-1 node-1 start", args: ["endpoint", "new", "workflow-1", "node-1", "start"] })
+  assert.equal(flashedMessage, "created workflow endpoint endpoint-1")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow missing shipit", args: ["missing", "shipit"] })
   assert.equal(flashedMessage, "unknown workflow: missing")

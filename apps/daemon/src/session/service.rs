@@ -4,8 +4,9 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
+    unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
 };
 
 #[derive(Debug, Clone)]
@@ -14,6 +15,10 @@ pub struct SessionService {
     host_machine_id: String,
     host_daemon_id: String,
     next_prompt_number: u64,
+    next_workflow_number: u64,
+    next_workflow_endpoint_number: u64,
+    next_workflow_node_number: u64,
+    next_workflow_edge_number: u64,
 }
 
 impl SessionService {
@@ -23,6 +28,10 @@ impl SessionService {
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
             next_prompt_number: 0,
+            next_workflow_number: 0,
+            next_workflow_endpoint_number: 0,
+            next_workflow_node_number: 0,
+            next_workflow_edge_number: 0,
         }
     }
 
@@ -57,6 +66,426 @@ impl SessionService {
 
     pub fn list_sessions(&self) -> Vec<RuntimeSession> {
         self.store.non_ended_sessions().cloned().collect()
+    }
+
+    pub fn list_workflows(&self, session_id: &str) -> Result<Vec<WorkflowDefinition>, DaemonError> {
+        Ok(self.get_session(session_id)?.workflows().to_vec())
+    }
+
+    pub fn resolve_workflow_ref(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let normalized_ref = workflow_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        let workflows = session.workflows();
+        if let Some(workflow) = workflows.iter().find(|workflow| workflow.id() == normalized_ref) {
+            return Ok(workflow.clone());
+        }
+        if let Some(workflow) = workflows
+            .iter()
+            .find(|workflow| workflow.alias() == Some(normalized_ref.as_str()))
+        {
+            return Ok(workflow.clone());
+        }
+        let id_matches = workflows
+            .iter()
+            .filter(|workflow| workflow.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        let alias_matches = workflows
+            .iter()
+            .filter(|workflow| {
+                workflow
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Ok(alias_matches[0].clone());
+        }
+        Err(DaemonError::WorkflowNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_ref.to_string(),
+        })
+    }
+
+    pub fn create_workflow(
+        &mut self,
+        session_id: &str,
+        alias: Option<String>,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let alias = normalize_workflow_alias(alias)?;
+        if let Some(alias) = alias.as_deref() {
+            self.ensure_workflow_alias_available(session_id, alias)?;
+        }
+        let workflow = WorkflowDefinition::new(self.next_workflow_id(), alias);
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.create_workflow(workflow))
+    }
+
+    pub fn assign_workflow_alias(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        alias: String,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let alias = normalize_workflow_alias(Some(alias))?.ok_or_else(|| {
+            DaemonError::InvalidWorkflowAlias {
+                alias: String::new(),
+                message: "alias cannot be empty",
+            }
+        })?;
+        self.ensure_workflow_alias_available_for_update(session_id, &workflow_id, &alias)?;
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+            }
+        })?;
+        workflow.set_alias(Some(alias));
+        Ok(workflow.clone())
+    }
+
+    pub fn resolve_workflow_endpoint_ref(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
+        let normalized_ref = endpoint_ref.trim().to_lowercase();
+        if let Some(endpoint) = workflow
+            .endpoints()
+            .iter()
+            .find(|endpoint| endpoint.id() == normalized_ref)
+        {
+            return Ok(endpoint.clone());
+        }
+        if let Some(endpoint) = workflow
+            .endpoints()
+            .iter()
+            .find(|endpoint| endpoint.alias() == Some(normalized_ref.as_str()))
+        {
+            return Ok(endpoint.clone());
+        }
+        let id_matches = workflow
+            .endpoints()
+            .iter()
+            .filter(|endpoint| endpoint.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        let alias_matches = workflow
+            .endpoints()
+            .iter()
+            .filter(|endpoint| {
+                endpoint
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Ok(alias_matches[0].clone());
+        }
+        Err(DaemonError::WorkflowEndpointNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            endpoint_id: endpoint_ref.to_string(),
+        })
+    }
+
+    pub fn add_workflow_node(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        agent_id: &str,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let node = WorkflowNodeDefinition::new(self.next_workflow_node_id(), agent_id.to_string());
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        Ok(workflow.add_node(node))
+    }
+
+    pub fn remove_workflow_node(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        node_id: &str,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        workflow.remove_node(node_id).ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.clone(),
+            node_id: node_id.to_string(),
+        })
+    }
+
+    pub fn add_workflow_edge(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        from_node_id: &str,
+        to_node_id: &str,
+    ) -> Result<WorkflowEdgeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let edge = WorkflowEdgeDefinition::new(
+            self.next_workflow_edge_id(),
+            from_node_id.to_string(),
+            to_node_id.to_string(),
+        );
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        if workflow.node(from_node_id).is_none() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: from_node_id.to_string(),
+                message: "source node does not exist",
+            });
+        }
+        if workflow.node(to_node_id).is_none() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: to_node_id.to_string(),
+                message: "target node does not exist",
+            });
+        }
+        Ok(workflow.add_edge(edge))
+    }
+
+    pub fn remove_workflow_edge(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        edge_id: &str,
+    ) -> Result<WorkflowEdgeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        workflow.remove_edge(edge_id).ok_or_else(|| DaemonError::WorkflowEdgeNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.clone(),
+            edge_id: edge_id.to_string(),
+        })
+    }
+
+    pub fn create_workflow_endpoint(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        entry_node_id: &str,
+        alias: Option<String>,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let alias = normalize_workflow_endpoint_alias(alias)?;
+        if let Some(alias) = alias.as_deref() {
+            self.ensure_workflow_endpoint_alias_available(session_id, &workflow_id, alias)?;
+        }
+        let endpoint = WorkflowEndpointDefinition::new(
+            self.next_workflow_endpoint_id(),
+            alias,
+            entry_node_id.to_string(),
+        );
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        if workflow.node(entry_node_id).is_none() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: entry_node_id.to_string(),
+                message: "entry node does not exist",
+            });
+        }
+        Ok(workflow.add_endpoint(endpoint))
+    }
+
+    pub fn assign_workflow_endpoint_alias(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        alias: String,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let endpoint_id = self
+            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
+            .id()
+            .to_string();
+        let alias = normalize_workflow_endpoint_alias(Some(alias))?.ok_or_else(|| {
+            DaemonError::InvalidWorkflowEndpointAlias {
+                alias: String::new(),
+                message: "alias cannot be empty",
+            }
+        })?;
+        self.ensure_workflow_endpoint_alias_available_for_update(
+            session_id,
+            &workflow_id,
+            &endpoint_id,
+            &alias,
+        )?;
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        let endpoint = workflow.endpoint_mut(&endpoint_id).ok_or_else(|| {
+            DaemonError::WorkflowEndpointNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            }
+        })?;
+        endpoint.set_alias(Some(alias));
+        Ok(endpoint.clone())
+    }
+
+    pub fn bind_workflow_endpoint(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        entry_node_id: &str,
+    ) -> Result<WorkflowEndpointDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let endpoint_id = self
+            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+            DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            }
+        })?;
+        if workflow.node(entry_node_id).is_none() {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: entry_node_id.to_string(),
+                message: "entry node does not exist",
+            });
+        }
+        let endpoint = workflow.endpoint_mut(&endpoint_id).ok_or_else(|| {
+            DaemonError::WorkflowEndpointNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                endpoint_id: endpoint_id.clone(),
+            }
+        })?;
+        endpoint.set_entry_node_id(entry_node_id.to_string());
+        Ok(endpoint.clone())
     }
 
     pub fn resolve_session_ref(
@@ -441,6 +870,92 @@ impl SessionService {
         Ok(())
     }
 
+    fn ensure_workflow_alias_available(
+        &self,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        if session
+            .workflows()
+            .iter()
+            .any(|workflow| workflow.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowAliasConflict {
+                session_id: session_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_workflow_alias_available_for_update(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        if session.workflows().iter().any(|workflow| {
+            workflow.id() != workflow_id && workflow.alias() == Some(alias)
+        }) {
+            return Err(DaemonError::WorkflowAliasConflict {
+                session_id: session_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_workflow_endpoint_alias_available(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        let workflow = session.workflow(workflow_id).ok_or_else(|| DaemonError::WorkflowNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.to_string(),
+        })?;
+        if workflow
+            .endpoints()
+            .iter()
+            .any(|endpoint| endpoint.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowEndpointAliasConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_workflow_endpoint_alias_available_for_update(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        let workflow = session.workflow(workflow_id).ok_or_else(|| DaemonError::WorkflowNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.to_string(),
+        })?;
+        if workflow.endpoints().iter().any(|endpoint| {
+            endpoint.id() != endpoint_id && endpoint.alias() == Some(alias)
+        }) {
+            return Err(DaemonError::WorkflowEndpointAliasConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn get_session_mut_for_operation(
         &mut self,
         session_id: &str,
@@ -491,6 +1006,99 @@ fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, Daem
         });
     }
     Ok(Some(normalized))
+}
+
+fn normalize_workflow_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {
+    let Some(alias) = alias else {
+        return Ok(None);
+    };
+    let normalized = alias.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonError::InvalidWorkflowAlias {
+            alias,
+            message: "alias cannot be empty",
+        });
+    }
+    if !normalized
+        .chars()
+        .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_')
+    {
+        return Err(DaemonError::InvalidWorkflowAlias {
+            alias,
+            message: "alias must use lowercase letters, digits, `-`, or `_`",
+        });
+    }
+    Ok(Some(normalized))
+}
+
+fn normalize_workflow_endpoint_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {
+    let Some(alias) = alias else {
+        return Ok(None);
+    };
+    let normalized = alias.trim().to_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonError::InvalidWorkflowEndpointAlias {
+            alias,
+            message: "alias cannot be empty",
+        });
+    }
+    if !normalized
+        .chars()
+        .all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_')
+    {
+        return Err(DaemonError::InvalidWorkflowEndpointAlias {
+            alias,
+            message: "alias must use lowercase letters, digits, `-`, or `_`",
+        });
+    }
+    Ok(Some(normalized))
+}
+
+impl SessionService {
+    fn next_workflow_id(&mut self) -> String {
+        loop {
+            self.next_workflow_number = self.next_workflow_number.wrapping_add(1);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos() as u64)
+                .unwrap_or(self.next_workflow_number);
+            let candidate =
+                format!("{:016x}", nanos ^ self.next_workflow_number.rotate_left(11));
+            let exists = self
+                .store
+                .list()
+                .iter()
+                .flat_map(|session| session.workflows().iter())
+                .any(|workflow| workflow.id() == candidate);
+            if !exists {
+                return candidate;
+            }
+        }
+    }
+
+    fn next_workflow_endpoint_id(&mut self) -> String {
+        self.next_workflow_endpoint_number = self.next_workflow_endpoint_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_endpoint_number.rotate_left(9)
+        )
+    }
+
+    fn next_workflow_node_id(&mut self) -> String {
+        self.next_workflow_node_number = self.next_workflow_node_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_node_number.rotate_left(7)
+        )
+    }
+
+    fn next_workflow_edge_id(&mut self) -> String {
+        self.next_workflow_edge_number = self.next_workflow_edge_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_edge_number.rotate_left(5)
+        )
+    }
 }
 
 fn describe_session_match(session: &RuntimeSession) -> String {
@@ -616,6 +1224,136 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let first = service
+            .create_workflow(session.id(), Some("review_loop".to_string()))
+            .expect("workflow should be created");
+        let second = service
+            .create_workflow(session.id(), Some("deploy".to_string()))
+            .expect("workflow should be created");
+
+        let workflows = service
+            .list_workflows(session.id())
+            .expect("workflow list should succeed");
+        assert_eq!(workflows.len(), 2);
+        assert_eq!(workflows[0], first);
+        assert_eq!(workflows[1], second);
+
+        let unique_prefix_len = (1..=first.id().len())
+            .find(|length| {
+                let prefix = &first.id()[..*length];
+                workflows
+                    .iter()
+                    .filter(|workflow| workflow.id().starts_with(prefix))
+                    .count()
+                    == 1
+            })
+            .expect("workflow id should have a unique prefix");
+        let unique_prefix = &first.id()[..unique_prefix_len];
+
+        assert_eq!(
+            service
+                .resolve_workflow_ref(session.id(), first.id())
+                .expect("workflow id should resolve")
+                .id(),
+            first.id()
+        );
+        assert_eq!(
+            service
+                .resolve_workflow_ref(session.id(), unique_prefix)
+                .expect("workflow id prefix should resolve")
+                .id(),
+            first.id()
+        );
+        assert_eq!(
+            service
+                .resolve_workflow_ref(session.id(), "review_loop")
+                .expect("workflow alias should resolve")
+                .id(),
+            first.id()
+        );
+        assert_eq!(
+            service
+                .resolve_workflow_ref(session.id(), "review")
+                .expect("workflow alias prefix should resolve")
+                .id(),
+            first.id()
+        );
+    }
+
+    #[test]
+    fn manages_workflow_nodes_edges_and_endpoints() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+
+        let planner = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("planner node should be added");
+        let reviewer = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-2")
+            .expect("reviewer node should be added");
+
+        let edge = service
+            .add_workflow_edge(session.id(), workflow.id(), planner.id(), reviewer.id())
+            .expect("edge should be added");
+        assert_eq!(edge.from_node_id(), planner.id());
+        assert_eq!(edge.to_node_id(), reviewer.id());
+
+        let endpoint = service
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                planner.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should be created");
+        assert_eq!(endpoint.entry_node_id(), planner.id());
+
+        assert_eq!(
+            service
+                .resolve_workflow_endpoint_ref(session.id(), workflow.id(), "entry")
+                .expect("endpoint alias should resolve")
+                .id(),
+            endpoint.id()
+        );
+
+        let rebound = service
+            .bind_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), reviewer.id())
+            .expect("endpoint should be rebound");
+        assert_eq!(rebound.entry_node_id(), reviewer.id());
+
+        let aliased = service
+            .assign_workflow_endpoint_alias(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                "review-entry".to_string(),
+            )
+            .expect("endpoint alias should be updated");
+        assert_eq!(aliased.alias(), Some("review-entry"));
+
+        let removed_edge = service
+            .remove_workflow_edge(session.id(), workflow.id(), edge.id())
+            .expect("edge should be removed");
+        assert_eq!(removed_edge.id(), edge.id());
+
+        let removed_node = service
+            .remove_workflow_node(session.id(), workflow.id(), planner.id())
+            .expect("node should be removed");
+        assert_eq!(removed_node.id(), planner.id());
     }
 
     #[test]

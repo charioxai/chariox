@@ -48,6 +48,7 @@ Rollout priority:
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
 - workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/node-connectivity completion and fit inside the same long-term daemon architecture
 - the workflow model is now explicitly multi-definition per workspace and multi-endpoint per workflow; the first implementation slice should start with kernel-backed workflow definitions/endpoints before graph scheduling
+- that first slice is now implemented in the local runtime: workflow definitions are kernel-backed, workflows/endpoints resolve by id or alias, and node/edge/endpoint management exists before any run scheduling
 
 ## 3. Milestones
 
