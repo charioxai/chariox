@@ -4,6 +4,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
+  WorkflowDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -34,6 +35,10 @@ type AgentFocusPayload = {
 type AgentSpawnPayload = {
   agent: AgentInstance
   session: RuntimeSession
+}
+
+type WorkflowCreatePayload = {
+  workflow: WorkflowDefinition
 }
 
 type CommandActionDeps = {
@@ -89,6 +94,10 @@ type CommandActionDeps = {
   destroyAgent: (agentId: string) => Promise<RuntimeSession>
   focusAgent: (agentId: string) => Promise<AgentFocusPayload>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
+  workflowScreenActive: () => boolean
+  showWorkflowScreen: () => void
+  createWorkflow: (alias?: string | null) => WorkflowCreatePayload
+  assignWorkflowAlias: (workflowId: string, alias: string) => WorkflowDefinition | null
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
   refreshSplitPaneFocusRepaint: () => void
   formatSessionList: (sessions: SessionListEntry[], currentSessionId?: string) => string
@@ -391,6 +400,49 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
   }
 
+  const handleWorkflowCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "workflow" }>,
+  ): Promise<void> => {
+    if (!deps.isAttached()) {
+      deps.flashFooter("must be attached to a session to manage workflows", "error")
+      return
+    }
+
+    const args = command.args
+    const subcommand = args[0]
+
+    if (!subcommand) {
+      if (!deps.workflowScreenActive()) {
+        deps.showWorkflowScreen()
+      }
+      return
+    }
+
+    if (subcommand === "new") {
+      const payload = deps.createWorkflow(args[1] ?? null)
+      deps.showWorkflowScreen()
+      deps.flashFooter(
+        `created workflow ${payload.workflow.id}${payload.workflow.alias ? ` (${payload.workflow.alias})` : ""}`,
+        "info",
+      )
+      return
+    }
+
+    const alias = args[1]
+    if (!alias) {
+      deps.flashFooter("usage: /workflow | /workflow new [alias] | /workflow <workflow-id> <alias>", "error")
+      return
+    }
+
+    const workflow = deps.assignWorkflowAlias(subcommand, alias)
+    if (!workflow) {
+      deps.flashFooter(`unknown workflow: ${subcommand}`, "error")
+      return
+    }
+    deps.showWorkflowScreen()
+    deps.flashFooter(`workflow ${workflow.id} aliased as ${workflow.alias}`, "info")
+  }
+
   return {
     handleSessionCommand,
     handleProviderCommand,
@@ -399,6 +451,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleWorkflowCommand,
   }
 }
 

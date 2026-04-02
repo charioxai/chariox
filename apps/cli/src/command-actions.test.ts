@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, RuntimeAttachment, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
@@ -178,6 +178,10 @@ test("agent spawn refreshes session state after launching the provider run", asy
     destroyAgent: async () => currentSession,
     focusAgent: async () => ({ agent: secondAgent, session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => {},
+    createWorkflow: () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: () => null,
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => { splitPaneRefreshCount += 1 },
     formatSessionList: () => "",
@@ -273,6 +277,10 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     destroyAgent: async () => currentSession,
     focusAgent: async () => ({ agent: agentB, session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => {},
+    createWorkflow: () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: () => null,
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
     formatSessionList: () => "",
@@ -283,4 +291,85 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
   assert.equal(refreshCount, 0)
   assert.equal(flashedMessage, "cycled to agent agent-b")
   assert.equal(currentSession.focused_agent_id, "agent-b")
+})
+
+test("workflow command opens the workflow screen and manages local workflows", async () => {
+  let flashedMessage = ""
+  let shownWorkflowScreen = 0
+  const workflows = new Map<string, WorkflowDefinition>()
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun | null => null,
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    focusedAgentId: () => "agent-1",
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: makeSession() }),
+    launchAgentProviderRun: async () => { throw new Error("should not launch provider") },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => makeSession(),
+    spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    destroyAgent: async () => makeSession(),
+    focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    resolveSessionAgent: () => ({ agent: makeAgent() }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => { shownWorkflowScreen += 1 },
+    createWorkflow: (alias) => {
+      const workflow = { id: "workflow-1", alias: alias ?? null }
+      workflows.set(workflow.id, workflow)
+      return { workflow }
+    },
+    assignWorkflowAlias: (workflowId, alias) => {
+      const workflow = workflows.get(workflowId)
+      if (!workflow) {
+        return null
+      }
+      const next = { ...workflow, alias }
+      workflows.set(workflowId, next)
+      return next
+    },
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow", args: [] })
+  assert.equal(shownWorkflowScreen, 1)
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow new review", args: ["new", "review"] })
+  assert.equal(flashedMessage, "created workflow workflow-1 (review)")
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
+  assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")
+
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow missing shipit", args: ["missing", "shipit"] })
+  assert.equal(flashedMessage, "unknown workflow: missing")
 })

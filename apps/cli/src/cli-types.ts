@@ -147,6 +147,11 @@ export type TranscriptEntry = {
   historyTotalChars?: number
 }
 
+export type WorkflowDefinition = {
+  id: string
+  alias: string | null
+}
+
 export type ReadDirectoryTreeResult = {
   session_id: string
   root_path: string

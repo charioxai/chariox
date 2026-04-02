@@ -417,9 +417,24 @@ Rules:
 
 Workflow endpoint direction:
 
-- every workflow definition should expose one logical entry point
-- that entry point may be invoked by a terminal user or by an external published API
+- a workspace may contain multiple workflow definitions
+- each workflow definition may expose multiple logical endpoints
+- each workflow endpoint maps to one entry node in that workflow
+- an endpoint may be invoked by a terminal user or by an external published API
 - once accepted by the kernel, the workflow should treat the resulting input message the same way regardless of source
+- disconnected subgraphs are allowed; a subgraph is reachable only if some endpoint points into it
+
+Workflow output direction:
+
+- a workflow run may emit zero or more outputs
+- outputs are a run-level concept first; strict graph-level exit points are deferred
+- entry and output may be handled by the same node when the workflow design requires it
+
+Workflow/agent binding direction:
+
+- creating a new agent MUST NOT implicitly add it to existing workflows
+- deleting an agent MUST NOT implicitly remove workflow nodes or edges
+- workflows should preserve nodes whose agents are missing and mark them unavailable until repaired
 
 Queue and turn direction:
 

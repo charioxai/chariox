@@ -33,9 +33,11 @@ type SessionLifecycleDeps = {
   }) => AttachedCliTransitionState
   clearPendingPromptAttachments: () => void
   clearActiveToolLabels: () => void
+  clearWorkflows: () => void
   clearAgentPaneRuntime: () => void
   clearDirectoryTree: () => void
   clearTranscript: () => void
+  resetWorkspaceScreen: () => void
   resetStopRequestInFlight: () => void
   bumpHistoryLoadGeneration: () => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
@@ -116,6 +118,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setCenterMode(nextAttachedState.centerMode)
     deps.setAttachmentState(attachment)
     deps.clearDirectoryTree()
+    deps.resetWorkspaceScreen()
+    deps.clearWorkflows()
     deps.clearActiveToolLabels()
     deps.setProviderActivityLabel(nextAttachedState.providerActivityLabel)
     deps.setActiveStatusLabel(nextAttachedState.activeStatusLabel)
@@ -137,6 +141,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setAttachmentState(null)
     deps.setProviderRunState(null)
     deps.clearPendingPromptAttachments()
+    deps.resetWorkspaceScreen()
+    deps.clearWorkflows()
     deps.setCenterMode(nextDetachedState.centerMode)
     deps.clearDirectoryTree()
     deps.clearActiveToolLabels()

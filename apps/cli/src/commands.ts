@@ -17,6 +17,7 @@ export type ParsedSlashCommand =
   | { kind: "variant"; raw: string; value: string }
   | { kind: "view"; raw: string; value: string }
   | { kind: "agent"; raw: string; args: string[] }
+  | { kind: "workflow"; raw: string; args: string[] }
 
 export type SlashCommandHandlers = {
   onExit: () => Promise<unknown> | unknown
@@ -29,6 +30,7 @@ export type SlashCommandHandlers = {
   onVariant: (command: Extract<ParsedSlashCommand, { kind: "variant" }>) => Promise<unknown> | unknown
   onView: (command: Extract<ParsedSlashCommand, { kind: "view" }>) => Promise<unknown> | unknown
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
+  onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
 }
 
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
@@ -93,6 +95,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/agent\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed.startsWith("/workflow")) {
+    return {
+      kind: "workflow",
+      raw: trimmed,
+      args: trimmed.replace(/^\/workflow\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   return null
 }
 
@@ -135,6 +144,9 @@ export async function executeSlashCommand(
     case "agent":
       await handlers.onAgent(command)
       break
+    case "workflow":
+      await handlers.onWorkflow(command)
+      break
   }
   return command
 }
@@ -146,6 +158,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "variant":
     case "view":
     case "agent":
+    case "workflow":
       return true
     default:
       return false

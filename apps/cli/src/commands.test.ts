@@ -24,6 +24,14 @@ test("parseSlashCommand preserves raw attachment command input", () => {
   })
 })
 
+test("parseSlashCommand parses workflow commands and args", () => {
+  assert.deepEqual(parseSlashCommand("/workflow new review-flow"), {
+    kind: "workflow",
+    raw: "/workflow new review-flow",
+    args: ["new", "review-flow"],
+  })
+})
+
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
@@ -43,6 +51,7 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onVariant: () => calls.push("variant"),
     onView: () => calls.push("view"),
     onAgent: () => calls.push("agent"),
+    onWorkflow: () => calls.push("workflow"),
   })
 
   assert.deepEqual(calls, ["view"])
@@ -65,6 +74,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onVariant: () => undefined,
     onView: () => undefined,
     onAgent: () => undefined,
+    onWorkflow: () => undefined,
   })
 
   assert.equal(command, null)

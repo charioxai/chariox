@@ -90,9 +90,11 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     deriveAttachedCliTransitionState: ({ session }: { session: RuntimeSession }) => attachedState(session),
     clearPendingPromptAttachments: () => calls.push("clearPendingPromptAttachments"),
     clearActiveToolLabels: () => calls.push("clearActiveToolLabels"),
+    clearWorkflows: () => calls.push("clearWorkflows"),
     clearAgentPaneRuntime: () => calls.push("clearAgentPaneRuntime"),
     clearDirectoryTree: () => calls.push("clearDirectoryTree"),
     clearTranscript: () => calls.push("clearTranscript"),
+    resetWorkspaceScreen: () => calls.push("resetWorkspaceScreen"),
     resetStopRequestInFlight: () => calls.push("resetStopRequestInFlight"),
     bumpHistoryLoadGeneration: () => calls.push("bumpHistoryLoadGeneration"),
     reconcileWaitingRoom: () => calls.push("reconcileWaitingRoom"),
@@ -181,6 +183,8 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
     "setAttachmentState",
     "setProviderRunState",
     "clearPendingPromptAttachments",
+    "resetWorkspaceScreen",
+    "clearWorkflows",
     "setCenterMode",
     "clearDirectoryTree",
     "clearActiveToolLabels",
@@ -235,7 +239,9 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
   const { deps } = createBaseDeps({
     attachmentState: () => null,
     clearPendingPromptAttachments: () => events.push("clearPendingPromptAttachments"),
+    clearWorkflows: () => events.push("clearWorkflows"),
     bumpHistoryLoadGeneration: () => events.push("bumpHistoryLoadGeneration"),
+    resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     attachToSession: async () => {
       events.push("attachToSession")
       return { id: "att-2", session_id: "session-2" }
@@ -312,6 +318,8 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "setCenterMode",
     "setAttachmentState",
     "clearDirectoryTree",
+    "resetWorkspaceScreen",
+    "clearWorkflows",
     "clearActiveToolLabels",
     "setProviderActivityLabel",
     "setActiveStatusLabel",
@@ -336,6 +344,8 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "setCenterMode",
     "setAttachmentState",
     "clearDirectoryTree",
+    "resetWorkspaceScreen",
+    "clearWorkflows",
     "clearActiveToolLabels",
     "setProviderActivityLabel",
     "setActiveStatusLabel",
@@ -389,6 +399,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
       state: "Running",
     }),
     setAttachmentState: () => events.push("setAttachmentState"),
+    resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
@@ -469,6 +480,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
     setAttachmentState: () => events.push("setAttachmentState"),
+    resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     clearDirectoryTree: () => events.push("clearDirectoryTree"),
     clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
     setProviderActivityLabel: () => events.push("setProviderActivityLabel"),
@@ -493,13 +505,14 @@ test("attachBinding synchronizes kernel event subscription immediately after app
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events.slice(0, 14), [
+  assert.deepEqual(events.slice(0, 15), [
     "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
     "setCenterMode",
     "setAttachmentState",
     "clearDirectoryTree",
+    "resetWorkspaceScreen",
     "clearActiveToolLabels",
     "setProviderActivityLabel",
     "setActiveStatusLabel",
@@ -545,6 +558,7 @@ test("attachBinding adopts the attached session response layout immediately", as
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => null,
     refreshAgentPanes: async () => {},
+    resetWorkspaceScreen: () => {},
     setMultiAgentResponseLayout: (layout: string) => {
       appliedLayouts.push(layout)
     },

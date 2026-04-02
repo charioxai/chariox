@@ -165,7 +165,7 @@ Inside the CLI:
   - `/agent focus <id>`
   - `/agent list`
   - `/agent cycle`
-  - `Ctrl+A` cycles focus to the next session agent
+  - `Tab` cycles focus to the next session agent
 - `/view <split|individual>` switches between the focused transcript view and the current split-pane response layout
 - deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
 

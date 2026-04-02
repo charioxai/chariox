@@ -47,6 +47,7 @@ Rollout priority:
 - then add multi-platform clients on the same daemon/protocol model
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
 - workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/node-connectivity completion and fit inside the same long-term daemon architecture
+- the workflow model is now explicitly multi-definition per workspace and multi-endpoint per workflow; the first implementation slice should start with kernel-backed workflow definitions/endpoints before graph scheduling
 
 ## 3. Milestones
 
@@ -176,7 +177,7 @@ Outcomes:
 Delivered in the current M4 slice:
 
 - multiple top-level Arroba-managed agents inside one session, each with its own focused-agent targeting, provider-run ownership, and agent-scoped history/runtime metadata
-- `Ctrl+A` and `/agent cycle` switch the active agent for direct interaction, not only footer metadata
+- `Tab` and `/agent cycle` switch the active agent for direct interaction, not only footer metadata
 - prompts and provider output route through the focused agent's runtime context for the local daemon + CLI path
 - TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
 - explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
@@ -202,7 +203,6 @@ Still pending in M4:
   - file/workspace claim tracking
   - mergeability/integration validation
 - multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
-- fuller pane/layout completion in the TypeScript CLI
 
 Exit criteria:
 

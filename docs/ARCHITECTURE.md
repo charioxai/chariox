@@ -96,10 +96,13 @@ The purpose of a multi-agent workspace is to host workflows.
 
 Normative rules:
 
+- a workspace may contain multiple workflow definitions
 - a workflow is a directed graph inside one workspace
 - graph nodes are top-level Arroba-managed agents
 - graph edges define allowed message flow
-- each workflow definition has exactly one entry node
+- each workflow definition may expose multiple endpoints
+- each workflow endpoint targets exactly one entry node in that workflow
+- disconnected subgraphs are allowed inside one workflow; a subgraph is only reachable if some endpoint targets an entry node within it
 - the kernel owns workflow runs, routing, and turn activation
 
 ## 3. Component Responsibilities
@@ -177,16 +180,18 @@ The kernel should treat workflows as general directed graphs.
 
 Each workflow definition contains:
 
-- one entry node
 - graph nodes that reference top-level agents
 - edges that define allowed message flow
+- one or more endpoints, each bound to an entry node
 - per-agent instructions/system prompts and optional capabilities/repo scopes
 
 Each workflow run contains:
 
+- the workflow endpoint that started the run
 - one inbound queue per agent
 - one active turn at most per agent
 - kernel-owned routing and delivery state
+- zero or more run outputs emitted by output-producing nodes
 
 ### 3.3.3 Workflow Messaging and Turns
 
@@ -219,19 +224,42 @@ Required kernel tools:
 - `consume_input_messages`
 - `validate_output_messages`
 
-### 3.3.4 Published Workflow Endpoints
+### 3.3.4 Workflow Endpoints and Run Outputs
 
-Workflow entry should not be limited to a human prompt from a terminal.
+Workflow entry should not be limited to a human prompt from a terminal, and a workflow may expose more than one entry surface.
 
-The kernel should support a logical `workflow endpoint` that can be invoked by:
+The kernel should support logical `workflow endpoints` that can be invoked by:
 
 - a terminal user in the workspace
 - another internal Arroba component
 - an external system through a published API surface
 
-The workflow itself should remain agnostic to whether the initial input came from a terminal or an external system.
+Rules:
 
-### 3.3.5 Observability and Debug Logging Baseline
+- each endpoint maps to one entry node in its workflow
+- multiple endpoints may target the same entry node
+- the workflow itself should remain agnostic to whether the initial input came from a terminal or an external system
+
+Workflow output should start as a run-level concept rather than a strict graph object.
+
+Rules:
+
+- a workflow run may emit zero or more outputs
+- output-producing nodes may be the same nodes used as workflow entry targets
+- explicit first-class output endpoints may be added later if publishing/integration needs them
+
+### 3.3.5 Workflow/Agent Binding and Missing Agents
+
+Workflow definitions are user-authored artifacts and should not silently mutate when workspace agents change.
+
+Rules:
+
+- creating a new agent MUST NOT automatically add that agent to existing workflows
+- deleting an agent MUST NOT automatically delete workflow nodes or edges
+- a workflow node whose referenced agent no longer exists should remain in the workflow and be marked missing/unavailable
+- workflows with missing endpoint targets or required nodes should remain listable/editable but be considered invalid for execution until repaired
+
+### 3.3.6 Observability and Debug Logging Baseline
 
 Arroba should treat debug logging as a shared local-runtime subsystem rather than as ad hoc per-process stderr output.
 

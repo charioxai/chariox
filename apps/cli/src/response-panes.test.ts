@@ -7,6 +7,7 @@ import {
   responsePaneRowSlots,
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
+  workflowCanvasPaneIndices,
 } from "./response-panes.js"
 
 const agents = [
@@ -95,6 +96,39 @@ test("responsePaneRowSlots lays out two panes per row up to the configured scree
   assert.deepEqual(responsePaneRowSlots(1), [[0]])
   assert.deepEqual(responsePaneRowSlots(4), [[0, 1], [2, 3]])
   assert.deepEqual(responsePaneRowSlots(5), [[0, 1], [2, 3], [4]])
+})
+
+test("workflowCanvasPaneIndices exposes spare trailing split-pane slots for the workflow canvas", () => {
+  assert.deepEqual(
+    workflowCanvasPaneIndices({
+      split: true,
+      visibleAgentCount: 1,
+      screenIndex: 1,
+      screenCount: 2,
+      maxAgentsPerScreen: 3,
+    }),
+    [1, 2],
+  )
+  assert.deepEqual(
+    workflowCanvasPaneIndices({
+      split: true,
+      visibleAgentCount: 3,
+      screenIndex: 0,
+      screenCount: 2,
+      maxAgentsPerScreen: 3,
+    }),
+    [],
+  )
+  assert.deepEqual(
+    workflowCanvasPaneIndices({
+      split: false,
+      visibleAgentCount: 1,
+      screenIndex: 0,
+      screenCount: 1,
+      maxAgentsPerScreen: 3,
+    }),
+    [],
+  )
 })
 
 test("computeSplitPaneGeometry preserves the current two-column split behavior", () => {

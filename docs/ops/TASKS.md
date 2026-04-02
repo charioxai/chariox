@@ -20,15 +20,13 @@ A lightweight, repo-native task board so contributors and future agents can cont
   - Future transport drills still pending:
     - deeper live replay/catch-up validation during active streaming output
     - long-idle heartbeat/liveness validation on the kernel WebSocket path
-- [ ] **M4-004** Expand the TypeScript CLI split-pane model beyond the current first slice
-  - Note: The daemon/runtime data model can handle more agents than the current visible split-pane surface; the current UI still centers on the primary transcript plus up to two auxiliary panes.
 - [ ] **M4-005** Add multi-machine session ownership and resume behavior on the OpenCode-first path
   - Note: Close machine reassignment/resume semantics before moving to multi-platform clients or more providers.
 
 ## Backlog
 
 - [ ] **M4-002** Add daemon-scheduled multi-agent workflow runtime
-  - Note: Build circular-first workflow scheduling and structured handoffs on top of the same top-level session-agent runtime.
+  - Note: Start with kernel-backed workflow definitions and endpoints (multiple workflows per workspace, multiple endpoints per workflow), then build circular-first scheduling and structured handoffs on top of the same top-level session-agent runtime.
 - [ ] **M5-001** Polish the TypeScript CLI as the reference Arroba client
   - Note: Finish the local UX, pane behavior, and command flow on the OpenCode-first path before adding more client surfaces.
 - [ ] **M6-001** Add multi-platform clients on the same daemon/protocol model
@@ -48,6 +46,9 @@ A lightweight, repo-native task board so contributors and future agents can cont
 - [x] **M4-001** Deliver manual multi-agent session runtime and split-pane CLI UX
   - Note: Landed real session-agent execution targets, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/view split|individual`, and the initial multi-agent split-pane TypeScript CLI surface.
   - Commit: `23829c2`
+- [x] **M4-004** Expand the TypeScript CLI split-pane model beyond the current first slice
+  - Note: Completed on a parallel branch by another agent and now treated as landed roadmap state.
+  - Commit: `unknown`
 
 - [x] **M2-001** Deliver end-to-end local OpenCode daemon + CLI baseline
   - Note: Shipped one working local flow: launch OpenCode through the daemon, submit prompts from a CLI input field, and stream output live back into the terminal.

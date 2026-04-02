@@ -532,6 +532,7 @@ Normative rules:
 
 - A workspace MAY run in single-agent mode, multi-agent manual mode, or multi-agent workflow mode.
 - Multi-agent manual mode is user-directed: the user selects the active top-level agent and the kernel routes direct interaction to that agent.
+- A workspace MAY contain multiple workflow definitions.
 - Multi-agent execution MUST be modeled as a general directed workflow graph.
 - v1 validates only two workflow topologies:
   - circular
@@ -539,15 +540,29 @@ Normative rules:
 - The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer aggregation, and more advanced topologies can be added without redesigning the core workflow engine.
 - Contributors MUST NOT implement multi-agent behavior as topology-specific special cases scattered through unrelated codepaths.
 
-### 7.4 Entry Node and Workflow Endpoint
+### 7.4 Workflow Endpoints
 
-Every workflow definition MUST have exactly one designed entry node.
+Every workflow definition MUST expose one or more endpoints.
 
 Rules:
 
-- initial input enters the workflow through the entry node
+- every workflow endpoint MUST target exactly one entry node in that workflow
+- a workflow MAY have multiple endpoints
+- multiple endpoints MAY target the same entry node
+- initial input enters the workflow through the endpoint's target entry node
 - the same logical workflow endpoint MAY be invoked by a terminal user or an external system
 - the workflow should be agnostic to the source of the initial input once it has been normalized into the workflow message model
+- disconnected subgraphs inside one workflow are allowed; a subgraph is only invokable if some endpoint targets an entry node within it
+
+### 7.4.1 Workflow Outputs
+
+Workflow output SHOULD start as a run-level concept rather than a mandatory graph-level exit-point object.
+
+Rules:
+
+- a workflow run MAY emit zero or more outputs
+- output-producing nodes MAY be the same nodes that serve as endpoint targets
+- explicit output-endpoint objects MAY be added later for published/integrated workflows
 
 ### 7.5 Inter-Agent Communication Contract
 
@@ -599,6 +614,17 @@ The workflow model should support both:
   - validated messages are delivered as soon as they are produced during the turn
 
 In both modes, every delivered message is considered final. Arroba does not distinguish a separate intermediate-message type by default.
+
+### 7.5.3 Workflow/Agent Binding
+
+Workflow definitions are user-authored structures and MUST NOT silently rewrite themselves when workspace agents change.
+
+Rules:
+
+- creating a new agent MUST NOT automatically add that agent to existing workflows
+- deleting an agent MUST NOT automatically delete workflow nodes or edges
+- if a workflow node references an agent that no longer exists, that node MUST remain in the workflow and be marked missing/unavailable
+- workflows with missing nodes or missing endpoint targets MUST remain listable/editable and SHOULD be blocked from execution until repaired
 
 ### 7.6 Circular Topology Rules
 

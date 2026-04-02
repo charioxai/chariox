@@ -122,6 +122,22 @@ export function responsePaneRowSlots(maxAgentsPerScreen: number) {
   return rows
 }
 
+export function workflowCanvasPaneIndices(options: {
+  split: boolean
+  visibleAgentCount: number
+  screenIndex: number
+  screenCount: number
+  maxAgentsPerScreen: number
+}) {
+  if (!options.split || options.screenCount < 1 || options.screenIndex !== options.screenCount - 1) {
+    return []
+  }
+
+  const slotCount = Math.max(1, Math.floor(options.maxAgentsPerScreen))
+  const workflowSlotCount = Math.max(0, slotCount - options.visibleAgentCount)
+  return Array.from({ length: workflowSlotCount }, (_, index) => options.visibleAgentCount + index)
+}
+
 export function computeSplitPaneGeometry(
   width: number,
   split: boolean,

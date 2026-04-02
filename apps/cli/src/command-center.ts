@@ -33,6 +33,8 @@ const ROOT_COMMANDS: CommandCenterItem[] = [
   { id: "agent-focus", label: "/agent focus", description: "Focus on a specific agent", kind: "command", value: "/agent focus " },
   { id: "agent-list", label: "/agent list", description: "List all agents in the session", kind: "command", value: "/agent list" },
   { id: "agent-cycle", label: "/agent cycle", description: "Cycle to next agent", kind: "command", value: "/agent cycle" },
+  { id: "workflow", label: "/workflow", description: "Open the workflow canvas", kind: "command", value: "/workflow" },
+  { id: "workflow-new", label: "/workflow new", description: "Create a new workflow", kind: "command", value: "/workflow new " },
 ]
 
 export function buildCommandCenterItems(input: string, context: CommandContext): CommandCenterItem[] {

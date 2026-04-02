@@ -1,5 +1,6 @@
 import path from "node:path"
 import process from "node:process"
+import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
@@ -17,7 +18,6 @@ import type {
   CliOptions,
   PromptAttachmentPart,
   PromptSubmittedPayload,
-  ReadDirectoryTreeResult,
   RuntimeAttachment,
   RuntimeNoticeRecord,
   RuntimeProviderRun,
@@ -30,6 +30,7 @@ import type {
   StoredTransferArtifact,
   TerminalOutputRecord,
   TranscriptEntry,
+  WorkflowDefinition,
 } from "./cli-types.js"
 import {
   createCommandActionHandlers,
@@ -71,7 +72,6 @@ import {
   listSessionsRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
-  readDirectoryTreeRequest,
   resizeTerminalRequest,
   resolveSessionRequest,
   spawnAgentRequest,
@@ -113,7 +113,12 @@ import {
   mergeAdjacentHistoryPageEntries,
   previewLineForHistoryEntry,
 } from "./transcript-history.js"
-import { responsePaneRowSlots, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
+import {
+  responsePaneRowSlots,
+  selectResponsePaneAgents,
+  splitPaneAuxiliaryAgentIds,
+  workflowCanvasPaneIndices,
+} from "./response-panes.js"
 import {
   navigatePromptHistory,
   promptHistoryDirectionForKey,
@@ -199,15 +204,11 @@ import {
   type WaitingRoomState,
 } from "./waiting-room.js"
 import {
-  buildDirectoryTreeRows,
-  createDirectoryTreeState,
-  isDirectoryTreePathLoaded,
-  mergeDirectoryTreeEntries,
-  moveDirectoryTreeSelection,
-  toggleDirectoryTreeExpansion,
-  type DirectoryTreeEntry,
-  type DirectoryTreeState,
-} from "./tree-view.js"
+  resolveWorkspaceVisibleAgents,
+  resolveWorkspaceVisibleTranscriptAgentId,
+  toggleWorkspaceScreenMode,
+  type WorkspaceScreenMode,
+} from "./workspace-screen.js"
 import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -245,12 +246,11 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
 const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
-  { keys: "Tab", description: "Toggle between the transcript and file tree." },
-  { keys: "Ctrl+A", description: "Cycle focus to the next agent." },
+  { keys: "Tab", description: "Cycle focus to the next agent." },
+  { keys: "Ctrl+Tab", description: "Toggle between the agent screens and workflow canvas." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
-  { keys: "Tree: Up / Down / Enter", description: "Move and toggle the file tree when it is active." },
 ]
 
 const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
@@ -680,11 +680,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
   const [commandCenterItems, setCommandCenterItems] = createSignal<CommandCenterItem[]>([])
   const [commandCenterIndex, setCommandCenterIndex] = createSignal(0)
-  const [centerMode, setCenterMode] = createSignal<"transcript" | "tree">("transcript")
   const [multiAgentResponseLayout, setMultiAgentResponseLayout] = createSignal<MultiAgentResponseLayout>(
     sessionResponseLayout(initialSession, preferencesState().ui?.multiAgentResponseLayout),
   )
-  const [directoryTreeState, setDirectoryTreeState] = createSignal<DirectoryTreeState | null>(null)
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
   const [activeStatusLabel, setActiveStatusLabel] = createSignal<string | null>(null)
   const [providerActivityLabel, setProviderActivityLabel] = createSignal<string | null>(null)
@@ -708,6 +706,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [promptHistoryDraft, setPromptHistoryDraft] = createSignal<string | null>(null)
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
+  const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
+  const [workflows, setWorkflows] = createSignal<WorkflowDefinition[]>([])
+  const setCenterMode = (_mode: "transcript") => {}
+  const setDirectoryTreeState = (_value: null) => {}
   let stopRequestInFlight = false
   let promptInput: TextareaRenderable | undefined
   let hotkeysFocus: Renderable | null = null
@@ -794,6 +796,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
+  const workflowScreenActive = () => isAttached() && workspaceScreenMode() === "workflow"
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
   const responsePaneSelection = () => selectResponsePaneAgents(
     sessionState().agents,
@@ -801,9 +804,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     splitAgentResponseMode(),
     maxAgentsPerScreen(),
   )
-  const responsePrimaryAgent = () => responsePaneSelection().primary
-  const responseVisibleAgents = () => responsePaneSelection().visibleAgents
-  const visibleTranscriptAgentId = () => responsePaneSelection().visibleTranscriptAgentId
+  const responsePrimaryAgent = () => workflowScreenActive() ? null : responsePaneSelection().primary
+  const responseVisibleAgents = () => resolveWorkspaceVisibleAgents(workspaceScreenMode(), responsePaneSelection().visibleAgents)
+  const visibleTranscriptAgentId = () => resolveWorkspaceVisibleTranscriptAgentId(
+    workspaceScreenMode(),
+    responsePaneSelection().visibleTranscriptAgentId,
+  )
+  const responseWorkflowCanvasSlots = () => workflowCanvasPaneIndices({
+    split: splitAgentResponseMode(),
+    visibleAgentCount: responsePaneSelection().visibleAgents.length,
+    screenIndex: responsePaneSelection().screenIndex,
+    screenCount: responsePaneSelection().screenCount,
+    maxAgentsPerScreen: maxAgentsPerScreen(),
+  })
   const responsePaneRows = () => responsePaneRowSlots(maxAgentsPerScreen())
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
@@ -927,7 +940,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       layout_is_split: multiAgentResponseLayout() === "split",
       split_active: splitAgentResponseMode(),
       attached: isAttached(),
-      center_mode: centerMode(),
+      center_mode: "transcript",
       agent_count: sessionState().agents.length,
       focused_agent_id: focusedAgentId(),
       has_transcript_scrollbox: Boolean(transcriptScrollbox),
@@ -1168,83 +1181,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applySessionState(await getSessionState(client, sessionState().id))
     await maybeResize(client, sessionState().id)
     flashFooter(`variant set to ${decision.selectedVariant}`, "info")
-  }
-  const loadDirectoryTree = async (treePath = "") => {
-    const attachment = attachmentState()
-    if (!attachment) {
-      return
-    }
-    const response = await client.send<Record<string, unknown>>(readDirectoryTreeRequest(sessionState().id, attachment.id, treePath || null, 1))
-    const payload = expectVariant<{ result: ReadDirectoryTreeResult }>(response, "DirectoryTreeRead")
-    const next = treePath && directoryTreeState()
-      ? mergeDirectoryTreeEntries(directoryTreeState()!, treePath, payload.result.entries)
-      : createDirectoryTreeState(payload.result.root_path, payload.result.entries)
-    const previous = directoryTreeState()
-    if (previous && previous.rootPath === next.rootPath) {
-      next.expandedPaths = previous.expandedPaths.filter((value) => value === "" || next.entries.some((entry) => entry.relative_path === value))
-      next.selectedPath = next.entries.some((entry) => entry.relative_path === previous.selectedPath) || previous.selectedPath === ""
-        ? previous.selectedPath
-        : next.selectedPath
-    }
-    setDirectoryTreeState(next)
-  }
-  const toggleCenterMode = async () => {
-    if (!isAttached()) {
-      return
-    }
-    if (centerMode() === "tree") {
-      setCenterMode("transcript")
-      rebuildTranscript()
-      if (transcriptScrollbox) {
-        const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
-        const target = Math.max(0, Math.min(lastTranscriptScrollTop, maxScrollTop))
-        transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
-        transcriptScrollbox.requestRender()
-      }
-      return
-    }
-    lastTranscriptScrollTop = transcriptScrollbox?.scrollTop ?? lastTranscriptScrollTop
-    try {
-      await loadDirectoryTree()
-    } catch (error) {
-      flashFooter(`failed to load tree: ${formatError(error)}`, "error")
-      return
-    }
-    setCenterMode("tree")
-    rebuildTranscript()
-  }
-  const navigateDirectoryTree = (direction: "up" | "down") => {
-    const state = directoryTreeState()
-    if (!state) {
-      return
-    }
-    setDirectoryTreeState(moveDirectoryTreeSelection(state, direction))
-    rebuildTranscript()
-  }
-  const activateDirectoryTreeSelection = () => {
-    const state = directoryTreeState()
-    if (!state) {
-      return
-    }
-    const row = buildDirectoryTreeRows(state).find((candidate) => candidate.id === state.selectedPath)
-    if (!row || (row.kind !== "root" && row.kind !== "directory")) {
-      return
-    }
-    const applyToggle = () => {
-      setDirectoryTreeState((current) => (current ? toggleDirectoryTreeExpansion(current) : current))
-      rebuildTranscript()
-    }
-    if (row.id === "" || isDirectoryTreePathLoaded(state, row.id)) {
-      applyToggle()
-      return
-    }
-    void loadDirectoryTree(row.id)
-      .then(() => {
-        applyToggle()
-      })
-      .catch((error) => {
-        flashFooter(`failed to load tree: ${formatError(error)}`, "error")
-      })
   }
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: providerRunState(),
@@ -2599,7 +2535,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const renderSplitPaneFooters = () => {
-    const showSplitFooters = splitAgentResponseMode() && sessionState().agents.length > 1
+    const showSplitFooters = !workflowScreenActive() && splitAgentResponseMode() && sessionState().agents.length > 1
     ensureSplitPaneFooterRenderables(
       responsePrimaryFooterBox,
       responsePrimaryFooterText,
@@ -2747,14 +2683,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!historyLoadingBox) {
       return
     }
-    historyLoadingBox.visible = centerMode() === "transcript" && loadingHistory()
-    if (centerMode() !== "transcript") {
-      if (historyLoadingText) {
-        historyLoadingBox.remove(historyLoadingText.id)
-        historyLoadingText.destroyRecursively()
-        historyLoadingText = undefined
-      }
-    } else if (loadingHistory()) {
+    historyLoadingBox.visible = loadingHistory()
+    if (loadingHistory()) {
       if (!historyLoadingText) {
         historyLoadingText = new TextRenderable(renderer, {
           content: "loading...",
@@ -2845,7 +2775,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const split = splitAgentResponseMode()
     const visibleAgents = responseVisibleAgents()
+    const workflowCanvasSlots = responseWorkflowCanvasSlots()
     const paneRows = responsePaneRows()
+    const showWorkflowScreen = workflowScreenActive()
 
     responseLayoutBox.flexDirection = "column"
     responseLayoutBox.gap = split ? 1 : 0
@@ -2858,6 +2790,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rowVisibleCount: number,
       focused: boolean,
       visible: boolean,
+      showFooter: boolean,
       defaultBackground: RGBA,
     ) => {
       if (!pane) {
@@ -2883,7 +2816,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pane.backgroundColor = visible && split
         ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
         : defaultBackground
-      footerBox && (footerBox.visible = visible && split)
+      footerBox && (footerBox.visible = visible && split && showFooter)
       if (scrollbox) {
         scrollbox.backgroundColor = pane.backgroundColor
         scrollbox.requestRender?.()
@@ -2901,7 +2834,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (paneIndex === 0) {
           return true
         }
-        return split && Boolean(visibleAgents[paneIndex])
+        return split && (Boolean(visibleAgents[paneIndex]) || workflowCanvasSlots.includes(paneIndex))
       }).length
       rowBox.visible = rowIndex === 0 || (split && rowVisibleCount > 0)
       rowBox.flexDirection = "row"
@@ -2922,6 +2855,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             rowVisibleCount,
             Boolean(focused),
             true,
+            !showWorkflowScreen,
             theme.backgroundPanel,
           )
           if (historyLoadingBox) {
@@ -2932,6 +2866,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           continue
         }
         const auxiliaryIndex = paneIndex - 1
+        const showWorkflowCanvas = workflowCanvasSlots.includes(paneIndex)
         layoutPane(
           responseAuxiliaryPanes[auxiliaryIndex],
           responseAuxiliaryFooterBoxes[auxiliaryIndex],
@@ -2939,7 +2874,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           agent,
           rowVisibleCount,
           Boolean(focused),
-          split && Boolean(agent),
+          !showWorkflowScreen && split && (Boolean(agent) || showWorkflowCanvas),
+          Boolean(agent),
           theme.backgroundElement,
         )
       }
@@ -2948,6 +2884,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderSplitPaneFooters()
 
     for (let auxiliaryIndex = 0; auxiliaryIndex < maxAgentsPerScreen() - 1; auxiliaryIndex += 1) {
+      const paneIndex = auxiliaryIndex + 1
       syncAuxiliaryPane({
         scrollbox: responseAuxiliaryScrollboxes[auxiliaryIndex],
         nextAgentId: split ? (visibleAgents[auxiliaryIndex + 1]?.id ?? null) : null,
@@ -2964,7 +2901,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           agentTranscriptScrollboxes.set(agentId, scrollbox)
         },
         rebuildAuxiliaryAgentPane,
-        buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
+        buildEmptyTranscriptRenderable: () => (
+          !showWorkflowScreen && workflowCanvasSlots.includes(paneIndex)
+            ? buildWorkflowCanvasRenderable(renderer)
+            : buildEmptyTranscriptRenderable(renderer)
+        ),
       })
     }
 
@@ -2992,6 +2933,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   createEffect(() => {
     splitAgentResponseMode()
+    workspaceScreenMode()
     multiAgentResponseLayout()
     maxAgentsPerScreen()
     dimensions().width
@@ -3619,21 +3561,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptRenderables.clear()
     emptyTranscriptRenderable = undefined
 
-    if (centerMode() === "tree" && directoryTreeState()) {
-      const treeState = directoryTreeState()!
-      const rows = buildDirectoryTreeRows(treeState)
-      transcriptScrollbox.add(buildDirectoryTreeRenderable(renderer, treeState))
-      const selectedIndex = Math.max(0, rows.findIndex((row) => row.id === treeState.selectedPath))
-      const maxScrollTop = Math.max(0, transcriptScrollbox.scrollHeight - transcriptScrollbox.height)
-      transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: Math.max(0, Math.min(selectedIndex, maxScrollTop)) })
-      transcriptScrollbox.requestRender()
-      return
-    }
-
     const visibleEntries = visibleTranscriptEntries()
     if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
-        ? buildEmptyTranscriptRenderable(renderer)
+        ? (workflowScreenActive()
+            ? buildWorkflowCanvasRenderableWithList(renderer, workflows())
+            : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
@@ -3846,9 +3779,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearActiveToolLabels: () => {
       activeToolLabels.clear()
     },
+    clearWorkflows: () => {
+      setWorkflows([])
+    },
     clearAgentPaneRuntime,
     clearDirectoryTree: () => setDirectoryTreeState(null),
     clearTranscript: () => replaceTranscriptEntries([]),
+    resetWorkspaceScreen: () => setWorkspaceScreenMode("agents"),
     resetStopRequestInFlight: () => {
       stopRequestInFlight = false
     },
@@ -3966,6 +3903,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleWorkflowCommand,
   } = createCommandActionHandlers({
     workspace: options.workspace ?? process.cwd(),
     worktree: options.worktree ?? options.workspace ?? process.cwd(),
@@ -4075,6 +4013,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ? { agent: resolved.agent ?? null, error: resolved.error }
         : { agent: resolved.agent ?? null }
     },
+    workflowScreenActive,
+    showWorkflowScreen,
+    createWorkflow,
+    assignWorkflowAlias,
     formatAgentLabel,
     refreshSplitPaneFocusRepaint,
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
@@ -4126,6 +4068,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onAgent: async (command) => {
         try {
           await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorkflow: async (command) => {
+        try {
+          await handleWorkflowCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -4295,6 +4244,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onAgent: async (command) => {
         try {
           await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onWorkflow: async (command) => {
+        try {
+          await handleWorkflowCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -4479,7 +4435,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return handled
   }
   const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
-    if (!isAttached() || centerMode() !== "transcript" || event.eventType === "release") {
+    if (!isAttached() || event.eventType === "release") {
       return false
     }
     if (event.name !== "up" && event.name !== "down") {
@@ -4504,6 +4460,58 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptScrollbox.requestRender()
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
+  function toggleWorkspaceScreen() {
+    if (!isAttached()) {
+      return
+    }
+    setWorkspaceScreenMode((current) => toggleWorkspaceScreenMode(current))
+    rebuildTranscript()
+    applyResponseLayout()
+  }
+  function showWorkflowScreen() {
+    if (!isAttached() || workflowScreenActive()) {
+      return
+    }
+    setWorkspaceScreenMode("workflow")
+    rebuildTranscript()
+    applyResponseLayout()
+  }
+  function createWorkflow(alias?: string | null) {
+    let created: WorkflowDefinition = { id: generateWorkflowId(), alias: alias?.trim() ? alias.trim() : null }
+    setWorkflows((current) => {
+      const existingIds = new Set(current.map((workflow) => workflow.id))
+      let nextId = generateWorkflowId()
+      while (existingIds.has(nextId)) {
+        nextId = generateWorkflowId()
+      }
+      created = {
+        id: nextId,
+        alias: alias?.trim() ? alias.trim() : null,
+      }
+      return [...current, created]
+    })
+    rebuildTranscript()
+    applyResponseLayout()
+    return { workflow: created }
+  }
+  function assignWorkflowAlias(workflowId: string, alias: string) {
+    let updated: WorkflowDefinition | null = null
+    setWorkflows((current) => current.map((workflow) => {
+      if (workflow.id !== workflowId) {
+        return workflow
+      }
+      updated = {
+        ...workflow,
+        alias: alias.trim(),
+      }
+      return updated
+    }))
+    if (updated) {
+      rebuildTranscript()
+      applyResponseLayout()
+    }
+    return updated
+  }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
     if (!event) {
@@ -4523,19 +4531,24 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
+    if (event.eventType !== "release" && event.ctrl && event.name === "tab") {
+      if (hotkeysOpen()) {
+        return
+      }
+      toggleWorkspaceScreen()
+      return
+    }
     if (event.eventType !== "release" && event.name === "tab") {
       if (hotkeysOpen()) {
         return
       }
-      void toggleCenterMode()
+      if (isAttached()) {
+        void handleCycleAgentFocus()
+      }
       return
     }
     if (event?.ctrl && event.name === "c") {
       void (activePrompt() ? requestPromptStop() : requestExit())
-      return
-    }
-    if (event.eventType !== "release" && event.ctrl && event.name === "a") {
-      void handleCycleAgentFocus()
       return
     }
     if (hotkeysOpen()) {
@@ -4552,20 +4565,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (event.eventType !== "release" && event.name === "backspace" && isAttached() && !promptInput?.plainText && pendingAttachments().length > 0) {
       removeLastPendingPromptAttachment()
       return
-    }
-    if (isAttached() && centerMode() === "tree") {
-      if (event.eventType !== "release" && event.name === "up") {
-        navigateDirectoryTree("up")
-        return
-      }
-      if (event.eventType !== "release" && event.name === "down") {
-        navigateDirectoryTree("down")
-        return
-      }
-      if (event.eventType !== "release" && (event.name === "return" || event.name === "enter") && !(promptInput?.plainText.trim())) {
-        activateDirectoryTreeSelection()
-        return
-      }
     }
     if (shouldNavigatePromptTurns(event)) {
       navigatePromptTurns(event.name === "up" ? "previous" : "next")
@@ -6044,8 +6043,56 @@ function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptE
 }
 
 function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
+  return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
+}
+
+function buildWorkflowCanvasRenderable(renderer: ReturnType<typeof useRenderer>) {
+  return buildWorkflowCanvasRenderableWithList(renderer, [])
+}
+
+function buildWorkflowCanvasRenderableWithList(
+  renderer: ReturnType<typeof useRenderer>,
+  workflows: WorkflowDefinition[],
+) {
+  const wrapper = buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
+  if (workflows.length === 0) {
+    return wrapper
+  }
+  const list = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 0,
+    marginTop: 1,
+    alignItems: "center",
+    width: "100%",
+  })
+  list.add(
+    new TextRenderable(renderer, {
+      content: "workflows",
+      fg: theme.secondary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    }),
+  )
+  for (const workflow of workflows) {
+    list.add(
+      new TextRenderable(renderer, {
+        content: workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id,
+        fg: theme.text,
+        wrapMode: "none",
+      }),
+    )
+  }
+  wrapper.add(list)
+  return wrapper
+}
+
+function buildAsciiCanvasRenderable(
+  renderer: ReturnType<typeof useRenderer>,
+  promptText: string,
+  promptColor: RGBA,
+) {
   const art = arrobaArtFrame(12)
-  const prompt = centerTextToWidth("Type your first prompt below.", maxLineWidth(art))
+  const prompt = centerTextToWidth(promptText, maxLineWidth(art))
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
     flexDirection: "column",
@@ -6071,7 +6118,7 @@ function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>
   artContainer.add(
     new TextRenderable(renderer, {
       content: prompt,
-      fg: theme.textMuted,
+      fg: promptColor,
       wrapMode: "none",
     }),
   )
@@ -6156,28 +6203,6 @@ function buildNoSessionRenderable(
       wrapMode: "word",
     }),
   )
-  return wrapper
-}
-
-function buildDirectoryTreeRenderable(renderer: ReturnType<typeof useRenderer>, state: DirectoryTreeState) {
-  const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 0,
-    flexDirection: "column",
-    gap: 0,
-  })
-  for (const row of buildDirectoryTreeRows(state)) {
-    const isSelected = row.id === state.selectedPath
-    const text = `${"  ".repeat(row.depth)}${row.kind === "root" || row.kind === "directory" ? (row.expanded ? "[-] " : "[+] ") : "    "}${row.label}`
-    wrapper.add(
-      new TextRenderable(renderer, {
-        content: text,
-        fg: row.kind === "root" ? theme.secondary : isSelected ? theme.primary : theme.text,
-        ...(isSelected ? { bg: theme.backgroundElement } : {}),
-        attributes: isSelected || row.kind === "root" ? TextAttributes.BOLD : TextAttributes.NONE,
-        wrapMode: "none",
-      }),
-    )
-  }
   return wrapper
 }
 
@@ -6603,13 +6628,17 @@ function trimSingleTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text
 }
 
+function generateWorkflowId(): string {
+  return randomBytes(8).toString("hex")
+}
+
 function formatError(error: unknown): string {
   return describeCliError(error)
 }
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Ctrl+A)\n  Ctrl+A                keyboard shortcut to cycle to next agent\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  Tab                   keyboard shortcut to cycle to next agent\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
   )
 }
 

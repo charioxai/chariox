@@ -134,8 +134,9 @@ export function deriveAttachedFooterSummary(options: {
     ? ` • Agent: ${formatAgentLabel(focusedAgent)}${focusedAgent.is_processing ? " [working]" : ""}`
     : ""
   const viewInfo = options.multiAgentMode ? ` • View: ${options.responseLayout}` : ""
+  const navigationInfo = options.multiAgentMode ? " • Tab cycles agents • Ctrl+Tab opens workflow" : ""
 
-  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${options.session.agents.length} ${options.session.agents.length === 1 ? "agent" : "agents"} in session${agentInfo}${viewInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""} • ${options.hotkeyToggleLabel} hotkeys`
+  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${options.session.agents.length} ${options.session.agents.length === 1 ? "agent" : "agents"} in session${agentInfo}${viewInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
 }
 
 function resolveProviderModelContextLimit(
