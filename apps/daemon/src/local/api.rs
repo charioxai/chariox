@@ -192,6 +192,7 @@ pub struct SpawnAgentRequest {
     pub alias: Option<String>,
     pub provider: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub worktree_id: Option<String>,
 }
 
@@ -729,6 +730,11 @@ impl DaemonApp {
                 } else {
                     create_request
                 };
+                let create_request = if let Some(effort) = request.effort {
+                    create_request.with_effort(effort)
+                } else {
+                    create_request
+                };
                 let create_request = if let Some(worktree_id) = request.worktree_id {
                     create_request.with_worktree(worktree_id)
                 } else {
@@ -1065,6 +1071,7 @@ mod tests {
                 alias: Some("reviewer".to_string()),
                 provider: "opencode".to_string(),
                 model: Some("openai/gpt-5.4".to_string()),
+                effort: None,
                 worktree_id: None,
             }))
             .expect("spawn should succeed")
@@ -1234,6 +1241,7 @@ mod tests {
                 alias: Some("reviewer".to_string()),
                 provider: "opencode".to_string(),
                 model: None,
+                effort: None,
                 worktree_id: None,
             }))
             .expect("spawn should succeed")
@@ -1459,6 +1467,7 @@ mod tests {
                 alias: Some("reviewer".to_string()),
                 provider: "claude-code".to_string(),
                 model: None,
+                effort: None,
                 worktree_id: None,
             }))
             .expect("spawn should succeed")

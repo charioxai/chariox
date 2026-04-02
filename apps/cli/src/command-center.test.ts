@@ -81,3 +81,24 @@ test("buildCommandCenterItems shows multi-agent view options", () => {
   assert.equal(items[0]?.label, "split")
   assert.equal(items[0]?.value, "/view split")
 })
+
+test("buildCommandCenterItems includes workflow subcommands", () => {
+  const items = buildCommandCenterItems("/", {
+    providerCatalog: fallbackProviderCatalog(),
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+  const labels = new Set(items.map((item) => item.label))
+
+  assert.equal(labels.has("/workflow"), true)
+  assert.equal(labels.has("/workflow list"), true)
+  assert.equal(labels.has("/workflow show"), true)
+  assert.equal(labels.has("/workflow new"), true)
+  assert.equal(labels.has("/workflow node add"), true)
+  assert.equal(labels.has("/workflow node remove"), true)
+  assert.equal(labels.has("/workflow edge add"), true)
+  assert.equal(labels.has("/workflow edge remove"), true)
+  assert.equal(labels.has("/workflow endpoint new"), true)
+  assert.equal(labels.has("/workflow endpoint alias"), true)
+  assert.equal(labels.has("/workflow endpoint bind"), true)
+})

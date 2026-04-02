@@ -20,6 +20,7 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     alias: null,
     provider: "opencode",
     model: "openai/gpt-5",
+    effort: null,
     worktree_id: "worktree-1",
     state: "Idle",
     is_processing: false,
@@ -87,7 +88,44 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
   assert.equal(nodeB!.y < nodeC!.y, true)
   assert.equal(nodeB!.selected, true)
   assert.equal(nodeC!.missing, true)
+  assert.equal(nodeB!.lines[0], "agent-b (reviewer)")
+  assert.equal(nodeB!.lines[1], "provider opencode")
+  assert.equal(nodeB!.lines[2], "model openai/gpt-5")
   assert.equal(layout.endpoints[0]?.entryNodeId, "node-a")
+})
+
+test("buildWorkflowGraphLayout applies live selection metadata to the active agent node", () => {
+  const layout = buildWorkflowGraphLayout({
+    workflow: workflow(),
+    agents: [
+      agent("agent-a"),
+      agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+    ],
+    selectedNodeId: "node-b",
+    zoomIndex: DEFAULT_WORKFLOW_ZOOM_INDEX,
+  })
+  const nodeB = layout.nodes.find((node) => node.id === "node-b")
+  assert.ok(nodeB)
+  assert.equal(nodeB!.lines[1], "provider opencode")
+  assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
+  assert.equal(nodeB!.lines[3], "effort high")
+})
+
+test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
+  const layout = buildWorkflowGraphLayout({
+    workflow: workflow(),
+    agents: [
+      agent("agent-a"),
+      agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
+    ],
+    selectedNodeId: "node-b",
+    zoomIndex: DEFAULT_WORKFLOW_ZOOM_INDEX,
+  })
+  const nodeB = layout.nodes.find((node) => node.id === "node-b")
+  assert.ok(nodeB)
+  assert.equal(nodeB!.lines[1], "provider opencode")
+  assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
+  assert.equal(nodeB!.lines[3], "effort high")
 })
 
 test("derivePointerAnchoredViewport preserves the pointer-relative anchor during zoom", () => {

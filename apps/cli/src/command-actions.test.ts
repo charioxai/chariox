@@ -130,6 +130,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
     }),
     currentModelId: () => "openai/gpt-5",
     currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
     focusedAgentId: () => currentSession.focused_agent_id,
     multiAgentResponseLayout: () => "split",
     maxAgentsPerScreen: () => 3,
@@ -182,6 +183,8 @@ test("agent spawn refreshes session state after launching the provider run", asy
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
     selectWorkflowCanvas: () => {},
+    replaceWorkflowDefinitions: () => {},
+    upsertWorkflowDefinition: () => {},
     createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     listWorkflows: async () => [],
     resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
@@ -242,6 +245,7 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     }),
     currentModelId: () => "openai/gpt-5",
     currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
     focusedAgentId: () => currentSession.focused_agent_id,
     multiAgentResponseLayout: () => "split",
     maxAgentsPerScreen: () => 3,
@@ -291,6 +295,8 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     workflowScreenActive: () => false,
     showWorkflowScreen: () => {},
     selectWorkflowCanvas: () => {},
+    replaceWorkflowDefinitions: () => {},
+    upsertWorkflowDefinition: () => {},
     createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
     listWorkflows: async () => [],
     resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
@@ -317,8 +323,14 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
 test("workflow command opens the workflow screen and manages local workflows", async () => {
   let flashedMessage = ""
   let shownWorkflowScreen = 0
+  let addedWorkflowNodeAgentId: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
+  const resolvedWorkflowAgent = makeAgent({
+    id: "agent-instance-1",
+    agent_ref: "5f26c340",
+    alias: "planner",
+  })
   const handlers = createCommandActionHandlers({
     workspace: "workspace-1",
     worktree: "worktree-1",
@@ -329,6 +341,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
     providerRunState: (): RuntimeProviderRun | null => null,
     currentModelId: () => "openai/gpt-5",
     currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
     focusedAgentId: () => "agent-1",
     multiAgentResponseLayout: () => "split",
     maxAgentsPerScreen: () => 3,
@@ -361,10 +374,28 @@ test("workflow command opens the workflow screen and manages local workflows", a
     spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     destroyAgent: async () => makeSession(),
     focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
-    resolveSessionAgent: () => ({ agent: makeAgent() }),
+    resolveSessionAgent: (reference) => {
+      if (
+        reference === resolvedWorkflowAgent.id
+        || reference === resolvedWorkflowAgent.agent_ref
+        || reference === resolvedWorkflowAgent.alias
+      ) {
+        return { agent: resolvedWorkflowAgent }
+      }
+      return { agent: null, error: `agent '${reference ?? ""}' not found` }
+    },
     workflowScreenActive: () => false,
     showWorkflowScreen: () => { shownWorkflowScreen += 1 },
     selectWorkflowCanvas: (workflowId) => { selectedWorkflowIds.push(workflowId ?? "null") },
+    replaceWorkflowDefinitions: (nextWorkflows) => {
+      workflows.clear()
+      for (const workflow of nextWorkflows) {
+        workflows.set(workflow.id, workflow)
+      }
+    },
+    upsertWorkflowDefinition: (workflow) => {
+      workflows.set(workflow.id, workflow)
+    },
     createWorkflow: async (alias) => {
       const workflow = { id: "workflow-1", alias: alias ?? null }
       const session = makeSession({ workflows: [workflow] })
@@ -403,11 +434,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
       workflow: { id: "workflow-1", alias: null },
       session: makeSession(),
     }),
-    addWorkflowNode: async (_workflowRef, agentId) => ({
-      node: { id: "node-1", agent_id: agentId },
-      workflow: { id: "workflow-1", alias: null },
-      session: makeSession(),
-    }),
+    addWorkflowNode: async (_workflowRef, agentId) => {
+      addedWorkflowNodeAgentId = agentId
+      return {
+        node: { id: "node-1", agent_id: agentId },
+        workflow: { id: "workflow-1", alias: null },
+        session: makeSession(),
+      }
+    },
     removeWorkflowNode: async (_workflowRef, nodeId) => ({
       node: { id: nodeId, agent_id: "agent-1" },
       workflow: { id: "workflow-1", alias: null },
@@ -431,6 +465,236 @@ test("workflow command opens the workflow screen and manages local workflows", a
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow", args: [] })
   assert.equal(shownWorkflowScreen, 1)
 
+  // Test: when workflow screen is already active and no workflows exist, create a workflow
+  let createdWorkflowFromEmpty = false
+  let activeScreenFlashedMessage = ""
+  const activeScreenSelectedWorkflowIds: string[] = []
+  const activeScreenWorkflows = new Map<string, WorkflowDefinition>()
+  const handlersWithActiveScreen = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun | null => null,
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
+    focusedAgentId: () => "agent-1",
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { activeScreenFlashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: makeSession() }),
+    launchAgentProviderRun: async () => { throw new Error("should not launch provider") },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => makeSession(),
+    spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    destroyAgent: async () => makeSession(),
+    focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    resolveSessionAgent: () => ({ agent: makeAgent() }),
+    workflowScreenActive: () => true,  // Screen is already active
+    showWorkflowScreen: () => {},
+    selectWorkflowCanvas: (workflowId: string | null) => { activeScreenSelectedWorkflowIds.push(workflowId ?? "null") },
+    replaceWorkflowDefinitions: (nextWorkflows) => {
+      activeScreenWorkflows.clear()
+      for (const workflow of nextWorkflows) {
+        activeScreenWorkflows.set(workflow.id, workflow)
+      }
+    },
+    upsertWorkflowDefinition: (workflow) => {
+      activeScreenWorkflows.set(workflow.id, workflow)
+    },
+    createWorkflow: async (alias: string | null | undefined) => {
+      createdWorkflowFromEmpty = true
+      const workflow = { id: "workflow-empty", alias: alias ?? null }
+      activeScreenWorkflows.set(workflow.id, workflow)
+      return { workflow, session: makeSession({ workflows: [workflow] }) }
+    },
+    listWorkflows: async () => [],  // No workflows exist
+    resolveWorkflow: async (workflowRef: string) => {
+      const workflow = [...activeScreenWorkflows.values()].find((item) => item.id === workflowRef || item.alias === workflowRef)
+      if (!workflow) {
+        throw new Error(`unknown workflow: ${workflowRef}`)
+      }
+      return { workflow }
+    },
+    assignWorkflowAlias: async (workflowId: string, alias: string) => {
+      const workflow = activeScreenWorkflows.get(workflowId)
+      if (!workflow) {
+        return null
+      }
+      const next = { ...workflow, alias }
+      activeScreenWorkflows.set(workflowId, next)
+      return next
+    },
+    createWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    assignWorkflowEndpointAlias: async () => ({
+      endpoint: { id: "endpoint-1", alias: "test", entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    bindWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    addWorkflowNode: async () => ({
+      node: { id: "node-1", agent_id: "agent-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    removeWorkflowNode: async () => ({
+      node: { id: "node-1", agent_id: "agent-1" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    addWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    removeWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" },
+      workflow: { id: "workflow-1", alias: null },
+      session: makeSession(),
+    }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+  await handlersWithActiveScreen.handleWorkflowCommand({ kind: "workflow", raw: "/workflow", args: [] })
+  assert.equal(createdWorkflowFromEmpty, true, "should create workflow when screen active but no workflows exist")
+  assert.equal(activeScreenFlashedMessage, "created workflow workflow-empty")
+  assert.deepEqual(activeScreenSelectedWorkflowIds, ["workflow-empty"])
+
+  let hydratedWorkflows: WorkflowDefinition[] = []
+  const hydratedSelections: string[] = []
+  const handlersWithDetachedWorkflowCache = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun | null => null,
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
+    focusedAgentId: () => "agent-1",
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: () => {},
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: makeSession() }),
+    launchAgentProviderRun: async () => { throw new Error("should not launch provider") },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => makeSession(),
+    spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    destroyAgent: async () => makeSession(),
+    focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    resolveSessionAgent: () => ({ agent: makeAgent() }),
+    workflowScreenActive: () => true,
+    showWorkflowScreen: () => {},
+    selectWorkflowCanvas: (workflowId: string | null) => { hydratedSelections.push(workflowId ?? "null") },
+    replaceWorkflowDefinitions: (workflows) => {
+      hydratedWorkflows = workflows
+    },
+    upsertWorkflowDefinition: () => {},
+    createWorkflow: async () => {
+      throw new Error("should not create a workflow when the workspace already has one")
+    },
+    listWorkflows: async () => [{ id: "workflow-cached", alias: "cached", nodes: [], edges: [], endpoints: [] }],
+    resolveWorkflow: async () => ({ workflow: { id: "workflow-cached", alias: "cached", nodes: [], edges: [], endpoints: [] } }),
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    assignWorkflowEndpointAlias: async () => ({
+      endpoint: { id: "endpoint-1", alias: "test", entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    bindWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    addWorkflowNode: async () => ({
+      node: { id: "node-1", agent_id: "agent-1" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    removeWorkflowNode: async () => ({
+      node: { id: "node-1", agent_id: "agent-1" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    addWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    removeWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" },
+      workflow: { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      session: makeSession(),
+    }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+  await handlersWithDetachedWorkflowCache.handleWorkflowCommand({ kind: "workflow", raw: "/workflow", args: [] })
+  assert.deepEqual(hydratedWorkflows.map((workflow) => workflow.id), ["workflow-cached"])
+  assert.deepEqual(hydratedSelections, ["workflow-cached"])
+
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow new review", args: ["new", "review"] })
   assert.equal(flashedMessage, "created workflow workflow-1 (review)")
   assert.deepEqual(selectedWorkflowIds, ["workflow-1"])
@@ -438,8 +702,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")
 
-  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow node add workflow-1 agent-1", args: ["node", "add", "workflow-1", "agent-1"] })
-  assert.equal(flashedMessage, "added workflow node node-1 for agent agent-1")
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow node add workflow-1 5f26c340", args: ["node", "add", "workflow-1", "5f26c340"] })
+  assert.equal(flashedMessage, "added workflow node node-1 for agent 5f26c340")
+  assert.equal(addedWorkflowNodeAgentId, "agent-instance-1")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
   assert.equal(flashedMessage, "added workflow edge edge-1")

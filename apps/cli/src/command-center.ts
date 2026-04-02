@@ -34,7 +34,17 @@ const ROOT_COMMANDS: CommandCenterItem[] = [
   { id: "agent-list", label: "/agent list", description: "List all agents in the session", kind: "command", value: "/agent list" },
   { id: "agent-cycle", label: "/agent cycle", description: "Cycle to next agent", kind: "command", value: "/agent cycle" },
   { id: "workflow", label: "/workflow", description: "Open the workflow canvas", kind: "command", value: "/workflow" },
+  { id: "workflow-list", label: "/workflow list", description: "List workflows in the workspace", kind: "command", value: "/workflow list" },
+  { id: "workflow-show", label: "/workflow show", description: "Show a workflow by id or alias", kind: "command", value: "/workflow show " },
   { id: "workflow-new", label: "/workflow new", description: "Create a new workflow", kind: "command", value: "/workflow new " },
+  { id: "workflow-alias", label: "/workflow <workflow-ref> <alias>", description: "Assign an alias to an existing workflow", kind: "command", value: "/workflow " },
+  { id: "workflow-node-add", label: "/workflow node add", description: "Add a workflow node for an agent", kind: "command", value: "/workflow node add " },
+  { id: "workflow-node-remove", label: "/workflow node remove", description: "Remove a workflow node", kind: "command", value: "/workflow node remove " },
+  { id: "workflow-edge-add", label: "/workflow edge add", description: "Add a directed edge between workflow nodes", kind: "command", value: "/workflow edge add " },
+  { id: "workflow-edge-remove", label: "/workflow edge remove", description: "Remove a workflow edge", kind: "command", value: "/workflow edge remove " },
+  { id: "workflow-endpoint-new", label: "/workflow endpoint new", description: "Create a workflow endpoint", kind: "command", value: "/workflow endpoint new " },
+  { id: "workflow-endpoint-alias", label: "/workflow endpoint alias", description: "Assign an alias to a workflow endpoint", kind: "command", value: "/workflow endpoint alias " },
+  { id: "workflow-endpoint-bind", label: "/workflow endpoint bind", description: "Bind an endpoint to a workflow node", kind: "command", value: "/workflow endpoint bind " },
 ]
 
 export function buildCommandCenterItems(input: string, context: CommandContext): CommandCenterItem[] {

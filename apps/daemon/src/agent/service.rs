@@ -66,6 +66,7 @@ impl AgentService {
             request.alias,
             request.provider,
             request.model,
+            request.effort,
             request.worktree_id,
             position,
         );
@@ -287,6 +288,25 @@ impl AgentService {
             })?;
 
         agent.set_processing(is_processing);
+        Ok(agent.clone())
+    }
+
+    pub fn set_agent_runtime_profile(
+        &mut self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_provider(provider.to_string());
+        agent.set_model(model);
+        agent.set_effort(effort);
         Ok(agent.clone())
     }
 

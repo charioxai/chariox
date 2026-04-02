@@ -77,6 +77,7 @@ type CommandActionDeps = {
   providerRunState: () => RuntimeProviderRun | null
   currentModelId: () => string
   currentVariantId: () => string
+  currentProviderId: () => string
   focusedAgentId: () => string | null
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
@@ -116,13 +117,15 @@ type CommandActionDeps = {
   ) => Promise<RuntimeProviderRun>
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
-  spawnAgent: (provider: string, alias?: string, model?: string) => Promise<AgentSpawnPayload>
+  spawnAgent: (provider: string, alias?: string, model?: string, effort?: string) => Promise<AgentSpawnPayload>
   destroyAgent: (agentId: string) => Promise<RuntimeSession>
   focusAgent: (agentId: string) => Promise<AgentFocusPayload>
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   workflowScreenActive: () => boolean
   showWorkflowScreen: () => void
   selectWorkflowCanvas: (workflowId: string | null) => void
+  replaceWorkflowDefinitions: (workflows: WorkflowDefinition[]) => void
+  upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
   createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
@@ -347,14 +350,15 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       case "spawn": {
         const alias = args[1]
         const model = args[2]
-        const provider = deps.providerRunState()?.provider ?? "opencode"
+        const provider = deps.currentProviderId()
+        const effort = deps.currentVariantId()
         try {
-          const payload = await deps.spawnAgent(provider, alias, model)
+          const payload = await deps.spawnAgent(provider, alias, model ?? deps.currentModelId(), effort)
           deps.applySessionState(payload.session)
           await deps.refreshAgentPanes(payload.session)
           const run = await deps.launchAgentProviderRun(
             model ?? deps.currentModelId(),
-            deps.currentVariantId(),
+            effort,
             payload.agent.id,
           )
           deps.setProviderRunState(run)
@@ -464,14 +468,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const subcommand = args[0]
 
     if (!subcommand) {
+      const knownWorkflows = deps.sessionState().workflows ?? []
+      if (knownWorkflows.length > 0) {
+        if (!deps.workflowScreenActive()) {
+          deps.selectWorkflowCanvas(knownWorkflows[0]?.id ?? null)
+          deps.showWorkflowScreen()
+        }
+        return
+      }
+
       if (!deps.workflowScreenActive()) {
         deps.showWorkflowScreen()
+        return
+      }
+
+      const workflows = await deps.listWorkflows()
+      if (workflows.length > 0) {
+        deps.replaceWorkflowDefinitions(workflows)
+        deps.selectWorkflowCanvas(workflows[0]?.id ?? null)
+      } else {
+        // If already on workflow screen but no workflows exist, create one
+        const payload = await deps.createWorkflow(null)
+        deps.selectWorkflowCanvas(payload.workflow.id)
+        deps.applySessionState(payload.session)
+        deps.flashFooter(`created workflow ${payload.workflow.id}`, "info")
       }
       return
     }
 
     if (subcommand === "list") {
       const workflows = await deps.listWorkflows()
+      deps.replaceWorkflowDefinitions(workflows)
       deps.flashFooter(
         workflows.length === 0
           ? "no workflows in workspace"
@@ -488,6 +515,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       const payload = await deps.resolveWorkflow(workflowRef)
+      deps.upsertWorkflowDefinition(payload.workflow)
       deps.selectWorkflowCanvas(payload.workflow.id)
       deps.showWorkflowScreen()
       deps.flashFooter(
@@ -513,14 +541,20 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const action = args[1]
       const workflowRef = args[2]
       if (action === "add") {
-        const agentId = args[3]
-        if (!workflowRef || !agentId) {
+        const agentRef = args[3]
+        if (!workflowRef || !agentRef) {
           deps.flashFooter("usage: /workflow node add <workflow-ref> <agent-id>", "error")
           return
         }
-        const payload = await deps.addWorkflowNode(workflowRef, agentId)
+        const resolvedAgent = deps.resolveSessionAgent(agentRef)
+        if (!resolvedAgent.agent || resolvedAgent.error) {
+          deps.flashFooter(resolvedAgent.error ?? `agent '${agentRef}' not found`, "error")
+          return
+        }
+        const payload = await deps.addWorkflowNode(workflowRef, resolvedAgent.agent.id)
         deps.applySessionState(payload.session)
-        deps.flashFooter(`added workflow node ${payload.node.id} for agent ${agentId}`, "info")
+        deps.selectWorkflowCanvas(payload.workflow.id)
+        deps.flashFooter(`added workflow node ${payload.node.id} for agent ${deps.formatAgentLabel(resolvedAgent.agent)}`, "info")
         return
       }
       if (action === "remove") {
@@ -531,6 +565,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.removeWorkflowNode(workflowRef, nodeId)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(`removed workflow node ${payload.node.id}`, "info")
         return
       }
@@ -556,6 +591,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.addWorkflowEdge(workflowRef, fromNodeId, toNodeId)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(`added workflow edge ${payload.edge.id}`, "info")
         return
       }
@@ -567,6 +603,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.removeWorkflowEdge(workflowRef, edgeId)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(`removed workflow edge ${payload.edge.id}`, "info")
         return
       }
@@ -592,6 +629,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.createWorkflowEndpoint(workflowRef, entryNodeId, alias)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(`created workflow endpoint ${payload.endpoint.id}`, "info")
         return
       }
@@ -607,6 +645,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.assignWorkflowEndpointAlias(workflowRef, endpointRef, alias)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(
           `workflow endpoint ${payload.endpoint.id} aliased as ${payload.endpoint.alias}`,
           "info",
@@ -625,6 +664,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         const payload = await deps.bindWorkflowEndpoint(workflowRef, endpointRef, entryNodeId)
         deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(
           `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`,
           "info",
@@ -652,6 +692,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`unknown workflow: ${subcommand}`, "error")
       return
     }
+    deps.upsertWorkflowDefinition(workflow)
     deps.showWorkflowScreen()
     deps.flashFooter(`workflow ${workflow.id} aliased as ${workflow.alias}`, "info")
   }

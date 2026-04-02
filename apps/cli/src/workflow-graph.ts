@@ -215,13 +215,16 @@ export function buildWorkflowGraphLayout(options: {
       const currentY = componentTop + levelIndex * (metrics.nodeHeight + metrics.verticalGap) + metrics.endpointGap + 1
       for (const node of levelNodes) {
         const agent = agentById.get(node.agent_id) ?? null
+        const provider = agent?.provider ?? null
+        const model = agent?.model ?? null
+        const effort = agent?.effort ?? null
         const layoutNode = {
           id: node.id,
           agentId: node.agent_id,
           alias: agent?.alias ?? null,
-          provider: agent?.provider ?? null,
-          model: agent?.model ?? null,
-          effort: null,
+          provider,
+          model,
+          effort,
           missing: !agent,
           selected: node.id === options.selectedNodeId,
           x: currentX,
@@ -229,11 +232,12 @@ export function buildWorkflowGraphLayout(options: {
           width: metrics.nodeWidth,
           height: metrics.nodeHeight,
           lines: formatNodeLines({
-            agentId: node.agent_id,
-            alias: agent?.alias ?? null,
-            provider: agent?.provider ?? null,
-            model: agent?.model ?? null,
-            effort: null,
+            title: agent
+              ? (agent.alias ? `${agent.agent_ref} (${agent.alias})` : agent.agent_ref)
+              : node.agent_id,
+            provider,
+            model,
+            effort,
           }, metrics.nodeWidth),
         } satisfies WorkflowGraphNodeLayout
         nodeLayoutById.set(node.id, layoutNode)
@@ -407,8 +411,7 @@ function routeEdge(fromNode: WorkflowGraphNodeLayout, toNode: WorkflowGraphNodeL
 
 function formatNodeLines(
   options: {
-    agentId: string
-    alias: string | null
+    title: string
     provider: string | null
     model: string | null
     effort: string | null
@@ -417,8 +420,7 @@ function formatNodeLines(
 ) {
   const innerWidth = Math.max(4, width - 2)
   return [
-    truncateLine(options.agentId, innerWidth),
-    truncateLine(options.alias ? `alias ${options.alias}` : "alias -", innerWidth),
+    truncateLine(options.title, innerWidth),
     truncateLine(options.provider ? `provider ${options.provider}` : "provider -", innerWidth),
     truncateLine(options.model ? `model ${options.model}` : "model -", innerWidth),
     truncateLine(options.effort ? `effort ${options.effort}` : "effort -", innerWidth),

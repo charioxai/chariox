@@ -271,7 +271,7 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
-  { keys: "Ctrl+Tab", description: "Toggle between the agent screens and workflow canvas." },
+  { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow canvas." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
@@ -2293,6 +2293,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
+  const replaceWorkflowDefinitions = (workflows: WorkflowDefinition[]) => {
+    applySessionState({
+      ...sessionState(),
+      workflows,
+    })
+  }
+
+  const upsertWorkflowDefinition = (workflow: WorkflowDefinition) => {
+    const currentWorkflows = sessionState().workflows ?? []
+    const existingIndex = currentWorkflows.findIndex((entry) => entry.id === workflow.id)
+    const workflows = existingIndex === -1
+      ? [...currentWorkflows, workflow]
+      : currentWorkflows.map((entry, index) => (index === existingIndex ? workflow : entry))
+    replaceWorkflowDefinitions(workflows)
+  }
+
   const clearAgentCompletionState = (agentId: string | null | undefined) => {
     if (!agentId) {
       return
@@ -3588,31 +3604,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     emptyTranscriptRenderable = undefined
 
     const visibleEntries = visibleTranscriptEntries()
-    if (visibleEntries.length === 0) {
+    if (isAttached() && workflowScreenActive()) {
+      emptyTranscriptRenderable = buildWorkflowCanvasRenderable(renderer, {
+        workflows: sessionState().workflows ?? [],
+        agents: sessionState().agents,
+        selectedWorkflowId: selectedWorkflowId(),
+        selectedNodeId: selectedWorkflowNodeId(),
+        zoomIndex: workflowZoomIndex(),
+        onSelectNode: (nodeId) => {
+          setSelectedWorkflowNodeId(nodeId)
+          rebuildTranscript()
+        },
+        onZoom: (direction, event) => {
+          if (!transcriptScrollbox) {
+            return
+          }
+          zoomWorkflowCanvas(
+            direction,
+            event.x - transcriptScrollbox.x,
+            event.y - transcriptScrollbox.y,
+          )
+        },
+      })
+      transcriptScrollbox.add(emptyTranscriptRenderable)
+      transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
+    } else if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
-        ? (workflowScreenActive()
-            ? buildWorkflowCanvasRenderable(renderer, {
-                workflows: sessionState().workflows ?? [],
-                agents: sessionState().agents,
-                selectedWorkflowId: selectedWorkflowId(),
-                selectedNodeId: selectedWorkflowNodeId(),
-                zoomIndex: workflowZoomIndex(),
-                onSelectNode: (nodeId) => {
-                  setSelectedWorkflowNodeId(nodeId)
-                  rebuildTranscript()
-                },
-                onZoom: (direction, event) => {
-                  if (!transcriptScrollbox) {
-                    return
-                  }
-                  zoomWorkflowCanvas(
-                    direction,
-                    event.x - transcriptScrollbox.x,
-                    event.y - transcriptScrollbox.y,
-                  )
-                },
-              })
-            : buildEmptyTranscriptRenderable(renderer))
+        ? buildEmptyTranscriptRenderable(renderer)
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
@@ -3958,6 +3976,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     providerRunState,
     currentModelId,
     currentVariantId,
+    currentProviderId: () => currentProviderSelection().provider,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -4025,9 +4044,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ),
     setProviderRunState,
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
-    spawnAgent: async (provider, alias, model) => {
+    spawnAgent: async (provider, alias, model, effort) => {
       const response = await client.send<Record<string, unknown>>(
-        spawnAgentRequest(sessionState().id, provider, alias, model),
+        spawnAgentRequest(sessionState().id, provider, alias, model, undefined, effort),
       )
       const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
       return {
@@ -4060,6 +4079,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workflowScreenActive,
     showWorkflowScreen,
     selectWorkflowCanvas,
+    replaceWorkflowDefinitions,
+    upsertWorkflowDefinition,
     createWorkflow,
     listWorkflows,
     resolveWorkflow,
@@ -4728,7 +4749,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       return
     }
-    if (event.eventType !== "release" && event.ctrl && event.name === "tab") {
+    if (event.eventType !== "release" && event.ctrl && event.name === "p") {
       if (hotkeysOpen()) {
         return
       }

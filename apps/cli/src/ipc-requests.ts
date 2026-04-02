@@ -347,6 +347,7 @@ export function spawnAgentRequest(
   alias?: string,
   model?: string,
   worktreeId?: string,
+  effort?: string,
 ) {
   return {
     SpawnAgent: {
@@ -354,6 +355,7 @@ export function spawnAgentRequest(
       provider,
       alias: alias ?? null,
       model: model ?? null,
+      effort: effort ?? null,
       worktree_id: worktreeId ?? null,
     },
   }

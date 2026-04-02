@@ -35,6 +35,7 @@ pub struct AgentInstance {
     alias: Option<String>,
     provider: String,
     model: Option<String>,
+    effort: Option<String>,
     worktree_id: Option<String>,
     state: AgentState,
     is_processing: bool,
@@ -52,6 +53,7 @@ impl AgentInstance {
         alias: Option<String>,
         provider: impl Into<String>,
         model: Option<String>,
+        effort: Option<String>,
         worktree_id: Option<String>,
         position: GridPosition,
     ) -> Self {
@@ -63,6 +65,7 @@ impl AgentInstance {
             alias,
             provider: provider.into(),
             model,
+            effort,
             worktree_id,
             state: AgentState::Idle,
             is_processing: false,
@@ -94,6 +97,10 @@ impl AgentInstance {
 
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    pub fn effort(&self) -> Option<&str> {
+        self.effort.as_deref()
     }
 
     pub fn worktree_id(&self) -> Option<&str> {
@@ -141,6 +148,14 @@ impl AgentInstance {
     pub fn set_model(&mut self, model: Option<String>) {
         self.model = model;
     }
+
+    pub fn set_provider(&mut self, provider: impl Into<String>) {
+        self.provider = provider.into();
+    }
+
+    pub fn set_effort(&mut self, effort: Option<String>) {
+        self.effort = effort;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +164,7 @@ pub struct CreateAgentRequest {
     pub alias: Option<String>,
     pub provider: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub worktree_id: Option<String>,
 }
 
@@ -159,6 +175,7 @@ impl CreateAgentRequest {
             alias: None,
             provider: provider.into(),
             model: None,
+            effort: None,
             worktree_id: None,
         }
     }
@@ -170,6 +187,11 @@ impl CreateAgentRequest {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        self.effort = Some(effort.into());
         self
     }
 

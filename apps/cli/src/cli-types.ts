@@ -34,6 +34,7 @@ export type AgentInstance = {
   alias: string | null
   provider: string
   model: string | null
+  effort?: string | null
   worktree_id: string | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean

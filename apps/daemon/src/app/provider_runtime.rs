@@ -152,6 +152,14 @@ impl DaemonApp {
                 "session_id": run.session_id(),
             }),
         );
+        if let Some(agent_id) = run.agent_instance_id() {
+            let _ = self.agents.set_agent_runtime_profile(
+                agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+            )?;
+        }
         self.providers.get_run(run.id())
     }
 
