@@ -6317,11 +6317,23 @@ function buildWorkflowCanvasRenderable(
   }
   wrapper.onMouseScroll = handleMouseScroll
 
+  // Get unique agent IDs from workflow nodes and format them
+  const nodeAgentIds = selectedWorkflow.nodes?.map((node) => node.agent_id) ?? []
+  const uniqueAgentIds = [...new Set(nodeAgentIds)]
+  const agentLabels = uniqueAgentIds.map((agentId) => {
+    const agent = options.agents.find((a) => a.id === agentId)
+    if (!agent) return agentId
+    return agent.alias ? `${agentId} (${agent.alias})` : agentId
+  })
+
+  const workflowLabel = selectedWorkflow.alias
+    ? `${layout.workflowId} (${selectedWorkflow.alias})`
+    : layout.workflowId
+  const agentsLabel = agentLabels.length > 0 ? `, agents: ${agentLabels.join(", ")}` : ""
+
   wrapper.add(
     new TextRenderable(renderer, {
-      content: selectedWorkflow.alias
-        ? `${layout.workflowId} (${selectedWorkflow.alias})`
-        : layout.workflowId,
+      content: `workflow: ${workflowLabel}${agentsLabel}`,
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
