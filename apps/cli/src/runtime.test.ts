@@ -9,6 +9,7 @@ import {
   describeCliError,
   getExitCleanupDecision,
   getProviderActivityLabel,
+  isProviderIdleStatus,
   resolveStreamingAgentId,
   resolveVisibleTranscriptAgentId,
   getPollRecoveryDecision,
@@ -124,6 +125,8 @@ test("provider status labels map to active badge text", () => {
   assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
   assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
   assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
+  assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
+  assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
 })
 
 test("visible transcript follows focus in individual mode and primary pane in split mode", () => {

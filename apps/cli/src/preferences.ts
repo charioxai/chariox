@@ -16,6 +16,29 @@ export type MultiAgentResponseLayout = "individual" | "split"
 
 export type UiPreferences = {
   multiAgentResponseLayout?: MultiAgentResponseLayout
+  maxAgentsPerScreen?: number
+}
+
+export const DEFAULT_MAX_AGENTS_PER_SCREEN = 6
+
+export function resolveMaxAgentsPerScreen(value?: number | null) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_MAX_AGENTS_PER_SCREEN
+  }
+  return Math.max(1, Math.floor(Number(value)))
+}
+
+export function mergeUiPreferences(
+  current: ArrobaPreferences,
+  next: UiPreferences,
+): ArrobaPreferences {
+  return {
+    ...current,
+    ui: {
+      ...(current.ui ?? {}),
+      ...next,
+    },
+  }
 }
 
 export async function loadPreferences() {
@@ -41,12 +64,7 @@ export async function saveProviderPreferences(provider: string, next: ProviderPr
 
 export async function saveUiPreferences(next: UiPreferences) {
   const current = await loadPreferences()
-  await savePreferences({
-    ui: {
-      ...(current.ui ?? {}),
-      ...next,
-    },
-  })
+  await savePreferences(mergeUiPreferences(current, next))
 }
 
 export function preferencesPath() {

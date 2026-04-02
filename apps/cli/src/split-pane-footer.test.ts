@@ -56,13 +56,13 @@ test("agentPaneStatusBadge reports error and streaming states", () => {
   })
 })
 
-test("formatSplitPaneFooter uses alias, catalog model name, and fallback variant", () => {
+test("formatSplitPaneFooter uses alias and catalog model name", () => {
   assert.equal(
-    formatSplitPaneFooter(primaryAgent, catalog, null, "high"),
-    "Planner • GPT-5.4 (high)",
+    formatSplitPaneFooter(primaryAgent, catalog, null),
+    "Planner • GPT-5.4",
   )
   assert.equal(
-    formatSplitPaneFooter(secondaryAgent, catalog, "gpt-5.4", null),
+    formatSplitPaneFooter(secondaryAgent, catalog, "gpt-5.4"),
     "agent-b • GPT-5.4",
   )
 })
@@ -83,13 +83,12 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
     },
     catalog,
     fallbackModel: "gpt-5.4",
-    fallbackVariant: "medium",
   })
 
   assert.deepEqual(state.primary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.deepEqual(state.secondary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.equal(state.secondary.focused, true)
-  assert.equal(state.secondary.info, "agent-b • GPT-5.4 (medium)")
+  assert.equal(state.secondary.info, "agent-b • GPT-5.4")
 })
 
 test("buildSplitPaneFooterState uses activity labels and focus per pane", () => {
@@ -108,7 +107,6 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
     },
     catalog,
     fallbackModel: "gpt-5.4",
-    fallbackVariant: null,
   })
 
   assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })

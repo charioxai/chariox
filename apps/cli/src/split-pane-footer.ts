@@ -85,15 +85,13 @@ export function formatSplitPaneFooter(
   agent: SplitPaneFooterAgent | null,
   catalog: ProviderCatalog,
   fallbackModel?: string | null,
-  fallbackVariant?: string | null,
 ) {
   if (!agent) {
     return ""
   }
   const aliasLabel = agent.alias?.trim() || agent.agent_ref
   const modelLabel = resolveAgentModelLabel(catalog, agent, fallbackModel)
-  const variantLabel = fallbackVariant?.trim() ? ` (${fallbackVariant})` : ""
-  return `${aliasLabel} • ${modelLabel}${variantLabel}`
+  return `${aliasLabel} • ${modelLabel}`
 }
 
 export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {
@@ -108,7 +106,6 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
   activityLabels: Record<string, string | null>
   catalog: ProviderCatalog
   fallbackModel?: string | null
-  fallbackVariant?: string | null
 }): SplitPaneFooterState<T> {
   const buildPaneState = (agent: T | null): SplitPaneFooterPaneState => {
     const focused = agent?.id === options.focusedAgentId
@@ -122,7 +119,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     return {
       badge,
       focused,
-      info: formatSplitPaneFooter(agent, options.catalog, options.fallbackModel, options.fallbackVariant),
+      info: formatSplitPaneFooter(agent, options.catalog, options.fallbackModel),
     }
   }
 

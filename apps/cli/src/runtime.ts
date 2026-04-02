@@ -43,7 +43,7 @@ export function getSessionStatusLabel(
 
 export function getProviderActivityLabel(text: string) {
   const normalized = text.trim()
-  if (!normalized || /^OpenCode is idle\.?$/i.test(normalized)) {
+  if (!normalized || isProviderIdleStatus(text)) {
     return null
   }
   if (/^OpenCode is thinking\.\.\.$/i.test(normalized)) {
@@ -63,6 +63,10 @@ export function getProviderActivityLabel(text: string) {
   }
 
   return null
+}
+
+export function isProviderIdleStatus(text: string) {
+  return /^OpenCode is idle\.?$/i.test(text.trim())
 }
 
 export function getToolActivityLabel(tool?: string | null) {

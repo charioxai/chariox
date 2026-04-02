@@ -115,6 +115,25 @@ test("visible provider status updates activity and appends renderable status chu
   ])
 })
 
+test("idle provider status is ignored so it cannot demote a live turn to idle", () => {
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    agentActivityLabel: () => "Thinking",
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_status",
+    bytes: [...Buffer.from("OpenCode is idle.", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "streaming:agent-a",
+  ])
+})
+
 test("runtime notices and transport lifecycle update the kernel connection state", () => {
   const { deps, calls, notices } = createDeps()
   const controller = createKernelEventController(deps as never)

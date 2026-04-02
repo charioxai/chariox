@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::TryRecvError;
+use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::provider::opencode_client::OpenCodePart;
@@ -10,6 +11,7 @@ use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMe
 const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
+const PROMPT_COMPLETION_SETTLE_WINDOW: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
@@ -50,6 +52,9 @@ pub(super) struct OpenCodeRuntimeState {
     event_subscription: OpenCodeEventSubscription,
     last_status_kind: Option<String>,
     last_completed_assistant_message_id: Option<String>,
+    pending_prompt_completion: bool,
+    pending_prompt_completion_quiet_since: Option<Instant>,
+    active_tool_part_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -91,6 +96,9 @@ impl OpenCodeRuntimeState {
             event_subscription,
             last_status_kind: None,
             last_completed_assistant_message_id: None,
+            pending_prompt_completion: false,
+            pending_prompt_completion_quiet_since: None,
+            active_tool_part_ids: BTreeSet::new(),
         }
     }
 
@@ -114,6 +122,7 @@ pub(super) fn drain_opencode_events(
     let mut chunks = Vec::new();
     let mut prompt_completed = false;
     let mut provider_idle = false;
+    let mut saw_completion_candidate = false;
     let mut notices = Vec::new();
     let mut resolved_model = None;
     let mut resolved_model_source = None;
@@ -148,7 +157,9 @@ pub(super) fn drain_opencode_events(
                         != Some(info.id.as_str())
                 {
                     state.last_completed_assistant_message_id = Some(info.id.clone());
-                    prompt_completed = true;
+                    state.pending_prompt_completion = true;
+                    state.pending_prompt_completion_quiet_since = None;
+                    saw_completion_candidate = true;
                 }
             }
             Ok(OpenCodeEvent::MessagePartDelta {
@@ -298,6 +309,7 @@ pub(super) fn drain_opencode_events(
                         if role != Some("assistant") {
                             continue;
                         }
+                        update_active_tool_part_ids(state, &part);
                         let summary = render_tool_transcript_update(&part);
                         let previous = state.emitted_tool_summaries.get(&part.id);
                         if previous.map(String::as_str) != Some(summary.as_str()) {
@@ -397,10 +409,26 @@ pub(super) fn drain_opencode_events(
                         }
                         is_new_completed
                     }) {
-                        prompt_completed = true;
+                        state.pending_prompt_completion = true;
+                        state.pending_prompt_completion_quiet_since = None;
+                        saw_completion_candidate = true;
                     }
                 }
             }
+        }
+    }
+
+    if state.pending_prompt_completion {
+        if saw_completion_candidate || !chunks.is_empty() || !state.active_tool_part_ids.is_empty() {
+            state.pending_prompt_completion_quiet_since = None;
+        } else if let Some(quiet_since) = state.pending_prompt_completion_quiet_since {
+            if quiet_since.elapsed() >= PROMPT_COMPLETION_SETTLE_WINDOW {
+                prompt_completed = true;
+                state.pending_prompt_completion = false;
+                state.pending_prompt_completion_quiet_since = None;
+            }
+        } else {
+            state.pending_prompt_completion_quiet_since = Some(Instant::now());
         }
     }
 
@@ -491,6 +519,7 @@ fn render_snapshot_output_chunks(
                     *emitted = part.text.len();
                 }
                 "tool" => {
+                    update_active_tool_part_ids(state, part);
                     let summary = render_tool_transcript_update(part);
                     let previous = state.emitted_tool_summaries.get(&part.id);
                     if previous.map(String::as_str) != Some(summary.as_str()) {
@@ -509,6 +538,22 @@ fn render_snapshot_output_chunks(
         }
     }
     SnapshotRenderResult { chunks }
+}
+
+fn update_active_tool_part_ids(state: &mut OpenCodeRuntimeState, part: &OpenCodePart) {
+    let Some(tool_state) = part.state.as_ref() else {
+        return;
+    };
+    let status = tool_state.status.trim().to_ascii_lowercase();
+    if status.is_empty() || is_terminal_tool_status(&status) {
+        state.active_tool_part_ids.remove(&part.id);
+    } else {
+        state.active_tool_part_ids.insert(part.id.clone());
+    }
+}
+
+fn is_terminal_tool_status(status: &str) -> bool {
+    matches!(status, "completed" | "error" | "cancelled")
 }
 
 fn render_tool_transcript_update(part: &OpenCodePart) -> String {
@@ -620,14 +665,18 @@ fn format_session_status(kind: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
     use serde_json::json;
 
     use crate::provider::opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState};
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        latest_assistant_usage_tokens, render_snapshot_output_chunks,
+        drain_opencode_events, latest_assistant_usage_tokens, render_snapshot_output_chunks,
         render_tool_transcript_update, OpenCodeRuntimeState, ToolTranscriptUpdate,
+        PROMPT_COMPLETION_SETTLE_WINDOW,
     };
 
     #[test]
@@ -785,5 +834,186 @@ mod tests {
         ];
 
         assert_eq!(latest_assistant_usage_tokens(&messages), Some(280));
+    }
+
+    #[test]
+    fn completed_assistant_requires_a_quiet_drain_before_completing_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+            info: serde_json::from_value(json!({
+                "id": "message-1",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "time": { "completed": 1 }
+            }))
+            .expect("message info should deserialize"),
+        })
+        .expect("message update should send");
+
+        let first = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("first drain should succeed");
+        assert_eq!(first.prompt_completed, false);
+
+        state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
+        let second = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("second drain should succeed");
+        assert_eq!(second.prompt_completed, true);
+    }
+
+    #[test]
+    fn running_tools_block_prompt_completion_until_they_finish_and_the_stream_goes_quiet() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+            info: serde_json::from_value(json!({
+                "id": "message-1",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "time": { "completed": 1 }
+            }))
+            .expect("message info should deserialize"),
+        })
+        .expect("message update should send");
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+            part: Box::new(OpenCodePart {
+                id: "tool-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "tool".to_string(),
+                text: String::new(),
+                tool: "bash".to_string(),
+                state: Some(OpenCodeToolState {
+                    status: "running".to_string(),
+                    input: json!({ "command": "git status" }),
+                    output: String::new(),
+                    title: String::new(),
+                    metadata: json!({}),
+                    error: String::new(),
+                    raw: String::new(),
+                }),
+                time: None,
+            }),
+        })
+        .expect("running tool update should send");
+
+        let first = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("first drain should succeed");
+        assert_eq!(first.prompt_completed, false);
+        assert!(first
+            .chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderTool));
+
+        let second = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("second drain should succeed");
+        assert_eq!(second.prompt_completed, false);
+
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+            part: Box::new(OpenCodePart {
+                id: "tool-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "tool".to_string(),
+                text: String::new(),
+                tool: "bash".to_string(),
+                state: Some(OpenCodeToolState {
+                    status: "completed".to_string(),
+                    input: json!({ "command": "git status" }),
+                    output: "On branch main".to_string(),
+                    title: String::new(),
+                    metadata: json!({}),
+                    error: String::new(),
+                    raw: String::new(),
+                }),
+                time: None,
+            }),
+        })
+        .expect("completed tool update should send");
+
+        let third = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("third drain should succeed");
+        assert_eq!(third.prompt_completed, false);
+
+        state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
+        let fourth = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("fourth drain should succeed");
+        assert_eq!(fourth.prompt_completed, true);
+    }
+
+    #[test]
+    fn resumed_output_resets_the_quiet_settle_window_before_prompt_completion() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+            info: serde_json::from_value(json!({
+                "id": "message-1",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "time": { "completed": 1 }
+            }))
+            .expect("message info should deserialize"),
+        })
+        .expect("message update should send");
+
+        let first = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("first drain should succeed");
+        assert_eq!(first.prompt_completed, false);
+
+        let second = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("second drain should succeed");
+        assert_eq!(second.prompt_completed, false);
+        assert!(state.pending_prompt_completion_quiet_since.is_some());
+
+        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+            part: Box::new(OpenCodePart {
+                id: "part-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "text".to_string(),
+                text: "late output".to_string(),
+                tool: String::new(),
+                state: None,
+                time: None,
+            }),
+        })
+        .expect("late text update should send");
+
+        let third = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("third drain should succeed");
+        assert_eq!(third.prompt_completed, false);
+        assert_eq!(third.chunks.len(), 1);
+        assert_eq!(state.pending_prompt_completion_quiet_since, None);
+
+        let fourth = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("fourth drain should succeed");
+        assert_eq!(fourth.prompt_completed, false);
+        assert!(state.pending_prompt_completion_quiet_since.is_some());
+
+        state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
+        let fifth = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("fifth drain should succeed");
+        assert_eq!(fifth.prompt_completed, true);
+    }
+
+    fn elapsed_quiet_since() -> Instant {
+        Instant::now()
+            .checked_sub(PROMPT_COMPLETION_SETTLE_WINDOW)
+            .unwrap_or_else(Instant::now)
     }
 }

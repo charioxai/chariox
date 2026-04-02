@@ -678,7 +678,6 @@ impl DaemonApp {
             );
         }
         let prompt_completed = poll_result.prompt_completed;
-        let provider_idle = poll_result.provider_idle;
         let records = self.render_opencode_output(
             session_id,
             provider_run_id,
@@ -695,7 +694,7 @@ impl DaemonApp {
             .active_prompt()
             .map(|prompt| prompt.status());
         if active_prompt_status == Some(PromptStatus::Cancelling) {
-            if provider_idle || prompt_completed {
+            if prompt_completed {
                 let _ = self.finalize_active_prompt_cancellation(session_id)?;
             }
         } else if prompt_completed && active_prompt_status.is_some() {

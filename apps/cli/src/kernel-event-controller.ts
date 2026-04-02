@@ -1,4 +1,5 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
+import { isProviderIdleStatus } from "./runtime.js"
 
 type KernelEventControllerDeps = {
   recordDaemonActivity: (source: string) => void
@@ -56,6 +57,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     }
     if (deps.splitAgentResponseMode() && recordAgentId) {
       if (record.kind === "provider_status") {
+        if (isProviderIdleStatus(text)) {
+          return
+        }
         const activityLabel = deps.getProviderActivityLabel(text)
         deps.setAgentActivityLabel(recordAgentId, activityLabel)
         if (recordAgentId === deps.focusedAgentId()) {
@@ -136,6 +140,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
             break
           }
           case "provider_status":
+            if (isProviderIdleStatus(text)) {
+              break
+            }
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
             if (deps.shouldRenderProviderStatus(text)) {
               deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__")
@@ -168,6 +175,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_status": {
+        if (isProviderIdleStatus(text)) {
+          break
+        }
         const activityLabel = deps.getProviderActivityLabel(text)
         deps.setAgentActivityLabel(recordAgentId, activityLabel)
         const nextFocusedActivityLabel = activityLabel ?? deps.agentActivityLabel(recordAgentId)

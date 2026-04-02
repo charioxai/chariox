@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
 import type {
@@ -81,7 +81,15 @@ import {
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
 import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
-import { loadPreferences, saveProviderPreferences, saveUiPreferences, type ArrobaPreferences, type MultiAgentResponseLayout } from "./preferences.js"
+import {
+  loadPreferences,
+  mergeUiPreferences,
+  resolveMaxAgentsPerScreen,
+  saveProviderPreferences,
+  saveUiPreferences,
+  type ArrobaPreferences,
+  type MultiAgentResponseLayout,
+} from "./preferences.js"
 import {
   extractDroppedPromptAttachments,
   parsePromptAttachmentCommand,
@@ -102,7 +110,8 @@ import {
   mergeAdjacentHistoryPageEntries,
   previewLineForHistoryEntry,
 } from "./transcript-history.js"
-import { computeSplitPaneGeometry, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
+import { responsePaneRowSlots, selectResponsePaneAgents, splitPaneAuxiliaryAgentIds } from "./response-panes.js"
+import { navigatePromptHistory, pushPromptHistoryEntry } from "./prompt-history.js"
 import {
   STATUS_BADGE_WIDTH,
   DEFAULT_CONNECTED_STATUS,
@@ -157,15 +166,12 @@ import {
   selectAttachableSession,
 } from "./sessions.js"
 import {
-  buildSplitPaneFooterState,
+  agentPaneStatusBadge,
+  formatSplitPaneFooter,
   reflectedDistance,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
-import {
-  applyResponseLayoutRenderables,
-  requestRenderableTreeRender,
-  syncAuxiliaryPane,
-} from "./response-layout-render.js"
+import { requestRenderableTreeRender, syncAuxiliaryPane } from "./response-layout-render.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
 import {
@@ -233,7 +239,8 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Toggle between the transcript and file tree." },
   { keys: "Ctrl+A", description: "Cycle focus to the next agent." },
-  { keys: "Up / Down", description: "Jump between user turns when the prompt is empty." },
+  { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
+  { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
   { keys: "Tree: Up / Down / Enter", description: "Move and toggle the file tree when it is active." },
 ]
@@ -588,6 +595,7 @@ async function main() {
         session.agents,
         focusedAgentId,
         sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
+        resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
       ).visibleTranscriptAgentId
     },
     prepareHistoryEntries: (entries, session) =>
@@ -647,6 +655,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialSessions = props.bootstrap.sessions
   const initialProviderCatalog = props.bootstrap.providerCatalog
   const initialPreferences = props.bootstrap.preferences
+  const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
+  const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
   const [sessionState, setSessionState] = createSignal(initialSession)
   const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
   const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
@@ -661,7 +671,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [commandCenterIndex, setCommandCenterIndex] = createSignal(0)
   const [centerMode, setCenterMode] = createSignal<"transcript" | "tree">("transcript")
   const [multiAgentResponseLayout, setMultiAgentResponseLayout] = createSignal<MultiAgentResponseLayout>(
-    sessionResponseLayout(initialSession, initialPreferences.ui?.multiAgentResponseLayout),
+    sessionResponseLayout(initialSession, preferencesState().ui?.multiAgentResponseLayout),
   )
   const [directoryTreeState, setDirectoryTreeState] = createSignal<DirectoryTreeState | null>(null)
   const [entries, setEntries] = createStore<TranscriptEntry[]>(initialEntries)
@@ -682,6 +692,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [working, setWorking] = createSignal(Boolean(initialSession.active_prompt) || initialSession.queued_prompts.length > 0)
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
   const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
+  const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>([])
+  const [promptHistoryIndex, setPromptHistoryIndex] = createSignal<number | null>(null)
+  const [promptHistoryDraft, setPromptHistoryDraft] = createSignal<string | null>(null)
   const [hotkeysOpen, setHotkeysOpen] = createSignal(false)
   const [expandedTurnIdsByAgent, setExpandedTurnIdsByAgent] = createSignal<Record<string, number[]>>({})
   let stopRequestInFlight = false
@@ -689,23 +702,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let hotkeysFocus: Renderable | null = null
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   let responseLayoutBox: BoxRenderable | undefined
-  let responseTopRowBox: BoxRenderable | undefined
+  const responseRowBoxes: Array<BoxRenderable | undefined> = []
   let responsePrimaryPane: BoxRenderable | undefined
-  let responseSecondaryPane: BoxRenderable | undefined
-  let responseSecondaryScrollbox: ScrollBoxRenderable | undefined
-  let responseTertiaryPane: BoxRenderable | undefined
-  let responseTertiaryScrollbox: ScrollBoxRenderable | undefined
+  const responseAuxiliaryPanes: Array<BoxRenderable | undefined> = []
+  const responseAuxiliaryScrollboxes: Array<ScrollBoxRenderable | undefined> = []
   let responsePrimaryFooterBox: BoxRenderable | undefined
-  let responseSecondaryFooterBox: BoxRenderable | undefined
-  let responseTertiaryFooterBox: BoxRenderable | undefined
+  const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
   let responsePrimaryFooterText: TextRenderable | undefined
-  let responseSecondaryFooterText: TextRenderable | undefined
-  let responseTertiaryFooterText: TextRenderable | undefined
+  const responseAuxiliaryFooterTexts: Array<TextRenderable | undefined> = []
   let responsePrimaryFooterBadgeTexts: TextRenderable[] = []
-  let responseSecondaryFooterBadgeTexts: TextRenderable[] = []
-  let responseTertiaryFooterBadgeTexts: TextRenderable[] = []
-  let responseSecondaryAgentId: string | null = null
-  let responseTertiaryAgentId: string | null = null
+  const responseAuxiliaryFooterBadgeTexts: Array<TextRenderable[]> = []
+  const responseAuxiliaryAgentIds: Array<string | null> = []
   const agentTranscriptScrollboxes = new Map<string, ScrollBoxRenderable>()
   const agentTranscriptRenderables = new Map<string, Map<number, TranscriptEntryRenderable>>()
   const agentEmptyTranscriptRenderables = new Map<string, BoxRenderable>()
@@ -778,11 +785,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionState().agents,
     focusedAgentId(),
     splitAgentResponseMode(),
+    maxAgentsPerScreen(),
   )
   const responsePrimaryAgent = () => responsePaneSelection().primary
-  const responseSecondaryAgent = () => responsePaneSelection().secondary
-  const responseTertiaryAgent = () => responsePaneSelection().tertiary
+  const responseVisibleAgents = () => responsePaneSelection().visibleAgents
   const visibleTranscriptAgentId = () => responsePaneSelection().visibleTranscriptAgentId
+  const responsePaneRows = () => responsePaneRowSlots(maxAgentsPerScreen())
   const primaryTranscriptSurfaceTone = () => resolveTranscriptSurfaceTone(splitAgentResponseMode(), responsePrimaryAgent()?.id === focusedAgentId())
   const auxiliaryTranscriptSurfaceTone = (agentId: string | null | undefined) => {
     return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
@@ -1528,9 +1536,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     promptTextMuting = true
     promptInput.setText(value)
+    promptInput.cursorOffset = value.length
     promptTextSnapshot = value
     refreshPromptAttachmentHighlights()
     promptTextMuting = false
+  }
+  const promptInputMaxHeight = () => (
+    isAttached()
+      ? Math.max(6, dimensions().height - 14)
+      : 6
+  )
+  const retainPromptFocus = () => {
+    if (!isAttached()) {
+      return
+    }
+    startTimeout(() => {
+      promptInput?.focus()
+    }, 0)
+  }
+  const navigatePromptHistoryInput = (direction: "previous" | "next") => {
+    const currentText = promptInput?.plainText ?? promptTextSnapshot
+    const entries = promptHistoryEntries()
+    const next = navigatePromptHistory({
+      entries,
+      currentText,
+      navigationIndex: promptHistoryIndex(),
+      navigationDraft: promptHistoryDraft(),
+      direction,
+    })
+    if (next.navigationIndex === promptHistoryIndex() && next.text === currentText) {
+      return false
+    }
+    setPromptHistoryIndex(next.navigationIndex)
+    setPromptHistoryDraft(next.navigationDraft)
+    setPromptText(next.text)
+    retainPromptFocus()
+    return true
   }
   const syncPromptPlaceholder = () => {
     if (!promptInput) {
@@ -1904,6 +1945,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       syncCommandCenter(value)
       return
     }
+    if (promptHistoryIndex() !== null || promptHistoryDraft() !== null) {
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+    }
     const drop = extractDroppedPromptAttachments(promptTextSnapshot, value, process.cwd())
     if (!drop) {
       syncPendingPromptAttachmentsFromText(value)
@@ -2017,9 +2062,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (toggleEntry?.toggleMode === "expand") {
       expandTurn(turnId)
+      retainPromptFocus()
       return
     }
     collapseTurn(turnId, toggleEntryId)
+    retainPromptFocus()
   }
 
   const appendEntry = (entry: Omit<TranscriptEntry, "id">) => {
@@ -2177,7 +2224,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       currentWorking: working(),
       currentStreamingAgentId: streamingAgentId(),
       currentAgentActivityLabels: agentActivityLabels(),
-      layoutPreference: initialPreferences.ui?.multiAgentResponseLayout,
+      layoutPreference: preferencesState().ui?.multiAgentResponseLayout,
     })
     setSessionState(nextSession)
     setAgentActivityLabels(transition.nextAgentActivityLabels)
@@ -2474,80 +2521,67 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         responsePrimaryFooterBadgeTexts = value
       },
     )
-    ensureSplitPaneFooterRenderables(
-      responseSecondaryFooterBox,
-      responseSecondaryFooterText,
-      responseSecondaryFooterBadgeTexts,
-      (value) => {
-        responseSecondaryFooterText = value
-      },
-      (value) => {
-        responseSecondaryFooterBadgeTexts = value
-      },
-    )
-    ensureSplitPaneFooterRenderables(
-      responseTertiaryFooterBox,
-      responseTertiaryFooterText,
-      responseTertiaryFooterBadgeTexts,
-      (value) => {
-        responseTertiaryFooterText = value
-      },
-      (value) => {
-        responseTertiaryFooterBadgeTexts = value
-      },
-    )
+    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
+      ensureSplitPaneFooterRenderables(
+        responseAuxiliaryFooterBoxes[slotIndex],
+        responseAuxiliaryFooterTexts[slotIndex],
+        responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
+        (value) => {
+          responseAuxiliaryFooterTexts[slotIndex] = value
+        },
+        (value) => {
+          responseAuxiliaryFooterBadgeTexts[slotIndex] = value
+        },
+      )
+    }
 
     if (!showSplitFooters) {
       renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, "", "idle")
-      renderStatusBadgeTexts(responseSecondaryFooterBadgeTexts, "", "idle")
-      renderStatusBadgeTexts(responseTertiaryFooterBadgeTexts, "", "idle")
       setTextRenderable(responsePrimaryFooterText, "", theme.textMuted)
-      setTextRenderable(responseSecondaryFooterText, "", theme.textMuted)
-      setTextRenderable(responseTertiaryFooterText, "", theme.textMuted)
       responsePrimaryFooterBox?.requestRender()
-      responseSecondaryFooterBox?.requestRender()
-      responseTertiaryFooterBox?.requestRender()
+      for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
+        renderStatusBadgeTexts(responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [], "", "idle")
+        setTextRenderable(responseAuxiliaryFooterTexts[slotIndex], "", theme.textMuted)
+        responseAuxiliaryFooterBoxes[slotIndex]?.requestRender()
+      }
       return
     }
 
     const providerRun = providerRunState()
     const fallbackModel = providerRun?.model ?? null
-    const fallbackVariant = providerRun?.variant ?? null
-    const footerState = buildSplitPaneFooterState({
-      mode: sessionStatusMode(),
-      selection: responsePaneSelection(),
-      focusedAgentId: focusedAgentId(),
-      streamingAgentId: streamingAgentId(),
-      activityLabels: agentActivityLabels(),
-      catalog: providerCatalogState(),
-      fallbackModel,
-      fallbackVariant,
-    })
+    const visibleAgents = responseVisibleAgents()
+    const renderFooter = (
+      agent: AgentInstance | null | undefined,
+      footerBox: BoxRenderable | undefined,
+      footerText: TextRenderable | undefined,
+      badgeTexts: TextRenderable[],
+    ) => {
+      const badge = agentPaneStatusBadge(
+        agent ?? null,
+        agent ? agentActivityLabels()[agent.id] ?? null : null,
+        agent?.id === streamingAgentId(),
+      )
+      const focused = agent?.id === focusedAgentId()
+      renderStatusBadgeTexts(badgeTexts, badge.label, badge.tone)
+      setTextRenderable(
+        footerText,
+        formatSplitPaneFooter(agent ?? null, providerCatalogState(), fallbackModel),
+        focused ? theme.text : theme.textMuted,
+        focused ? TextAttributes.BOLD : TextAttributes.NONE,
+      )
+      footerBox?.requestRender()
+    }
 
-    renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, footerState.primary.badge.label, footerState.primary.badge.tone)
-    renderStatusBadgeTexts(responseSecondaryFooterBadgeTexts, footerState.secondary.badge.label, footerState.secondary.badge.tone)
-    renderStatusBadgeTexts(responseTertiaryFooterBadgeTexts, footerState.tertiary.badge.label, footerState.tertiary.badge.tone)
-    setTextRenderable(
-      responsePrimaryFooterText,
-      footerState.primary.info,
-      footerState.primary.focused ? theme.text : theme.textMuted,
-      footerState.primary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(
-      responseSecondaryFooterText,
-      footerState.secondary.info,
-      footerState.secondary.focused ? theme.text : theme.textMuted,
-      footerState.secondary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(
-      responseTertiaryFooterText,
-      footerState.tertiary.info,
-      footerState.tertiary.focused ? theme.text : theme.textMuted,
-      footerState.tertiary.focused ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
+    renderFooter(visibleAgents[0] ?? null, responsePrimaryFooterBox, responsePrimaryFooterText, responsePrimaryFooterBadgeTexts)
+    for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
+      renderFooter(
+        visibleAgents[slotIndex + 1] ?? null,
+        responseAuxiliaryFooterBoxes[slotIndex],
+        responseAuxiliaryFooterTexts[slotIndex],
+        responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
+      )
+    }
     responsePrimaryFooterBox?.requestRender()
-    responseSecondaryFooterBox?.requestRender()
-    responseTertiaryFooterBox?.requestRender()
   }
 
   const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
@@ -2709,139 +2743,162 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const applyResponseLayout = () => {
-    if (!responseLayoutBox || !responseTopRowBox || !responsePrimaryPane || !responseSecondaryPane || !responseTertiaryPane) {
+    const primaryPane = responsePrimaryPane
+    if (!responseLayoutBox || !primaryPane) {
       logViewDebug("apply response layout:missing refs", {
         has_layout_box: Boolean(responseLayoutBox),
-        has_top_row_box: Boolean(responseTopRowBox),
-        has_primary_pane: Boolean(responsePrimaryPane),
-        has_secondary_pane: Boolean(responseSecondaryPane),
-        has_tertiary_pane: Boolean(responseTertiaryPane),
+        has_primary_pane: Boolean(primaryPane),
+        auxiliary_pane_count: responseAuxiliaryPanes.filter(Boolean).length,
       })
       return
     }
 
     const split = splitAgentResponseMode()
-    const {
-      primary: primaryAgent,
-      secondary: secondaryAgent,
-      tertiary: tertiaryAgent,
-    } = responsePaneSelection()
-    const primaryFocused = primaryAgent?.id === focusedAgentId()
-    const secondaryFocused = secondaryAgent?.id === focusedAgentId()
-    const tertiaryFocused = tertiaryAgent?.id === focusedAgentId()
-    const geometry = computeSplitPaneGeometry(
-      dimensions().width,
-      split,
-      Boolean(secondaryAgent),
-      Boolean(tertiaryAgent),
-    )
-    const primarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, primaryFocused))
-    const secondarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, secondaryFocused))
-    const tertiarySurface = transcriptSurfacePalette(resolveTranscriptSurfaceTone(split, tertiaryFocused))
-    const primaryBackground = split
-      ? primarySurface.panel
-      : theme.backgroundPanel
-    const secondaryBackground = split
-      ? secondarySurface.panel
-      : theme.backgroundElement
-    const tertiaryBackground = split
-      ? tertiarySurface.panel
-      : theme.backgroundElement
-    const layoutSummary = applyResponseLayoutRenderables({
-      renderables: {
-        responseLayoutBox,
-        responseTopRowBox,
-        responsePrimaryPane,
-        responseSecondaryPane,
-        responseTertiaryPane,
-        historyLoadingBox,
-        transcriptScrollbox,
-        responseSecondaryScrollbox,
-        responseTertiaryScrollbox,
-        responsePrimaryFooterBox,
-        responseSecondaryFooterBox,
-        responseTertiaryFooterBox,
-      },
-      geometry,
-      split,
-      primaryFocused,
-      secondaryFocused,
-      tertiaryFocused,
-      primaryBackground,
-      secondaryBackground,
-      tertiaryBackground,
-      primaryBorderColor: theme.primary,
-      secondaryBorderColor: theme.primary,
-      tertiaryBorderColor: theme.primary,
-      subtleBorderColor: theme.borderSubtle,
+    const visibleAgents = responseVisibleAgents()
+    const paneRows = responsePaneRows()
+
+    responseLayoutBox.flexDirection = "column"
+    responseLayoutBox.gap = split ? 1 : 0
+
+    const layoutPane = (
+      pane: BoxRenderable | undefined,
+      footerBox: BoxRenderable | undefined,
+      scrollbox: ScrollBoxRenderable | undefined,
+      agent: AgentInstance | null,
+      rowVisibleCount: number,
+      focused: boolean,
+      visible: boolean,
+      defaultBackground: RGBA,
+    ) => {
+      if (!pane) {
+        return
+      }
+      pane.visible = visible
+      pane.flexDirection = "column"
+      pane.flexGrow = visible ? 1 : 0
+      pane.flexBasis = visible ? 0 : 0
+      if (!visible) {
+        pane.width = 0
+      }
+      pane.minWidth = visible && split && rowVisibleCount > 1 ? 0 : null
+      pane.maxWidth = null
+      pane.paddingLeft = 0
+      pane.paddingRight = 0
+      pane.paddingTop = 0
+      pane.paddingBottom = 0
+      pane.border = visible
+        ? (split ? ["left", "top", "bottom", "right"] : ["left"])
+        : false
+      pane.borderColor = split && focused ? theme.primary : theme.borderSubtle
+      pane.backgroundColor = visible && split
+        ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
+        : defaultBackground
+      footerBox && (footerBox.visible = visible && split)
+      if (scrollbox) {
+        scrollbox.backgroundColor = pane.backgroundColor
+        scrollbox.requestRender?.()
+      }
+      pane.requestRender?.()
+      footerBox?.requestRender?.()
+    }
+
+    paneRows.forEach((rowSlots, rowIndex) => {
+      const rowBox = responseRowBoxes[rowIndex]
+      if (!rowBox) {
+        return
+      }
+      const rowVisibleCount = rowSlots.filter((paneIndex) => {
+        if (paneIndex === 0) {
+          return true
+        }
+        return split && Boolean(visibleAgents[paneIndex])
+      }).length
+      rowBox.visible = rowIndex === 0 || (split && rowVisibleCount > 0)
+      rowBox.flexDirection = "row"
+      rowBox.gap = split && rowVisibleCount > 1 ? 1 : 0
+      rowBox.flexGrow = rowBox.visible ? 1 : 0
+      rowBox.flexBasis = 0
+      rowBox.requestRender?.()
+
+      for (const paneIndex of rowSlots) {
+        const agent = visibleAgents[paneIndex] ?? null
+        const focused = agent?.id === focusedAgentId()
+        if (paneIndex === 0) {
+          layoutPane(
+            primaryPane,
+            responsePrimaryFooterBox,
+            transcriptScrollbox,
+            agent,
+            rowVisibleCount,
+            Boolean(focused),
+            true,
+            theme.backgroundPanel,
+          )
+          if (historyLoadingBox) {
+            historyLoadingBox.backgroundColor = primaryPane.backgroundColor
+            historyLoadingBox.borderColor = split && focused ? theme.primary : theme.borderSubtle
+            historyLoadingBox.requestRender?.()
+          }
+          continue
+        }
+        const auxiliaryIndex = paneIndex - 1
+        layoutPane(
+          responseAuxiliaryPanes[auxiliaryIndex],
+          responseAuxiliaryFooterBoxes[auxiliaryIndex],
+          responseAuxiliaryScrollboxes[auxiliaryIndex],
+          agent,
+          rowVisibleCount,
+          Boolean(focused),
+          split && Boolean(agent),
+          theme.backgroundElement,
+        )
+      }
     })
 
     renderSplitPaneFooters()
 
-    syncAuxiliaryPane({
-      scrollbox: responseSecondaryScrollbox,
-      nextAgentId: secondaryAgent?.id ?? null,
-      currentAgentId: responseSecondaryAgentId,
-      splitMode: splitAgentResponseMode(),
-      clearAuxiliaryAgentPane,
-      unregisterAgentScrollbox: (agentId) => {
-        agentTranscriptScrollboxes.delete(agentId)
-      },
-      assignCurrentAgentId: (value) => {
-        responseSecondaryAgentId = value
-      },
-      registerAgentScrollbox: (agentId, scrollbox) => {
-        agentTranscriptScrollboxes.set(agentId, scrollbox)
-      },
-      rebuildAuxiliaryAgentPane,
-      buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
-    })
-    syncAuxiliaryPane({
-      scrollbox: responseTertiaryScrollbox,
-      nextAgentId: tertiaryAgent?.id ?? null,
-      currentAgentId: responseTertiaryAgentId,
-      splitMode: splitAgentResponseMode(),
-      clearAuxiliaryAgentPane,
-      unregisterAgentScrollbox: (agentId) => {
-        agentTranscriptScrollboxes.delete(agentId)
-      },
-      assignCurrentAgentId: (value) => {
-        responseTertiaryAgentId = value
-      },
-      registerAgentScrollbox: (agentId, scrollbox) => {
-        agentTranscriptScrollboxes.set(agentId, scrollbox)
-      },
-      rebuildAuxiliaryAgentPane,
-      buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
-    })
+    for (let auxiliaryIndex = 0; auxiliaryIndex < maxAgentsPerScreen() - 1; auxiliaryIndex += 1) {
+      syncAuxiliaryPane({
+        scrollbox: responseAuxiliaryScrollboxes[auxiliaryIndex],
+        nextAgentId: split ? (visibleAgents[auxiliaryIndex + 1]?.id ?? null) : null,
+        currentAgentId: responseAuxiliaryAgentIds[auxiliaryIndex] ?? null,
+        splitMode: split,
+        clearAuxiliaryAgentPane,
+        unregisterAgentScrollbox: (agentId) => {
+          agentTranscriptScrollboxes.delete(agentId)
+        },
+        assignCurrentAgentId: (value) => {
+          responseAuxiliaryAgentIds[auxiliaryIndex] = value
+        },
+        registerAgentScrollbox: (agentId, scrollbox) => {
+          agentTranscriptScrollboxes.set(agentId, scrollbox)
+        },
+        rebuildAuxiliaryAgentPane,
+        buildEmptyTranscriptRenderable: () => buildEmptyTranscriptRenderable(renderer),
+      })
+    }
 
     if (transcriptScrollbox) {
       rebuildTranscript()
     }
-    if (secondaryAgent?.id) {
-      rebuildAuxiliaryAgentPane(secondaryAgent.id)
-    }
-    if (tertiaryAgent?.id) {
-      rebuildAuxiliaryAgentPane(tertiaryAgent.id)
+    for (const agent of visibleAgents.slice(1)) {
+      rebuildAuxiliaryAgentPane(agent.id)
     }
 
     scheduleResponsePaneRepaint()
 
     logViewDebug("apply response layout", {
       split,
-      split_pane_width: layoutSummary.splitPaneWidth,
-      secondary_visible: layoutSummary.secondaryVisible,
-      tertiary_visible: layoutSummary.tertiaryVisible,
-      primary_width: layoutSummary.primaryWidth,
-      secondary_width: layoutSummary.secondaryWidth,
-      secondary_agent_id: secondaryAgent?.id ?? null,
-      tertiary_agent_id: tertiaryAgent?.id ?? null,
+      visible_agent_ids: visibleAgents.map((agent) => agent.id),
+      screen_index: responsePaneSelection().screenIndex,
+      screen_count: responsePaneSelection().screenCount,
     })
   }
 
   createEffect(() => {
     splitAgentResponseMode()
     multiAgentResponseLayout()
+    maxAgentsPerScreen()
     dimensions().width
     sessionState().agents.length
     focusedAgentId()
@@ -2864,7 +2921,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (transcriptScrollbox) {
       rebuildTranscript()
     }
-    for (const agentId of splitPaneAuxiliaryAgentIds(sessionState().agents, focusedAgentId(), splitAgentResponseMode())) {
+    for (const agentId of splitPaneAuxiliaryAgentIds(
+      sessionState().agents,
+      focusedAgentId(),
+      splitAgentResponseMode(),
+      maxAgentsPerScreen(),
+    )) {
       rebuildAuxiliaryAgentPane(agentId)
     }
   }
@@ -3010,10 +3072,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
       replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })))
     }
-    if (splitAgentResponseMode() && agentId === responseSecondaryAgent()?.id) {
-      rebuildAuxiliaryAgentPane(agentId)
-    }
-    if (splitAgentResponseMode() && agentId === responseTertiaryAgent()?.id) {
+    if (splitAgentResponseMode() && splitPaneAuxiliaryAgentIds(
+      sessionState().agents,
+      focusedAgentId(),
+      true,
+      maxAgentsPerScreen(),
+    ).includes(agentId)) {
       rebuildAuxiliaryAgentPane(agentId)
     }
     if (splitAgentResponseMode()) {
@@ -3077,6 +3141,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setExpandedTurnState(agentId, turnId, expanding)
     setAgentTranscriptEntries(agentId, nextEntries)
+    retainPromptFocus()
   }
 
   const clearAuxiliaryAgentPane = (agentId: string) => {
@@ -3125,20 +3190,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     scrollbox.requestRender()
   }
 
-  const registerAuxiliaryAgentPane = (agentId: string, value: ScrollBoxRenderable | undefined) => {
-    if (!value) {
-      agentTranscriptScrollboxes.delete(agentId)
-      return
-    }
-    agentTranscriptScrollboxes.set(agentId, value)
-    rebuildAuxiliaryAgentPane(agentId)
-  }
-
   const pruneAuxiliaryAgentPanes = (session: RuntimeSession) => {
     const activeAgentIds = new Set(
-      session.agents
-        .map((agent) => agent.id)
-        .filter((agentId) => agentId === session.agents[1]?.id || agentId === session.agents[2]?.id),
+      splitPaneAuxiliaryAgentIds(
+        session.agents,
+        session.focused_agent_id,
+        true,
+        maxAgentsPerScreen(),
+      ),
     )
     for (const agentId of agentTranscriptScrollboxes.keys()) {
       if (!activeAgentIds.has(agentId)) {
@@ -3326,7 +3385,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         session.agents.map((agent) => [agent.id, currentAgentPaneEntries(agent.id)]),
       ),
       resolveVisibleAgentId: (agents, focusedAgentId) =>
-        selectResponsePaneAgents(agents, focusedAgentId, splitAgentResponseMode()).visibleTranscriptAgentId,
+        selectResponsePaneAgents(
+          agents,
+          focusedAgentId,
+          splitAgentResponseMode(),
+          maxAgentsPerScreen(),
+        ).visibleTranscriptAgentId,
       loadHistoryPage: async (agentId, cursor) => {
         const historyPage = await getSessionHistory(client, session.id, cursor, agentId)
         return {
@@ -3352,7 +3416,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ?.map((entry) => ({ ...entry })) ?? [],
     )
     if (splitAgentResponseMode()) {
-      for (const agentId of splitPaneAuxiliaryAgentIds(session.agents, session.focused_agent_id, true)) {
+      for (const agentId of splitPaneAuxiliaryAgentIds(
+        session.agents,
+        session.focused_agent_id,
+        true,
+        maxAgentsPerScreen(),
+      )) {
         rebuildAuxiliaryAgentPane(agentId)
       }
     }
@@ -3656,6 +3725,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentTranscriptRenderables.clear()
     agentEmptyTranscriptRenderables.clear()
     agentPaneTools.clear()
+    responseAuxiliaryAgentIds.length = 0
   }
 
   const {
@@ -3830,7 +3900,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ),
     applySessionState,
     refreshAgentPanes,
-    saveUiPreferences,
+    saveUiPreferences: async (prefs) => {
+      await saveUiPreferences(prefs)
+      setPreferencesState((current) => mergeUiPreferences(current, prefs))
+    },
     rebuildTranscript,
     requestRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
@@ -4124,6 +4197,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (handledCommand) {
       promptInput.clear()
       syncPromptTextSnapshot()
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
       if (shouldClearCommandCenterForSlashCommand(handledCommand)) {
         clearCommandCenter()
       }
@@ -4185,6 +4260,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           : "Prompt submitted.",
       )
       updateSessionChrome()
+      setPromptHistoryEntries((entries) => {
+        return pushPromptHistoryEntry(entries, rawPrompt)
+      })
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
       promptInput.clear()
       syncPromptTextSnapshot()
       clearPendingPromptAttachments()
@@ -4252,6 +4332,43 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const handleSigint = () => {
     void (activePrompt() ? requestPromptStop() : requestExit())
   }
+  const handlePromptHistoryKey = (event: {
+    name: string
+    eventType?: string
+    ctrl?: boolean
+    meta?: boolean
+    alt?: boolean
+    shift?: boolean
+    preventDefault?: () => void
+    stopPropagation?: () => void
+  }) => {
+    if (!isAttached() || !promptInput?.focused) {
+      return false
+    }
+    if (event.eventType === "release") {
+      return false
+    }
+    if (event.ctrl || event.meta || event.alt || event.shift) {
+      return false
+    }
+    if (event.name === "up") {
+      const handled = navigatePromptHistoryInput("previous")
+      if (handled) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+      }
+      return handled
+    }
+    if (event.name === "down" && promptHistoryIndex() !== null) {
+      const handled = navigatePromptHistoryInput("next")
+      if (handled) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+      }
+      return handled
+    }
+    return false
+  }
   const shouldNavigatePromptTurns = (event: { name: string; eventType: string; shift?: boolean }) => {
     if (!isAttached() || centerMode() !== "transcript" || event.eventType === "release") {
       return false
@@ -4259,7 +4376,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (event.name !== "up" && event.name !== "down") {
       return false
     }
-    return Boolean(event.shift) || !(promptInput?.plainText.trim())
+    return Boolean(event.shift) && !(promptInput?.plainText.trim())
   }
   const navigatePromptTurns = (direction: "previous" | "next") => {
     if (!transcriptScrollbox) {
@@ -4966,6 +5083,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       paddingLeft={2}
       paddingRight={2}
       backgroundColor={theme.background}
+      onMouseUp={() => {
+        retainPromptFocus()
+      }}
     >
       <box
         flexGrow={1}
@@ -4979,6 +5099,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }
           startTimeout(() => {
             copySelection()
+            retainPromptFocus()
           }, 0)
         }}
       >
@@ -4989,196 +5110,157 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             applyResponseLayout()
           }}
           flexGrow={1}
-          flexDirection="row"
+          flexDirection="column"
           gap={0}
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
           paddingBottom={1}
         >
-          <box
-            flexGrow={1}
-            flexDirection="row"
-            gap={0}
-            ref={(value) => {
-              responseTopRowBox = value
-              applyResponseLayout()
-            }}
-          >
-            <box
-              ref={(value) => {
-                responsePrimaryPane = value
-                logViewDebug("mounted response primary pane")
-                applyResponseLayout()
-              }}
-              flexGrow={1}
-              flexDirection="column"
-              border={["left"]}
-              borderColor={theme.borderSubtle}
-              backgroundColor={theme.backgroundPanel}
-            >
+          <For each={responsePaneRows()}>
+            {(rowSlots, rowIndex) => (
               <box
                 ref={(value) => {
-                  historyLoadingBox = value
-                  logViewDebug("mounted history loading box")
-                  renderHistoryLoadingIndicator()
-                }}
-                flexShrink={0}
-                paddingLeft={1}
-                paddingRight={1}
-              />
-              <scrollbox
-                ref={(value) => {
-                  transcriptScrollbox = value
-                  logViewDebug("mounted primary transcript scrollbox")
-                  rebuildTranscript()
-                  ensureBackgroundPollersStarted()
-                }}
-                flexGrow={1}
-                stickyScroll={true}
-                stickyStart="bottom"
-                paddingLeft={2}
-                paddingRight={1}
-                paddingTop={1}
-                paddingBottom={1}
-                viewportOptions={{
-                  paddingRight: 1,
-                }}
-                verticalScrollbarOptions={{
-                  visible: true,
-                  paddingLeft: 1,
-                  trackOptions: {
-                    backgroundColor: theme.backgroundElement,
-                    foregroundColor: theme.border,
-                  },
-                }}
-              />
-              <box
-                ref={(value) => {
-                  responsePrimaryFooterBox = value
-                  renderSplitPaneFooters()
-                  applyResponseLayout()
-                }}
-                flexShrink={0}
-                flexDirection="row"
-                gap={1}
-                paddingLeft={1}
-                paddingRight={1}
-              />
-            </box>
-            <box
-              ref={(value) => {
-                responseSecondaryPane = value
-                logViewDebug("mounted response secondary pane")
-                applyResponseLayout()
-              }}
-              width={0}
-              flexShrink={0}
-              flexDirection="column"
-              border={false}
-              borderColor={theme.borderSubtle}
-              backgroundColor={theme.backgroundElement}
-              paddingLeft={0}
-              paddingRight={0}
-              paddingTop={0}
-              paddingBottom={0}
-              visible={false}
-            >
-              <scrollbox
-                ref={(value) => {
-                  responseSecondaryScrollbox = value
-                  logViewDebug("mounted response secondary scrollbox")
+                  responseRowBoxes[rowIndex()] = value
                   applyResponseLayout()
                 }}
                 flexGrow={1}
-                stickyScroll={true}
-                stickyStart="bottom"
-                paddingLeft={2}
-                paddingRight={1}
-                paddingTop={1}
-                paddingBottom={1}
-                viewportOptions={{
-                  paddingRight: 1,
-                }}
-                verticalScrollbarOptions={{
-                  visible: true,
-                  paddingLeft: 1,
-                  trackOptions: {
-                    backgroundColor: theme.backgroundElement,
-                    foregroundColor: theme.border,
-                  },
-                }}
-              />
-              <box
-                ref={(value) => {
-                  responseSecondaryFooterBox = value
-                  renderSplitPaneFooters()
-                  applyResponseLayout()
-                }}
-                flexShrink={0}
                 flexDirection="row"
-                gap={1}
-                paddingLeft={1}
-                paddingRight={1}
-              />
-            </box>
-          </box>
-          <box
-            ref={(value) => {
-              responseTertiaryPane = value
-              logViewDebug("mounted response tertiary pane")
-              applyResponseLayout()
-            }}
-            width={0}
-            flexShrink={0}
-            flexDirection="column"
-            border={false}
-            borderColor={theme.borderSubtle}
-            backgroundColor={theme.backgroundElement}
-            paddingLeft={0}
-            paddingRight={0}
-            paddingTop={0}
-            paddingBottom={0}
-            visible={false}
-          >
-            <scrollbox
-              ref={(value) => {
-                responseTertiaryScrollbox = value
-                logViewDebug("mounted response tertiary scrollbox")
-                applyResponseLayout()
-              }}
-              flexGrow={1}
-              stickyScroll={true}
-              stickyStart="bottom"
-              paddingLeft={2}
-              paddingRight={1}
-              paddingTop={1}
-              paddingBottom={1}
-              viewportOptions={{
-                paddingRight: 1,
-              }}
-              verticalScrollbarOptions={{
-                visible: true,
-                paddingLeft: 1,
-                trackOptions: {
-                  backgroundColor: theme.backgroundElement,
-                  foregroundColor: theme.border,
-                },
-              }}
-            />
-            <box
-              ref={(value) => {
-                responseTertiaryFooterBox = value
-                renderSplitPaneFooters()
-                applyResponseLayout()
-              }}
-              flexShrink={0}
-              flexDirection="row"
-              gap={1}
-              paddingLeft={1}
-              paddingRight={1}
-            />
-          </box>
+                gap={0}
+              >
+                <For each={rowSlots}>
+                  {(paneIndex) => (
+                    paneIndex === 0
+                      ? (
+                          <box
+                            ref={(value) => {
+                              responsePrimaryPane = value
+                              logViewDebug("mounted response primary pane")
+                              applyResponseLayout()
+                            }}
+                            flexGrow={1}
+                            flexDirection="column"
+                            border={["left"]}
+                            borderColor={theme.borderSubtle}
+                            backgroundColor={theme.backgroundPanel}
+                          >
+                            <box
+                              ref={(value) => {
+                                historyLoadingBox = value
+                                logViewDebug("mounted history loading box")
+                                renderHistoryLoadingIndicator()
+                              }}
+                              flexShrink={0}
+                              paddingLeft={1}
+                              paddingRight={1}
+                            />
+                            <scrollbox
+                              ref={(value) => {
+                                transcriptScrollbox = value
+                                logViewDebug("mounted primary transcript scrollbox")
+                                rebuildTranscript()
+                                ensureBackgroundPollersStarted()
+                              }}
+                              flexGrow={1}
+                              stickyScroll={true}
+                              stickyStart="bottom"
+                              paddingLeft={2}
+                              paddingRight={1}
+                              paddingTop={1}
+                              paddingBottom={1}
+                              viewportOptions={{
+                                paddingRight: 1,
+                              }}
+                              verticalScrollbarOptions={{
+                                visible: true,
+                                paddingLeft: 1,
+                                trackOptions: {
+                                  backgroundColor: theme.backgroundElement,
+                                  foregroundColor: theme.border,
+                                },
+                              }}
+                            />
+                            <box
+                              ref={(value) => {
+                                responsePrimaryFooterBox = value
+                                renderSplitPaneFooters()
+                                applyResponseLayout()
+                              }}
+                              flexShrink={0}
+                              flexDirection="row"
+                              gap={1}
+                              paddingLeft={1}
+                              paddingRight={1}
+                            />
+                          </box>
+                        )
+                      : (
+                          <box
+                            ref={(value) => {
+                              responseAuxiliaryPanes[paneIndex - 1] = value
+                              logViewDebug("mounted response auxiliary pane", {
+                                pane_index: paneIndex,
+                              })
+                              applyResponseLayout()
+                            }}
+                            width={0}
+                            flexShrink={0}
+                            flexDirection="column"
+                            border={false}
+                            borderColor={theme.borderSubtle}
+                            backgroundColor={theme.backgroundElement}
+                            paddingLeft={0}
+                            paddingRight={0}
+                            paddingTop={0}
+                            paddingBottom={0}
+                            visible={false}
+                          >
+                            <scrollbox
+                              ref={(value) => {
+                                responseAuxiliaryScrollboxes[paneIndex - 1] = value
+                                logViewDebug("mounted response auxiliary scrollbox", {
+                                  pane_index: paneIndex,
+                                })
+                                applyResponseLayout()
+                              }}
+                              flexGrow={1}
+                              stickyScroll={true}
+                              stickyStart="bottom"
+                              paddingLeft={2}
+                              paddingRight={1}
+                              paddingTop={1}
+                              paddingBottom={1}
+                              viewportOptions={{
+                                paddingRight: 1,
+                              }}
+                              verticalScrollbarOptions={{
+                                visible: true,
+                                paddingLeft: 1,
+                                trackOptions: {
+                                  backgroundColor: theme.backgroundElement,
+                                  foregroundColor: theme.border,
+                                },
+                              }}
+                            />
+                            <box
+                              ref={(value) => {
+                                responseAuxiliaryFooterBoxes[paneIndex - 1] = value
+                                renderSplitPaneFooters()
+                                applyResponseLayout()
+                              }}
+                              flexShrink={0}
+                              flexDirection="row"
+                              gap={1}
+                              paddingLeft={1}
+                              paddingRight={1}
+                            />
+                          </box>
+                        )
+                  )}
+                </For>
+              </box>
+            )}
+          </For>
         </box>
       </box>
 
@@ -5226,9 +5308,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   textColor={theme.text}
                   focusedTextColor={theme.text}
                   minHeight={1}
-                  maxHeight={6}
+                  maxHeight={promptInputMaxHeight()}
                   keyBindings={PROMPT_KEYBINDINGS}
                   onKeyDown={(event) => {
+                    if (handlePromptHistoryKey(event)) {
+                      return
+                    }
                     if (handleCommandCenterKey(event)) {
                       return
                     }
@@ -5261,9 +5346,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
                   textColor={theme.text}
                   focusedTextColor={theme.text}
                   minHeight={1}
-                  maxHeight={6}
+                  maxHeight={promptInputMaxHeight()}
                   keyBindings={PROMPT_KEYBINDINGS}
                   onKeyDown={(event) => {
+                    if (handlePromptHistoryKey(event)) {
+                      return
+                    }
                     if (handleCommandCenterKey(event)) {
                       return
                     }
