@@ -67,6 +67,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       calls.push(`notice:${message}:${tone ?? "default"}`)
     },
     connectedStatusLine: "Connected to the Arroba kernel.",
+    clearAgentCompletionState: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
   }
 
@@ -168,6 +169,20 @@ test("runtime notices and transport lifecycle update the kernel connection state
     { message: "worker switched", tone: undefined },
     { message: "connection lost", tone: "warning" },
     { message: "Reconnected to the Arroba kernel.", tone: undefined },
+  ])
+})
+
+test("assistant completion clears the agent completion state without relying on idle status", () => {
+  const { deps, calls } = createDeps()
+  const controller = createKernelEventController(deps as never)
+
+  controller.applyAssistantMessageCompleted({
+    agent_id: "agent-a",
+  })
+
+  assert.deepEqual(calls, [
+    "activity:assistant_message_completed",
+    "completed:agent-a",
   ])
 })
 

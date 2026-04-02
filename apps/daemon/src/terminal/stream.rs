@@ -44,11 +44,24 @@ pub struct RuntimeNoticeRecord {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantMessageCompletionRecord {
+    pub session_id: String,
+    pub provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub recipient_attachment_ids: Vec<String>,
+    pub pending_recipient_attachment_ids: Vec<String>,
+    pub message_id: String,
+    pub completed_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TerminalStreamService {
     input_records: Vec<TerminalInputRecord>,
     output_records: Vec<TerminalOutputRecord>,
     notice_records: Vec<RuntimeNoticeRecord>,
+    completion_records: Vec<AssistantMessageCompletionRecord>,
 }
 
 impl TerminalStreamService {
@@ -153,6 +166,54 @@ impl TerminalStreamService {
 
     pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
         &self.notice_records
+    }
+
+    pub fn record_assistant_message_completion(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) -> AssistantMessageCompletionRecord {
+        let record = AssistantMessageCompletionRecord {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.map(str::to_string),
+            pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
+            recipient_attachment_ids,
+            message_id: message_id.to_string(),
+            completed_at_ms,
+        };
+
+        self.completion_records.push(record.clone());
+        record
+    }
+
+    pub fn drain_completion_records(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<AssistantMessageCompletionRecord> {
+        let mut drained = Vec::new();
+        for record in &mut self.completion_records {
+            if record.session_id == session_id
+                && record
+                    .pending_recipient_attachment_ids
+                    .iter()
+                    .any(|id| id == attachment_id)
+            {
+                drained.push(record.clone());
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
+            }
+        }
+
+        self.completion_records
+            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        drained
     }
 
     pub fn drain_notice_records(
@@ -267,5 +328,27 @@ mod tests {
         let second = terminal.drain_notice_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
         assert!(terminal.notice_records().is_empty());
+    }
+
+    #[test]
+    fn completion_polling_is_per_recipient() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "message-1",
+            42,
+        );
+
+        let first = terminal.drain_completion_records("session-1", "attachment-1");
+        assert_eq!(first.len(), 1);
+
+        let second = terminal.drain_completion_records("session-1", "attachment-2");
+        assert_eq!(second.len(), 1);
+
+        let none_left = terminal.drain_completion_records("session-1", "attachment-2");
+        assert!(none_left.is_empty());
     }
 }

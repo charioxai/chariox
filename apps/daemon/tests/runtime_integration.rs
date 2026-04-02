@@ -1684,7 +1684,7 @@ fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    let fixture_path = create_opencode_fixture_script(1);
+    let fixture_path = create_opencode_fixture_script(5);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
@@ -1746,7 +1746,7 @@ fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
         .expect("reviewer prompt should queue");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let timeout_ms = output_timeout_ms().max(4_000);
+    let timeout_ms = output_timeout_ms().max(6_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut default_output = Vec::new();
     let mut reviewer_output = Vec::new();

@@ -46,6 +46,7 @@ type KernelEventControllerDeps = {
   updateSessionChrome: () => void
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
+  clearAgentCompletionState: (agentId: string | null | undefined) => void
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
@@ -223,11 +224,19 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.appendNotice("Reconnected to the Arroba kernel.")
   }
 
+  const applyAssistantMessageCompleted = (event: {
+    agent_id?: string | null
+  }) => {
+    deps.recordDaemonActivity("assistant_message_completed")
+    deps.clearAgentCompletionState(event.agent_id ?? null)
+  }
+
   return {
     processTerminalOutputRecord,
     applyRuntimeNotices,
     applyTransportClosed,
     applyTransportResumed,
+    applyAssistantMessageCompleted,
   }
 }
 

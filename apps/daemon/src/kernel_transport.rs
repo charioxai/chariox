@@ -21,7 +21,7 @@ use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::provider::RuntimeProviderRun;
 use crate::session::RuntimeSession;
-use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
+use crate::terminal::{AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord};
 
 const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
@@ -77,6 +77,14 @@ enum KernelEvent {
     },
     RuntimeNotices {
         notices: Vec<RuntimeNoticeRecord>,
+    },
+    AssistantMessageCompleted {
+        session_id: String,
+        provider_run_id: String,
+        agent_id: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: String,
+        completed_at_ms: u64,
     },
     SessionSnapshot {
         session: Box<RuntimeSession>,
@@ -447,6 +455,7 @@ async fn run_subscription_loop(
             WatchResult::Ok {
                 records,
                 notices,
+                completions,
                 snapshot,
             } => {
                 if !records.is_empty()
@@ -476,6 +485,28 @@ async fn run_subscription_loop(
                     .await
                 {
                     break;
+                }
+                for completion in completions {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::AssistantMessageCompleted {
+                            session_id: completion.session_id,
+                            provider_run_id: completion.provider_run_id,
+                            agent_id: completion.agent_id,
+                            recipient_attachment_ids: completion.recipient_attachment_ids,
+                            message_id: completion.message_id,
+                            completed_at_ms: completion.completed_at_ms,
+                        },
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
                 }
                 if let Some(snapshot) = *snapshot {
                     previous_snapshot = Some(snapshot.clone());
@@ -540,6 +571,7 @@ enum WatchResult {
     Ok {
         records: Vec<TerminalOutputRecord>,
         notices: Vec<RuntimeNoticeRecord>,
+        completions: Vec<AssistantMessageCompletionRecord>,
         snapshot: Box<Option<(RuntimeSession, Option<RuntimeProviderRun>)>>,
     },
     Unavailable(String),
@@ -584,6 +616,9 @@ fn watch_subscription_state(
     let notices = app
         .terminal_mut()
         .drain_notice_records(session_id, attachment_id);
+    let completions = app
+        .terminal_mut()
+        .drain_completion_records(session_id, attachment_id);
     let snapshot = if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
         match build_session_snapshot(app, session_id) {
             Ok(snapshot) => {
@@ -618,6 +653,7 @@ fn watch_subscription_state(
     WatchResult::Ok {
         records,
         notices,
+        completions,
         snapshot,
     }
 }
@@ -749,6 +785,7 @@ fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RuntimeNotices { notices } => {
             notices.first().map(|notice| notice.session_id.as_str())
         }
+        KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
@@ -771,6 +808,10 @@ fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> 
                     .iter()
                     .any(|id| id == attachment_id)
         }),
+        KernelEvent::AssistantMessageCompleted {
+            recipient_attachment_ids,
+            ..
+        } => recipient_attachment_ids.iter().any(|id| id == attachment_id),
         KernelEvent::SessionSnapshot { .. }
         | KernelEvent::SessionUnavailable { .. }
         | KernelEvent::Heartbeat { .. }

@@ -45,6 +45,14 @@ export type KernelEvent =
     notices: Array<Record<string, unknown>>
   }
   | {
+    event: "assistant_message_completed"
+    session_id: string
+    provider_run_id: string
+    agent_id: string | null
+    message_id: string
+    completed_at_ms: number
+  }
+  | {
     event: "session_snapshot"
     session: Record<string, unknown>
     provider_run: Record<string, unknown> | null

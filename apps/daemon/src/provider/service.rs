@@ -338,6 +338,7 @@ impl ProviderProcessService {
 
         Ok(Some(OpenCodePollResult {
             chunks: drain.chunks,
+            completions: drain.completions,
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
             notices: drain.notices,

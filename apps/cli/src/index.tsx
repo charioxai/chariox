@@ -2325,6 +2325,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome()
   }
 
+  const clearAgentCompletionState = (agentId: string | null | undefined) => {
+    if (!agentId) {
+      return
+    }
+    batch(() => {
+      setAgentActivityLabels((current) => ({
+        ...current,
+        [agentId]: null,
+      }))
+      if (streamingAgentId() === agentId) {
+        setStreamingAgentId(null)
+      }
+      if (focusedAgentId() === agentId) {
+        setProviderActivityLabel(null)
+        setActiveStatusLabel(null)
+      }
+      setSessionState((current) => ({
+        ...current,
+        agents: current.agents.map((agent) => (
+          agent.id === agentId
+            ? { ...agent, is_processing: false, state: agent.state === "Error" ? "Error" : "Idle" }
+            : agent
+        )),
+      }))
+    })
+    updateSessionChrome()
+  }
+
   const syncVisibleActivityLabel = () => {
     setActiveStatusLabel(deriveVisibleActivityLabel({
       providerActivityLabel: providerActivityLabel(),
@@ -4709,6 +4737,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome,
     appendNotice: (message, tone) => appendNotice(message, tone === "warning" ? "warning" : "muted"),
     connectedStatusLine: DEFAULT_CONNECTED_STATUS,
+    clearAgentCompletionState,
   })
 
   const applyKernelSessionSnapshot = async (
@@ -4755,6 +4784,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       case "runtime_notices":
         kernelEventController.applyRuntimeNotices(event.notices as RuntimeNoticeRecord[])
+        return
+      case "assistant_message_completed":
+        kernelEventController.applyAssistantMessageCompleted(event)
         return
       case "session_snapshot":
         recordDaemonActivity("kernel_session_snapshot")

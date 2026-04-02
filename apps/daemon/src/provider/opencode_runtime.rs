@@ -16,6 +16,7 @@ const PROMPT_COMPLETION_SETTLE_WINDOW: Duration = Duration::from_millis(1500);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodePollResult {
     pub chunks: Vec<OpenCodeOutputChunk>,
+    pub completions: Vec<OpenCodeAssistantCompletion>,
     pub prompt_completed: bool,
     pub provider_idle: bool,
     pub notices: Vec<String>,
@@ -30,6 +31,7 @@ pub struct OpenCodeOutputChunk {
 
 pub(super) struct OpenCodeEventDrainResult {
     pub chunks: Vec<OpenCodeOutputChunk>,
+    pub completions: Vec<OpenCodeAssistantCompletion>,
     pub prompt_completed: bool,
     pub provider_idle: bool,
     pub notices: Vec<String>,
@@ -37,6 +39,12 @@ pub(super) struct OpenCodeEventDrainResult {
     pub resolved_model_source: Option<&'static str>,
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeAssistantCompletion {
+    pub message_id: String,
+    pub completed_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -120,6 +128,7 @@ pub(super) fn drain_opencode_events(
     provider_run_id: &str,
 ) -> Result<OpenCodeEventDrainResult, DaemonError> {
     let mut chunks = Vec::new();
+    let mut completions = Vec::new();
     let mut prompt_completed = false;
     let mut provider_idle = false;
     let mut saw_completion_candidate = false;
@@ -157,6 +166,10 @@ pub(super) fn drain_opencode_events(
                         != Some(info.id.as_str())
                 {
                     state.last_completed_assistant_message_id = Some(info.id.clone());
+                    completions.push(OpenCodeAssistantCompletion {
+                        message_id: info.id.clone(),
+                        completed_at_ms: info.time.completed.unwrap_or_default(),
+                    });
                     state.pending_prompt_completion = true;
                     state.pending_prompt_completion_quiet_since = None;
                     saw_completion_candidate = true;
@@ -406,6 +419,10 @@ pub(super) fn drain_opencode_events(
                         if is_new_completed {
                             state.last_completed_assistant_message_id =
                                 Some(message.info.id.clone());
+                            completions.push(OpenCodeAssistantCompletion {
+                                message_id: message.info.id.clone(),
+                                completed_at_ms: message.info.time.completed.unwrap_or_default(),
+                            });
                         }
                         is_new_completed
                     }) {
@@ -434,6 +451,7 @@ pub(super) fn drain_opencode_events(
 
     Ok(OpenCodeEventDrainResult {
         chunks,
+        completions,
         prompt_completed,
         provider_idle,
         notices,
@@ -675,7 +693,7 @@ mod tests {
 
     use super::{
         drain_opencode_events, latest_assistant_usage_tokens, render_snapshot_output_chunks,
-        render_tool_transcript_update, OpenCodeRuntimeState, ToolTranscriptUpdate,
+        render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
         PROMPT_COMPLETION_SETTLE_WINDOW,
     };
 
@@ -859,6 +877,13 @@ mod tests {
         let first = drain_opencode_events(&mut state, "provider-run-1")
             .expect("first drain should succeed");
         assert_eq!(first.prompt_completed, false);
+        assert_eq!(
+            first.completions,
+            vec![OpenCodeAssistantCompletion {
+                message_id: "message-1".to_string(),
+                completed_at_ms: 1,
+            }]
+        );
 
         state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
         let second = drain_opencode_events(&mut state, "provider-run-1")
