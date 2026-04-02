@@ -1,0 +1,168 @@
+# CLI Commands
+
+This page tracks the current user-facing slash commands and keyboard shortcuts in the Arroba CLI.
+
+The source of truth is the current TypeScript CLI implementation in:
+
+- `apps/cli/src/index.tsx`
+- `apps/cli/src/command-center.ts`
+- `apps/cli/src/commands.ts`
+- `apps/cli/src/command-actions.ts`
+
+## Core Commands
+
+### `/stop`
+
+Request cancellation of the active provider turn.
+
+### `/exit`
+
+Exit the CLI.
+
+### `/waiting`
+
+Leave the current workspace/session view and return to the waiting room.
+
+## Provider Selection
+
+### `/provider <name>`
+
+Select the active provider backend.
+
+### `/model <id>`
+
+Select the active model.
+
+### `/variant <name>`
+
+Select the active model variant.
+
+### `/view <mode>`
+
+Set the multi-agent response layout.
+
+Supported values:
+
+- `split`
+- `individual`
+
+## Session Commands
+
+### `/session new [alias]`
+
+Create and attach to a new session.
+
+### `/session create [alias]`
+
+Alias for `/session new`.
+
+### `/session attach <ref>`
+
+Attach to a session by:
+
+- full session id
+- unique id prefix
+- alias
+- unique alias prefix
+
+### `/session list`
+
+List available sessions in the current workspace.
+
+### `/session delete [ref]`
+
+Delete the current session, or the referenced session if a ref is provided.
+
+## Agent Commands
+
+### `/agent spawn [alias] [model]`
+
+Spawn a new agent in the current session.
+
+### `/agent delete [ref]`
+
+Delete the focused agent, or a referenced agent.
+
+### `/agent destroy [ref]`
+
+Alias for `/agent delete`.
+
+### `/agent focus <id>`
+
+Focus a specific agent.
+
+### `/agent list`
+
+List agents in the current session.
+
+### `/agent cycle`
+
+Cycle focus to the next agent.
+
+## Workflow Commands
+
+### `/workflow`
+
+Open the workflow canvas. If already on the workflow screen, nothing changes.
+
+### `/workflow list`
+
+List workflows in the current session/workspace.
+
+### `/workflow show <workflow-ref>`
+
+Resolve and show a workflow by id or alias.
+
+### `/workflow new [alias]`
+
+Create a new workflow with an optional alias.
+
+### `/workflow <workflow-ref> <alias>`
+
+Assign or update the alias of an existing workflow.
+
+### `/workflow node add <workflow-ref> <agent-id>`
+
+Add a workflow node bound to an existing agent.
+
+### `/workflow node remove <workflow-ref> <node-id>`
+
+Remove a workflow node. Connected edges and endpoints targeting that node are also removed by the kernel.
+
+### `/workflow edge add <workflow-ref> <from-node-id> <to-node-id>`
+
+Add a directed edge between two existing workflow nodes.
+
+### `/workflow edge remove <workflow-ref> <edge-id>`
+
+Remove a workflow edge.
+
+### `/workflow endpoint new <workflow-ref> <entry-node-id> [alias]`
+
+Create a workflow endpoint targeting one entry node.
+
+### `/workflow endpoint alias <workflow-ref> <endpoint-ref> <alias>`
+
+Assign or update the alias of a workflow endpoint.
+
+### `/workflow endpoint bind <workflow-ref> <endpoint-ref> <entry-node-id>`
+
+Rebind an existing workflow endpoint to a different entry node.
+
+## Keyboard Shortcuts
+
+### `Tab`
+
+Cycle to the next agent.
+
+### `Ctrl+Tab`
+
+Switch between the agent screens and the workflow canvas.
+
+### `Ctrl+T`
+
+Open the hotkeys/help overlay.
+
+### `Ctrl+E`
+
+Exit the CLI with the same behavior as `/exit`.

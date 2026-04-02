@@ -1,0 +1,11 @@
+site_name: Arroba Docs
+site_description: User-facing documentation for Arroba
+docs_dir: docs-site
+site_dir: site
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Reference:
+      - CLI Commands: reference/cli-commands.md
+      - Kernel-CLI Protocol: reference/kernel-cli-protocol.md
