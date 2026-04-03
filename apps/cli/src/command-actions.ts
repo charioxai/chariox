@@ -159,6 +159,50 @@ type CommandActionDeps = {
 }
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
+  const hasDuplicateWorkflowEdge = (
+    workflow: WorkflowDefinition,
+    fromNodeId: string,
+    toNodeId: string,
+  ) => {
+    return (workflow.edges ?? []).some((edge) => (
+      edge.from_node_id === fromNodeId && edge.to_node_id === toNodeId
+    ))
+  }
+
+  const resolveWorkflowNodeReference = (
+    workflow: WorkflowDefinition,
+    workflowRef: string,
+    reference: string,
+  ): { nodeId: string } | { error: string } => {
+    const nodes = workflow.nodes ?? []
+    const nodeMatch = nodes.find((node) => node.id === reference)
+    if (nodeMatch) {
+      return { nodeId: nodeMatch.id }
+    }
+
+    const resolvedAgent = deps.resolveSessionAgent(reference)
+    if (!resolvedAgent.agent) {
+      if (resolvedAgent.error?.startsWith("multiple agents match")) {
+        return { error: resolvedAgent.error }
+      }
+      return { nodeId: reference }
+    }
+
+    const matches = nodes.filter((node) => node.agent_id === resolvedAgent.agent?.id)
+    if (matches.length === 1) {
+      const [node] = matches
+      return { nodeId: node?.id ?? reference }
+    }
+    if (matches.length > 1) {
+      return {
+        error: `agent '${reference}' maps to multiple nodes in workflow '${workflow.id}'; use explicit node ids`,
+      }
+    }
+    return {
+      error: `agent '${reference}' is not a node in workflow '${workflowRef}'; add it first with /workflow node add <workflow-ref> <agent-id>`,
+    }
+  }
+
   const handleSessionCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "session" }>,
   ): Promise<boolean> => {
@@ -580,16 +624,36 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const action = args[1]
       const workflowRef = args[2]
       if (action === "add") {
-        const fromNodeId = args[3]
-        const toNodeId = args[4]
-        if (!workflowRef || !fromNodeId || !toNodeId) {
+        const fromRef = args[3]
+        const toRef = args[4]
+        if (!workflowRef || !fromRef || !toRef) {
           deps.flashFooter(
-            "usage: /workflow edge add <workflow-ref> <from-node-id> <to-node-id>",
+            "usage: /workflow edge add <workflow-ref> <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>",
             "error",
           )
           return
         }
-        const payload = await deps.addWorkflowEdge(workflowRef, fromNodeId, toNodeId)
+        const resolvedWorkflow = await deps.resolveWorkflow(workflowRef)
+        deps.upsertWorkflowDefinition(resolvedWorkflow.workflow)
+        const fromNode = resolveWorkflowNodeReference(resolvedWorkflow.workflow, workflowRef, fromRef)
+        if ("error" in fromNode) {
+          deps.flashFooter(fromNode.error, "error")
+          return
+        }
+        const toNode = resolveWorkflowNodeReference(resolvedWorkflow.workflow, workflowRef, toRef)
+        if ("error" in toNode) {
+          deps.flashFooter(toNode.error, "error")
+          return
+        }
+        if (fromNode.nodeId === toNode.nodeId) {
+          deps.flashFooter("workflow edges must connect two different nodes", "error")
+          return
+        }
+        if (hasDuplicateWorkflowEdge(resolvedWorkflow.workflow, fromNode.nodeId, toNode.nodeId)) {
+          deps.flashFooter("workflow edge already exists between those nodes", "error")
+          return
+        }
+        const payload = await deps.addWorkflowEdge(workflowRef, fromNode.nodeId, toNode.nodeId)
         deps.applySessionState(payload.session)
         deps.selectWorkflowCanvas(payload.workflow.id)
         deps.flashFooter(`added workflow edge ${payload.edge.id}`, "info")
@@ -608,7 +672,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow edge add <workflow-ref> <from-node-id> <to-node-id> | remove <workflow-ref> <edge-id>",
+        "usage: /workflow edge add <workflow-ref> <from-node-id|from-agent-ref> <to-node-id|to-agent-ref> | remove <workflow-ref> <edge-id>",
         "error",
       )
       return
@@ -678,10 +742,41 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    const edgeFromRef = args[1]
+    const edgeToRef = args[2]
+    if (edgeFromRef && edgeToRef) {
+      const resolvedWorkflow = await deps.resolveWorkflow(subcommand)
+      deps.upsertWorkflowDefinition(resolvedWorkflow.workflow)
+      const fromNode = resolveWorkflowNodeReference(resolvedWorkflow.workflow, subcommand, edgeFromRef)
+      if ("error" in fromNode) {
+        deps.flashFooter(fromNode.error, "error")
+        return
+      }
+      const toNode = resolveWorkflowNodeReference(resolvedWorkflow.workflow, subcommand, edgeToRef)
+      if ("error" in toNode) {
+        deps.flashFooter(toNode.error, "error")
+        return
+      }
+      if (fromNode.nodeId === toNode.nodeId) {
+        deps.flashFooter("workflow edges must connect two different nodes", "error")
+        return
+      }
+      if (hasDuplicateWorkflowEdge(resolvedWorkflow.workflow, fromNode.nodeId, toNode.nodeId)) {
+        deps.flashFooter("workflow edge already exists between those nodes", "error")
+        return
+      }
+      const payload = await deps.addWorkflowEdge(subcommand, fromNode.nodeId, toNode.nodeId)
+      deps.applySessionState(payload.session)
+      deps.selectWorkflowCanvas(payload.workflow.id)
+      deps.showWorkflowScreen()
+      deps.flashFooter(`added workflow edge ${payload.edge.id}`, "info")
+      return
+    }
+
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow <workflow-ref> <alias> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

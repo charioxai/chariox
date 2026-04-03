@@ -177,6 +177,12 @@ impl WorkflowDefinition {
         self.edges.iter().find(|edge| edge.id() == edge_id)
     }
 
+    pub fn has_edge(&self, from_node_id: &str, to_node_id: &str) -> bool {
+        self.edges
+            .iter()
+            .any(|edge| edge.from_node_id() == from_node_id && edge.to_node_id() == to_node_id)
+    }
+
     pub fn remove_edge(&mut self, edge_id: &str) -> Option<WorkflowEdgeDefinition> {
         let index = self.edges.iter().position(|edge| edge.id() == edge_id)?;
         Some(self.edges.remove(index))

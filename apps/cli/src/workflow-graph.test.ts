@@ -8,8 +8,10 @@ import {
   cycleWorkflowNodeId,
   derivePointerAnchoredViewport,
   deriveWorkflowZoomIndex,
+  routeWorkflowEdge,
   resolveSelectedWorkflow,
   resolveSelectedWorkflowNodeId,
+  type WorkflowGraphNodeLayout,
 } from "./workflow-graph.js"
 
 function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
@@ -50,6 +52,24 @@ function workflow(): WorkflowDefinition {
     endpoints: [
       { id: "endpoint-a", alias: "start", entry_node_id: "node-a" },
     ],
+  }
+}
+
+function layoutNode(id: string, x: number, y: number, width = 30, height = 8): WorkflowGraphNodeLayout {
+  return {
+    id,
+    agentId: id,
+    alias: null,
+    provider: "opencode",
+    model: "openai/gpt-5.4",
+    effort: "high",
+    missing: false,
+    selected: false,
+    x,
+    y,
+    width,
+    height,
+    lines: [id, "provider opencode", "model openai/gpt-5.4", "effort high"],
   }
 }
 
@@ -144,4 +164,25 @@ test("derivePointerAnchoredViewport preserves the pointer-relative anchor during
 
   assert.deepEqual(viewport, { x: 55, y: 19 })
   assert.equal(deriveWorkflowZoomIndex(DEFAULT_WORKFLOW_ZOOM_INDEX, "in") > DEFAULT_WORKFLOW_ZOOM_INDEX, true)
+})
+
+test("routeWorkflowEdge connects nearest border centers across orientations", () => {
+  const topNode = layoutNode("top", 10, 10)
+  const bottomNode = layoutNode("bottom", 10, 30)
+  const leftNode = layoutNode("left", 10, 10)
+  const rightNode = layoutNode("right", 60, 10)
+
+  const downward = routeWorkflowEdge(topNode, bottomNode)
+  assert.deepEqual(downward[0], { x: 25, y: 18 })
+  assert.deepEqual(downward[downward.length - 1], { x: 25, y: 29 })
+
+  const upward = routeWorkflowEdge(bottomNode, topNode)
+  assert.deepEqual(upward[0], { x: 25, y: 29 })
+  assert.deepEqual(upward[upward.length - 1], { x: 25, y: 18 })
+
+  const horizontal = routeWorkflowEdge(leftNode, rightNode)
+  assert.deepEqual(horizontal, [
+    { x: 40, y: 14 },
+    { x: 59, y: 14 },
+  ])
 })

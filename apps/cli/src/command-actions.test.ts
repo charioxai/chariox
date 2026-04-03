@@ -324,12 +324,18 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let flashedMessage = ""
   let shownWorkflowScreen = 0
   let addedWorkflowNodeAgentId: string | null = null
+  let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const resolvedWorkflowAgent = makeAgent({
     id: "agent-instance-1",
     agent_ref: "5f26c340",
     alias: "planner",
+  })
+  const reviewerAgent = makeAgent({
+    id: "agent-instance-2",
+    agent_ref: "19c82a89",
+    alias: "reviewer",
   })
   const handlers = createCommandActionHandlers({
     workspace: "workspace-1",
@@ -382,6 +388,13 @@ test("workflow command opens the workflow screen and manages local workflows", a
       ) {
         return { agent: resolvedWorkflowAgent }
       }
+      if (
+        reference === reviewerAgent.id
+        || reference === reviewerAgent.agent_ref
+        || reference === reviewerAgent.alias
+      ) {
+        return { agent: reviewerAgent }
+      }
       return { agent: null, error: `agent '${reference ?? ""}' not found` }
     },
     workflowScreenActive: () => false,
@@ -397,7 +410,16 @@ test("workflow command opens the workflow screen and manages local workflows", a
       workflows.set(workflow.id, workflow)
     },
     createWorkflow: async (alias) => {
-      const workflow = { id: "workflow-1", alias: alias ?? null }
+      const workflow = {
+        id: "workflow-1",
+        alias: alias ?? null,
+        nodes: [
+          { id: "node-1", agent_id: resolvedWorkflowAgent.id },
+          { id: "node-2", agent_id: reviewerAgent.id },
+        ],
+        edges: [],
+        endpoints: [],
+      }
       const session = makeSession({ workflows: [workflow] })
       workflows.set(workflow.id, workflow)
       return { workflow, session }
@@ -447,13 +469,35 @@ test("workflow command opens the workflow screen and manages local workflows", a
       workflow: { id: "workflow-1", alias: null },
       session: makeSession(),
     }),
-    addWorkflowEdge: async (_workflowRef, fromNodeId, toNodeId) => ({
-      edge: { id: "edge-1", from_node_id: fromNodeId, to_node_id: toNodeId },
-      workflow: { id: "workflow-1", alias: null },
-      session: makeSession(),
-    }),
+    addWorkflowEdge: async (_workflowRef, fromNodeId, toNodeId) => {
+      addedWorkflowEdgeRefs = { fromNodeId, toNodeId }
+      const edge = { id: "edge-1", from_node_id: fromNodeId, to_node_id: toNodeId }
+      const currentWorkflow = workflows.get(_workflowRef) ?? { id: _workflowRef, alias: null }
+      workflows.set(_workflowRef, {
+        ...currentWorkflow,
+        edges: [...(currentWorkflow.edges ?? []), edge],
+      })
+      return {
+        edge,
+        workflow: { id: "workflow-1", alias: null },
+        session: makeSession(),
+      }
+    },
     removeWorkflowEdge: async (_workflowRef, edgeId) => ({
-      edge: { id: edgeId, from_node_id: "node-1", to_node_id: "node-2" },
+      edge: (() => {
+        const currentWorkflow = workflows.get(_workflowRef) ?? { id: _workflowRef, alias: null }
+        const existingEdges = currentWorkflow.edges ?? []
+        const found = existingEdges.find((edge) => edge.id === edgeId) ?? {
+          id: edgeId,
+          from_node_id: "node-1",
+          to_node_id: "node-2",
+        }
+        workflows.set(_workflowRef, {
+          ...currentWorkflow,
+          edges: existingEdges.filter((edge) => edge.id !== edgeId),
+        })
+        return found
+      })(),
       workflow: { id: "workflow-1", alias: null },
       session: makeSession(),
     }),
@@ -708,6 +752,54 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
   assert.equal(flashedMessage, "added workflow edge edge-1")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
+    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
+  })
+  assert.equal(flashedMessage, "workflow edge already exists between those nodes")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge remove workflow-1 edge-1",
+    args: ["edge", "remove", "workflow-1", "edge-1"],
+  })
+  assert.equal(flashedMessage, "removed workflow edge edge-1")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow workflow-1 5f26c340 19c82a89",
+    args: ["workflow-1", "5f26c340", "19c82a89"],
+  })
+  assert.equal(flashedMessage, "added workflow edge edge-1")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
+    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
+  })
+  assert.equal(flashedMessage, "workflow edge already exists between those nodes")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge add workflow-1 5f26c340 5f26c340",
+    args: ["edge", "add", "workflow-1", "5f26c340", "5f26c340"],
+  })
+  assert.equal(flashedMessage, "workflow edges must connect two different nodes")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
+    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
+  })
+  assert.equal(flashedMessage, "workflow edge already exists between those nodes")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow endpoint new workflow-1 node-1 start", args: ["endpoint", "new", "workflow-1", "node-1", "start"] })
   assert.equal(flashedMessage, "created workflow endpoint endpoint-1")

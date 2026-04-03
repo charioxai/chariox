@@ -96,6 +96,7 @@ test("buildCommandCenterItems includes workflow subcommands", () => {
   assert.equal(labels.has("/workflow new"), true)
   assert.equal(labels.has("/workflow node add"), true)
   assert.equal(labels.has("/workflow node remove"), true)
+  assert.equal(labels.has("/workflow <workflow-ref> <from-ref> <to-ref>"), true)
   assert.equal(labels.has("/workflow edge add"), true)
   assert.equal(labels.has("/workflow edge remove"), true)
   assert.equal(labels.has("/workflow endpoint new"), true)

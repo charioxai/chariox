@@ -54,6 +54,13 @@ pub enum DaemonError {
         workflow_id: String,
         edge_id: String,
     },
+    #[error("workflow edge `{from_node_id}` -> `{to_node_id}` already exists in workflow `{workflow_id}` for session `{session_id}`")]
+    WorkflowEdgeConflict {
+        session_id: String,
+        workflow_id: String,
+        from_node_id: String,
+        to_node_id: String,
+    },
     #[error("workflow alias `{alias}` is invalid: {message}")]
     InvalidWorkflowAlias {
         alias: String,
@@ -72,7 +79,7 @@ pub enum DaemonError {
         workflow_id: String,
         alias: String,
     },
-    #[error("workflow graph reference `{reference}` is invalid in workflow `{workflow_id}` for session `{session_id}`: {message}")]
+    #[error("workflow node reference `{reference}` is invalid in workflow `{workflow_id}` for session `{session_id}`: {message}")]
     InvalidWorkflowGraphReference {
         session_id: String,
         workflow_id: String,

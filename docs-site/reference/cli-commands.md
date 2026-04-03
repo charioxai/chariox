@@ -121,6 +121,13 @@ Create a new workflow with an optional alias.
 
 Assign or update the alias of an existing workflow.
 
+### `/workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref>`
+
+Shorthand for creating a workflow edge. Each endpoint can be:
+
+- a workflow node id
+- an agent reference (agent id, hash ref, or alias) that maps to exactly one node in that workflow
+
 ### `/workflow node add <workflow-ref> <agent-id>`
 
 Add a workflow node bound to an existing agent.
@@ -129,7 +136,7 @@ Add a workflow node bound to an existing agent.
 
 Remove a workflow node. Connected edges and endpoints targeting that node are also removed by the kernel.
 
-### `/workflow edge add <workflow-ref> <from-node-id> <to-node-id>`
+### `/workflow edge add <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref>`
 
 Add a directed edge between two existing workflow nodes.
 

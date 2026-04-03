@@ -317,6 +317,22 @@ impl SessionService {
                 message: "target node does not exist",
             });
         }
+        if from_node_id == to_node_id {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: from_node_id.to_string(),
+                message: "source and target nodes must be different",
+            });
+        }
+        if workflow.has_edge(from_node_id, to_node_id) {
+            return Err(DaemonError::WorkflowEdgeConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                from_node_id: from_node_id.to_string(),
+                to_node_id: to_node_id.to_string(),
+            });
+        }
         Ok(workflow.add_edge(edge))
     }
 
@@ -1311,6 +1327,22 @@ mod tests {
             .expect("edge should be added");
         assert_eq!(edge.from_node_id(), planner.id());
         assert_eq!(edge.to_node_id(), reviewer.id());
+
+        let duplicate_edge = service
+            .add_workflow_edge(session.id(), workflow.id(), planner.id(), reviewer.id())
+            .expect_err("duplicate edge should be rejected");
+        assert!(matches!(
+            duplicate_edge,
+            DaemonError::WorkflowEdgeConflict { .. }
+        ));
+
+        let self_edge = service
+            .add_workflow_edge(session.id(), workflow.id(), planner.id(), planner.id())
+            .expect_err("self edge should be rejected");
+        assert!(matches!(
+            self_edge,
+            DaemonError::InvalidWorkflowGraphReference { .. }
+        ));
 
         let endpoint = service
             .create_workflow_endpoint(

@@ -6316,14 +6316,8 @@ function buildWorkflowCanvasRenderable(
   }
   wrapper.onMouseScroll = handleMouseScroll
 
-  // Get unique agent IDs from workflow nodes and format them
-  const nodeAgentIds = selectedWorkflow.nodes?.map((node) => node.agent_id) ?? []
-  const uniqueAgentIds = [...new Set(nodeAgentIds)]
-  const agentLabels = uniqueAgentIds.map((agentId) => {
-    const agent = options.agents.find((a) => a.id === agentId)
-    if (!agent) return agentId
-    return agent.agent_ref ?? agent.id
-  })
+  // Show all session agents in the workflow header, even before nodes are added.
+  const agentLabels = options.agents.map((agent) => agent.agent_ref ?? agent.id)
 
   const workflowLabel = selectedWorkflow.alias
     ? `${layout.workflowId} (${selectedWorkflow.alias})`
@@ -6467,20 +6461,32 @@ function drawWorkflowEdge(
   for (let index = 0; index < points.length - 1; index += 1) {
     const current = points[index]!
     const next = points[index + 1]!
+    const lastSegment = index === points.length - 2
     if (current.x === next.x) {
-      const fromY = Math.min(current.y, next.y)
-      const toY = Math.max(current.y, next.y)
-      for (let y = fromY; y <= toY; y += 1) {
-        const char = y === toY && index === points.length - 2 ? "v" : "|"
+      const step = current.y <= next.y ? 1 : -1
+      for (let y = current.y; ; y += step) {
+        const atEnd = y === next.y
+        const char = lastSegment && atEnd
+          ? (step > 0 ? "v" : "^")
+          : "|"
         buffer.setCell(current.x, y, char, theme.secondary, theme.backgroundPanel)
+        if (atEnd) {
+          break
+        }
       }
       continue
     }
     if (current.y === next.y) {
-      const fromX = Math.min(current.x, next.x)
-      const toX = Math.max(current.x, next.x)
-      for (let x = fromX; x <= toX; x += 1) {
-        buffer.setCell(x, current.y, "-", theme.secondary, theme.backgroundPanel)
+      const step = current.x <= next.x ? 1 : -1
+      for (let x = current.x; ; x += step) {
+        const atEnd = x === next.x
+        const char = lastSegment && atEnd
+          ? (step > 0 ? ">" : "<")
+          : "-"
+        buffer.setCell(x, current.y, char, theme.secondary, theme.backgroundPanel)
+        if (atEnd) {
+          break
+        }
       }
     }
   }
@@ -7034,7 +7040,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
   )
 }
 
