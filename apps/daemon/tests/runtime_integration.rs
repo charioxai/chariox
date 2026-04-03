@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use arroba_daemon::agent::CreateAgentRequest;
 use arroba_daemon::attachment::{AttachRequest, ClientCapabilityLevel};
 use arroba_daemon::local::{
     AttachToSessionRequest, EndSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest,
@@ -20,7 +21,8 @@ use arroba_daemon::local::{
 };
 use arroba_daemon::provider::{LaunchProviderRequest, ProviderRunState};
 use arroba_daemon::session::{
-    CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+    CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus, WorkflowNodeRunStatus,
+    WorkflowRunStatus,
 };
 use arroba_daemon::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
@@ -201,6 +203,97 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
         .expect("session should still exist");
     assert!(session.active_prompt().is_none());
     assert!(session.queued_prompts().is_empty());
+}
+
+#[test]
+fn workflow_runs_progress_without_terminal_pumps() {
+    let _guard = OPENCODE_ENV_LOCK.lock().unwrap();
+    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let _attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let agent = app
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("node-a"))
+        .expect("agent should spawn");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("workflow-pump-test".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+
+    let (run, _workflow, _endpoint) = app
+        .invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("kickoff".to_string()),
+        )
+        .expect("workflow run should start");
+
+    let run_id = run.id().to_string();
+    let start = Instant::now();
+    loop {
+        app.pump_active_prompt_outputs();
+        let run = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), &run_id)
+            .expect("workflow run should exist");
+        if !matches!(
+            run.status(),
+            WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
+        ) {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(2) {
+            panic!("workflow run never completed");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let run = app
+        .sessions()
+        .resolve_workflow_run_ref(session.id(), &run_id)
+        .expect("workflow run should exist");
+    assert!(
+        matches!(
+            run.status(),
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Stopped
+        ),
+        "workflow run should complete or stop"
+    );
+    assert!(
+        run.node_runs().iter().all(|node_run| matches!(
+            node_run.status(),
+            WorkflowNodeRunStatus::Completed
+                | WorkflowNodeRunStatus::Failed
+                | WorkflowNodeRunStatus::Stopped
+        )),
+        "workflow node run should settle"
+    );
 }
 
 #[test]

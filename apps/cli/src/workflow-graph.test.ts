@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import { buildWorkflowGraphDrillCases, validateWorkflowGraphLayout } from "./workflow-graph-drills.js"
 import {
   buildWorkflowGraphLayout,
   cycleWorkflowNodeId,
@@ -255,22 +256,62 @@ test("routeWorkflowEdge offsets reciprocal edges into separate lanes", () => {
   const forward = routeWorkflowEdge(leftNode, rightNode, { reciprocalLane: -1 })
   const reverse = routeWorkflowEdge(rightNode, leftNode, { reciprocalLane: 1 })
 
-  assert.deepEqual(forward, [
-    { x: 39, y: 14 },
-    { x: 40, y: 14 },
-    { x: 40, y: 12 },
-    { x: 59, y: 12 },
-    { x: 59, y: 14 },
-    { x: 60, y: 14 },
-  ])
-  assert.deepEqual(reverse, [
-    { x: 60, y: 14 },
-    { x: 59, y: 14 },
-    { x: 59, y: 16 },
-    { x: 40, y: 16 },
-    { x: 40, y: 14 },
-    { x: 39, y: 14 },
-  ])
+  assert.notDeepEqual(forward, reverse)
+  assert.notEqual(forward[0]?.y, reverse[0]?.y)
+  assert.notEqual(forward[forward.length - 1]?.y, reverse[reverse.length - 1]?.y)
+  assert.equal(forward[0]?.x, 39)
+  assert.equal(reverse[0]?.x, 60)
+})
+
+test("routeWorkflowEdge avoids unrelated node boxes by using orthogonal corners", () => {
+  const fromNode = layoutNode("from", 10, 10)
+  const blocker = layoutNode("blocker", 45, 8, 18, 10)
+  const toNode = layoutNode("to", 80, 10)
+
+  const path = routeWorkflowEdge(fromNode, toNode, { obstacles: [fromNode, blocker, toNode] })
+
+  assert.ok(path.length >= 4)
+  assert.ok(path.some((point) => point.y < blocker.y || point.y > blocker.y + blocker.height - 1))
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const start = path[index]!
+    const end = path[index + 1]!
+    const intersectsBlocker = segmentIntersectsNode(start, end, blocker)
+    assert.equal(intersectsBlocker, false)
+  }
+})
+
+test("buildWorkflowGraphLayout reorders nodes within a rank to reduce crossings", () => {
+  const crossingWorkflow: WorkflowDefinition = {
+    id: "flow-crossing",
+    alias: null,
+    nodes: [
+      { id: "node-root", agent_id: "agent-root" },
+      { id: "node-a", agent_id: "agent-a" },
+      { id: "node-b", agent_id: "agent-b" },
+      { id: "node-c", agent_id: "agent-c" },
+      { id: "node-d", agent_id: "agent-d" },
+    ],
+    edges: [
+      { id: "edge-root-a", from_node_id: "node-root", to_node_id: "node-a" },
+      { id: "edge-root-b", from_node_id: "node-root", to_node_id: "node-b" },
+      { id: "edge-a", from_node_id: "node-a", to_node_id: "node-d" },
+      { id: "edge-b", from_node_id: "node-b", to_node_id: "node-c" },
+    ],
+    endpoints: [],
+  }
+
+  const layout = buildWorkflowGraphLayout({
+    workflow: crossingWorkflow,
+    agents: [agent("agent-root"), agent("agent-a"), agent("agent-b"), agent("agent-c"), agent("agent-d")],
+    workflowRuns: [],
+    selectedNodeId: null,
+  })
+
+  const nodeC = layout.nodes.find((node) => node.id === "node-c")
+  const nodeD = layout.nodes.find((node) => node.id === "node-d")
+  assert.ok(nodeC)
+  assert.ok(nodeD)
+  assert.ok(nodeD!.x < nodeC!.x, `expected node-d (${nodeD!.x}) left of node-c (${nodeC!.x})`)
 })
 
 test("buildWorkflowGraphLayout separates reciprocal edges so both remain visible", () => {
@@ -301,5 +342,59 @@ test("buildWorkflowGraphLayout separates reciprocal edges so both remain visible
   assert.ok(forward)
   assert.ok(reverse)
   assert.notDeepEqual(forward!.points, reverse!.points)
-  assert.notEqual(forward!.points[2]?.y, reverse!.points[2]?.y)
+  assert.notEqual(forward!.points[0]?.y, reverse!.points[0]?.y)
+  assert.notEqual(
+    forward!.points[forward!.points.length - 1]?.y,
+    reverse!.points[reverse!.points.length - 1]?.y,
+  )
 })
+
+test("workflow graph drill suite keeps representative topologies clean", () => {
+  for (const drillCase of buildWorkflowGraphDrillCases()) {
+    const layout = buildWorkflowGraphLayout({
+      workflow: drillCase.workflow,
+      agents: drillCase.agents,
+      workflowRuns: [],
+      selectedNodeId: null,
+    })
+    const validation = validateWorkflowGraphLayout(layout)
+    assert.deepEqual(
+      validation,
+      {
+        nodeOverlaps: [],
+        diagonalSegments: [],
+        edgeNodeCollisions: [],
+        reciprocalOverlaps: [],
+      },
+      `expected clean layout for ${drillCase.id}`,
+    )
+  }
+})
+
+function segmentIntersectsNode(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  node: WorkflowGraphNodeLayout,
+) {
+  const minX = node.x
+  const maxX = node.x + node.width - 1
+  const minY = node.y
+  const maxY = node.y + node.height - 1
+  if (start.x === end.x) {
+    if (start.x < minX || start.x > maxX) {
+      return false
+    }
+    const segmentMinY = Math.min(start.y, end.y)
+    const segmentMaxY = Math.max(start.y, end.y)
+    return segmentMaxY >= minY && segmentMinY <= maxY
+  }
+  if (start.y === end.y) {
+    if (start.y < minY || start.y > maxY) {
+      return false
+    }
+    const segmentMinX = Math.min(start.x, end.x)
+    const segmentMaxX = Math.max(start.x, end.x)
+    return segmentMaxX >= minX && segmentMinX <= maxX
+  }
+  return false
+}

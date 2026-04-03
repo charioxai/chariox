@@ -147,9 +147,20 @@ where
             message: error.to_string(),
         })?;
     let app = Arc::new(Mutex::new(app));
+    let pump_app = Arc::clone(&app);
     let runtime = Arc::new(KernelTransportRuntime::default());
 
     tokio::pin!(shutdown);
+
+    tokio::spawn(async move {
+        loop {
+            {
+                let mut app = pump_app.lock().await;
+                app.pump_active_prompt_outputs();
+            }
+            sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
+        }
+    });
 
     loop {
         tokio::select! {

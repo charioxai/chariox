@@ -604,6 +604,33 @@ impl DaemonApp {
             .collect())
     }
 
+    pub fn pump_active_prompt_outputs(&mut self) {
+        let sessions = self.sessions.list_sessions();
+        for session in sessions {
+            if session.active_prompt().is_none() {
+                continue;
+            }
+            let Some(provider_run_id) = session.active_provider_run_id() else {
+                continue;
+            };
+            let recipient_attachment_ids =
+                self.attachments.list_session_attachment_ids(session.id());
+            if let Err(error) =
+                self.pump_provider_output(session.id(), provider_run_id, recipient_attachment_ids)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.app",
+                    "background prompt pump failed",
+                    serde_json::json!({
+                        "session_id": session.id(),
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
     pub(crate) fn ensure_attachment_in_session(
         &self,
         session_id: &str,

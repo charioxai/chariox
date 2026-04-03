@@ -64,7 +64,7 @@ export function buildWorkflowGraphLayout(options: {
     )
     const componentEndpoints = endpoints.filter((endpoint) => componentNodeIds.includes(endpoint.entry_node_id))
     const ranks = assignNodeRanks(componentNodes, componentEdges, componentEndpoints)
-    const levels = groupNodesByRank(componentNodes, ranks)
+    const levels = orderLevelsToReduceCrossings(groupNodesByRank(componentNodes, ranks), componentEdges)
     const componentWidth = levels.reduce((max, level) => {
       const levelWidth = level.length * metrics.nodeWidth + Math.max(0, level.length - 1) * metrics.horizontalGap
       return Math.max(max, levelWidth)
@@ -130,6 +130,8 @@ export function buildWorkflowGraphLayout(options: {
       })
     }
 
+    const componentNodeLayouts = [...nodeLayoutById.values()]
+
     for (const edge of componentEdges) {
       const fromNode = nodeLayoutById.get(edge.from_node_id)
       const toNode = nodeLayoutById.get(edge.to_node_id)
@@ -141,16 +143,35 @@ export function buildWorkflowGraphLayout(options: {
         id: edge.id,
         fromNodeId: edge.from_node_id,
         toNodeId: edge.to_node_id,
-        points: routeWorkflowEdge(fromNode, toNode, reciprocalLane ? { reciprocalLane } : undefined),
+        points: routeWorkflowEdge(fromNode, toNode, {
+          reciprocalLane,
+          obstacles: componentNodeLayouts,
+        }),
       })
     }
 
-    const componentHeight = levels.length * metrics.nodeHeight
-      + Math.max(0, levels.length - 1) * metrics.verticalGap
-      + metrics.endpointGap
-      + 2
-    nextComponentTop += componentHeight + metrics.componentGap
-    graphWidth = Math.max(graphWidth, componentLeft + componentWidth + GRAPH_PADDING_X)
+    const componentBottom = Math.max(
+      componentTop,
+      ...componentNodeLayouts.map((node) => node.y + node.height - 1),
+      ...layoutEndpoints
+        .filter((endpoint) => componentNodeIds.includes(endpoint.entryNodeId))
+        .map((endpoint) => endpoint.markerY + 1),
+      ...layoutEdges
+        .filter((edge) => componentNodeIds.includes(edge.fromNodeId) && componentNodeIds.includes(edge.toNodeId))
+        .flatMap((edge) => edge.points.map((point) => point.y)),
+    )
+    const componentRight = Math.max(
+      componentLeft + componentWidth - 1,
+      ...componentNodeLayouts.map((node) => node.x + node.width - 1),
+      ...layoutEndpoints
+        .filter((endpoint) => componentNodeIds.includes(endpoint.entryNodeId))
+        .map((endpoint) => endpoint.labelX + endpoint.label.length),
+      ...layoutEdges
+        .filter((edge) => componentNodeIds.includes(edge.fromNodeId) && componentNodeIds.includes(edge.toNodeId))
+        .flatMap((edge) => edge.points.map((point) => point.x)),
+    )
+    nextComponentTop = componentBottom + metrics.componentGap
+    graphWidth = Math.max(graphWidth, componentRight + GRAPH_PADDING_X + 1)
   }
 
   const graphHeight = Math.max(GRAPH_PADDING_Y * 2 + 6, nextComponentTop + GRAPH_PADDING_Y - metrics.componentGap)
@@ -262,6 +283,85 @@ function groupNodesByRank(
   return [...levels.entries()]
     .sort((left, right) => left[0] - right[0])
     .map((entry) => entry[1].sort((left, right) => left.id.localeCompare(right.id)))
+}
+
+function orderLevelsToReduceCrossings(
+  levels: WorkflowNodeDefinition[][],
+  edges: WorkflowEdgeDefinition[],
+) {
+  if (levels.length <= 1 || edges.length === 0) {
+    return levels
+  }
+  const orderedLevels = levels.map((level) => [...level])
+  const incoming = new Map<string, string[]>()
+  const outgoing = new Map<string, string[]>()
+  for (const level of orderedLevels) {
+    for (const node of level) {
+      incoming.set(node.id, [])
+      outgoing.set(node.id, [])
+    }
+  }
+  for (const edge of edges) {
+    incoming.get(edge.to_node_id)?.push(edge.from_node_id)
+    outgoing.get(edge.from_node_id)?.push(edge.to_node_id)
+  }
+
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    for (let levelIndex = 1; levelIndex < orderedLevels.length; levelIndex += 1) {
+      const previousPositions = buildLevelPositions(orderedLevels[levelIndex - 1]!)
+      orderedLevels[levelIndex] = sortLevelByBarycenter(
+        orderedLevels[levelIndex]!,
+        incoming,
+        previousPositions,
+      )
+    }
+    for (let levelIndex = orderedLevels.length - 2; levelIndex >= 0; levelIndex -= 1) {
+      const nextPositions = buildLevelPositions(orderedLevels[levelIndex + 1]!)
+      orderedLevels[levelIndex] = sortLevelByBarycenter(
+        orderedLevels[levelIndex]!,
+        outgoing,
+        nextPositions,
+      )
+    }
+  }
+
+  return orderedLevels
+}
+
+function buildLevelPositions(level: WorkflowNodeDefinition[]) {
+  return new Map(level.map((node, index) => [node.id, index] as const))
+}
+
+function sortLevelByBarycenter(
+  level: WorkflowNodeDefinition[],
+  neighborMap: Map<string, string[]>,
+  adjacentPositions: Map<string, number>,
+) {
+  const existingOrder = buildLevelPositions(level)
+  return [...level].sort((left, right) => {
+    const leftBarycenter = barycenterForNode(left.id, neighborMap, adjacentPositions, existingOrder.get(left.id) ?? 0)
+    const rightBarycenter = barycenterForNode(right.id, neighborMap, adjacentPositions, existingOrder.get(right.id) ?? 0)
+    if (leftBarycenter !== rightBarycenter) {
+      return leftBarycenter - rightBarycenter
+    }
+    return (existingOrder.get(left.id) ?? 0) - (existingOrder.get(right.id) ?? 0)
+      || left.id.localeCompare(right.id)
+  })
+}
+
+function barycenterForNode(
+  nodeId: string,
+  neighborMap: Map<string, string[]>,
+  adjacentPositions: Map<string, number>,
+  fallback: number,
+) {
+  const positions = (neighborMap.get(nodeId) ?? [])
+    .map((neighborId) => adjacentPositions.get(neighborId))
+    .filter((value): value is number => value !== undefined)
+  if (positions.length === 0) {
+    return fallback
+  }
+  return positions.reduce((sum, value) => sum + value, 0) / positions.length
 }
 
 function formatNodeLines(
