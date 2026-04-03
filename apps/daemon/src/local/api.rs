@@ -1892,6 +1892,164 @@ mod tests {
     }
 
     #[test]
+    fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let entry_agent = spawn_workflow_test_agent(&mut app, session.id(), "entry");
+        let branch_one_agent = spawn_workflow_test_agent(&mut app, session.id(), "branch-one");
+        let branch_two_agent = spawn_workflow_test_agent(&mut app, session.id(), "branch-two");
+        let join_agent = spawn_workflow_test_agent(&mut app, session.id(), "join");
+
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("join".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+
+        let entry_node =
+            add_workflow_test_node(&mut app, session.id(), workflow.id(), entry_agent.id());
+        let branch_one_node =
+            add_workflow_test_node(&mut app, session.id(), workflow.id(), branch_one_agent.id());
+        let branch_two_node =
+            add_workflow_test_node(&mut app, session.id(), workflow.id(), branch_two_agent.id());
+        let join_node =
+            add_workflow_test_node(&mut app, session.id(), workflow.id(), join_agent.id());
+        add_workflow_test_edge(
+            &mut app,
+            session.id(),
+            workflow.id(),
+            entry_node.id(),
+            branch_one_node.id(),
+        );
+        add_workflow_test_edge(
+            &mut app,
+            session.id(),
+            workflow.id(),
+            entry_node.id(),
+            branch_two_node.id(),
+        );
+        add_workflow_test_edge(
+            &mut app,
+            session.id(),
+            workflow.id(),
+            branch_one_node.id(),
+            join_node.id(),
+        );
+        add_workflow_test_edge(
+            &mut app,
+            session.id(),
+            workflow.id(),
+            branch_two_node.id(),
+            join_node.id(),
+        );
+
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: entry_node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("workflow endpoint should be created")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("run the join drill".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        complete_workflow_test_prompt(&mut app, session.id(), "entry workflow prompt");
+        let after_entry = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
+        assert_eq!(after_entry.node_runs().len(), 3);
+        let session_after_entry = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve after entry");
+        assert!(session_after_entry.active_prompt().is_some());
+        assert_eq!(session_after_entry.queued_prompts().len(), 1);
+
+        complete_workflow_test_prompt(&mut app, session.id(), "first branch workflow prompt");
+        let after_first_branch = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
+        assert_eq!(after_first_branch.node_runs().len(), 3);
+        assert!(after_first_branch
+            .node_runs()
+            .iter()
+            .all(|node_run| node_run.node_id() != join_node.id()));
+        let buffered_join_messages = after_first_branch
+            .messages()
+            .iter()
+            .filter(|message| message.target_node_id() == join_node.id())
+            .collect::<Vec<_>>();
+        assert_eq!(buffered_join_messages.len(), 1);
+        assert!(buffered_join_messages[0]
+            .consumed_by_node_run_id()
+            .is_none());
+        let session_after_first_branch = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve after first branch");
+        assert!(
+            session_after_first_branch.active_prompt().is_some(),
+            "expected the second branch prompt to be active after the first branch completed"
+        );
+        assert_eq!(session_after_first_branch.queued_prompts().len(), 0);
+
+        complete_workflow_test_prompt(&mut app, session.id(), "second branch workflow prompt");
+        let after_second_branch = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
+        let join_runs = after_second_branch
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == join_node.id())
+            .collect::<Vec<_>>();
+        assert_eq!(join_runs.len(), 1);
+        let join_run = join_runs[0];
+        let join_messages = after_second_branch
+            .messages()
+            .iter()
+            .filter(|message| message.target_node_id() == join_node.id())
+            .collect::<Vec<_>>();
+        assert_eq!(join_messages.len(), 2);
+        assert!(join_messages
+            .iter()
+            .all(|message| message.consumed_by_node_run_id() == Some(join_run.id())));
+
+        complete_workflow_test_prompt(&mut app, session.id(), "join workflow prompt");
+        let completed = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
+        assert_eq!(format!("{:?}", completed.status()), "Completed");
+        assert_eq!(completed.node_runs().len(), 4);
+    }
+
+    #[test]
     fn detaching_one_attachment_keeps_the_session_open_for_others() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -2854,6 +3012,100 @@ mod tests {
                 assert_eq!(result.bytes, 8);
             }
             _ => panic!("unexpected transfer response"),
+        }
+    }
+
+    fn spawn_workflow_test_agent(
+        app: &mut DaemonApp,
+        session_id: &str,
+        alias: &str,
+    ) -> crate::agent::AgentInstance {
+        match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session_id.to_string(),
+                alias: Some(alias.to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("workflow test agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        }
+    }
+
+    fn add_workflow_test_node(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+        agent_id: &str,
+    ) -> crate::session::WorkflowNodeDefinition {
+        match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session_id.to_string(),
+                    workflow_ref: workflow_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                },
+            ))
+            .expect("workflow test node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        }
+    }
+
+    fn add_workflow_test_edge(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+        from_node_id: &str,
+        to_node_id: &str,
+    ) {
+        match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session_id.to_string(),
+                    workflow_ref: workflow_id.to_string(),
+                    from_node_id: from_node_id.to_string(),
+                    to_node_id: to_node_id.to_string(),
+                },
+            ))
+            .expect("workflow test edge should be added")
+        {
+            LocalDaemonResponse::WorkflowEdgeAdded { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+    }
+
+    fn complete_workflow_test_prompt(app: &mut DaemonApp, session_id: &str, label: &str) {
+        match app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session_id.to_string(),
+            }))
+            .unwrap_or_else(|error| panic!("{label} should complete: {error}"))
+        {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            _ => panic!("unexpected local response"),
+        }
+    }
+
+    fn get_workflow_test_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> crate::session::WorkflowRun {
+        match app
+            .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session_id.to_string(),
+                workflow_run_ref: workflow_run_id.to_string(),
+            }))
+            .expect("workflow test run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
         }
     }
 }

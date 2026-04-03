@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
@@ -14,7 +14,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDispatch {
     pub node_run: WorkflowNodeRun,
-    pub message: WorkflowMessage,
+    pub messages: Vec<WorkflowMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,14 +320,16 @@ impl SessionService {
             .as_ref()
             .filter(|value| !value.trim().is_empty())
             .map(|value| {
-                vec![WorkflowMessage::new(
+                let mut message = WorkflowMessage::new(
                     self.next_workflow_message_id(),
                     None,
                     entry_node.id().to_string(),
                     "invocation",
                     "workflow invoked",
                     value.clone(),
-                )]
+                );
+                message.set_consumed_by_node_run_id(node_run.id().to_string());
+                vec![message]
             })
             .unwrap_or_default();
         let workflow_run = WorkflowRun::new(
@@ -470,7 +472,7 @@ impl SessionService {
                 .clone();
             (workflow_run, source_node_run, workflow)
         };
-        let dispatches = workflow
+        let emitted_messages = workflow
             .edges()
             .iter()
             .filter(|edge| edge.from_node_id() == source_node_run.node_id())
@@ -510,16 +512,11 @@ impl SessionService {
                         }
                     })?,
                 );
-                let node_run = WorkflowNodeRun::new(
-                    self.next_workflow_node_run_id(),
-                    target_node.id().to_string(),
-                    target_node.agent_id().to_string(),
-                    WorkflowNodeRunStatus::Ready,
-                );
-                Ok(WorkflowDispatch { node_run, message })
+                Ok(message)
             })
             .collect::<Result<Vec<_>, DaemonError>>()?;
 
+        let next_workflow_node_run_number = &mut self.next_workflow_node_run_number;
         let session =
             self.store
                 .get_mut(session_id)
@@ -552,14 +549,33 @@ impl SessionService {
         ));
         node_run.set_completion(completion);
         workflow_run.clear_active_node_run();
-        for dispatch in &dispatches {
-            workflow_run.add_message(dispatch.message.clone());
-            workflow_run.add_node_run(dispatch.node_run.clone());
+        for message in emitted_messages {
+            workflow_run.add_message(message);
         }
-        workflow_run.set_status(if dispatches.is_empty() {
-            WorkflowRunStatus::Completed
-        } else {
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let dispatches = collect_ready_workflow_dispatches(
+            next_workflow_node_run_number,
+            session_id,
+            &workflow_id,
+            &workflow,
+            workflow_run,
+        )?;
+        let has_unconsumed_messages = workflow_run
+            .messages()
+            .iter()
+            .any(|message| message.consumed_by_node_run_id().is_none());
+        let has_pending_node_runs = workflow_run.node_runs().iter().any(|node_run| {
+            !matches!(
+                node_run.status(),
+                WorkflowNodeRunStatus::Completed
+                    | WorkflowNodeRunStatus::Failed
+                    | WorkflowNodeRunStatus::Stopped
+            )
+        });
+        workflow_run.set_status(if has_unconsumed_messages || has_pending_node_runs {
             WorkflowRunStatus::Waiting
+        } else {
+            WorkflowRunStatus::Completed
         });
         Ok(WorkflowCompletionUpdate {
             workflow_run: workflow_run.clone(),
@@ -1429,6 +1445,124 @@ impl SessionService {
     }
 }
 
+fn collect_ready_workflow_dispatches(
+    next_workflow_node_run_number: &mut u64,
+    session_id: &str,
+    workflow_id: &str,
+    workflow: &WorkflowDefinition,
+    workflow_run: &mut WorkflowRun,
+) -> Result<Vec<WorkflowDispatch>, DaemonError> {
+    let target_node_ids = workflow_run
+        .messages()
+        .iter()
+        .filter(|message| message.consumed_by_node_run_id().is_none())
+        .map(|message| message.target_node_id().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut dispatches = Vec::new();
+
+    for target_node_id in target_node_ids {
+        if workflow_run.node_runs().iter().any(|node_run| {
+            node_run.node_id() == target_node_id
+                && !matches!(
+                    node_run.status(),
+                    WorkflowNodeRunStatus::Completed
+                        | WorkflowNodeRunStatus::Failed
+                        | WorkflowNodeRunStatus::Stopped
+                )
+        }) {
+            continue;
+        }
+
+        let target_node = workflow.node(&target_node_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                reference: target_node_id.clone(),
+                message: "target node does not exist",
+            }
+        })?;
+        let expected_source_node_ids = workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.to_node_id() == target_node_id)
+            .map(|edge| edge.from_node_id().to_string())
+            .collect::<BTreeSet<_>>();
+        if expected_source_node_ids.is_empty() {
+            continue;
+        }
+
+        let mut latest_message_index_by_source = BTreeMap::new();
+        for (index, message) in workflow_run.messages().iter().enumerate() {
+            if message.target_node_id() != target_node_id
+                || message.consumed_by_node_run_id().is_some()
+            {
+                continue;
+            }
+            let Some(source_node_run_id) = message.source_node_run_id() else {
+                continue;
+            };
+            let Some(source_node_run) = workflow_run
+                .node_runs()
+                .iter()
+                .find(|node_run| node_run.id() == source_node_run_id)
+            else {
+                continue;
+            };
+            let source_node_id = source_node_run.node_id().to_string();
+            let should_replace = latest_message_index_by_source
+                .get(&source_node_id)
+                .and_then(|existing_index| workflow_run.messages().get(*existing_index))
+                .is_none_or(|existing_message: &WorkflowMessage| {
+                    existing_message.created_at_ms() <= message.created_at_ms()
+                });
+            if should_replace {
+                latest_message_index_by_source.insert(source_node_id, index);
+            }
+        }
+
+        if !expected_source_node_ids
+            .iter()
+            .all(|source_node_id| latest_message_index_by_source.contains_key(source_node_id))
+        {
+            continue;
+        }
+
+        let node_run = WorkflowNodeRun::new(
+            next_workflow_node_run_id(next_workflow_node_run_number),
+            target_node.id().to_string(),
+            target_node.agent_id().to_string(),
+            WorkflowNodeRunStatus::Ready,
+        );
+        let selected_indices = expected_source_node_ids
+            .iter()
+            .filter_map(|source_node_id| {
+                latest_message_index_by_source.get(source_node_id).copied()
+            })
+            .collect::<Vec<_>>();
+        let selected_messages = selected_indices
+            .iter()
+            .filter_map(|index| workflow_run.messages().get(*index).cloned())
+            .collect::<Vec<_>>();
+        for index in selected_indices {
+            if let Some(message) = workflow_run.messages_mut().get_mut(index) {
+                message.set_consumed_by_node_run_id(node_run.id().to_string());
+            }
+        }
+        let node_run = workflow_run.add_node_run(node_run);
+        dispatches.push(WorkflowDispatch {
+            node_run,
+            messages: selected_messages,
+        });
+    }
+
+    Ok(dispatches)
+}
+
+fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String {
+    *next_workflow_node_run_number += 1;
+    format!("workflow-node-run-{}", next_workflow_node_run_number)
+}
+
 fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {
     let Some(alias) = alias else {
         return Ok(None);
@@ -1964,12 +2098,13 @@ mod tests {
         assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Waiting);
         assert_eq!(completion.dispatches.len(), 1);
         assert_eq!(completion.dispatches[0].node_run.node_id(), second.id());
+        assert_eq!(completion.dispatches[0].messages.len(), 1);
         assert_eq!(
-            completion.dispatches[0].message.target_node_id(),
+            completion.dispatches[0].messages[0].target_node_id(),
             second.id()
         );
         let payload: WorkflowHandoffPayload =
-            serde_json::from_str(completion.dispatches[0].message.handoff_payload())
+            serde_json::from_str(completion.dispatches[0].messages[0].handoff_payload())
                 .expect("handoff payload should deserialize");
         assert_eq!(payload.workflow_run_id(), workflow_run.id());
         assert_eq!(payload.workflow_id(), workflow.id());
@@ -1989,6 +2124,149 @@ mod tests {
         assert_eq!(resolved.status(), WorkflowRunStatus::Waiting);
         assert_eq!(resolved.node_runs().len(), 2);
         assert_eq!(resolved.messages().len(), 2);
+    }
+
+    #[test]
+    fn join_nodes_wait_for_all_inputs_before_dispatching_once() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("join".to_string()))
+            .expect("workflow should be created");
+        let entry = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("entry node should be added");
+        let branch_one = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-2")
+            .expect("branch one node should be added");
+        let branch_two = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-3")
+            .expect("branch two node should be added");
+        let join = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-4")
+            .expect("join node should be added");
+        service
+            .add_workflow_edge(session.id(), workflow.id(), entry.id(), branch_one.id())
+            .expect("entry should connect to branch one");
+        service
+            .add_workflow_edge(session.id(), workflow.id(), entry.id(), branch_two.id())
+            .expect("entry should connect to branch two");
+        service
+            .add_workflow_edge(session.id(), workflow.id(), branch_one.id(), join.id())
+            .expect("branch one should connect to join");
+        service
+            .add_workflow_edge(session.id(), workflow.id(), branch_two.id(), join.id())
+            .expect("branch two should connect to join");
+        let endpoint = service
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                entry.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+
+        let workflow_run = service
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("run the join drill".to_string()),
+            )
+            .expect("workflow run should be created");
+        let started = service
+            .start_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                workflow_run.node_runs()[0].id(),
+            )
+            .expect("entry node should start");
+        let entry_completion = service
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                started.node_runs()[0].id(),
+                None,
+            )
+            .expect("entry node should dispatch both branches");
+        assert_eq!(entry_completion.dispatches.len(), 2);
+
+        let branch_one_run = entry_completion
+            .dispatches
+            .iter()
+            .find(|dispatch| dispatch.node_run.node_id() == branch_one.id())
+            .expect("branch one dispatch should exist")
+            .node_run
+            .clone();
+        let branch_two_run = entry_completion
+            .dispatches
+            .iter()
+            .find(|dispatch| dispatch.node_run.node_id() == branch_two.id())
+            .expect("branch two dispatch should exist")
+            .node_run
+            .clone();
+        service
+            .start_workflow_node_run(session.id(), workflow_run.id(), branch_one_run.id())
+            .expect("branch one should start");
+        let branch_one_completion = service
+            .complete_workflow_node_run(session.id(), workflow_run.id(), branch_one_run.id(), None)
+            .expect("branch one completion should succeed");
+        assert!(branch_one_completion.dispatches.is_empty());
+        let waiting = service
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should resolve after first branch");
+        assert_eq!(waiting.node_runs().len(), 3);
+        assert_eq!(
+            waiting
+                .messages()
+                .iter()
+                .filter(|message| message.target_node_id() == join.id())
+                .count(),
+            1
+        );
+        assert!(waiting
+            .messages()
+            .iter()
+            .filter(|message| message.target_node_id() == join.id())
+            .all(|message| message.consumed_by_node_run_id().is_none()));
+
+        service
+            .start_workflow_node_run(session.id(), workflow_run.id(), branch_two_run.id())
+            .expect("branch two should start");
+        let branch_two_completion = service
+            .complete_workflow_node_run(session.id(), workflow_run.id(), branch_two_run.id(), None)
+            .expect("branch two completion should succeed");
+        assert_eq!(branch_two_completion.dispatches.len(), 1);
+        let join_dispatch = &branch_two_completion.dispatches[0];
+        assert_eq!(join_dispatch.node_run.node_id(), join.id());
+        assert_eq!(join_dispatch.messages.len(), 2);
+        assert_eq!(
+            join_dispatch
+                .messages
+                .iter()
+                .map(|message| message.target_node_id())
+                .collect::<Vec<_>>(),
+            vec![join.id(), join.id()]
+        );
+        let resolved = service
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should resolve");
+        assert_eq!(resolved.node_runs().len(), 4);
+        assert_eq!(
+            resolved
+                .messages()
+                .iter()
+                .filter(|message| message.target_node_id() == join.id())
+                .count(),
+            2
+        );
+        assert!(resolved
+            .messages()
+            .iter()
+            .filter(|message| message.target_node_id() == join.id())
+            .all(|message| message.consumed_by_node_run_id() == Some(join_dispatch.node_run.id())));
     }
 
     #[test]

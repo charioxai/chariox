@@ -403,6 +403,8 @@ pub struct WorkflowMessage {
     message_type: String,
     summary: String,
     handoff_payload: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consumed_by_node_run_id: Option<String>,
     created_at_ms: u64,
 }
 
@@ -422,6 +424,7 @@ impl WorkflowMessage {
             message_type: message_type.into(),
             summary: summary.into(),
             handoff_payload: handoff_payload.into(),
+            consumed_by_node_run_id: None,
             created_at_ms: unix_epoch_ms(),
         }
     }
@@ -448,6 +451,18 @@ impl WorkflowMessage {
 
     pub fn handoff_payload(&self) -> &str {
         &self.handoff_payload
+    }
+
+    pub fn consumed_by_node_run_id(&self) -> Option<&str> {
+        self.consumed_by_node_run_id.as_deref()
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn set_consumed_by_node_run_id(&mut self, workflow_node_run_id: impl Into<String>) {
+        self.consumed_by_node_run_id = Some(workflow_node_run_id.into());
     }
 }
 

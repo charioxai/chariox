@@ -169,8 +169,8 @@ impl DaemonApp {
                 None,
                 self.attachments().list_session_attachment_ids(session_id),
                 format!(
-                    "Workflow run `{workflow_run_id}` routed `{}` to node `{}`.",
-                    dispatch.message.id(),
+                    "Workflow run `{workflow_run_id}` routed {} upstream message(s) to node `{}`.",
+                    dispatch.messages.len(),
                     dispatch.node_run.node_id()
                 ),
             );
@@ -180,7 +180,7 @@ impl DaemonApp {
                 dispatch.node_run.id(),
                 dispatch.node_run.agent_id(),
                 dispatch.node_run.node_id(),
-                &Self::build_workflow_handoff_prompt(&dispatch.message),
+                &Self::build_workflow_handoff_prompt(&dispatch.messages),
             ) {
                 self.record_notice(
                     session_id,
@@ -196,11 +196,25 @@ impl DaemonApp {
         }
     }
 
-    fn build_workflow_handoff_prompt(message: &WorkflowMessage) -> String {
+    fn build_workflow_handoff_prompt(messages: &[WorkflowMessage]) -> String {
+        let handoff_payloads = messages
+            .iter()
+            .map(|message| {
+                serde_json::from_str::<serde_json::Value>(message.handoff_payload()).unwrap_or_else(
+                    |_| serde_json::Value::String(message.handoff_payload().to_string()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let payloads =
+            serde_json::to_string_pretty(&handoff_payloads).unwrap_or_else(|_| "[]".to_string());
+        let target_node_id = messages
+            .first()
+            .map(|message| message.target_node_id())
+            .unwrap_or("-");
         format!(
-            "Workflow handoff payload (JSON):\n{}\n\nExecute workflow node `{}` using this payload as the authoritative upstream context.\n\n{}\n",
-            message.handoff_payload(),
-            message.target_node_id(),
+            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}\n",
+            payloads,
+            target_node_id,
             workflow_output_contract_instructions()
         )
     }

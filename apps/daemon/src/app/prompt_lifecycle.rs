@@ -123,8 +123,8 @@ impl DaemonApp {
         let started_next = if self
             .sessions
             .get_session(session_id)?
-            .active_provider_run_id()
-            .is_some()
+            .active_prompt()
+            .is_none()
         {
             self.advance_next_queued_prompt(session_id)?
         } else {
