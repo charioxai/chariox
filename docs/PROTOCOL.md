@@ -727,6 +727,7 @@ Suggested payload fields:
 - `summary`
 - `output`
 - `artifacts`
+- `output_schema_ref`
 - `handoff_payload`
 - `meta`
 

@@ -552,6 +552,7 @@ impl SessionService {
                     target_node.id().to_string(),
                     workflow_run.invocation_prompt().map(str::to_string),
                     completion.clone(),
+                    edge.output_schema_ref().map(str::to_string),
                 );
                 let message = WorkflowMessage::new(
                     self.next_workflow_message_id(),

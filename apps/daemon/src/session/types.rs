@@ -345,6 +345,8 @@ pub struct WorkflowHandoffPayload {
     invocation_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<WorkflowCompletionSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema_ref: Option<String>,
 }
 
 impl WorkflowHandoffPayload {
@@ -357,6 +359,7 @@ impl WorkflowHandoffPayload {
         target_node_id: impl Into<String>,
         invocation_prompt: Option<String>,
         completion: Option<WorkflowCompletionSnapshot>,
+        output_schema_ref: Option<String>,
     ) -> Self {
         Self {
             workflow_run_id: workflow_run_id.into(),
@@ -367,6 +370,7 @@ impl WorkflowHandoffPayload {
             target_node_id: target_node_id.into(),
             invocation_prompt,
             completion,
+            output_schema_ref,
         }
     }
 
