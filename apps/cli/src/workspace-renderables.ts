@@ -34,10 +34,71 @@ export function buildWorkflowCanvasRenderable(
     selectedWorkflowId: string | null
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
+    inspector?: {
+      title: string
+      content: string
+      footer?: string | null
+    } | null
   },
 ) {
-  return buildWorkflowCanvasPaneRenderable(renderer, options)
-    ?? buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
+  const canvas = buildWorkflowCanvasPaneRenderable(renderer, options)
+  if (!canvas) {
+    return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
+  }
+  if (!options.inspector) {
+    return canvas
+  }
+  const wrapper = new BoxRenderable(renderer, {
+    flexDirection: "row",
+    width: "100%",
+    gap: 0,
+  })
+  const left = new BoxRenderable(renderer, {
+    flexGrow: 2,
+    minWidth: 40,
+  })
+  left.add(canvas)
+  wrapper.add(left)
+
+  const inspector = new BoxRenderable(renderer, {
+    flexGrow: 1,
+    minWidth: 32,
+    border: ["left"],
+    borderColor: theme.borderSubtle,
+    customBorderChars: SplitBorder.customBorderChars,
+    paddingLeft: 1,
+    paddingRight: 1,
+    paddingTop: 1,
+    paddingBottom: 1,
+    flexDirection: "column",
+    gap: 1,
+  })
+  inspector.add(
+    new TextRenderable(renderer, {
+      content: options.inspector.title,
+      fg: theme.primary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "word",
+    }),
+  )
+  inspector.add(
+    new TextRenderable(renderer, {
+      content: options.inspector.content,
+      fg: theme.text,
+      wrapMode: "word",
+    }),
+  )
+  if (options.inspector.footer) {
+    inspector.add(
+      new TextRenderable(renderer, {
+        content: options.inspector.footer,
+        fg: theme.textMuted,
+        wrapMode: "word",
+      }),
+    )
+  }
+  wrapper.add(inspector)
+  return wrapper
 }
 
 export function buildNoSessionRenderable(

@@ -22,6 +22,7 @@ import {
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
   resolveWorkflowRequest,
+  updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import { toggleWorkspaceScreenMode, type WorkspaceScreenMode } from "./workspace-screen.js"
 import {
@@ -212,6 +213,20 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     )
   }
 
+  const updateWorkflowNodeInstructions = async (
+    workflowRef: string,
+    nodeId: string,
+    instructions: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      updateWorkflowNodeInstructionsRequest(deps.sessionState().id, workflowRef, nodeId, instructions),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeInstructionsUpdated",
+    )
+  }
+
   const addWorkflowEdge = async (workflowRef: string, fromNodeId: string, toNodeId: string) => {
     const response = await deps.sendRequest(
       addWorkflowEdgeRequest(deps.sessionState().id, workflowRef, fromNodeId, toNodeId),
@@ -291,6 +306,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     bindWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,
+    updateWorkflowNodeInstructions,
     addWorkflowEdge,
     removeWorkflowEdge,
     invokeWorkflowEndpoint,

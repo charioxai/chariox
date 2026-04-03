@@ -167,12 +167,15 @@ export type WorkflowEndpointDefinition = {
 export type WorkflowNodeDefinition = {
   id: string
   agent_id: string
+  instructions?: string | null
 }
 
 export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
+  output_schema_ref?: string | null
+  validation_policy?: "warn" | "halt" | null
 }
 
 export type WorkflowMessage = {

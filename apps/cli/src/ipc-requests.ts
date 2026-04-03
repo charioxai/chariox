@@ -170,6 +170,22 @@ export function removeWorkflowNodeRequest(sessionId: string, workflowRef: string
   }
 }
 
+export function updateWorkflowNodeInstructionsRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  instructions: string | null,
+) {
+  return {
+    UpdateWorkflowNodeInstructions: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      instructions,
+    },
+  }
+}
+
 export function addWorkflowEdgeRequest(
   sessionId: string,
   workflowRef: string,

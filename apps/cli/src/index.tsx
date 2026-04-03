@@ -718,6 +718,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
+  type WorkflowNodeInstructionsEditor = {
+    workflowId: string
+    nodeId: string
+    draft: string
+  }
+  const [workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor] = createSignal<WorkflowNodeInstructionsEditor | null>(null)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   let stopRequestInFlight = false
@@ -904,6 +910,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return { agent: null, error: `multiple agents match '${normalizedReference}'` }
     }
     return { agent: null, error: `agent '${normalizedReference}' not found` }
+  }
+  const workflowNodeInstructionsInspector = () => {
+    const editor = workflowNodeInstructionsEditor()
+    if (!editor) {
+      return null
+    }
+    const workflow = sessionState().workflows?.find((entry) => entry.id === editor.workflowId) ?? null
+    const node = workflow?.nodes?.find((entry) => entry.id === editor.nodeId) ?? null
+    const agent = node ? sessionState().agents.find((entry) => entry.id === node.agent_id) ?? null : null
+    const workflowLabel = workflow?.alias ? `${workflow.id} (${workflow.alias})` : editor.workflowId
+    const agentLabel = agent ? formatAgentLabel(agent) : node?.agent_id ?? "unknown"
+    const instructions = editor.draft?.trim() ? editor.draft : "(empty)"
+    return {
+      title: "Node Instructions",
+      content: [
+        `Workflow: ${workflowLabel}`,
+        `Node: ${node?.id ?? editor.nodeId}`,
+        `Agent: ${agentLabel}`,
+        "",
+        "Instructions:",
+        instructions,
+      ].join("\n"),
+      footer: "Use /workflow node instructions save to persist. /workflow node instructions close to discard.",
+    }
   }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
@@ -3607,6 +3637,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           setSelectedWorkflowNodeId(nodeId)
           rebuildTranscript()
         },
+        inspector: workflowNodeInstructionsInspector(),
       })
       transcriptScrollbox.add(emptyTranscriptRenderable)
       transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
@@ -3631,6 +3662,45 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       scroll_top: transcriptScrollbox.scrollTop,
     })
   }
+
+  const openWorkflowNodeInstructionsEditor = (workflowId: string, nodeId: string, draft: string) => {
+    setWorkflowNodeInstructionsEditor({ workflowId, nodeId, draft })
+    if (!workflowScreenShowing()) {
+      setWorkspaceScreenMode("workflow")
+    }
+    rebuildTranscript()
+  }
+
+  const closeWorkflowNodeInstructionsEditor = () => {
+    if (!workflowNodeInstructionsEditor()) {
+      return
+    }
+    setWorkflowNodeInstructionsEditor(null)
+    if (workflowScreenShowing()) {
+      rebuildTranscript()
+    }
+  }
+
+  const updateWorkflowNodeInstructionsDraft = (draft: string) => {
+    const editor = workflowNodeInstructionsEditor()
+    if (!editor) {
+      return
+    }
+    setWorkflowNodeInstructionsEditor({ ...editor, draft })
+    if (workflowScreenShowing()) {
+      rebuildTranscript()
+    }
+  }
+
+  const getWorkflowNodeInstructionsContext = () => {
+    const editor = workflowNodeInstructionsEditor()
+    if (!editor) {
+      return null
+    }
+    return { workflowId: editor.workflowId, nodeId: editor.nodeId }
+  }
+
+  const getWorkflowNodeInstructionsDraft = () => workflowNodeInstructionsEditor()?.draft ?? ""
 
   const replaceTranscriptEntries = (
     nextEntries: TranscriptEntry[],
@@ -3977,6 +4047,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowNode,
     addWorkflowEdge,
     removeWorkflowEdge,
+    updateWorkflowNodeInstructions,
     invokeWorkflowEndpoint,
     listWorkflowRuns,
     cancelWorkflowRun,
@@ -4045,6 +4116,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ),
     applySessionState,
     refreshAgentPanes,
+    openWorkflowNodeInstructionsEditor,
+    closeWorkflowNodeInstructionsEditor,
+    getWorkflowNodeInstructionsDraft,
+    getWorkflowNodeInstructionsContext,
     saveUiPreferences: async (prefs) => {
       await saveUiPreferences(prefs)
       setPreferencesState((current) => mergeUiPreferences(current, prefs))
@@ -4296,6 +4371,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const rawPrompt = promptInput.plainText
     const trimmed = rawPrompt.trim()
     if (!trimmed && pendingAttachments().length === 0) {
+      promptInput.clear()
+      syncPromptTextSnapshot()
+      return
+    }
+    if (workflowNodeInstructionsEditor() && !trimmed.startsWith("/")) {
+      updateWorkflowNodeInstructionsDraft(rawPrompt)
       promptInput.clear()
       syncPromptTextSnapshot()
       return
