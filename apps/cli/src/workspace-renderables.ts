@@ -1,5 +1,6 @@
 import {
   BoxRenderable,
+  TextareaRenderable,
   TextAttributes,
   TextRenderable,
   type RGBA,
@@ -36,8 +37,12 @@ export function buildWorkflowCanvasRenderable(
     onSelectNode: (nodeId: string | null) => void
     inspector?: {
       title: string
-      content: string
-      footer?: string | null
+      meta: string[]
+      draft: string
+      placeholder?: string | null
+      hint?: string | null
+      onDraftChange: (draft: string) => void
+      onEditorRef?: (editor: TextareaRenderable | null) => void
     } | null
   },
 ) {
@@ -60,6 +65,7 @@ export function buildWorkflowCanvasRenderable(
   left.add(canvas)
   wrapper.add(left)
 
+  const inspectorConfig = options.inspector
   const inspector = new BoxRenderable(renderer, {
     flexGrow: 1,
     minWidth: 32,
@@ -75,23 +81,43 @@ export function buildWorkflowCanvasRenderable(
   })
   inspector.add(
     new TextRenderable(renderer, {
-      content: options.inspector.title,
+      content: inspectorConfig.title,
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "word",
     }),
   )
-  inspector.add(
-    new TextRenderable(renderer, {
-      content: options.inspector.content,
-      fg: theme.text,
-      wrapMode: "word",
-    }),
-  )
-  if (options.inspector.footer) {
+  if (inspectorConfig.meta.length > 0) {
     inspector.add(
       new TextRenderable(renderer, {
-        content: options.inspector.footer,
+        content: inspectorConfig.meta.join("\n"),
+        fg: theme.textMuted,
+        wrapMode: "word",
+      }),
+    )
+  }
+  const textarea = new TextareaRenderable(renderer, {
+    flexGrow: 1,
+    minHeight: 8,
+    wrapMode: "word",
+    initialValue: inspectorConfig.draft,
+    backgroundColor: theme.backgroundPanel,
+    textColor: theme.text,
+    placeholder: inspectorConfig.placeholder ?? "Type instructions here",
+    placeholderColor: theme.textMuted,
+    onContentChange: () => {
+      inspectorConfig.onDraftChange(textarea.plainText)
+    },
+  })
+  textarea.onMouseUp = () => {
+    textarea.focus()
+  }
+  inspectorConfig.onEditorRef?.(textarea)
+  inspector.add(textarea)
+  if (inspectorConfig.hint) {
+    inspector.add(
+      new TextRenderable(renderer, {
+        content: inspectorConfig.hint,
         fg: theme.textMuted,
         wrapMode: "word",
       }),

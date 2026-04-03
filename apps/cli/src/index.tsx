@@ -764,6 +764,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let promptMetaUsageBarCloseText: TextRenderable | undefined
   let promptMetaUsagePercentText: TextRenderable | undefined
   let commandCenterBox: BoxRenderable | undefined
+  let workflowNodeInstructionsInput: TextareaRenderable | undefined
   let hotkeysOverlayBox: BoxRenderable | undefined
   let footerSummaryText: TextRenderable | undefined
   let footerFlashText: TextRenderable | undefined
@@ -921,18 +922,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const agent = node ? sessionState().agents.find((entry) => entry.id === node.agent_id) ?? null : null
     const workflowLabel = workflow?.alias ? `${workflow.id} (${workflow.alias})` : editor.workflowId
     const agentLabel = agent ? formatAgentLabel(agent) : node?.agent_id ?? "unknown"
-    const instructions = editor.draft?.trim() ? editor.draft : "(empty)"
     return {
       title: "Node Instructions",
-      content: [
+      meta: [
         `Workflow: ${workflowLabel}`,
         `Node: ${node?.id ?? editor.nodeId}`,
         `Agent: ${agentLabel}`,
-        "",
-        "Instructions:",
-        instructions,
-      ].join("\n"),
-      footer: "Use /workflow node instructions save to persist. /workflow node instructions close to discard.",
+      ],
+      draft: editor.draft ?? "",
+      placeholder: "Type system instructions for this node",
+      hint: "Use /workflow node instructions save to persist. /workflow node instructions close to discard.",
+      onDraftChange: (draft: string) => updateWorkflowNodeInstructionsDraft(draft),
+      onEditorRef: (editorRef: TextareaRenderable | null) => {
+        workflowNodeInstructionsInput = editorRef ?? undefined
+      },
     }
   }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
@@ -3669,6 +3672,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setWorkspaceScreenMode("workflow")
     }
     rebuildTranscript()
+    startTimeout(() => {
+      workflowNodeInstructionsInput?.focus()
+    }, 0)
   }
 
   const closeWorkflowNodeInstructionsEditor = () => {
@@ -3676,9 +3682,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     setWorkflowNodeInstructionsEditor(null)
+    workflowNodeInstructionsInput = undefined
     if (workflowScreenShowing()) {
       rebuildTranscript()
     }
+    promptInput?.focus()
   }
 
   const updateWorkflowNodeInstructionsDraft = (draft: string) => {
@@ -3687,9 +3695,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     setWorkflowNodeInstructionsEditor({ ...editor, draft })
-    if (workflowScreenShowing()) {
-      rebuildTranscript()
-    }
   }
 
   const getWorkflowNodeInstructionsContext = () => {
@@ -4376,7 +4381,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     if (workflowNodeInstructionsEditor() && !trimmed.startsWith("/")) {
-      updateWorkflowNodeInstructionsDraft(rawPrompt)
+      flashFooter("instructions editor is open; type in the I/O panel and use /workflow node instructions save", "info")
       promptInput.clear()
       syncPromptTextSnapshot()
       return
