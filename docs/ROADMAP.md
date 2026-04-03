@@ -194,6 +194,9 @@ Still pending in M4:
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
 - same-kernel remote terminal connectivity on top of the hardened kernel-CLI WebSocket transport
+- workflow runnable validation and preflight diagnostics (missing endpoints/nodes/agents, invalid graphs)
+- daemon-managed workflow instruction artifacts per node (system prompt + role guidance)
+- workflow output schema registry plus agent-facing validation tooling
 - broader automated interaction coverage:
   - deterministic kernel/CLI transcript-flow integration tests
   - PTY-driven terminal smoke tests for visible CLI behavior

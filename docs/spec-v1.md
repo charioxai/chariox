@@ -565,6 +565,17 @@ Rules:
 - output-producing nodes MAY be the same nodes that serve as endpoint targets
 - explicit output-endpoint objects MAY be added later for published/integrated workflows
 
+### 7.4.2 Workflow Runnable Validation
+
+Workflows must be validated for runnable state before execution.
+
+Required rules:
+
+- the daemon MUST reject invocation when the endpoint is missing, invalid, or targets a missing node
+- the daemon MUST reject invocation when any required node references a missing agent
+- disconnected subgraphs MAY remain defined, but invocations MUST fail if the entry subgraph is invalid
+- the daemon SHOULD surface a structured preflight report describing all blocking reasons
+
 ### 7.5 Inter-Agent Communication Contract
 
 Inter-agent communication in workflow mode MUST be kernel-orchestrated.
@@ -644,6 +655,18 @@ Rules:
 - deleting an agent MUST NOT automatically delete workflow nodes or edges
 - if a workflow node references an agent that no longer exists, that node MUST remain in the workflow and be marked missing/unavailable
 - workflows with missing nodes or missing endpoint targets MUST remain listable/editable and SHOULD be blocked from execution until repaired
+
+### 7.5.4 Workflow Node Instructions and Output Validation
+
+Workflow nodes require daemon-owned instruction artifacts and schema validation.
+
+Required rules:
+
+- the daemon MUST maintain per-node instruction content used as system or preamble context
+- node instruction artifacts MUST be daemon-managed and not silently overwritten by agents
+- the daemon MUST provide a kernel-owned validation tool for node outputs
+- node completion outputs SHOULD be validated against a node-level schema before downstream routing
+- the daemon MUST reject or flag invalid output payloads and surface the validation errors to the node
 
 ### 7.6 Graph-Derived Barrier and Cycle Rules
 

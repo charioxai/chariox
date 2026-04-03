@@ -673,6 +673,14 @@ Required runtime entities:
 - `WorktreeAssignment`
 - `AggregationState` or equivalent barrier/fan-in state
 
+## 7.2.1 Workflow Runnable Validation
+
+Before starting a workflow run:
+
+- the daemon MUST validate that the endpoint exists and targets a valid entry node
+- the daemon MUST reject invocations that reference missing nodes or missing agents
+- the daemon SHOULD return a structured preflight report that enumerates blocking issues
+
 ## 7.3 Node Completion Contract
 
 Each workflow node MUST emit a structured completion report that the daemon can parse.
@@ -692,6 +700,17 @@ Suggested event:
 - `workflow.node.completed`
 
 The daemon scheduler MUST advance workflow execution from these completion reports.
+
+## 7.3.1 Node Instructions and Output Validation
+
+Workflow nodes require daemon-owned instruction and validation surfaces.
+
+Required rules:
+
+- the daemon MUST maintain per-node instruction content used as system or preamble context
+- the daemon MUST expose a kernel-owned output validation tool to workflow nodes
+- node completion output SHOULD be validated against a node-level schema before routing
+- invalid output MUST be rejected or flagged and surfaced back to the node as a validation error
 
 ## 7.4 Handoff Contract
 

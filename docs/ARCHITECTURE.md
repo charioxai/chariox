@@ -184,6 +184,7 @@ Each workflow definition contains:
 - edges that define allowed message flow
 - one or more endpoints, each bound to an entry node
 - per-agent instructions/system prompts and optional capabilities/repo scopes
+- daemon-managed node instruction artifacts and optional output schema constraints
 
 Each workflow run contains:
 
@@ -239,6 +240,7 @@ Rules:
 - each endpoint maps to one entry node in its workflow
 - multiple endpoints may target the same entry node
 - the workflow itself should remain agnostic to whether the initial input came from a terminal or an external system
+- workflow invocations should fail fast when endpoints, nodes, or agent bindings are invalid
 
 Workflow output should start as a run-level concept rather than a strict graph object.
 
