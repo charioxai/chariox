@@ -1,4 +1,12 @@
-import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition } from "./cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition } from "../cli-types.js"
+import { routeWorkflowEdge } from "./routing.js"
+import type {
+  WorkflowGraphEdgeLayout,
+  WorkflowGraphEndpointLayout,
+  WorkflowGraphLayout,
+  WorkflowGraphMetrics,
+  WorkflowGraphNodeLayout,
+} from "./types.js"
 
 const BASE_NODE_WIDTH = 30
 const BASE_NODE_HEIGHT = 8
@@ -10,59 +18,6 @@ const GRAPH_PADDING_Y = 3
 const MIN_NODE_WIDTH = 24
 const MIN_NODE_HEIGHT = 7
 
-export type WorkflowGraphMetrics = {
-  nodeWidth: number
-  nodeHeight: number
-  horizontalGap: number
-  verticalGap: number
-  componentGap: number
-  endpointGap: number
-}
-
-export type WorkflowGraphNodeLayout = {
-  id: string
-  agentId: string
-  alias: string | null
-  provider: string | null
-  model: string | null
-  effort: string | null
-  missing: boolean
-  selected: boolean
-  x: number
-  y: number
-  width: number
-  height: number
-  lines: string[]
-}
-
-export type WorkflowGraphEdgeLayout = {
-  id: string
-  fromNodeId: string
-  toNodeId: string
-  points: Array<{ x: number; y: number }>
-}
-
-export type WorkflowGraphEndpointLayout = {
-  id: string
-  alias: string | null
-  entryNodeId: string
-  markerX: number
-  markerY: number
-  labelX: number
-  labelY: number
-  label: string
-}
-
-export type WorkflowGraphLayout = {
-  workflowId: string
-  workflowAlias: string | null
-  width: number
-  height: number
-  nodes: WorkflowGraphNodeLayout[]
-  edges: WorkflowGraphEdgeLayout[]
-  endpoints: WorkflowGraphEndpointLayout[]
-}
-
 export function resolveWorkflowGraphMetrics(): WorkflowGraphMetrics {
   return {
     nodeWidth: Math.max(MIN_NODE_WIDTH, BASE_NODE_WIDTH),
@@ -72,56 +27,6 @@ export function resolveWorkflowGraphMetrics(): WorkflowGraphMetrics {
     componentGap: Math.max(4, BASE_COMPONENT_GAP),
     endpointGap: Math.max(2, 3),
   }
-}
-
-export function resolveSelectedWorkflow(
-  workflows: WorkflowDefinition[],
-  selectedWorkflowId: string | null,
-): WorkflowDefinition | null {
-  if (workflows.length === 0) {
-    return null
-  }
-  if (selectedWorkflowId) {
-    const exact = workflows.find((workflow) => workflow.id === selectedWorkflowId)
-    if (exact) {
-      return exact
-    }
-  }
-  return workflows[0] ?? null
-}
-
-export function resolveSelectedWorkflowNodeId(
-  workflow: WorkflowDefinition | null,
-  selectedNodeId: string | null,
-): string | null {
-  const nodes = workflow?.nodes ?? []
-  if (nodes.length === 0) {
-    return null
-  }
-  if (selectedNodeId && nodes.some((node) => node.id === selectedNodeId)) {
-    return selectedNodeId
-  }
-  return nodes[0]?.id ?? null
-}
-
-export function cycleWorkflowNodeId(
-  workflow: WorkflowDefinition | null,
-  selectedNodeId: string | null,
-  step = 1,
-): string | null {
-  const nodes = workflow?.nodes ?? []
-  if (nodes.length === 0) {
-    return null
-  }
-  if (!selectedNodeId) {
-    return nodes[0]?.id ?? null
-  }
-  const currentIndex = nodes.findIndex((node) => node.id === selectedNodeId)
-  if (currentIndex < 0) {
-    return nodes[0]?.id ?? null
-  }
-  const nextIndex = modulo(currentIndex + step, nodes.length)
-  return nodes[nextIndex]?.id ?? null
 }
 
 export function buildWorkflowGraphLayout(options: {
@@ -349,143 +254,6 @@ function groupNodesByRank(
     .map((entry) => entry[1].sort((left, right) => left.id.localeCompare(right.id)))
 }
 
-type EdgeAnchorSide = "top" | "right" | "bottom" | "left"
-type EdgeAnchor = { x: number; y: number; side: EdgeAnchorSide }
-
-export function routeWorkflowEdge(
-  fromNode: WorkflowGraphNodeLayout,
-  toNode: WorkflowGraphNodeLayout,
-) {
-  const fromAnchors = borderCenterAnchors(fromNode)
-  const toAnchors = borderCenterAnchors(toNode)
-  const chosenPair = chooseNearestAnchorPair(fromAnchors, toAnchors)
-  return buildOrthogonalPath(chosenPair.from, chosenPair.to, fromNode, toNode)
-}
-
-function borderCenterAnchors(node: WorkflowGraphNodeLayout): EdgeAnchor[] {
-  const centerX = node.x + Math.floor(node.width / 2)
-  const centerY = node.y + Math.floor(node.height / 2)
-  return [
-    { side: "top", x: centerX, y: node.y },
-    { side: "right", x: node.x + node.width - 1, y: centerY },
-    { side: "bottom", x: centerX, y: node.y + node.height - 1 },
-    { side: "left", x: node.x, y: centerY },
-  ]
-}
-
-function chooseNearestAnchorPair(fromAnchors: EdgeAnchor[], toAnchors: EdgeAnchor[]) {
-  let bestPair = { from: fromAnchors[0]!, to: toAnchors[0]!, score: Number.POSITIVE_INFINITY }
-  for (const from of fromAnchors) {
-    for (const to of toAnchors) {
-      const manhattan = Math.abs(from.x - to.x) + Math.abs(from.y - to.y)
-      const nonLinearPenalty = from.x === to.x || from.y === to.y ? 0 : 1
-      const fromFacingPenalty = anchorFacingPenalty(from, to)
-      const toFacingPenalty = anchorFacingPenalty(to, from)
-      const score = manhattan * 16 + nonLinearPenalty * 4 + fromFacingPenalty + toFacingPenalty
-      if (score < bestPair.score) {
-        bestPair = { from, to, score }
-      }
-    }
-  }
-  return bestPair
-}
-
-function anchorFacingPenalty(from: EdgeAnchor, to: EdgeAnchor) {
-  const dx = to.x - from.x
-  const dy = to.y - from.y
-  switch (from.side) {
-    case "top":
-      return dy <= 0 ? 0 : 1
-    case "right":
-      return dx >= 0 ? 0 : 1
-    case "bottom":
-      return dy >= 0 ? 0 : 1
-    case "left":
-      return dx <= 0 ? 0 : 1
-    default:
-      return 0
-  }
-}
-
-function buildOrthogonalPath(
-  from: EdgeAnchor,
-  to: EdgeAnchor,
-  fromNode: WorkflowGraphNodeLayout,
-  toNode: WorkflowGraphNodeLayout,
-) {
-  if (from.x === to.x || from.y === to.y) {
-    return [{ x: from.x, y: from.y }, { x: to.x, y: to.y }]
-  }
-
-  const elbowA = { x: from.x, y: to.y }
-  const elbowB = { x: to.x, y: from.y }
-  const pathA = [{ x: from.x, y: from.y }, elbowA, { x: to.x, y: to.y }]
-  const pathB = [{ x: from.x, y: from.y }, elbowB, { x: to.x, y: to.y }]
-  const scoreA = orthogonalPathScore(pathA, fromNode, toNode)
-  const scoreB = orthogonalPathScore(pathB, fromNode, toNode)
-  return dedupeAdjacentPoints(scoreA <= scoreB ? pathA : pathB)
-}
-
-function orthogonalPathScore(
-  path: Array<{ x: number; y: number }>,
-  fromNode: WorkflowGraphNodeLayout,
-  toNode: WorkflowGraphNodeLayout,
-) {
-  let score = 0
-  for (let index = 0; index < path.length - 1; index += 1) {
-    const start = path[index]!
-    const end = path[index + 1]!
-    score += Math.abs(end.x - start.x) + Math.abs(end.y - start.y)
-    if (segmentOverlapsNode(start, end, fromNode)) {
-      score += 10
-    }
-    if (segmentOverlapsNode(start, end, toNode)) {
-      score += 10
-    }
-  }
-  return score
-}
-
-function segmentOverlapsNode(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  node: WorkflowGraphNodeLayout,
-) {
-  const minX = node.x
-  const maxX = node.x + node.width - 1
-  const minY = node.y
-  const maxY = node.y + node.height - 1
-  if (start.x === end.x) {
-    if (start.x < minX || start.x > maxX) {
-      return false
-    }
-    const segmentMinY = Math.min(start.y, end.y)
-    const segmentMaxY = Math.max(start.y, end.y)
-    return segmentMaxY >= minY && segmentMinY <= maxY
-  }
-  if (start.y === end.y) {
-    if (start.y < minY || start.y > maxY) {
-      return false
-    }
-    const segmentMinX = Math.min(start.x, end.x)
-    const segmentMaxX = Math.max(start.x, end.x)
-    return segmentMaxX >= minX && segmentMinX <= maxX
-  }
-  return false
-}
-
-function dedupeAdjacentPoints(points: Array<{ x: number; y: number }>) {
-  const deduped: Array<{ x: number; y: number }> = []
-  for (const point of points) {
-    const previous = deduped[deduped.length - 1]
-    if (previous && previous.x === point.x && previous.y === point.y) {
-      continue
-    }
-    deduped.push(point)
-  }
-  return deduped
-}
-
 function formatNodeLines(
   options: {
     title: string
@@ -515,16 +283,7 @@ function truncateLine(value: string, width: number) {
 }
 
 function uniquePreservingOrder(values: string[]) {
-  const seen = new Set<string>()
-  return values.filter((value) => {
-    if (seen.has(value)) {
-      return false
-    }
-    seen.add(value)
-    return true
+  return values.filter((value, index) => {
+    return value.length > 0 && values.indexOf(value) === index
   })
-}
-
-function modulo(value: number, divisor: number) {
-  return ((value % divisor) + divisor) % divisor
 }

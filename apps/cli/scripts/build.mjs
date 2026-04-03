@@ -14,16 +14,12 @@ const distDir = path.join(appDir, "dist")
 await rm(distDir, { force: true, recursive: true })
 await mkdir(distDir, { recursive: true })
 
-for (const entry of await readdir(srcDir, { withFileTypes: true })) {
-  if (!entry.isFile()) {
-    continue
-  }
-  if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) {
-    continue
-  }
-
-  const sourcePath = path.join(srcDir, entry.name)
-  const outputPath = path.join(distDir, entry.name.replace(/\.tsx?$/, ".js"))
+for (const sourcePath of await collectSourceFiles(srcDir)) {
+  const outputPath = path.join(
+    distDir,
+    path.relative(srcDir, sourcePath).replace(/\.tsx?$/, ".js"),
+  )
+  await mkdir(path.dirname(outputPath), { recursive: true })
   const code = await readFile(sourcePath, "utf8")
   const transformed = await transformAsync(code, {
     filename: sourcePath,
@@ -41,4 +37,23 @@ for (const entry of await readdir(srcDir, { withFileTypes: true })) {
   })
 
   await writeFile(outputPath, transformed?.code ?? "", "utf8")
+}
+
+async function collectSourceFiles(directory) {
+  const files = []
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...await collectSourceFiles(entryPath))
+      continue
+    }
+    if (!entry.isFile()) {
+      continue
+    }
+    if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) {
+      continue
+    }
+    files.push(entryPath)
+  }
+  return files
 }

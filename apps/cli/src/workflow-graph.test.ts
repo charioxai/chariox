@@ -9,7 +9,7 @@ import {
   resolveSelectedWorkflow,
   resolveSelectedWorkflowNodeId,
   type WorkflowGraphNodeLayout,
-} from "./workflow-graph.js"
+} from "./workflow-graph/index.js"
 
 function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {

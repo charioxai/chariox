@@ -68,6 +68,7 @@ type SessionLifecycleDeps = {
   setHistoryLoadingState: (value: boolean) => void
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
+  refreshSplitPaneFocusRepaint?: () => void
   attachToSession: (sessionId: string, clientId: string) => Promise<RuntimeAttachment>
   getSessionState: (sessionId: string) => Promise<RuntimeSession>
   launchProviderRun: (
@@ -82,13 +83,11 @@ type SessionLifecycleDeps = {
   ) => Promise<RuntimeProviderRun | null>
   setProviderCatalogState: (catalog: ProviderCatalog) => void
   getProviderCatalog: () => Promise<ProviderCatalog>
-  maybeResize: (sessionId: string) => Promise<void>
-  catchUpAttachedSession: (
+  hydrateAttachedSessionBinding: (
     sessionId: string,
     attachmentId: string,
     session: RuntimeSession,
-  ) => Promise<void>
-  refreshAgentPanes: (session: RuntimeSession) => Promise<void>
+  ) => Promise<RuntimeSession>
   setAvailableSessions: (sessions: RuntimeSession[]) => void
   listSessions: () => Promise<RuntimeSession[]>
   scheduleShortViewportHistoryCheck: () => void
@@ -130,6 +129,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setStatusLine(nextAttachedState.statusLine)
     deps.updateSessionChrome()
     deps.focusPromptInput()
+    deps.refreshSplitPaneFocusRepaint?.()
   }
 
   const transitionToNoSession = async (message = "No session attached.") => {
@@ -247,40 +247,17 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
 
     deps.reconcileWaitingRoom(deps.waitingRoomState())
 
-    try {
-      await deps.maybeResize(session.id)
-    } catch (error) {
-      deps.logWarning?.("failed to resize attached session", {
-        session_id: session.id,
-        error: formatError(error),
-      })
-    }
-
-    try {
-      await deps.catchUpAttachedSession(session.id, attachment.id, attachedSession)
-    } catch (error) {
-      deps.logWarning?.("failed to catch up attached session", {
-        session_id: session.id,
-        attachment_id: attachment.id,
-        error: formatError(error),
-      })
-    }
-
     let hydratedSession = attachedSession
     try {
-      hydratedSession = await deps.getSessionState(session.id)
+      hydratedSession = await deps.hydrateAttachedSessionBinding(
+        session.id,
+        attachment.id,
+        attachedSession,
+      )
     } catch (error) {
       deps.logWarning?.("failed to hydrate attached session after attach", {
         session_id: session.id,
-        error: formatError(error),
-      })
-    }
-
-    try {
-      await deps.refreshAgentPanes(hydratedSession)
-    } catch (error) {
-      deps.logWarning?.("failed to refresh agent panes after attach", {
-        session_id: session.id,
+        attachment_id: attachment.id,
         error: formatError(error),
       })
     }

@@ -6,9 +6,9 @@ import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 
 import type {
@@ -31,9 +31,6 @@ import type {
   TerminalOutputRecord,
   TranscriptEntry,
   WorkflowDefinition,
-  WorkflowEdgeDefinition,
-  WorkflowEndpointDefinition,
-  WorkflowNodeDefinition,
 } from "./cli-types.js"
 import {
   createCommandActionHandlers,
@@ -61,8 +58,6 @@ import {
   cancelActivePromptRequest,
   captureScreenshotRequest,
   createSessionRequest,
-  createWorkflowRequest,
-  createWorkflowEndpointRequest,
   cycleAgentFocusRequest,
   deleteSessionRequest,
   destroyAgentRequest,
@@ -74,20 +69,11 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
-  listWorkflowsRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
   resizeTerminalRequest,
   resolveSessionRequest,
-  resolveWorkflowRequest,
-  aliasWorkflowRequest,
-  aliasWorkflowEndpointRequest,
-  bindWorkflowEndpointRequest,
-  addWorkflowNodeRequest,
-  removeWorkflowNodeRequest,
-  addWorkflowEdgeRequest,
-  removeWorkflowEdgeRequest,
   spawnAgentRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
@@ -124,8 +110,6 @@ import {
   applyHistoryDeferral,
   hydrateTranscriptEntries,
   markDeferredHistoryEntries,
-  mergeAdjacentHistoryPageEntries,
-  previewLineForHistoryEntry,
 } from "./transcript-history.js"
 import {
   responsePaneRowSlots,
@@ -169,16 +153,12 @@ import {
   sessionResponseLayout,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
+import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import {
   formatToolTranscriptUpdate,
-  guessPathFenceLanguage,
   mergeToolTranscriptUpdate,
-  normalizeMarkdownFenceInfoStrings,
   parseToolTranscriptUpdate,
-  readApplyPatchFiles,
-  splitInlineCodeSpans,
-  shouldRenderTranscriptAsMarkdown,
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
@@ -186,7 +166,6 @@ import {
   decideBootstrapAction,
   SESSION_NEW_ERROR_HINT,
   SESSION_NEW_FOOTER_HINT,
-  SESSION_NEW_HELP_TEXT,
   SESSION_NEW_PLACEHOLDER,
   formatSessionList,
   selectAttachableSession,
@@ -199,7 +178,7 @@ import {
 } from "./split-pane-footer.js"
 import { requestRenderableTreeRender, syncAuxiliaryPane } from "./response-layout-render.js"
 import { bootstrapSession } from "./session-bootstrap.js"
-import { createTranscriptSyntaxStyle, EmptyBorder, PromptBorderChars, SplitBorder, theme } from "./theme.js"
+import { createTranscriptSyntaxStyle, EmptyBorder, SplitBorder, theme } from "./theme.js"
 import {
   deriveWaitingRoomActivationDecision,
   deriveWaitingRoomModelSelectionDecision,
@@ -207,28 +186,41 @@ import {
   deriveWaitingRoomVariantSelectionDecision,
 } from "./waiting-room-controller.js"
 import {
-  arrobaArtFrame,
   createWaitingRoomState,
   cycleWaitingRoomValue,
   moveWaitingRoomFocus,
   normalizeWaitingRoomState,
-  waitingRoomRows,
   type WaitingRoomFocus,
   type WaitingRoomState,
 } from "./waiting-room.js"
 import {
   resolveWorkspaceVisibleAgents,
   resolveWorkspaceVisibleTranscriptAgentId,
-  toggleWorkspaceScreenMode,
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
+import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
+import { WorkspaceLayout } from "./workspace-layout.js"
 import {
-  buildWorkflowGraphLayout,
-  cycleWorkflowNodeId,
-  resolveSelectedWorkflow,
-  resolveSelectedWorkflowNodeId,
-  type WorkflowGraphLayout,
-} from "./workflow-graph.js"
+  appendPreviewLine,
+  computeCurrentTurnId,
+  computeNextTurnId,
+  formatTranscriptPreview,
+  previewLineForTerminalRecord,
+} from "./transcript-preview.js"
+import {
+  buildTranscriptEntryRenderable,
+  renderPromptTranscript,
+  resolveTranscriptSurfaceTone,
+  transcriptRenderMode,
+  transcriptSurfacePalette,
+  type TranscriptEntryRenderable,
+  type TranscriptSurfaceTone,
+} from "./transcript-render.js"
+import {
+  buildEmptyTranscriptRenderable,
+  buildNoSessionRenderable,
+  buildWorkflowCanvasRenderable,
+} from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
 const PROMPT_KEYBINDINGS = [
@@ -313,14 +305,6 @@ type PendingPromptAttachment = {
   kind: PromptAttachmentKind
   token: string
 }
-
-type TranscriptEntryRenderable = {
-  entry: TranscriptEntry
-  wrapper: BoxRenderable
-  update: (entry: TranscriptEntry) => void
-}
-
-type TranscriptSurfaceTone = "default" | "focused" | "faded"
 
 function collapseHistoricalTurns(entries: TranscriptEntry[], keepLatestExpanded = true) {
   const normalizedEntries = normalizeTranscriptTurnIds(entries)
@@ -817,8 +801,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
-  const workflowScreenActive = () => isAttached() && workspaceScreenMode() === "workflow"
-  const selectedWorkflow = () => resolveSelectedWorkflow(sessionState().workflows ?? [], selectedWorkflowId())
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
   const responsePaneSelection = () => selectResponsePaneAgents(
     sessionState().agents,
@@ -865,12 +847,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   createEffect(() => {
-    const workflow = selectedWorkflow()
-    const nextWorkflowId = workflow?.id ?? null
+    const nextSelection = deriveWorkflowSelectionState(
+      sessionState().workflows ?? [],
+      selectedWorkflowId(),
+      selectedWorkflowNodeId(),
+    )
+    const nextWorkflowId = nextSelection.workflowId
     if (selectedWorkflowId() !== nextWorkflowId) {
       setSelectedWorkflowId(nextWorkflowId)
     }
-    const nextNodeId = resolveSelectedWorkflowNodeId(workflow, selectedWorkflowNodeId())
+    const nextNodeId = nextSelection.nodeId
     if (selectedWorkflowNodeId() !== nextNodeId) {
       setSelectedWorkflowNodeId(nextNodeId)
     }
@@ -2286,22 +2272,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       scheduleTurnCompletion()
     }
     updateSessionChrome()
-  }
-
-  const replaceWorkflowDefinitions = (workflows: WorkflowDefinition[]) => {
-    applySessionState({
-      ...sessionState(),
-      workflows,
-    })
-  }
-
-  const upsertWorkflowDefinition = (workflow: WorkflowDefinition) => {
-    const currentWorkflows = sessionState().workflows ?? []
-    const existingIndex = currentWorkflows.findIndex((entry) => entry.id === workflow.id)
-    const workflows = existingIndex === -1
-      ? [...currentWorkflows, workflow]
-      : currentWorkflows.map((entry, index) => (index === existingIndex ? workflow : entry))
-    replaceWorkflowDefinitions(workflows)
   }
 
   const clearAgentCompletionState = (agentId: string | null | undefined) => {
@@ -3813,6 +3783,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const {
+    hydrateCurrentAttachedSession,
+    finalizeAttachedSessionBinding,
+  } = createSessionAttachmentController({
+    isAttached,
+    attachmentState,
+    sessionState,
+    getSessionState: (sessionId) => getSessionState(client, sessionId),
+    applySessionState,
+    refreshAgentPanes,
+    refreshSplitPaneFocusRepaint,
+    maybeResize: (sessionId) => maybeResize(client, sessionId),
+    catchUpAttachedSession: (sessionId, attachmentId, session) =>
+      catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
+    formatError,
+    logWarning: (message, fields) => {
+      appLogger?.warn(message, fields)
+    },
+  })
+
+  const {
     transitionToNoSession,
     detachCurrentAttachment,
     attachBinding,
@@ -3874,6 +3864,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setHistoryLoadingState,
     setStatusLine,
     updateSessionChrome,
+    refreshSplitPaneFocusRepaint,
     attachToSession: (sessionId, clientId) => attachToSession(client, sessionId, clientId),
     getSessionState: (sessionId) => getSessionState(client, sessionId),
     launchProviderRun: (sessionId, accountProfile, model, effort, targetAgentId) =>
@@ -3881,10 +3872,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
     setProviderCatalogState,
     getProviderCatalog: () => getProviderCatalog(client, appLogger),
-    maybeResize: (sessionId) => maybeResize(client, sessionId),
-    catchUpAttachedSession: (sessionId, attachmentId, session) =>
-      catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
-    refreshAgentPanes,
+    hydrateAttachedSessionBinding: (sessionId, attachmentId, session) =>
+      finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
     setAvailableSessions,
     listSessions: () => listSessions(client),
     scheduleShortViewportHistoryCheck: () => {
@@ -3940,6 +3929,40 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setHistoryLoadingState(false)
     }
   }
+
+  const {
+    workflowScreenActive,
+    toggleWorkspaceScreen,
+    showWorkflowScreen,
+    selectWorkflowCanvas,
+    cycleWorkflowCanvasNode,
+    replaceWorkflowDefinitions,
+    upsertWorkflowDefinition,
+    createWorkflow,
+    listWorkflows,
+    resolveWorkflow,
+    assignWorkflowAlias,
+    createWorkflowEndpoint,
+    assignWorkflowEndpointAlias,
+    bindWorkflowEndpoint,
+    addWorkflowNode,
+    removeWorkflowNode,
+    addWorkflowEdge,
+    removeWorkflowEdge,
+  } = createWorkflowController({
+    sendRequest: (request) => client.send<Record<string, unknown>>(request),
+    isAttached,
+    sessionState,
+    applySessionState,
+    selectedWorkflowId,
+    setSelectedWorkflowId,
+    selectedWorkflowNodeId,
+    setSelectedWorkflowNodeId,
+    workspaceScreenMode,
+    setWorkspaceScreenMode,
+    rebuildTranscript,
+    applyResponseLayout,
+  })
 
   const {
     handleSessionCommand,
@@ -4518,160 +4541,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: target })
     transcriptScrollbox.requestRender()
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
-  }
-  function toggleWorkspaceScreen() {
-    if (!isAttached()) {
-      return
-    }
-    setWorkspaceScreenMode((current) => toggleWorkspaceScreenMode(current))
-    rebuildTranscript()
-    applyResponseLayout()
-  }
-  function showWorkflowScreen() {
-    if (!isAttached() || workflowScreenActive()) {
-      return
-    }
-    setWorkspaceScreenMode("workflow")
-    rebuildTranscript()
-    applyResponseLayout()
-  }
-  function selectWorkflowCanvas(workflowId: string | null) {
-    setSelectedWorkflowId(workflowId)
-    setSelectedWorkflowNodeId(null)
-    if (workflowScreenActive()) {
-      rebuildTranscript()
-    }
-  }
-  function cycleWorkflowCanvasNode(step = 1) {
-    const nextNodeId = cycleWorkflowNodeId(selectedWorkflow(), selectedWorkflowNodeId(), step)
-    if (nextNodeId === selectedWorkflowNodeId()) {
-      return
-    }
-    setSelectedWorkflowNodeId(nextNodeId)
-    if (workflowScreenActive()) {
-      rebuildTranscript()
-    }
-  }
-  async function createWorkflow(alias?: string | null) {
-    const response = await client.send<Record<string, unknown>>(
-      createWorkflowRequest(sessionState().id, alias),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowCreated",
-    )
-    setSessionState(payload.session)
-    setSelectedWorkflowId(payload.workflow.id)
-    setSelectedWorkflowNodeId(null)
-    rebuildTranscript()
-    applyResponseLayout()
-    return payload
-  }
-  async function listWorkflows() {
-    const response = await client.send<Record<string, unknown>>(
-      listWorkflowsRequest(sessionState().id),
-    )
-    const payload = expectVariant<{ workflows: WorkflowDefinition[] }>(
-      response,
-      "WorkflowsListed",
-    )
-    return payload.workflows
-  }
-  async function resolveWorkflow(workflowRef: string) {
-    const response = await client.send<Record<string, unknown>>(
-      resolveWorkflowRequest(sessionState().id, workflowRef),
-    )
-    return expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
-  }
-  async function assignWorkflowAlias(workflowId: string, alias: string) {
-    const response = await client.send<Record<string, unknown>>(
-      aliasWorkflowRequest(sessionState().id, workflowId, alias),
-    )
-    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowAliased",
-    )
-    setSessionState(payload.session)
-    if (payload.workflow) {
-      rebuildTranscript()
-      applyResponseLayout()
-    }
-    return payload.workflow
-  }
-  async function createWorkflowEndpoint(
-    workflowRef: string,
-    entryNodeId: string,
-    alias?: string | null,
-  ) {
-    const response = await client.send<Record<string, unknown>>(
-      createWorkflowEndpointRequest(sessionState().id, workflowRef, entryNodeId, alias),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointCreated",
-    )
-  }
-  async function assignWorkflowEndpointAlias(
-    workflowRef: string,
-    endpointRef: string,
-    alias: string,
-  ) {
-    const response = await client.send<Record<string, unknown>>(
-      aliasWorkflowEndpointRequest(sessionState().id, workflowRef, endpointRef, alias),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointAliased",
-    )
-  }
-  async function bindWorkflowEndpoint(
-    workflowRef: string,
-    endpointRef: string,
-    entryNodeId: string,
-  ) {
-    const response = await client.send<Record<string, unknown>>(
-      bindWorkflowEndpointRequest(sessionState().id, workflowRef, endpointRef, entryNodeId),
-    )
-    return expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEndpointBound",
-    )
-  }
-  async function addWorkflowNode(workflowRef: string, agentId: string) {
-    const response = await client.send<Record<string, unknown>>(
-      addWorkflowNodeRequest(sessionState().id, workflowRef, agentId),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeAdded",
-    )
-  }
-  async function removeWorkflowNode(workflowRef: string, nodeId: string) {
-    const response = await client.send<Record<string, unknown>>(
-      removeWorkflowNodeRequest(sessionState().id, workflowRef, nodeId),
-    )
-    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowNodeRemoved",
-    )
-  }
-  async function addWorkflowEdge(workflowRef: string, fromNodeId: string, toNodeId: string) {
-    const response = await client.send<Record<string, unknown>>(
-      addWorkflowEdgeRequest(sessionState().id, workflowRef, fromNodeId, toNodeId),
-    )
-    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEdgeAdded",
-    )
-  }
-  async function removeWorkflowEdge(workflowRef: string, edgeId: string) {
-    const response = await client.send<Record<string, unknown>>(
-      removeWorkflowEdgeRequest(sessionState().id, workflowRef, edgeId),
-    )
-    return expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
-      response,
-      "WorkflowEdgeRemoved",
-    )
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
@@ -5347,514 +5216,169 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   onMount(() => {
-    if (isAttached()) {
-      void refreshAgentPanes(sessionState())
-    }
+    void hydrateCurrentAttachedSession("mount")
   })
 
   return (
-    <box
+    <WorkspaceLayout
       width={dimensions().width}
       height={dimensions().height}
-      flexDirection="column"
-      paddingBottom={1}
-      paddingLeft={2}
-      paddingRight={2}
-      backgroundColor={theme.background}
-      onMouseUp={() => {
-        retainPromptFocus()
+      fatalError={fatalError() !== null}
+      responsePaneRows={responsePaneRows}
+      promptPlaceholder={isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER}
+      promptInputMaxHeight={promptInputMaxHeight()}
+      promptKeyBindings={PROMPT_KEYBINDINGS}
+      onRootMouseUp={retainPromptFocus}
+      onResponseSurfaceMouseUp={(event) => {
+        if (event.button !== MouseButton.LEFT) {
+          return
+        }
+        startTimeout(() => {
+          copySelection()
+          retainPromptFocus()
+        }, 0)
       }}
-    >
-      <box
-        flexGrow={1}
-        backgroundColor={theme.backgroundPanel}
-        border={["left", "right"]}
-        customBorderChars={SplitBorder.customBorderChars}
-        borderColor={theme.borderSubtle}
-        onMouseUp={(event) => {
-          if (event.button !== MouseButton.LEFT) {
+      onResponseLayoutBoxRef={(value) => {
+        responseLayoutBox = value
+        logViewDebug("mounted response layout box")
+        applyResponseLayout()
+      }}
+      onResponseRowBoxRef={(index, value) => {
+        responseRowBoxes[index] = value
+        applyResponseLayout()
+      }}
+      onResponsePrimaryPaneRef={(value) => {
+        responsePrimaryPane = value
+        logViewDebug("mounted response primary pane")
+        applyResponseLayout()
+      }}
+      onHistoryLoadingBoxRef={(value) => {
+        historyLoadingBox = value
+        logViewDebug("mounted history loading box")
+        renderHistoryLoadingIndicator()
+      }}
+      onTranscriptScrollboxRef={(value) => {
+        transcriptScrollbox = value
+        logViewDebug("mounted primary transcript scrollbox")
+        rebuildTranscript()
+        ensureBackgroundPollersStarted()
+      }}
+      onResponsePrimaryFooterBoxRef={(value) => {
+        responsePrimaryFooterBox = value
+        renderSplitPaneFooters()
+        applyResponseLayout()
+      }}
+      onResponseAuxiliaryPaneRef={(index, value) => {
+        responseAuxiliaryPanes[index] = value
+        logViewDebug("mounted response auxiliary pane", {
+          pane_index: index + 1,
+        })
+        applyResponseLayout()
+      }}
+      onResponseAuxiliaryScrollboxRef={(index, value) => {
+        responseAuxiliaryScrollboxes[index] = value
+        logViewDebug("mounted response auxiliary scrollbox", {
+          pane_index: index + 1,
+        })
+        applyResponseLayout()
+      }}
+      onResponseAuxiliaryFooterBoxRef={(index, value) => {
+        responseAuxiliaryFooterBoxes[index] = value
+        renderSplitPaneFooters()
+        applyResponseLayout()
+      }}
+      onCommandCenterBoxRef={(value) => {
+        commandCenterBox = value
+        renderCommandCenter()
+      }}
+      onPromptInputRef={(value) => {
+        promptInput = value
+        value.syntaxStyle = promptTokenStyle
+        syncPromptPlaceholder()
+        syncPromptTextSnapshot()
+        refreshPromptAttachmentHighlights()
+        ensureBackgroundPollersStarted()
+      }}
+      onPromptKeyDown={(event) => {
+        if (handleCommandCenterKey(event)) {
+          return
+        }
+        if (handlePromptHistoryKey(event)) {
+          return
+        }
+        handleHotkeysToggleShortcut("textarea", event)
+      }}
+      onPromptContentChange={handlePromptContentChange}
+      onPromptSubmit={() => {
+        if (commandCenterOpen()) {
+          if (selectCommandCenterFromSubmit()) {
             return
           }
-          startTimeout(() => {
-            copySelection()
-            retainPromptFocus()
-          }, 0)
-        }}
-      >
-        <box
-          ref={(value) => {
-            responseLayoutBox = value
-            logViewDebug("mounted response layout box")
-            applyResponseLayout()
-          }}
-          flexGrow={1}
-          flexDirection="column"
-          gap={0}
-          paddingLeft={1}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-        >
-          <For each={responsePaneRows()}>
-            {(rowSlots, rowIndex) => (
-              <box
-                ref={(value) => {
-                  responseRowBoxes[rowIndex()] = value
-                  applyResponseLayout()
-                }}
-                flexGrow={1}
-                flexDirection="row"
-                gap={0}
-              >
-                <For each={rowSlots}>
-                  {(paneIndex) => (
-                    paneIndex === 0
-                      ? (
-                          <box
-                            ref={(value) => {
-                              responsePrimaryPane = value
-                              logViewDebug("mounted response primary pane")
-                              applyResponseLayout()
-                            }}
-                            flexGrow={1}
-                            flexDirection="column"
-                            border={["left"]}
-                            borderColor={theme.borderSubtle}
-                            backgroundColor={theme.backgroundPanel}
-                          >
-                            <box
-                              ref={(value) => {
-                                historyLoadingBox = value
-                                logViewDebug("mounted history loading box")
-                                renderHistoryLoadingIndicator()
-                              }}
-                              flexShrink={0}
-                              paddingLeft={1}
-                              paddingRight={1}
-                            />
-                            <scrollbox
-                              ref={(value) => {
-                                transcriptScrollbox = value
-                                logViewDebug("mounted primary transcript scrollbox")
-                                rebuildTranscript()
-                                ensureBackgroundPollersStarted()
-                              }}
-                              flexGrow={1}
-                              stickyScroll={true}
-                              stickyStart="bottom"
-                              paddingLeft={2}
-                              paddingRight={1}
-                              paddingTop={1}
-                              paddingBottom={1}
-                              viewportOptions={{
-                                paddingRight: 1,
-                              }}
-                              verticalScrollbarOptions={{
-                                visible: true,
-                                paddingLeft: 1,
-                                trackOptions: {
-                                  backgroundColor: theme.backgroundElement,
-                                  foregroundColor: theme.border,
-                                },
-                              }}
-                            />
-                            <box
-                              ref={(value) => {
-                                responsePrimaryFooterBox = value
-                                renderSplitPaneFooters()
-                                applyResponseLayout()
-                              }}
-                              flexShrink={0}
-                              flexDirection="row"
-                              gap={1}
-                              paddingLeft={1}
-                              paddingRight={1}
-                            />
-                          </box>
-                        )
-                      : (
-                          <box
-                            ref={(value) => {
-                              responseAuxiliaryPanes[paneIndex - 1] = value
-                              logViewDebug("mounted response auxiliary pane", {
-                                pane_index: paneIndex,
-                              })
-                              applyResponseLayout()
-                            }}
-                            width={0}
-                            flexShrink={0}
-                            flexDirection="column"
-                            border={false}
-                            borderColor={theme.borderSubtle}
-                            backgroundColor={theme.backgroundElement}
-                            paddingLeft={0}
-                            paddingRight={0}
-                            paddingTop={0}
-                            paddingBottom={0}
-                            visible={false}
-                          >
-                            <scrollbox
-                              ref={(value) => {
-                                responseAuxiliaryScrollboxes[paneIndex - 1] = value
-                                logViewDebug("mounted response auxiliary scrollbox", {
-                                  pane_index: paneIndex,
-                                })
-                                applyResponseLayout()
-                              }}
-                              flexGrow={1}
-                              stickyScroll={true}
-                              stickyStart="bottom"
-                              paddingLeft={2}
-                              paddingRight={1}
-                              paddingTop={1}
-                              paddingBottom={1}
-                              viewportOptions={{
-                                paddingRight: 1,
-                              }}
-                              verticalScrollbarOptions={{
-                                visible: true,
-                                paddingLeft: 1,
-                                trackOptions: {
-                                  backgroundColor: theme.backgroundElement,
-                                  foregroundColor: theme.border,
-                                },
-                              }}
-                            />
-                            <box
-                              ref={(value) => {
-                                responseAuxiliaryFooterBoxes[paneIndex - 1] = value
-                                renderSplitPaneFooters()
-                                applyResponseLayout()
-                              }}
-                              flexShrink={0}
-                              flexDirection="row"
-                              gap={1}
-                              paddingLeft={1}
-                              paddingRight={1}
-                            />
-                          </box>
-                        )
-                  )}
-                </For>
-              </box>
-            )}
-          </For>
-        </box>
-      </box>
-
-      <box
-        flexShrink={0}
-        marginTop={1}
-        overflow="visible"
-        border={["left"]}
-        borderColor={fatalError() ? theme.error : theme.primary}
-        customBorderChars={PromptBorderChars}
-      >
-        <box
-          overflow="visible"
-          paddingLeft={2}
-          paddingRight={2}
-          paddingTop={1}
-          paddingBottom={1}
-          backgroundColor={theme.backgroundElement}
-          flexDirection="column"
-          gap={1}
-        >
-          <box
-            ref={(value) => {
-              commandCenterBox = value
-              renderCommandCenter()
-            }}
-            position="absolute"
-            left={0}
-            right={0}
-            flexDirection="column"
-            overflow="visible"
-          />
-          {isAttached()
-            ? (
-                <textarea
-                  ref={(value) => {
-                    promptInput = value
-                    value.syntaxStyle = promptTokenStyle
-                    syncPromptPlaceholder()
-                    syncPromptTextSnapshot()
-                    refreshPromptAttachmentHighlights()
-                    ensureBackgroundPollersStarted()
-                  }}
-                  placeholder={ATTACHED_PROMPT_PLACEHOLDER}
-                  textColor={theme.text}
-                  focusedTextColor={theme.text}
-                  minHeight={1}
-                  maxHeight={promptInputMaxHeight()}
-                  keyBindings={PROMPT_KEYBINDINGS}
-                  onKeyDown={(event) => {
-                    if (handleCommandCenterKey(event)) {
-                      return
-                    }
-                    if (handlePromptHistoryKey(event)) {
-                      return
-                    }
-                    handleHotkeysToggleShortcut("textarea", event)
-                  }}
-                  onContentChange={() => {
-                    handlePromptContentChange()
-                  }}
-                  onSubmit={() => {
-                    if (commandCenterOpen()) {
-                      if (selectCommandCenterFromSubmit()) {
-                        return
-                      }
-                    }
-                    void submitPrompt()
-                  }}
-                />
-              )
-            : (
-                <textarea
-                  ref={(value) => {
-                    promptInput = value
-                    value.syntaxStyle = promptTokenStyle
-                    syncPromptPlaceholder()
-                    syncPromptTextSnapshot()
-                    refreshPromptAttachmentHighlights()
-                    ensureBackgroundPollersStarted()
-                  }}
-                  placeholder={SESSION_NEW_PLACEHOLDER}
-                  textColor={theme.text}
-                  focusedTextColor={theme.text}
-                  minHeight={1}
-                  maxHeight={promptInputMaxHeight()}
-                  keyBindings={PROMPT_KEYBINDINGS}
-                  onKeyDown={(event) => {
-                    if (handleCommandCenterKey(event)) {
-                      return
-                    }
-                    if (handlePromptHistoryKey(event)) {
-                      return
-                    }
-                    handleHotkeysToggleShortcut("textarea", event)
-                  }}
-                  onContentChange={() => {
-                    handlePromptContentChange()
-                  }}
-                  onSubmit={() => {
-                    if (commandCenterOpen()) {
-                      if (selectCommandCenterFromSubmit()) {
-                        return
-                      }
-                    }
-                    void submitPrompt()
-                  }}
-                />
-              )}
-          <box flexDirection="row">
-            <text
-              ref={(value) => {
-                promptMetaProviderText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {" "}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaProviderDividerText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaModelText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaModelDividerText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaVariantText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageDividerText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageTokensText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageBarOpenText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageBarFilledText = value
-                updateSessionChrome()
-              }}
-              fg={theme.primary}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageBarEmptyText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsageBarCloseText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-            <text
-              ref={(value) => {
-                promptMetaUsagePercentText = value
-                updateSessionChrome()
-              }}
-              fg={theme.textMuted}
-            >
-              {""}
-            </text>
-          </box>
-        </box>
-      </box>
-
-      <box flexShrink={0} marginTop={1} paddingLeft={2} paddingRight={2}>
-        <box flexDirection="row" gap={1}>
-          <box
-            ref={(value) => {
-              statusIndicatorBox = value
-              updateSessionChrome()
-            }}
-            flexDirection="row"
-          />
-          <box
-            ref={(value) => {
-              footerSummaryBox = value
-              updateSessionChrome()
-            }}
-            flexDirection="row"
-          />
-        </box>
-      </box>
-
-      {hotkeysOpen()
-        ? null
-        : null}
-      <box
-        ref={(value) => {
-          hotkeysOverlayBox = value
-          renderHotkeysOverlay()
-        }}
-        position="absolute"
-        left={0}
-        top={0}
-      />
-    </box>
+        }
+        void submitPrompt()
+      }}
+      onPromptMetaProviderTextRef={(value) => {
+        promptMetaProviderText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaProviderDividerTextRef={(value) => {
+        promptMetaProviderDividerText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaModelTextRef={(value) => {
+        promptMetaModelText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaModelDividerTextRef={(value) => {
+        promptMetaModelDividerText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaVariantTextRef={(value) => {
+        promptMetaVariantText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageDividerTextRef={(value) => {
+        promptMetaUsageDividerText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageTokensTextRef={(value) => {
+        promptMetaUsageTokensText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageBarOpenTextRef={(value) => {
+        promptMetaUsageBarOpenText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageBarFilledTextRef={(value) => {
+        promptMetaUsageBarFilledText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageBarEmptyTextRef={(value) => {
+        promptMetaUsageBarEmptyText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsageBarCloseTextRef={(value) => {
+        promptMetaUsageBarCloseText = value
+        updateSessionChrome()
+      }}
+      onPromptMetaUsagePercentTextRef={(value) => {
+        promptMetaUsagePercentText = value
+        updateSessionChrome()
+      }}
+      onStatusIndicatorBoxRef={(value) => {
+        statusIndicatorBox = value
+        updateSessionChrome()
+      }}
+      onFooterSummaryBoxRef={(value) => {
+        footerSummaryBox = value
+        updateSessionChrome()
+      }}
+      onHotkeysOverlayBoxRef={(value) => {
+        hotkeysOverlayBox = value
+        renderHotkeysOverlay()
+      }}
+    />
   )
-}
-
-function appendPreviewLine(current: string, line: string) {
-  const combined = current ? `${current}\n${line}` : line
-  const lines = combined.split("\n")
-  return lines.slice(-14).join("\n")
-}
-
-function formatHistoryPreview(historyEntries: SessionHistoryPageEntry[]) {
-  const lines = mergeAdjacentHistoryPageEntries(historyEntries)
-    .map((item) => previewLineForHistoryEntry(item.entry))
-    .filter(Boolean) as string[]
-  return lines.slice(-14).join("\n")
-}
-
-function formatTranscriptPreview(transcriptEntries: TranscriptEntry[]) {
-  const lines = transcriptEntries
-    .filter((entry) => entry && !entry.hidden)
-    .map(previewLineForTranscriptEntry)
-    .filter(Boolean) as string[]
-  return lines.slice(-14).join("\n")
-}
-
-function previewLineForTranscriptEntry(entry: TranscriptEntry) {
-  const text = entry.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!text || entry.role === "turn_toggle" || entry.role === "turn_summary") {
-    return null
-  }
-  const label = entry.role === "user"
-    ? "You"
-    : entry.role === "reasoning"
-      ? "Think"
-      : entry.role === "tool"
-        ? "Tool"
-        : entry.role === "error"
-          ? "Err"
-          : entry.role === "status"
-            ? "Stat"
-            : entry.role === "notice"
-              ? "Note"
-              : "Asst"
-  return `${label}: ${text.split("\n")[0]}`
-}
-
-function previewLineForTerminalRecord(kind: TerminalOutputRecord["kind"], text: string) {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!normalized) {
-    return ""
-  }
-  const label = kind === "prompt_echo"
-    ? "You"
-    : kind === "provider_reasoning"
-      ? "Think"
-      : kind === "provider_tool"
-        ? "Tool"
-        : kind === "provider_error"
-          ? "Err"
-          : kind === "provider_status"
-            ? "Stat"
-            : "Asst"
-  return `${label}: ${normalized.split("\n")[0]}`
 }
 
 function reindexTranscriptEntries(entries: TranscriptEntry[], startingId: number): TranscriptEntry[] {
@@ -5904,811 +5428,12 @@ function isRecoverableProviderError(error: unknown): boolean {
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
 }
 
-function buildTranscriptEntryRenderable(
-  renderer: ReturnType<typeof useRenderer>,
-  entry: TranscriptEntry,
-  transcriptSyntax: SyntaxStyle,
-  onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
-  surfaceTone: TranscriptSurfaceTone = "default",
-) {
-  const patch = readTranscriptApplyPatch(entry)
-  const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 1,
-    flexDirection: "column",
-  })
-  const bodyColor = transcriptBodyColor(entry, surfaceTone)
-  const body = new BoxRenderable(renderer, {
-    paddingLeft: 1,
-    paddingRight: 0,
-    paddingTop: 1,
-    paddingBottom: 1,
-    ...(bodyColor ? { backgroundColor: bodyColor } : {}),
-  })
-  let update: (nextEntry: TranscriptEntry) => void
-
-  if (patch) {
-    buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax, surfaceTone)
-    update = (nextEntry) => {
-      for (const child of body.getChildren()) {
-        body.remove(child.id)
-        child.destroyRecursively()
-      }
-      const nextPatch = readTranscriptApplyPatch(nextEntry)
-      if (nextPatch) {
-        buildApplyPatchTranscriptContent(renderer, body, nextPatch, transcriptSyntax, surfaceTone)
-        return
-      }
-      const markdown = new MarkdownRenderable(renderer, {
-        content: normalizeMarkdownFenceInfoStrings(nextEntry.text),
-        syntaxStyle: transcriptSyntax,
-        conceal: true,
-        concealCode: false,
-        streaming: true,
-      })
-      body.add(markdown)
-      markdown.requestRender()
-    }
-  } else if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
-    const markdown = new MarkdownRenderable(renderer, {
-      content: normalizeMarkdownFenceInfoStrings(entry.text),
-      syntaxStyle: transcriptSyntax,
-      conceal: true,
-      concealCode: false,
-      streaming: true,
-    })
-    body.add(markdown)
-    update = (nextEntry) => {
-      markdown.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
-      markdown.streaming = true
-      markdown.requestRender()
-    }
-  } else {
-    const text = new TextRenderable(renderer, {
-      fg: transcriptTextColor(entry),
-      wrapMode: "word",
-    })
-    if (entry.role === "turn_toggle") {
-      text.onMouseUp = (event) => {
-        if (event.button !== MouseButton.LEFT) {
-          return
-        }
-        event.stopPropagation()
-        startTimeout(() => {
-          onToggleTurn(entry.turnId, entry.id)
-        }, 0)
-      }
-    }
-    applyTranscriptTextContent(text, entry)
-    body.add(text)
-    update = (nextEntry) => {
-      applyTranscriptTextContent(text, nextEntry)
-    }
-  }
-
-  if (transcriptUsesAccentBorder(entry)) {
-    const border = new BoxRenderable(renderer, {
-      border: ["left"],
-      customBorderChars: SplitBorder.customBorderChars,
-      borderColor: transcriptAccent(entry),
-    })
-    border.add(body)
-    wrapper.add(border)
-  } else {
-    wrapper.add(body)
-  }
-
-  return { entry, wrapper, update }
-}
-
-function transcriptRenderMode(entry: TranscriptEntry) {
-  if (readTranscriptApplyPatch(entry)) {
-    return "patch"
-  }
-  if (shouldRenderTranscriptAsMarkdown(entry.role === "turn_summary" ? "assistant" : entry.role, entry.text)) {
-    return "markdown"
-  }
-  return "text"
-}
-
-function readTranscriptApplyPatch(entry: TranscriptEntry) {
-  const parsed = parseToolTranscriptUpdate(entry.sourceText ?? entry.text)
-  if (!parsed) {
-    return null
-  }
-  const files = readApplyPatchFiles(parsed)
-  return files.length > 0 ? files : null
-}
-
-function buildApplyPatchTranscriptContent(
-  renderer: ReturnType<typeof useRenderer>,
-  body: BoxRenderable,
-  files: ReturnType<typeof readApplyPatchFiles>,
-  transcriptSyntax: SyntaxStyle,
-  surfaceTone: TranscriptSurfaceTone,
-) {
-  const palette = transcriptSurfacePalette(surfaceTone)
-  body.flexDirection = "column"
-  body.gap = 1
-  body.add(
-    new TextRenderable(renderer, {
-      content: `patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
-      fg: theme.secondary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "word",
-    }),
-  )
-
-  for (const file of files) {
-    const block = new BoxRenderable(renderer, {
-      flexDirection: "column",
-      border: ["left"],
-      customBorderChars: SplitBorder.customBorderChars,
-      borderColor: theme.borderSubtle,
-      paddingLeft: 1,
-    })
-    block.add(
-      new TextRenderable(renderer, {
-        content: file.title,
-        fg: file.kind === "delete" ? theme.error : file.kind === "add" ? theme.success : theme.text,
-        attributes: TextAttributes.BOLD,
-        wrapMode: "word",
-      }),
-    )
-    if (file.diff) {
-      const diff = new DiffRenderable(renderer, {
-        diff: file.diff,
-        view: "split",
-        filetype: guessPathFenceLanguage(file.filePath),
-        syntaxStyle: transcriptSyntax,
-        showLineNumbers: true,
-        wrapMode: "none",
-        fg: theme.text,
-        addedBg: RGBA.fromHex("#102616"),
-        removedBg: RGBA.fromHex("#2a1215"),
-        contextBg: palette.element,
-        addedSignColor: theme.success,
-        removedSignColor: theme.error,
-        lineNumberFg: theme.textMuted,
-        lineNumberBg: palette.element,
-        addedLineNumberBg: RGBA.fromHex("#16301d"),
-        removedLineNumberBg: RGBA.fromHex("#34191d"),
-      })
-      block.add(
-        diff,
-      )
-      startTimeout(() => {
-        ;(diff as unknown as { requestRebuild?: () => void }).requestRebuild?.()
-        diff.requestRender()
-      }, 0)
-    } else {
-      block.add(
-        new TextRenderable(renderer, {
-          content: file.kind === "delete" ? "File deleted" : "No diff available",
-          fg: theme.textMuted,
-          wrapMode: "word",
-        }),
-      )
-    }
-    body.add(block)
-  }
-}
-
-function appendAttachmentChip(text: TextRenderable, mime: string, filename: string) {
-  const label = mime.startsWith("image/") ? "img" : mime === "application/pdf" ? "pdf" : "txt"
-  const colors = mime.startsWith("image/")
-    ? { accentBg: RGBA.fromHex("#f0d77d"), accentFg: RGBA.fromHex("#1f1400"), bodyBg: RGBA.fromHex("#2e2615") }
-    : mime === "application/pdf"
-      ? { accentBg: RGBA.fromHex("#8cc0ff"), accentFg: RGBA.fromHex("#09182b"), bodyBg: RGBA.fromHex("#172534") }
-      : { accentBg: RGBA.fromHex("#8fd8a8"), accentFg: RGBA.fromHex("#0d1f13"), bodyBg: RGBA.fromHex("#173022") }
-  text.add(TextNodeRenderable.fromString(` ${label} `, {
-    fg: colors.accentFg,
-    bg: colors.accentBg,
-    attributes: TextAttributes.BOLD,
-  }))
-  text.add(TextNodeRenderable.fromString(` ${filename} `, {
-    fg: theme.text,
-    bg: colors.bodyBg,
-    attributes: TextAttributes.BOLD,
-  }))
-}
-
-function tokenMime(kind: string) {
-  const value = kind.toLowerCase()
-  if (value === "image") {
-    return "image/png"
-  }
-  if (value === "pdf") {
-    return "application/pdf"
-  }
-  return "text/plain"
-}
-
-function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
-  const lines = entry.text.split("\n")
-  for (const [lineIndex, line] of lines.entries()) {
-    appendPromptTranscriptLine(text, entry, line)
-    if (lineIndex < lines.length - 1) {
-      text.add("\n")
-    }
-  }
-}
-
-function appendPromptTranscriptLine(text: TextRenderable, entry: TranscriptEntry, line: string) {
-  const matches = Array.from(line.matchAll(/\[(image|pdf|file)\s+(\d+)\]/gi))
-  if (matches.length === 0) {
-    appendTranscriptSpans(text, entry, line)
-    return
-  }
-  let offset = 0
-  for (const match of matches) {
-    const index = match.index ?? 0
-    if (index > offset) {
-      appendTranscriptSpans(text, entry, line.slice(offset, index))
-    }
-    appendAttachmentChip(text, tokenMime(match[1] ?? "file"), `[${(match[1] ?? "file").toLowerCase()} ${match[2] ?? "1"}]`)
-    offset = index + match[0].length
-  }
-  if (offset < line.length) {
-    appendTranscriptSpans(text, entry, line.slice(offset))
-  }
-}
-
-function appendTranscriptSpans(text: TextRenderable, entry: TranscriptEntry, value: string) {
-  for (const span of splitInlineCodeSpans(value)) {
-    text.add(
-      TextNodeRenderable.fromString(
-        span.text,
-        span.code
-          ? {
-              fg: transcriptInlineCodeColor(entry),
-              attributes: TextAttributes.BOLD,
-            }
-          : undefined,
-      ),
-    )
-  }
-}
-
-function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
-  text.clear()
-  if (entry.role === "tool") {
-    applyToolTranscriptTextContent(text, entry)
-    return
-  }
-  if (entry.role === "user") {
-    applyPromptTranscriptTextContent(text, entry)
-    return
-  }
-  appendTranscriptSpans(text, entry, entry.text)
-}
-
-function applyToolTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
-  const newlineIndex = entry.text.indexOf("\n")
-  const title = newlineIndex === -1 ? entry.text : entry.text.slice(0, newlineIndex)
-  const rest = newlineIndex === -1 ? "" : entry.text.slice(newlineIndex)
-
-  if (title) {
-    text.add(TextNodeRenderable.fromString(title, { fg: theme.secondary }))
-  }
-  for (const span of splitInlineCodeSpans(rest)) {
-    text.add(
-      TextNodeRenderable.fromString(
-        span.text,
-        span.code
-          ? {
-              fg: transcriptInlineCodeColor(entry),
-              attributes: TextAttributes.BOLD,
-            }
-          : {
-              fg: theme.text,
-            },
-      ),
-    )
-  }
-}
-
-function buildEmptyTranscriptRenderable(renderer: ReturnType<typeof useRenderer>) {
-  return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
-}
-
-function buildWorkflowCanvasRenderable(
-  renderer: ReturnType<typeof useRenderer>,
-  options: {
-    workflows: WorkflowDefinition[]
-    agents: AgentInstance[]
-    selectedWorkflowId: string | null
-    selectedNodeId: string | null
-    onSelectNode: (nodeId: string | null) => void
-  },
-) {
-  const selectedWorkflow = resolveSelectedWorkflow(options.workflows, options.selectedWorkflowId)
-  if (!selectedWorkflow) {
-    return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
-  }
-
-  const selectedNodeId = resolveSelectedWorkflowNodeId(selectedWorkflow, options.selectedNodeId)
-  const layout = buildWorkflowGraphLayout({
-    workflow: selectedWorkflow,
-    agents: options.agents,
-    selectedNodeId,
-  })
-  const wrapper = new BoxRenderable(renderer, {
-    flexDirection: "column",
-    gap: 1,
-    width: "100%",
-    minWidth: layout.width,
-    minHeight: layout.height + 6,
-    paddingTop: 1,
-    paddingBottom: 1,
-  })
-
-  // Show all session agents in the workflow header, even before nodes are added.
-  const agentLabels = options.agents.map((agent) => agent.agent_ref ?? agent.id)
-
-  const workflowLabel = selectedWorkflow.alias
-    ? `${layout.workflowId} (${selectedWorkflow.alias})`
-    : layout.workflowId
-  const agentsLabel = agentLabels.length > 0 ? `, agents: ${agentLabels.join(", ")}` : ""
-
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: `workflow: ${workflowLabel}${agentsLabel}`,
-      fg: theme.primary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "word",
-    }),
-  )
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: `Tab cycles nodes • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,
-      fg: theme.textMuted,
-      wrapMode: "word",
-    }),
-  )
-
-  const graphArea = new BoxRenderable(renderer, {
-    width: layout.width,
-    minWidth: layout.width,
-    height: layout.height,
-    minHeight: layout.height,
-    position: "relative",
-  })
-
-  for (const node of layout.nodes) {
-    const nodeBox = new BoxRenderable(renderer, {
-      position: "absolute",
-      left: node.x,
-      top: node.y,
-      width: node.width,
-      minWidth: node.width,
-      height: node.height,
-      minHeight: node.height,
-      flexDirection: "column",
-      border: ["left", "top", "right", "bottom"],
-      borderColor: node.missing ? theme.error : node.selected ? theme.primary : theme.borderSubtle,
-      backgroundColor: node.selected ? theme.backgroundPanel : theme.backgroundElement,
-      paddingLeft: 1,
-      paddingRight: 1,
-      paddingTop: 0,
-      paddingBottom: 0,
-    })
-    nodeBox.onMouseUp = (event) => {
-      if (event.button !== MouseButton.LEFT) {
-        return
-      }
-      event.stopPropagation()
-      options.onSelectNode(node.id)
-    }
-    for (const [lineIndex, line] of node.lines.entries()) {
-      nodeBox.add(
-        new TextRenderable(renderer, {
-          content: line,
-          fg: lineIndex === 0 ? theme.text : theme.textMuted,
-          attributes: lineIndex === 0 ? TextAttributes.BOLD : TextAttributes.NONE,
-          wrapMode: "none",
-        }),
-      )
-    }
-    graphArea.add(nodeBox)
-  }
-
-  for (const endpoint of layout.endpoints) {
-    graphArea.add(
-      new TextRenderable(renderer, {
-        position: "absolute",
-        left: endpoint.labelX,
-        top: endpoint.labelY,
-        content: endpoint.label,
-        fg: theme.secondary,
-        wrapMode: "none",
-      }),
-    )
-    graphArea.add(
-      new TextRenderable(renderer, {
-        position: "absolute",
-        left: endpoint.markerX,
-        top: endpoint.markerY,
-        content: "o",
-        fg: theme.warning,
-        wrapMode: "none",
-      }),
-    )
-    if (endpoint.markerY + 1 < layout.height) {
-      graphArea.add(
-        new TextRenderable(renderer, {
-          position: "absolute",
-          left: endpoint.markerX,
-          top: endpoint.markerY + 1,
-          content: "|",
-          fg: theme.warning,
-          wrapMode: "none",
-        }),
-      )
-    }
-  }
-
-  for (const edge of layout.edges) {
-    for (const cell of buildWorkflowEdgeCells(edge.points)) {
-      graphArea.add(
-        new TextRenderable(renderer, {
-          position: "absolute",
-          left: cell.x,
-          top: cell.y,
-          content: cell.char,
-          fg: theme.secondary,
-          wrapMode: "none",
-        }),
-      )
-    }
-  }
-
-  const footer = new BoxRenderable(renderer, {
-    flexDirection: "column",
-    gap: 0,
-    marginTop: 1,
-  })
-  if (options.workflows.length > 1) {
-    footer.add(
-      new TextRenderable(renderer, {
-        content: `workflows: ${options.workflows.map((workflow) => workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id).join(", ")}`,
-        fg: theme.secondary,
-        wrapMode: "word",
-      }),
-    )
-  }
-  if (layout.nodes.length === 0) {
-    footer.add(
-      new TextRenderable(renderer, {
-        content: "Add nodes with /workflow node add <workflow-ref> <agent-id>.",
-        fg: theme.warning,
-        wrapMode: "word",
-      }),
-    )
-  }
-
-  wrapper.add(graphArea)
-  if (footer.getChildrenCount() > 0) {
-    wrapper.add(footer)
-  }
-
-  return wrapper
-}
-
-function buildWorkflowEdgeCells(points: Array<{ x: number; y: number }>) {
-  const cells: Array<{ x: number; y: number; char: string }> = []
-  if (points.length < 2) {
-    return cells
-  }
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const current = points[index]!
-    const next = points[index + 1]!
-    const lastSegment = index === points.length - 2
-    if (current.x === next.x) {
-      const step = current.y <= next.y ? 1 : -1
-      for (let y = current.y; ; y += step) {
-        const atEnd = y === next.y
-        const char = lastSegment && atEnd
-          ? (step > 0 ? "v" : "^")
-          : "|"
-        cells.push({ x: current.x, y, char })
-        if (atEnd) {
-          break
-        }
-      }
-      continue
-    }
-    if (current.y === next.y) {
-      const step = current.x <= next.x ? 1 : -1
-      for (let x = current.x; ; x += step) {
-        const atEnd = x === next.x
-        const char = lastSegment && atEnd
-          ? (step > 0 ? ">" : "<")
-          : "-"
-        cells.push({ x, y: current.y, char })
-        if (atEnd) {
-          break
-        }
-      }
-    }
-  }
-  return cells
-}
-
-function buildAsciiCanvasRenderable(
-  renderer: ReturnType<typeof useRenderer>,
-  promptText: string,
-  promptColor: RGBA,
-) {
-  const art = arrobaArtFrame(12)
-  const prompt = centerTextToWidth(promptText, maxLineWidth(art))
-  const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 0,
-    flexDirection: "column",
-    gap: 1,
-    paddingLeft: 2,
-    paddingRight: 2,
-    paddingTop: 2,
-  })
-  const artContainer = new BoxRenderable(renderer, {
-    flexDirection: "column",
-    gap: 1,
-    alignItems: "center",
-    width: "100%",
-  })
-  artContainer.add(
-    new TextRenderable(renderer, {
-      content: art,
-      fg: theme.primary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "none",
-    }),
-  )
-  artContainer.add(
-    new TextRenderable(renderer, {
-      content: prompt,
-      fg: promptColor,
-      wrapMode: "none",
-    }),
-  )
-  wrapper.add(artContainer)
-  return wrapper
-}
-
-function maxLineWidth(content: string) {
-  return content.split("\n").reduce((width, line) => Math.max(width, line.length), 0)
-}
-
-function centerTextToWidth(content: string, width: number) {
-  if (content.length >= width) {
-    return content
-  }
-  const padding = width - content.length
-  const leftPadding = Math.floor(padding / 2)
-  const rightPadding = padding - leftPadding
-  return `${" ".repeat(leftPadding)}${content}${" ".repeat(rightPadding)}`
-}
-
-function buildNoSessionRenderable(
-  renderer: ReturnType<typeof useRenderer>,
-  state: WaitingRoomState,
-  sessions: RuntimeSession[],
-  catalog: ProviderCatalog,
-) {
-  const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 0,
-    flexGrow: 1,
-    flexDirection: "column",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 1,
-  })
-  const rows = waitingRoomRows(state, sessions, catalog)
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: arrobaArtFrame(state.introStep),
-      fg: theme.primary,
-      attributes: TextAttributes.BOLD,
-      wrapMode: "none",
-    }),
-  )
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: "No session attached. Dial in and choose your next run.",
-      fg: theme.warning,
-      wrapMode: "word",
-    }),
-  )
-  const menu = new BoxRenderable(renderer, {
-    flexDirection: "column",
-    gap: 0,
-    border: ["left"],
-    borderColor: theme.secondary,
-    customBorderChars: SplitBorder.customBorderChars,
-    paddingLeft: 1,
-  })
-  for (const row of rows) {
-    menu.add(
-      new TextRenderable(renderer, {
-        content: `${state.focus === row.id ? ">" : " "} ${row.title.padEnd(22, " ")} ${row.value}`,
-        fg: state.focus === row.id ? theme.primary : theme.text,
-        attributes: state.focus === row.id ? TextAttributes.BOLD : TextAttributes.NONE,
-        wrapMode: "none",
-      }),
-    )
-  }
-  wrapper.add(menu)
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: renderWaitingRoomKeys(state),
-      fg: theme.textMuted,
-      wrapMode: "none",
-    }),
-  )
-  wrapper.add(
-    new TextRenderable(renderer, {
-      content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move, ← → to cycle, Enter to confirm.`,
-      fg: theme.textMuted,
-      wrapMode: "word",
-    }),
-  )
-  return wrapper
-}
-
-function renderWaitingRoomKeys(state: WaitingRoomState) {
-  const key = (label: string, pressed: boolean) => (pressed ? `[${label}]` : `<${label}>`)
-  return [
-    `        ${key("^", state.keyState.up)}`,
-    `${key("<", state.keyState.left)} ${key("v", state.keyState.down)} ${key(">", state.keyState.right)}`,
-  ].join("\n")
-}
-
-function computeCurrentTurnId(entries: TranscriptEntry[]) {
-  return entries.reduce<number | null>((latest, entry) => {
-    if (!entry || entry.role !== "user" || entry.turnId === undefined) {
-      return latest
-    }
-    return entry.turnId
-  }, null)
-}
-
-function computeNextTurnId(entries: TranscriptEntry[]) {
-  return entries.reduce((max, entry) => Math.max(max, entry?.turnId ?? 0), 0) + 1
-}
-
-function transcriptAccent(entry: TranscriptEntry) {
-  if (entry.role === "user") {
-    return theme.primary
-  }
-  if (entry.role === "reasoning") {
-    return theme.accent
-  }
-  if (entry.role === "tool") {
-    return theme.secondary
-  }
-  if (entry.role === "error") {
-    return theme.error
-  }
-  if (entry.role === "status") {
-    return theme.info
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error"
-      ? theme.error
-      : entry.emphasis === "warning"
-        ? theme.warning
-        : theme.textMuted
-  }
-  if (entry.role === "turn_summary") {
-    return theme.borderSubtle
-  }
-  if (entry.role === "turn_toggle") {
-    return theme.info
-  }
-  return theme.borderSubtle
-}
-
 function isSessionUnavailableError(error: unknown): boolean {
   const message = formatError(error)
   return /session `[^`]+` was not found/i.test(message)
     || /attachment `[^`]+` was not found/i.test(message)
     || /does not belong to session/i.test(message)
     || /cannot perform `[^`]+` while ended/i.test(message)
-}
-
-function transcriptUsesAccentBorder(entry: TranscriptEntry) {
-  return entry.role !== "status"
-}
-
-function resolveTranscriptSurfaceTone(splitActive: boolean, focused: boolean): TranscriptSurfaceTone {
-  if (!splitActive) {
-    return "default"
-  }
-  return focused ? "focused" : "faded"
-}
-
-function transcriptSurfacePalette(surfaceTone: TranscriptSurfaceTone) {
-  if (surfaceTone === "focused") {
-    return {
-      panel: theme.backgroundPanel,
-      element: theme.backgroundElement,
-    }
-  }
-  if (surfaceTone === "faded") {
-    return {
-      panel: RGBA.fromHex("#171717"),
-      element: RGBA.fromHex("#202020"),
-    }
-  }
-  return {
-    panel: theme.backgroundPanel,
-    element: theme.backgroundElement,
-  }
-}
-
-function transcriptBodyColor(entry: TranscriptEntry, surfaceTone: TranscriptSurfaceTone = "default") {
-  const palette = transcriptSurfacePalette(surfaceTone)
-  if (entry.role === "status") {
-    return null
-  }
-  if (entry.role === "error") {
-    return palette.panel
-  }
-  if (entry.role === "turn_summary") {
-    return palette.panel
-  }
-  return entry.role === "assistant" || entry.role === "reasoning"
-    ? palette.panel
-    : palette.element
-}
-
-function transcriptTextColor(entry: TranscriptEntry) {
-  if (entry.role === "user") {
-    return theme.text
-  }
-  if (entry.role === "reasoning") {
-    return theme.textMuted
-  }
-  if (entry.role === "tool") {
-    return theme.secondary
-  }
-  if (entry.role === "error") {
-    return theme.error
-  }
-  if (entry.role === "status") {
-    return theme.info
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error"
-      ? theme.error
-      : entry.emphasis === "warning"
-        ? theme.warning
-        : theme.textMuted
-  }
-  if (entry.role === "turn_summary") {
-    return theme.text
-  }
-  if (entry.role === "turn_toggle") {
-    return theme.info
-  }
-  return theme.text
-}
-
-function transcriptInlineCodeColor(entry: TranscriptEntry) {
-  if (entry.role === "tool" || entry.role === "status" || entry.role === "error" || entry.role === "turn_toggle") {
-    return theme.primary
-  }
-  if (entry.role === "user") {
-    return theme.text
-  }
-  if (entry.role === "notice") {
-    return entry.emphasis === "error" ? theme.warning : theme.info
-  }
-  return theme.info
-}
-
-function renderPromptTranscript(prompt: string) {
-  const text = prompt.trimEnd()
-  return text ? `${text}\n` : ""
 }
 
 function parseArgs(args: string[]): CliOptions {

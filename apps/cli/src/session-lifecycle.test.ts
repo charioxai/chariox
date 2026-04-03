@@ -125,6 +125,7 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     setHistoryLoadingState: () => calls.push("setHistoryLoadingState"),
     setStatusLine: () => calls.push("setStatusLine"),
     updateSessionChrome: () => calls.push("updateSessionChrome"),
+    refreshSplitPaneFocusRepaint: () => calls.push("refreshSplitPaneFocusRepaint"),
     attachToSession: async () => {
       calls.push("attachToSession")
       throw new Error("should not be called")
@@ -146,9 +147,10 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
       calls.push("getProviderCatalog")
       return {}
     },
-    maybeResize: async () => { calls.push("maybeResize") },
-    catchUpAttachedSession: async () => { calls.push("catchUpAttachedSession") },
-    refreshAgentPanes: async () => { calls.push("refreshAgentPanes") },
+    hydrateAttachedSessionBinding: async () => {
+      calls.push("hydrateAttachedSessionBinding")
+      return detachedState.session
+    },
     setAvailableSessions: () => calls.push("setAvailableSessions"),
     listSessions: async () => {
       calls.push("listSessions")
@@ -217,7 +219,7 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
   ])
 })
 
-test("attachBinding reattaches, catches up, and refreshes panes before restoring the attached state", async () => {
+test("attachBinding reattaches and hydrates the attached session before restoring the attached state", async () => {
   const events: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
@@ -272,9 +274,10 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
       return {}
     },
     reconcileWaitingRoom: () => events.push("reconcileWaitingRoom"),
-    maybeResize: async () => { events.push("maybeResize") },
-    catchUpAttachedSession: async () => { events.push("catchUpAttachedSession") },
-    refreshAgentPanes: async () => { events.push("refreshAgentPanes") },
+    hydrateAttachedSessionBinding: async () => {
+      events.push("hydrateAttachedSessionBinding")
+      return attachedSession
+    },
     setAttachmentState: () => events.push("setAttachmentState"),
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
@@ -334,10 +337,7 @@ test("attachBinding reattaches, catches up, and refreshes panes before restoring
     "getProviderCatalog",
     "setProviderCatalogState",
     "reconcileWaitingRoom",
-    "maybeResize",
-    "catchUpAttachedSession",
-    "getSessionState",
-    "refreshAgentPanes",
+    "hydrateAttachedSessionBinding",
     "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
@@ -416,9 +416,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
     focusPromptInput: () => events.push("focusPromptInput"),
     syncKernelEventSubscription: async () => { throw new Error("subscribe failed") },
     getProviderCatalog: async () => { throw new Error("catalog down") },
-    maybeResize: async () => { throw new Error("resize failed") },
-    catchUpAttachedSession: async () => { throw new Error("catch-up failed") },
-    refreshAgentPanes: async () => { throw new Error("pane refresh failed") },
+    hydrateAttachedSessionBinding: async () => { throw new Error("hydrate failed") },
     listSessions: async () => { throw new Error("list failed") },
     logWarning: (message: string) => warnings.push(message),
   })
@@ -434,9 +432,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   assert.deepEqual(warnings, [
     "failed to synchronize kernel event subscription after attach",
     "failed to refresh provider catalog after attach",
-    "failed to resize attached session",
-    "failed to catch up attached session",
-    "failed to refresh agent panes after attach",
+    "failed to hydrate attached session after attach",
     "failed to refresh session list after attach",
   ])
 })
@@ -495,9 +491,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     setMultiAgentResponseLayout: () => events.push("setMultiAgentResponseLayout"),
     syncKernelEventSubscription: async () => { events.push("syncKernelEventSubscription") },
     getProviderCatalog: async () => ({}),
-    maybeResize: async () => {},
-    catchUpAttachedSession: async () => {},
-    refreshAgentPanes: async () => {},
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
     listSessions: async () => [],
   })
 
@@ -530,6 +524,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
 
 test("attachBinding adopts the attached session response layout immediately", async () => {
   const appliedLayouts: string[] = []
+  const repaintCalls: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
     alias: "feature",
@@ -557,10 +552,13 @@ test("attachBinding adopts the attached session response layout immediately", as
     attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => null,
-    refreshAgentPanes: async () => {},
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
     resetWorkspaceScreen: () => {},
     setMultiAgentResponseLayout: (layout: string) => {
       appliedLayouts.push(layout)
+    },
+    refreshSplitPaneFocusRepaint: () => {
+      repaintCalls.push("refresh")
     },
   })
   const controller = createSessionLifecycleController(deps as never)
@@ -568,4 +566,5 @@ test("attachBinding adopts the attached session response layout immediately", as
   await controller.attachBinding({ id: "session-2" }, false)
 
   assert.deepEqual(appliedLayouts, ["split", "split"])
+  assert.deepEqual(repaintCalls, ["refresh", "refresh"])
 })
