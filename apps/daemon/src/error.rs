@@ -104,6 +104,13 @@ pub enum DaemonError {
         status: crate::session::WorkflowRunStatus,
         operation: &'static str,
     },
+    #[error("workflow output validation failed for edge `{edge_id}` in workflow `{workflow_id}` for session `{session_id}`: {message}")]
+    WorkflowOutputValidationFailed {
+        session_id: String,
+        workflow_id: String,
+        edge_id: String,
+        message: String,
+    },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {
         session_id: String,

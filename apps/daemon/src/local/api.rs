@@ -288,6 +288,8 @@ pub struct AddWorkflowEdgeRequest {
     pub to_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -935,6 +937,7 @@ impl DaemonApp {
                     &request.from_node_id,
                     &request.to_node_id,
                     request.output_schema_ref.clone(),
+                    request.validation_policy,
                 )?;
                 let workflow = self
                     .sessions()
@@ -1413,6 +1416,7 @@ mod tests {
                     from_node_id: node_a.id().to_string(),
                     to_node_id: node_b.id().to_string(),
                     output_schema_ref: None,
+                    validation_policy: None,
                 },
             ))
             .expect("workflow edge should be added")
@@ -1712,6 +1716,7 @@ mod tests {
                     from_node_id: first_node.id().to_string(),
                     to_node_id: second_node.id().to_string(),
                     output_schema_ref: None,
+                    validation_policy: None,
                 },
             ))
             .expect("workflow edge should be added")
@@ -3077,6 +3082,7 @@ mod tests {
                     from_node_id: from_node_id.to_string(),
                     to_node_id: to_node_id.to_string(),
                     output_schema_ref: None,
+                    validation_policy: None,
                 },
             ))
             .expect("workflow test edge should be added")

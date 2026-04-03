@@ -79,6 +79,8 @@ pub struct WorkflowEdgeDefinition {
     to_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validation_policy: Option<WorkflowOutputValidationPolicy>,
 }
 
 impl WorkflowEdgeDefinition {
@@ -87,12 +89,14 @@ impl WorkflowEdgeDefinition {
         from_node_id: impl Into<String>,
         to_node_id: impl Into<String>,
         output_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowOutputValidationPolicy>,
     ) -> Self {
         Self {
             id: id.into(),
             from_node_id: from_node_id.into(),
             to_node_id: to_node_id.into(),
             output_schema_ref,
+            validation_policy,
         }
     }
 
@@ -111,6 +115,17 @@ impl WorkflowEdgeDefinition {
     pub fn output_schema_ref(&self) -> Option<&str> {
         self.output_schema_ref.as_deref()
     }
+
+    pub fn validation_policy(&self) -> Option<WorkflowOutputValidationPolicy> {
+        self.validation_policy
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOutputValidationPolicy {
+    Warn,
+    Halt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +362,8 @@ pub struct WorkflowHandoffPayload {
     completion: Option<WorkflowCompletionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validation_warning: Option<String>,
 }
 
 impl WorkflowHandoffPayload {
@@ -360,6 +377,7 @@ impl WorkflowHandoffPayload {
         invocation_prompt: Option<String>,
         completion: Option<WorkflowCompletionSnapshot>,
         output_schema_ref: Option<String>,
+        validation_warning: Option<String>,
     ) -> Self {
         Self {
             workflow_run_id: workflow_run_id.into(),
@@ -371,6 +389,7 @@ impl WorkflowHandoffPayload {
             invocation_prompt,
             completion,
             output_schema_ref,
+            validation_warning,
         }
     }
 

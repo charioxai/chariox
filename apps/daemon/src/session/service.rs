@@ -2,13 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use jsonschema::JSONSchema;
+use serde_json::Value;
 
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition,
-    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputValidationPolicy, WorkflowRun,
+    WorkflowRunStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +24,13 @@ pub struct WorkflowDispatch {
 pub struct WorkflowCompletionUpdate {
     pub workflow_run: WorkflowRun,
     pub dispatches: Vec<WorkflowDispatch>,
+    pub validation_warnings: Vec<WorkflowOutputValidationWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowOutputValidationWarning {
+    pub edge_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -530,11 +540,20 @@ impl SessionService {
                 .clone();
             (workflow_run, source_node_run, workflow)
         };
+        let mut validation_warnings = Vec::new();
         let emitted_messages = workflow
             .edges()
             .iter()
             .filter(|edge| edge.from_node_id() == source_node_run.node_id())
             .map(|edge| {
+                let warning =
+                    validate_workflow_edge_output(session_id, &workflow, edge, &completion)?;
+                if let Some(message) = warning.as_ref() {
+                    validation_warnings.push(WorkflowOutputValidationWarning {
+                        edge_id: edge.id().to_string(),
+                        message: message.clone(),
+                    });
+                }
                 let target_node = workflow.node(edge.to_node_id()).ok_or_else(|| {
                     DaemonError::InvalidWorkflowGraphReference {
                         session_id: session_id.to_string(),
@@ -553,6 +572,7 @@ impl SessionService {
                     workflow_run.invocation_prompt().map(str::to_string),
                     completion.clone(),
                     edge.output_schema_ref().map(str::to_string),
+                    warning.clone(),
                 );
                 let message = WorkflowMessage::new(
                     self.next_workflow_message_id(),
@@ -639,6 +659,7 @@ impl SessionService {
         Ok(WorkflowCompletionUpdate {
             workflow_run: workflow_run.clone(),
             dispatches,
+            validation_warnings,
         })
     }
 
@@ -743,6 +764,7 @@ impl SessionService {
         from_node_id: &str,
         to_node_id: &str,
         output_schema_ref: Option<String>,
+        validation_policy: Option<WorkflowOutputValidationPolicy>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
@@ -753,6 +775,7 @@ impl SessionService {
             from_node_id.to_string(),
             to_node_id.to_string(),
             output_schema_ref,
+            validation_policy,
         );
         let session =
             self.store
@@ -1637,6 +1660,84 @@ fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String 
     format!("workflow-node-run-{}", next_workflow_node_run_number)
 }
 
+fn validate_workflow_edge_output(
+    session_id: &str,
+    workflow: &WorkflowDefinition,
+    edge: &WorkflowEdgeDefinition,
+    completion: &Option<WorkflowCompletionSnapshot>,
+) -> Result<Option<String>, DaemonError> {
+    let Some(schema_ref) = edge.output_schema_ref() else {
+        return Ok(None);
+    };
+    let policy = edge
+        .validation_policy()
+        .unwrap_or(WorkflowOutputValidationPolicy::Warn);
+
+    let failure = |message: String| -> Result<Option<String>, DaemonError> {
+        match policy {
+            WorkflowOutputValidationPolicy::Warn => Ok(Some(message)),
+            WorkflowOutputValidationPolicy::Halt => Err(DaemonError::WorkflowOutputValidationFailed {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                edge_id: edge.id().to_string(),
+                message,
+            }),
+        }
+    };
+
+    let output = completion
+        .as_ref()
+        .and_then(|value| value.output())
+        .ok_or_else(|| "missing workflow output payload".to_string())
+        .and_then(|output| {
+            serde_json::from_str::<Value>(output.message()).map_err(|error| {
+                format!("output.message is not valid JSON: {error}")
+            })
+        });
+
+    let output_value = match output {
+        Ok(value) => value,
+        Err(message) => return failure(message),
+    };
+
+    let schema_source =
+        std::fs::read_to_string(schema_ref).map_err(|error| {
+            format!("schema ref `{schema_ref}` could not be read: {error}")
+        });
+    let schema_value = match schema_source {
+        Ok(source) => serde_json::from_str::<Value>(&source).map_err(|error| {
+            format!("schema ref `{schema_ref}` is not valid JSON: {error}")
+        }),
+        Err(message) => return failure(message),
+    };
+    let schema_value = match schema_value {
+        Ok(value) => value,
+        Err(message) => return failure(message),
+    };
+
+    let compiled = JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(&schema_value)
+        .map_err(|error| {
+            format!("schema ref `{schema_ref}` failed to compile: {error}")
+        });
+    let compiled = match compiled {
+        Ok(value) => value,
+        Err(message) => return failure(message),
+    };
+
+    if let Err(errors) = compiled.validate(&output_value) {
+        let message = errors
+            .into_iter()
+            .next()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "schema validation failed".to_string());
+        return failure(message);
+    }
+
+    Ok(None)
+}
+
 fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {
     let Some(alias) = alias else {
         return Ok(None);
@@ -1986,6 +2087,7 @@ mod tests {
                 planner.id(),
                 reviewer.id(),
                 None,
+                None,
             )
             .expect("edge should be added");
         assert_eq!(edge.from_node_id(), planner.id());
@@ -1997,6 +2099,7 @@ mod tests {
                 workflow.id(),
                 planner.id(),
                 reviewer.id(),
+                None,
                 None,
             )
             .expect_err("duplicate edge should be rejected");
@@ -2011,6 +2114,7 @@ mod tests {
                 workflow.id(),
                 planner.id(),
                 planner.id(),
+                None,
                 None,
             )
             .expect_err("self edge should be rejected");
@@ -2153,6 +2257,7 @@ mod tests {
                 first.id(),
                 second.id(),
                 None,
+                None,
             )
             .expect("workflow edge should be added");
         let endpoint = service
@@ -2252,6 +2357,7 @@ mod tests {
                 entry.id(),
                 branch_one.id(),
                 None,
+                None,
             )
             .expect("entry should connect to branch one");
         service
@@ -2260,6 +2366,7 @@ mod tests {
                 workflow.id(),
                 entry.id(),
                 branch_two.id(),
+                None,
                 None,
             )
             .expect("entry should connect to branch two");
@@ -2270,6 +2377,7 @@ mod tests {
                 branch_one.id(),
                 join.id(),
                 None,
+                None,
             )
             .expect("branch one should connect to join");
         service
@@ -2278,6 +2386,7 @@ mod tests {
                 workflow.id(),
                 branch_two.id(),
                 join.id(),
+                None,
                 None,
             )
             .expect("branch two should connect to join");

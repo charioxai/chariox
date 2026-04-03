@@ -668,7 +668,7 @@ Required rules:
 - the daemon MUST provide a kernel-owned validation tool for node outputs
 - node completion outputs SHOULD be validated against per-edge schema constraints before downstream routing
 - the daemon MUST reject or flag invalid output payloads and surface the validation errors to the node
-- validation failures MUST follow a daemon-owned policy (warn-and-continue vs halt-run) based on node or workflow criticality
+- validation failures MUST follow a daemon-owned policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
 
 ### 7.6 Graph-Derived Barrier and Cycle Rules
 

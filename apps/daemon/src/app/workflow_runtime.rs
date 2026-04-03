@@ -495,12 +495,26 @@ impl DaemonApp {
         let WorkflowCompletionUpdate {
             workflow_run,
             dispatches,
+            validation_warnings,
         } = self.sessions_mut().complete_workflow_node_run(
             session_id,
             workflow_run_id,
             workflow_node_run_id,
             completion_snapshot,
         )?;
+        if !validation_warnings.is_empty() {
+            for warning in &validation_warnings {
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachments().list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow output validation warning on edge `{}`: {}",
+                        warning.edge_id, warning.message
+                    ),
+                );
+            }
+        }
         self.schedule_workflow_dispatches(session_id, workflow_run.id(), &dispatches);
         let state_suffix = match workflow_run.status() {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",

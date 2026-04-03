@@ -825,6 +825,7 @@ mod tests {
                     from_node_id: first_node.id().to_string(),
                     to_node_id: second_node.id().to_string(),
                     output_schema_ref: None,
+                    validation_policy: None,
                 },
             ))
             .expect("workflow edge add should succeed")

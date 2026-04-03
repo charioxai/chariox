@@ -227,7 +227,7 @@ Required kernel tools:
 
 Validation policy:
 
-- invalid output payloads SHOULD follow daemon-owned policy (warn-and-continue vs halt-run)
+- invalid output payloads SHOULD follow daemon-owned policy (warn-and-continue vs halt-run), with per-edge overrides allowed
 - warnings SHOULD be visible to the emitting node and any downstream recipients
 
 ### 3.3.4 Workflow Endpoints and Run Outputs

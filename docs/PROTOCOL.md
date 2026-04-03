@@ -712,7 +712,7 @@ Required rules:
 - the daemon MUST expose a kernel-owned output validation tool to workflow nodes
 - node completion output SHOULD be validated against per-edge schema constraints before routing
 - invalid output MUST be rejected or flagged and surfaced back to the node as a validation error
-- validation failures SHOULD follow daemon policy (warn-and-continue vs halt-run) based on node or workflow criticality
+- validation failures SHOULD follow daemon policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
 
 ## 7.4 Handoff Contract
 
