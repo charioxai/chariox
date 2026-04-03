@@ -488,6 +488,7 @@ impl SessionService {
         workflow_run_id: &str,
         workflow_node_run_id: &str,
         completion: Option<WorkflowCompletionSnapshot>,
+        max_turns: Option<usize>,
     ) -> Result<WorkflowCompletionUpdate, DaemonError> {
         let (workflow_run, source_node_run, workflow) = {
             let session =
@@ -622,6 +623,9 @@ impl SessionService {
             &workflow,
             workflow_run,
         )?;
+        let max_turns_reached = max_turns
+            .filter(|limit| *limit > 0)
+            .is_some_and(|limit| workflow_run.node_runs().len() >= limit);
         let has_unconsumed_messages = workflow_run
             .messages()
             .iter()
@@ -634,6 +638,14 @@ impl SessionService {
                     | WorkflowNodeRunStatus::Stopped
             )
         });
+        if max_turns_reached {
+            workflow_run.set_status(WorkflowRunStatus::Stopped);
+            return Ok(WorkflowCompletionUpdate {
+                workflow_run: workflow_run.clone(),
+                dispatches: Vec::new(),
+                validation_warnings,
+            });
+        }
         workflow_run.set_status(if has_unconsumed_messages || has_pending_node_runs {
             WorkflowRunStatus::Waiting
         } else {
@@ -2317,6 +2329,7 @@ mod tests {
                 workflow_run.id(),
                 workflow_run.node_runs()[0].id(),
                 None,
+                None,
             )
             .expect("entry node completion should route downstream work");
         assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Waiting);
@@ -2446,6 +2459,7 @@ mod tests {
                 workflow_run.id(),
                 started.node_runs()[0].id(),
                 None,
+                None,
             )
             .expect("entry node should dispatch both branches");
         assert_eq!(entry_completion.dispatches.len(), 2);
@@ -2468,7 +2482,13 @@ mod tests {
             .start_workflow_node_run(session.id(), workflow_run.id(), branch_one_run.id())
             .expect("branch one should start");
         let branch_one_completion = service
-            .complete_workflow_node_run(session.id(), workflow_run.id(), branch_one_run.id(), None)
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                branch_one_run.id(),
+                None,
+                None,
+            )
             .expect("branch one completion should succeed");
         assert!(branch_one_completion.dispatches.is_empty());
         let waiting = service
@@ -2493,7 +2513,13 @@ mod tests {
             .start_workflow_node_run(session.id(), workflow_run.id(), branch_two_run.id())
             .expect("branch two should start");
         let branch_two_completion = service
-            .complete_workflow_node_run(session.id(), workflow_run.id(), branch_two_run.id(), None)
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                branch_two_run.id(),
+                None,
+                None,
+            )
             .expect("branch two completion should succeed");
         assert_eq!(branch_two_completion.dispatches.len(), 1);
         let join_dispatch = &branch_two_completion.dispatches[0];

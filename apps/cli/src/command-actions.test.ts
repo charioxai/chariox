@@ -152,6 +152,10 @@ test("agent spawn refreshes session state after launching the provider run", asy
       session: currentSession,
       config: currentSession.config_state,
     }),
+    updateSessionConfig: async () => ({
+      session: currentSession,
+      config: currentSession.config_state,
+    }),
     applySessionState: (session) => {
       currentSession = session
       appliedProviderRunIds.push(session.active_provider_run_id)
@@ -267,6 +271,10 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
       session: currentSession,
       config: currentSession.config_state,
     }),
+    updateSessionConfig: async () => ({
+      session: currentSession,
+      config: currentSession.config_state,
+    }),
     applySessionState: (session) => {
       currentSession = session
     },
@@ -371,6 +379,10 @@ test("workflow command opens the workflow screen and manages local workflows", a
     setMultiAgentResponseLayout: () => {},
     applyResponseLayout: () => {},
     updateSessionResponseLayout: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
+    updateSessionConfig: async () => ({
       session: makeSession(),
       config: makeSession().config_state,
     }),
@@ -601,6 +613,10 @@ test("workflow command opens the workflow screen and manages local workflows", a
       session: makeSession(),
       config: makeSession().config_state,
     }),
+    updateSessionConfig: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
     saveUiPreferences: async () => {},
@@ -723,6 +739,10 @@ test("workflow command opens the workflow screen and manages local workflows", a
     setMultiAgentResponseLayout: () => {},
     applyResponseLayout: () => {},
     updateSessionResponseLayout: async () => ({
+      session: makeSession(),
+      config: makeSession().config_state,
+    }),
+    updateSessionConfig: async () => ({
       session: makeSession(),
       config: makeSession().config_state,
     }),

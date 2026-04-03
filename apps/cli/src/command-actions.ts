@@ -17,6 +17,8 @@ import type { SessionListEntry } from "./sessions.js"
 import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
+const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
+
 type FooterTone = "info" | "error"
 
 type CreateSessionResult = Pick<RuntimeSession, "id" | "alias">
@@ -117,6 +119,12 @@ type CommandActionDeps = {
     sessionId: string,
     attachmentId: string,
     layout: MultiAgentResponseLayout,
+  ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
+  updateSessionConfig: (
+    sessionId: string,
+    attachmentId: string,
+    values: Record<string, string>,
+    requiresIdle: boolean,
   ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
@@ -616,12 +624,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
-    if (subcommand === "run") {
+    if (subcommand === "run" || subcommand === "start") {
       const workflowRef = args[1]
       const endpointRef = args[2]
       const prompt = args.slice(3).join(" ").trim()
       if (!workflowRef || !endpointRef) {
-        deps.flashFooter("usage: /workflow run <workflow-ref> <endpoint-ref> [prompt]", "error")
+        deps.flashFooter("usage: /workflow run|start <workflow-ref> <endpoint-ref> [prompt]", "error")
         return
       }
       if (!deps.invokeWorkflowEndpoint) {
@@ -635,6 +643,45 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.showWorkflowScreen()
       deps.flashFooter(
         `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+        "info",
+      )
+      return
+    }
+
+    if (subcommand === "max-turns") {
+      const value = args[1]
+      if (!value) {
+        const current = deps.sessionState().config_state?.values?.[WORKFLOW_MAX_TURNS_CONFIG_KEY]
+        const label = current && current.trim() !== "" ? current : "unset"
+        deps.flashFooter(`workflow max turns: ${label}`, "info")
+        return
+      }
+      if (!deps.attachmentState()) {
+        deps.flashFooter("must be attached to set workflow max turns", "error")
+        return
+      }
+      const normalized = value.trim().toLowerCase()
+      const nextValue =
+        normalized === "off" || normalized === "0"
+          ? "0"
+          : Number.isFinite(Number(normalized))
+            ? String(Math.max(1, Math.floor(Number(normalized))))
+            : null
+      if (!nextValue) {
+        deps.flashFooter("usage: /workflow max-turns <count|off>", "error")
+        return
+      }
+      const payload = await deps.updateSessionConfig(
+        deps.sessionState().id,
+        deps.attachmentState()!.id,
+        { [WORKFLOW_MAX_TURNS_CONFIG_KEY]: nextValue },
+        false,
+      )
+      deps.applySessionState(payload.session)
+      deps.flashFooter(
+        nextValue === "0"
+          ? "workflow max turns disabled"
+          : `workflow max turns set to ${nextValue}`,
         "info",
       )
       return
@@ -952,7 +999,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run <workflow-ref> <endpoint-ref> [prompt] | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

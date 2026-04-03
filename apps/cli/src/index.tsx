@@ -4119,6 +4119,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         { [SESSION_CONFIG_RESPONSE_LAYOUT_KEY]: layout },
         false,
       ),
+    updateSessionConfig: (sessionId, attachmentId, values, requiresIdle) =>
+      updateSessionConfig(client, sessionId, attachmentId, values, requiresIdle),
     applySessionState,
     refreshAgentPanes,
     openWorkflowNodeInstructionsEditor,

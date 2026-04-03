@@ -16,6 +16,7 @@ use crate::session::{
 
 const WORKFLOW_PROMPT_SOURCE_PREFIX: &str = "workflow-run:";
 const WORKFLOW_COMPLETION_SUMMARY_LIMIT: usize = 160;
+const WORKFLOW_MAX_TURNS_CONFIG_KEY: &str = "workflow.max_turns";
 
 #[derive(Debug, Deserialize)]
 struct WorkflowStructuredOutputEnvelope {
@@ -31,6 +32,16 @@ enum WorkflowStructuredOutputValue {
 }
 
 impl DaemonApp {
+    fn workflow_max_turns(&self, session_id: &str) -> Option<usize> {
+        let session = self.sessions().get_session(session_id).ok()?;
+        session
+            .config_state()
+            .values()
+            .get(WORKFLOW_MAX_TURNS_CONFIG_KEY)
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+    }
+
     pub fn invoke_workflow_endpoint_and_schedule(
         &mut self,
         session_id: &str,
@@ -53,12 +64,7 @@ impl DaemonApp {
             endpoint_ref,
             prompt,
         )?;
-        if workflow_run
-            .invocation_prompt()
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            self.schedule_workflow_run_entry_node(session_id, &workflow_run)?;
-        }
+        self.schedule_workflow_run_entry_node(session_id, &workflow_run)?;
         let workflow_run = self
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
@@ -105,12 +111,7 @@ impl DaemonApp {
         let prompt = workflow_run
             .invocation_prompt()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| DaemonError::InvalidWorkflowRunState {
-                workflow_run_id: workflow_run.id().to_string(),
-                status: workflow_run.status(),
-                operation: "schedule workflow run entry node",
-            })?;
+            .unwrap_or("");
         let node_run = workflow_run.node_runs().first().ok_or_else(|| {
             DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
@@ -570,6 +571,7 @@ impl DaemonApp {
             workflow_node_run_id,
             provider_run_id,
         );
+        let max_turns = self.workflow_max_turns(session_id);
         let WorkflowCompletionUpdate {
             workflow_run,
             dispatches,
@@ -579,6 +581,7 @@ impl DaemonApp {
             workflow_run_id,
             workflow_node_run_id,
             completion_snapshot,
+            max_turns,
         )?;
         if !validation_warnings.is_empty() {
             self.write_workflow_control_mailbox(
@@ -603,6 +606,7 @@ impl DaemonApp {
         let state_suffix = match workflow_run.status() {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completed => "completed",
+            crate::session::WorkflowRunStatus::Stopped => "stopped after reaching the max turn limit",
             _ => "updated",
         };
         self.record_notice(

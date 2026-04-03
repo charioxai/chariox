@@ -38,6 +38,8 @@ const ROOT_COMMANDS: CommandCenterItem[] = [
   { id: "workflow-show", label: "/workflow show", description: "Show a workflow by id or alias", kind: "command", value: "/workflow show " },
   { id: "workflow-new", label: "/workflow new", description: "Create a new workflow", kind: "command", value: "/workflow new " },
   { id: "workflow-run", label: "/workflow run", description: "Invoke a workflow endpoint", kind: "command", value: "/workflow run " },
+  { id: "workflow-start", label: "/workflow start", description: "Alias for /workflow run", kind: "command", value: "/workflow start " },
+  { id: "workflow-max-turns", label: "/workflow max-turns", description: "Set max workflow turns across all agents", kind: "command", value: "/workflow max-turns " },
   { id: "workflow-runs", label: "/workflow runs", description: "List workflow runs in the session", kind: "command", value: "/workflow runs " },
   { id: "workflow-cancel", label: "/workflow cancel", description: "Cancel a workflow run", kind: "command", value: "/workflow cancel " },
   { id: "workflow-alias", label: "/workflow <workflow-ref> <alias>", description: "Assign an alias to an existing workflow", kind: "command", value: "/workflow " },
