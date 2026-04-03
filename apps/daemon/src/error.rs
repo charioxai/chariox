@@ -48,6 +48,13 @@ pub enum DaemonError {
         workflow_id: String,
         node_id: String,
     },
+    #[error("workflow node `{node_id}` references missing agent `{agent_id}` in workflow `{workflow_id}` for session `{session_id}`")]
+    WorkflowNodeAgentMissing {
+        session_id: String,
+        workflow_id: String,
+        node_id: String,
+        agent_id: String,
+    },
     #[error("workflow edge `{edge_id}` was not found in workflow `{workflow_id}` for session `{session_id}`")]
     WorkflowEdgeNotFound {
         session_id: String,

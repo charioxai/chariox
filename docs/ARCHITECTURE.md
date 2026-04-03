@@ -184,7 +184,7 @@ Each workflow definition contains:
 - edges that define allowed message flow
 - one or more endpoints, each bound to an entry node
 - per-agent instructions/system prompts and optional capabilities/repo scopes
-- daemon-managed node instruction artifacts and optional output schema constraints
+- daemon-managed node instruction artifacts with stable references plus optional output schema constraints
 
 Each workflow run contains:
 
@@ -224,6 +224,11 @@ Required kernel tools:
 
 - `consume_input_messages`
 - `validate_output_messages`
+
+Validation policy:
+
+- invalid output payloads SHOULD follow daemon-owned policy (warn-and-continue vs halt-run)
+- warnings SHOULD be visible to the emitting node and any downstream recipients
 
 ### 3.3.4 Workflow Endpoints and Run Outputs
 

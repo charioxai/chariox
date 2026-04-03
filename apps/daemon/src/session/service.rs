@@ -302,6 +302,7 @@ impl SessionService {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
+        self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
         let entry_node = workflow.node(endpoint.entry_node_id()).ok_or_else(|| {
             DaemonError::WorkflowNodeNotFound {
                 session_id: session_id.to_string(),
@@ -348,6 +349,63 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow_run(workflow_run))
+    }
+
+    fn validate_workflow_runnable(
+        &self,
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+        endpoint: &WorkflowEndpointDefinition,
+    ) -> Result<(), DaemonError> {
+        let entry_node_id = endpoint.entry_node_id();
+        workflow.node(entry_node_id).ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            node_id: entry_node_id.to_string(),
+        })?;
+
+        let node_ids = workflow
+            .nodes()
+            .iter()
+            .map(|node| node.id().to_string())
+            .collect::<BTreeSet<_>>();
+        for edge in workflow.edges() {
+            if !node_ids.contains(edge.from_node_id()) {
+                return Err(DaemonError::InvalidWorkflowGraphReference {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    reference: edge.from_node_id().to_string(),
+                    message: "edge references missing source node",
+                });
+            }
+            if !node_ids.contains(edge.to_node_id()) {
+                return Err(DaemonError::InvalidWorkflowGraphReference {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    reference: edge.to_node_id().to_string(),
+                    message: "edge references missing target node",
+                });
+            }
+        }
+
+        let session = self.get_session(session_id)?;
+        let agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<BTreeSet<_>>();
+        for node in workflow.nodes() {
+            if !agent_ids.contains(node.agent_id()) {
+                return Err(DaemonError::WorkflowNodeAgentMissing {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    node_id: node.id().to_string(),
+                    agent_id: node.agent_id().to_string(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     pub fn cancel_workflow_run(
