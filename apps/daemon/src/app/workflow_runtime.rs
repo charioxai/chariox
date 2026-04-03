@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
@@ -45,6 +46,7 @@ impl DaemonApp {
             workflow_ref,
             endpoint_ref,
         )?;
+        self.validate_workflow_agents(session_id, &workflow)?;
         let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
             session_id,
             workflow_ref,
@@ -61,6 +63,30 @@ impl DaemonApp {
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
         Ok((workflow_run, workflow, endpoint))
+    }
+
+    fn validate_workflow_agents(
+        &self,
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), DaemonError> {
+        let agent_ids = self
+            .agents()
+            .get_session_agents(session_id)
+            .into_iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<BTreeSet<_>>();
+        for node in workflow.nodes() {
+            if !agent_ids.contains(node.agent_id()) {
+                return Err(DaemonError::WorkflowNodeAgentMissing {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    node_id: node.id().to_string(),
+                    agent_id: node.agent_id().to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn is_workflow_prompt_source_attachment_id(attachment_id: &str) -> bool {

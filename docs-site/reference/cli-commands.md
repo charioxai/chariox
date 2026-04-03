@@ -105,6 +105,7 @@ Current status:
 
 - workflow definition commands and basic workflow runtime commands are available in the CLI
 - the daemon executes endpoint-triggered workflow runs with daemon-owned downstream handoffs and explicit `output.message` payloads, plus optional artifact refs when a workflow-owned artifact is produced
+- join nodes now buffer inbound workflow messages on the target side and, by default, wait for all upstream parents before starting one aggregated node run
 - the workflow canvas now shows basic run status for the selected workflow and its nodes
 - there is still no `/workflow schedule` command
 

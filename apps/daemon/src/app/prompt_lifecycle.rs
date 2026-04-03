@@ -198,7 +198,7 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         loop {
-            let (_session, next_candidate) = self.sessions.peek_next_queued_prompt(session_id)?;
+            let next_candidate = self.sessions.peek_next_queued_prompt(session_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };

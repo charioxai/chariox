@@ -282,6 +282,14 @@ Chronological notes to preserve execution context between contributors/agents.
 - Queued workflow prompts can now auto-launch the target agent's provider run when they reach the front of the session queue, so chained workflow execution no longer depends on pre-launched runs.
 - Added daemon tests plus a local IPC socket round-trip covering entry execution -> downstream routing -> downstream completion for a simple chained workflow.
 
+### Workflow join gating slice update
+
+- Workflow handoffs are now buffered on the target side instead of immediately creating one node run per incoming edge.
+- Join nodes default to `all_inputs` gating when their indegree is greater than one, so one downstream node run starts only after all required parent messages are present.
+- Workflow messages now record which node run consumed them, making aggregated activations and later audit/replay possible without forwarding transcript history.
+- Fixed a queue-advancement bug where completing one workflow prompt could overwrite an already-started downstream prompt instead of only advancing when no active prompt remained.
+- Added daemon coverage for service-level join gating and a local API round-trip proving that join nodes do not start early and do start exactly once after the final parent completes.
+
 ### Workflow runtime CLI slice update
 
 - Wired `/workflow run`, `/workflow runs`, and `/workflow cancel` into the TypeScript CLI on top of the existing daemon workflow-run API.

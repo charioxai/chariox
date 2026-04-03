@@ -15,6 +15,7 @@ futures-util = "0.3.31"
 wait-timeout = "0.2.0"
 libc = "0.2.172"
 jsonschema = "0.18.0"
+tracing = "0.1.40"
 
 [lib]
 name = "arroba_daemon"

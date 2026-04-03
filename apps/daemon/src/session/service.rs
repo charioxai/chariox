@@ -398,23 +398,6 @@ impl SessionService {
             }
         }
 
-        let session = self.get_session(session_id)?;
-        let agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<BTreeSet<_>>();
-        for node in workflow.nodes() {
-            if !agent_ids.contains(node.agent_id()) {
-                return Err(DaemonError::WorkflowNodeAgentMissing {
-                    session_id: session_id.to_string(),
-                    workflow_id: workflow.id().to_string(),
-                    node_id: node.id().to_string(),
-                    agent_id: node.agent_id().to_string(),
-                });
-            }
-        }
-
         Ok(())
     }
 
@@ -1595,7 +1578,7 @@ fn collect_ready_workflow_dispatches(
                 continue;
             };
             let should_replace = latest_message_index_by_source
-                .get(&source_node_id)
+                .get(source_node_id.as_str())
                 .and_then(|existing_index| workflow_run.messages().get(*existing_index))
                 .is_none_or(|existing_message: &WorkflowMessage| {
                     existing_message.created_at_ms() <= message.created_at_ms()
@@ -1628,7 +1611,7 @@ fn collect_ready_workflow_dispatches(
             .iter()
             .filter_map(|index| workflow_run.messages().get(*index).cloned())
             .collect::<Vec<_>>();
-        for (index, message) in workflow_run.messages_mut().iter_mut().enumerate() {
+        for (_index, message) in workflow_run.messages_mut().iter_mut().enumerate() {
             if message.target_node_id() != target_node_id
                 || message.consumed_by_node_run_id().is_some()
             {
@@ -1887,6 +1870,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::SessionService;
+    use crate::agent::{AgentInstance, GridPosition};
     use crate::config::DaemonConfig;
     use crate::error::DaemonError;
     use crate::session::{
@@ -2173,6 +2157,7 @@ mod tests {
         let session = service
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
         let workflow = service
             .create_workflow(session.id(), Some("review".to_string()))
             .expect("workflow should be created");
@@ -2241,6 +2226,7 @@ mod tests {
         let session = service
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
         let workflow = service
             .create_workflow(session.id(), Some("review".to_string()))
             .expect("workflow should be created");
@@ -2335,6 +2321,11 @@ mod tests {
         let session = service
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
+        seed_agents(
+            &mut service,
+            session.id(),
+            &["agent-1", "agent-2", "agent-3", "agent-4"],
+        );
         let workflow = service
             .create_workflow(session.id(), Some("join".to_string()))
             .expect("workflow should be created");
@@ -2517,6 +2508,31 @@ mod tests {
             Err(DaemonError::SessionNotFound { .. })
         ));
         assert!(service.list_sessions().is_empty());
+    }
+
+    fn seed_agents(service: &mut SessionService, session_id: &str, agent_ids: &[&str]) {
+        let session = service
+            .store
+            .get_mut(session_id)
+            .expect("session should exist for test seeding");
+        let agents = agent_ids
+            .iter()
+            .enumerate()
+            .map(|(index, agent_id)| {
+                AgentInstance::new(
+                    agent_id.to_string(),
+                    format!("ref-{agent_id}"),
+                    session_id.to_string(),
+                    None,
+                    "dev-stub",
+                    Some("default".to_string()),
+                    None,
+                    None,
+                    GridPosition::new(0, index as u32, 1, 1),
+                )
+            })
+            .collect::<Vec<_>>();
+        session.set_agents(agents);
     }
 
     #[test]

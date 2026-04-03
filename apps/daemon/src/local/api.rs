@@ -1284,6 +1284,21 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
 
+        let agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("workflow agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
         let workflow = match app
             .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
                 session_id: session.id().to_string(),
@@ -1325,7 +1340,7 @@ mod tests {
                 AddWorkflowNodeRequest {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
-                    agent_id: session.agents()[0].id().to_string(),
+                    agent_id: agent.id().to_string(),
                 },
             ))
             .expect("first workflow node should be added")
@@ -1337,7 +1352,7 @@ mod tests {
         let spawned = match app
             .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
-                alias: Some("reviewer".to_string()),
+                alias: Some("reviewer-2".to_string()),
                 provider: "opencode".to_string(),
                 model: None,
                 effort: None,
@@ -1468,6 +1483,21 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
 
+        let agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("workflow agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+
         let workflow = match app
             .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
                 session_id: session.id().to_string(),
@@ -1484,7 +1514,7 @@ mod tests {
                 AddWorkflowNodeRequest {
                     session_id: session.id().to_string(),
                     workflow_ref: workflow.id().to_string(),
-                    agent_id: session.agents()[0].id().to_string(),
+                    agent_id: agent.id().to_string(),
                 },
             ))
             .expect("workflow node should be added")
@@ -1512,7 +1542,7 @@ mod tests {
             .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
                 LaunchProviderRunRequest {
                     session_id: session.id().to_string(),
-                    agent_id: Some(session.agents()[0].id().to_string()),
+                    agent_id: Some(agent.id().to_string()),
                     adapter_key: "dev-stub".to_string(),
                     provider: "dev-stub".to_string(),
                     account_profile: "default".to_string(),
