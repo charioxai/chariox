@@ -666,7 +666,7 @@ Required rules:
 - the daemon MUST provide a stable reference (path or artifact ref) so a node can reload its instructions after compaction
 - node instruction artifacts MUST be daemon-managed and not silently overwritten by agents
 - the daemon MUST provide a kernel-owned validation tool for node outputs
-- node completion outputs SHOULD be validated against a node-level schema before downstream routing
+- node completion outputs SHOULD be validated against per-edge schema constraints before downstream routing
 - the daemon MUST reject or flag invalid output payloads and surface the validation errors to the node
 - validation failures MUST follow a daemon-owned policy (warn-and-continue vs halt-run) based on node or workflow criticality
 

@@ -99,7 +99,15 @@ impl DaemonApp {
             node_run.id(),
             node_run.agent_id(),
             node_run.node_id(),
-            &Self::build_workflow_entry_prompt(node_run.node_id(), prompt),
+            &Self::build_workflow_entry_prompt(
+                node_run.node_id(),
+                prompt,
+                Self::workflow_node_instruction_reference(
+                    session_id,
+                    workflow_run.id(),
+                    node_run.node_id(),
+                ),
+            ),
         )
     }
 
@@ -180,7 +188,14 @@ impl DaemonApp {
                 dispatch.node_run.id(),
                 dispatch.node_run.agent_id(),
                 dispatch.node_run.node_id(),
-                &Self::build_workflow_handoff_prompt(&dispatch.messages),
+                &Self::build_workflow_handoff_prompt(
+                    &dispatch.messages,
+                    Self::workflow_node_instruction_reference(
+                        session_id,
+                        workflow_run_id,
+                        dispatch.node_run.node_id(),
+                    ),
+                ),
             ) {
                 self.record_notice(
                     session_id,
@@ -196,7 +211,10 @@ impl DaemonApp {
         }
     }
 
-    fn build_workflow_handoff_prompt(messages: &[WorkflowMessage]) -> String {
+    fn build_workflow_handoff_prompt(
+        messages: &[WorkflowMessage],
+        instruction_ref: Option<String>,
+    ) -> String {
         let handoff_payloads = messages
             .iter()
             .map(|message| {
@@ -211,19 +229,66 @@ impl DaemonApp {
             .first()
             .map(|message| message.target_node_id())
             .unwrap_or("-");
+        let reference_line = instruction_ref
+            .as_deref()
+            .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
+            .unwrap_or_default();
         format!(
-            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}\n",
+            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}{}\n",
             payloads,
             target_node_id,
+            reference_line,
             workflow_output_contract_instructions()
         )
     }
 
-    fn build_workflow_entry_prompt(node_id: &str, prompt: &str) -> String {
+    fn build_workflow_entry_prompt(
+        node_id: &str,
+        prompt: &str,
+        instruction_ref: Option<String>,
+    ) -> String {
+        let reference_line = instruction_ref
+            .as_deref()
+            .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
+            .unwrap_or_default();
         format!(
-            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}\n",
+            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}{}\n",
+            reference_line,
             workflow_output_contract_instructions()
         )
+    }
+
+    fn workflow_node_instruction_reference(
+        session_id: &str,
+        workflow_run_id: &str,
+        node_id: &str,
+    ) -> Option<String> {
+        let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
+        let root = Self::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
+        let filename = format!("node-{node_id}.md");
+        let path = root.join(filename);
+        if !path.exists() {
+            if let Err(error) = std::fs::create_dir_all(&root) {
+                tracing::debug!(
+                    ?error,
+                    "Failed to create workflow instruction directory at {:?}",
+                    root
+                );
+                return None;
+            }
+            let content = format!(
+                "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
+            );
+            if let Err(error) = std::fs::write(&path, content) {
+                tracing::debug!(
+                    ?error,
+                    "Failed to write workflow instruction file at {:?}",
+                    path
+                );
+                return None;
+            }
+        }
+        Some(path.to_string_lossy().to_string())
     }
 
     pub(crate) fn ensure_workflow_provider_run_for_agent(

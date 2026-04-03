@@ -184,7 +184,7 @@ Each workflow definition contains:
 - edges that define allowed message flow
 - one or more endpoints, each bound to an entry node
 - per-agent instructions/system prompts and optional capabilities/repo scopes
-- daemon-managed node instruction artifacts with stable references plus optional output schema constraints
+- daemon-managed node instruction artifacts with stable references plus per-edge output schema constraints
 
 Each workflow run contains:
 

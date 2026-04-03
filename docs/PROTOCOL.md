@@ -710,7 +710,7 @@ Required rules:
 - the daemon MUST maintain per-node instruction content used as system or preamble context
 - the daemon MUST provide a stable reference so nodes can reload instructions after compaction
 - the daemon MUST expose a kernel-owned output validation tool to workflow nodes
-- node completion output SHOULD be validated against a node-level schema before routing
+- node completion output SHOULD be validated against per-edge schema constraints before routing
 - invalid output MUST be rejected or flagged and surfaced back to the node as a validation error
 - validation failures SHOULD follow daemon policy (warn-and-continue vs halt-run) based on node or workflow criticality
 
