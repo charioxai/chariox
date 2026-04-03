@@ -4,14 +4,21 @@ mod ipc;
 mod provider_requests;
 
 pub use api::{
-    AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
-    CompletePromptRequest, DeleteSessionRequest, DetachFromSessionRequest,
-    EditFileCapabilityRequest, EndSessionRequest, GetSessionStateRequest,
-    InspectGitCapabilityRequest, LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest,
+    AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
+    AliasWorkflowRequest, AttachToSessionRequest, BindWorkflowEndpointRequest,
+    CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
+    CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+    DestroyAgentRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
+    GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest,
     LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, ResizeTerminalRequest,
-    ResolveSessionRequest, RunShellCapabilityRequest, StoreTransferredFileCapabilityRequest,
-    SubmitPromptRequest, UpdateSessionConfigRequest,
+    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+    RemoveWorkflowNodeRequest, ResizeTerminalRequest, ResolveSessionRequest,
+    ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest,
+    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

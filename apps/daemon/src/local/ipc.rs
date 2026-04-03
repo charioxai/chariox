@@ -402,8 +402,13 @@ mod tests {
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, LaunchProviderRunRequest, PumpTerminalOutputRequest,
-        SubmitPromptRequest,
+        AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
+        PumpTerminalOutputRequest, SpawnAgentRequest, SubmitPromptRequest,
+    };
+    use crate::local::api::{
+        AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
+        CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
+        InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -522,6 +527,377 @@ mod tests {
             LocalDaemonResponse::SessionCreated { .. } => {}
             other => panic!("unexpected response: {other:?}"),
         }
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should stop cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+            run_local_ipc_server(app, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        wait_for_socket(&socket_path).await;
+
+        let client = LocalIpcClient::new(socket_path.clone());
+        let session = match client
+            .send(&LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-ipc-workflow", "."),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow = match client
+            .send(&LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("review".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let node = match client
+            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: session.agents()[0].id().to_string(),
+            }))
+            .expect("workflow node add should succeed")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let endpoint = match client
+            .send(&LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("workflow endpoint create should succeed")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        match client
+            .send(&LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(session.agents()[0].id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "dev-stub".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "default".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider run launch should succeed")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { .. } => {}
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let workflow_run = match client
+            .send(&LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("socket drill".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(workflow_run.workflow_id(), workflow.id());
+        assert_eq!(format!("{:?}", workflow_run.status()), "Running");
+
+        let listed = match client
+            .send(&LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: Some(workflow.id().to_string()),
+            }))
+            .expect("workflow runs list should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id(), workflow_run.id());
+
+        let resolved = match client
+            .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("workflow run get should succeed")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(resolved.id(), workflow_run.id());
+        assert_eq!(format!("{:?}", resolved.status()), "Running");
+
+        match client
+            .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("workflow-backed prompt should complete")
+        {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let completed = match client
+            .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("completed workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(format!("{:?}", completed.status()), "Completed");
+
+        let second_run = match client
+            .send(&LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("socket drill again".to_string()),
+                },
+            ))
+            .expect("second workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let cancelled = match client
+            .send(&LocalDaemonRequest::CancelWorkflowRun(CancelWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: second_run.id().to_string(),
+            }))
+            .expect("workflow run cancel should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(format!("{:?}", cancelled.status()), "Stopped");
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should stop cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+            run_local_ipc_server(app, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        wait_for_socket(&socket_path).await;
+
+        let client = LocalIpcClient::new(socket_path.clone());
+        let session = match client
+            .send(&LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-ipc-workflow-chain", "."),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let first_agent = match client
+            .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("planner".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("first workflow agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let second_agent = match client
+            .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("second workflow agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow = match client
+            .send(&LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("review".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let first_node = match client
+            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: first_agent.id().to_string(),
+            }))
+            .expect("first workflow node add should succeed")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let second_node = match client
+            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: second_agent.id().to_string(),
+            }))
+            .expect("second workflow node add should succeed")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        match client
+            .send(&LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: first_node.id().to_string(),
+                to_node_id: second_node.id().to_string(),
+            }))
+            .expect("workflow edge add should succeed")
+        {
+            LocalDaemonResponse::WorkflowEdgeAdded { .. } => {}
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let endpoint = match client
+            .send(&LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: first_node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("workflow endpoint create should succeed")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow_run = match client
+            .send(&LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("socket chain drill".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(format!("{:?}", workflow_run.status()), "Running");
+
+        match client
+            .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("entry workflow prompt should complete")
+        {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let routed = match client
+            .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("routed workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(format!("{:?}", routed.status()), "Running");
+        assert_eq!(routed.node_runs().len(), 2);
+        assert_eq!(routed.active_node_run_id(), Some(routed.node_runs()[1].id()));
+        assert_eq!(routed.node_runs()[1].node_id(), second_node.id());
+
+        match client
+            .send(&LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("downstream workflow prompt should complete")
+        {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let completed = match client
+            .send(&LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("completed workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(format!("{:?}", completed.status()), "Completed");
+        assert_eq!(completed.node_runs().len(), 2);
 
         let _ = shutdown_tx.send(());
         server

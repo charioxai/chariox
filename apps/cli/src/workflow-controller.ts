@@ -4,6 +4,7 @@ import type {
   WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
+  WorkflowRun,
 } from "./cli-types.js"
 import {
   addWorkflowEdgeRequest,
@@ -13,7 +14,11 @@ import {
   bindWorkflowEndpointRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
+  cancelWorkflowRunRequest,
+  getWorkflowRunRequest,
+  invokeWorkflowEndpointRequest,
   listWorkflowsRequest,
+  listWorkflowRunsRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
   resolveWorkflowRequest,
@@ -225,6 +230,49 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     )
   }
 
+  const invokeWorkflowEndpoint = async (
+    workflowRef: string,
+    endpointRef: string,
+    prompt?: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      invokeWorkflowEndpointRequest(deps.sessionState().id, workflowRef, endpointRef, prompt),
+    )
+    const payload = expectVariant<{
+      workflow_run: WorkflowRun
+      workflow: WorkflowDefinition
+      endpoint: WorkflowEndpointDefinition
+      session: RuntimeSession
+    }>(response, "WorkflowRunInvoked")
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const listWorkflowRuns = async (workflowRef?: string | null) => {
+    const response = await deps.sendRequest(listWorkflowRunsRequest(deps.sessionState().id, workflowRef))
+    const payload = expectVariant<{ workflow_runs: WorkflowRun[] }>(response, "WorkflowRunsListed")
+    return payload.workflow_runs
+  }
+
+  const getWorkflowRun = async (workflowRunRef: string) => {
+    const response = await deps.sendRequest(getWorkflowRunRequest(deps.sessionState().id, workflowRunRef))
+    return expectVariant<{ workflow_run: WorkflowRun }>(response, "WorkflowRun")
+  }
+
+  const cancelWorkflowRun = async (workflowRunRef: string) => {
+    const response = await deps.sendRequest(cancelWorkflowRunRequest(deps.sessionState().id, workflowRunRef))
+    const payload = expectVariant<{ workflow_run: WorkflowRun; session: RuntimeSession }>(
+      response,
+      "WorkflowRunCancelled",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   return {
     workflowScreenActive,
     selectedWorkflow,
@@ -245,6 +293,10 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     removeWorkflowNode,
     addWorkflowEdge,
     removeWorkflowEdge,
+    invokeWorkflowEndpoint,
+    listWorkflowRuns,
+    getWorkflowRun,
+    cancelWorkflowRun,
   }
 }
 

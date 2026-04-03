@@ -258,8 +258,36 @@ Chronological notes to preserve execution context between contributors/agents.
 ### Roadmap reprioritization update
 
 - Reordered the near-term roadmap around one end-to-end local success path before broader platform scope.
+
+### Workflow runtime phase 1 update
+
+- Added daemon-owned workflow runtime entities for `WorkflowRun`, `WorkflowNodeRun`, and `WorkflowMessage` on the current session runtime path.
+- Added local API invoke/list/get/cancel flow for workflow runs, keyed off existing workflow endpoints.
+- Added workflow-run daemon tests plus a local IPC socket round-trip covering create -> list -> get -> cancel on the new transport surface.
+- Kept this slice intentionally narrow: endpoint invocation now persists runnable workflow state, but it does not yet schedule provider turns or execute graph handoffs.
 - New immediate priority: local daemon + CLI + OpenCode integration with prompt submission and live output streaming.
 - Deferred broader local capabilities, additional providers, multi-agent workflows, relay/web surfaces, provider switching, memory, compaction, and per-agent extension management to later milestones after that baseline is proven.
+
+### Workflow runtime scheduler slice update
+
+- Added daemon-owned entry-node scheduling for endpoint-triggered workflow runs on top of the existing prompt queue and provider runtime.
+- Workflow-owned prompts now carry workflow run/node run context so prompt start, completion, cancellation, and unexpected provider exits reconcile back into `WorkflowRun` and `WorkflowNodeRun` state.
+- Entry-node scheduling can auto-launch a provider run for the bound agent when one is not already active, then dispatch the workflow prompt through the same top-level agent runtime.
+- Kept this slice intentionally narrow: there is still no CLI `/workflow run` surface yet, and downstream node handoffs are not executed. Runs currently become `Completed` when the entry node has no outgoing edges, or `Waiting` when downstream edges exist.
+
+### Workflow runtime handoff slice update
+
+- Added a daemon-owned structured handoff payload for downstream routing, including workflow run id, workflow id, source node run id, source node id, source agent id, target node id, and the root invocation prompt.
+- Node completion now creates one workflow message per outgoing edge, creates one downstream node run per routed message, and schedules those downstream node prompts through the same prompt/provider runtime.
+- Queued workflow prompts can now auto-launch the target agent's provider run when they reach the front of the session queue, so chained workflow execution no longer depends on pre-launched runs.
+- Added daemon tests plus a local IPC socket round-trip covering entry execution -> downstream routing -> downstream completion for a simple chained workflow.
+
+### Workflow runtime CLI slice update
+
+- Wired `/workflow run`, `/workflow runs`, and `/workflow cancel` into the TypeScript CLI on top of the existing daemon workflow-run API.
+- Added command-center entries and CLI help text for the new workflow runtime commands.
+- Updated the workflow canvas to show the selected workflow's display run id/status and per-node status derived from the newest active run, falling back to the newest run overall.
+- Added CLI tests covering workflow runtime commands plus graph-layout tests for runtime status rendering.
 
 ### M2 checklist realignment update
 

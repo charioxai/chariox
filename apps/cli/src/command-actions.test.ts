@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition } from "./cli-types.js"
+import type { AgentInstance, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
@@ -41,6 +41,7 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     max_agents: 6,
     agents: [makeAgent()],
     workflows: [],
+    workflow_runs: [],
     config_state: {
       version: 0,
       values: {},
@@ -325,8 +326,11 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let shownWorkflowScreen = 0
   let addedWorkflowNodeAgentId: string | null = null
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
+  let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
+  let cancelledWorkflowRunRef: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
+  const workflowRuns: WorkflowRun[] = []
   const resolvedWorkflowAgent = makeAgent({
     id: "agent-instance-1",
     agent_ref: "5f26c340",
@@ -503,6 +507,56 @@ test("workflow command opens the workflow screen and manages local workflows", a
       workflow: { id: "workflow-1", alias: null },
       session: makeSession(),
     }),
+    invokeWorkflowEndpoint: async (workflowRef, endpointRef, prompt) => {
+      invokedWorkflowRunArgs = { workflowRef, endpointRef, prompt }
+      const workflow_run: WorkflowRun = {
+        id: "run-1",
+        workflow_id: "workflow-1",
+        endpoint_id: endpointRef,
+        entry_node_id: "node-1",
+        status: "Running",
+        invocation_prompt: prompt ?? null,
+        active_node_run_id: "node-run-1",
+        node_runs: [
+          {
+            id: "node-run-1",
+            node_id: "node-1",
+            agent_id: resolvedWorkflowAgent.id,
+            status: "Running",
+            summary: null,
+            created_at_ms: 0,
+            started_at_ms: 0,
+            completed_at_ms: null,
+          },
+        ],
+        messages: [],
+        created_at_ms: 0,
+        started_at_ms: 0,
+        completed_at_ms: null,
+      }
+      workflowRuns.splice(0, workflowRuns.length, workflow_run)
+      return {
+        workflow_run,
+        workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
+        endpoint: { id: endpointRef, alias: null, entry_node_id: "node-1" },
+        session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
+      }
+    },
+    listWorkflowRuns: async () => workflowRuns,
+    cancelWorkflowRun: async (workflowRunRef) => {
+      cancelledWorkflowRunRef = workflowRunRef
+      const workflow_run = {
+        ...(workflowRuns.find((candidate) => candidate.id === workflowRunRef) ?? workflowRuns[0]!),
+        id: workflowRunRef,
+        status: "Stopped",
+        active_node_run_id: null,
+      }
+      workflowRuns.splice(0, workflowRuns.length, workflow_run)
+      return {
+        workflow_run,
+        session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
+      }
+    },
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
     formatSessionList: () => "",
@@ -744,6 +798,33 @@ test("workflow command opens the workflow screen and manages local workflows", a
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow new review", args: ["new", "review"] })
   assert.equal(flashedMessage, "created workflow workflow-1 (review)")
   assert.deepEqual(selectedWorkflowIds, ["workflow-1"])
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow run workflow-1 entry summarize changes",
+    args: ["run", "workflow-1", "entry", "summarize", "changes"],
+  })
+  assert.deepEqual(invokedWorkflowRunArgs, {
+    workflowRef: "workflow-1",
+    endpointRef: "entry",
+    prompt: "summarize changes",
+  })
+  assert.equal(flashedMessage, "started workflow run run-1 [running]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow runs workflow-1",
+    args: ["runs", "workflow-1"],
+  })
+  assert.equal(flashedMessage, "workflow runs: run-1 [running]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow cancel run-1",
+    args: ["cancel", "run-1"],
+  })
+  assert.equal(cancelledWorkflowRunRef, "run-1")
+  assert.equal(flashedMessage, "cancelled workflow run run-1 [stopped]")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")

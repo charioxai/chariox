@@ -1,7 +1,7 @@
 import { useRenderer } from "@opentui/solid"
 import { BoxRenderable, MouseButton, TextAttributes, TextRenderable } from "@opentui/core"
 
-import type { AgentInstance, WorkflowDefinition } from "../cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "../cli-types.js"
 import { theme } from "../theme.js"
 import { buildWorkflowGraphLayout } from "./layout.js"
 import { buildWorkflowEdgeCells } from "./render.js"
@@ -12,6 +12,7 @@ export function buildWorkflowCanvasRenderable(
   options: {
     workflows: WorkflowDefinition[]
     agents: AgentInstance[]
+    workflowRuns: WorkflowRun[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
@@ -26,6 +27,7 @@ export function buildWorkflowCanvasRenderable(
   const layout = buildWorkflowGraphLayout({
     workflow: selectedWorkflow,
     agents: options.agents,
+    workflowRuns: options.workflowRuns,
     selectedNodeId,
   })
   const wrapper = new BoxRenderable(renderer, {
@@ -52,6 +54,15 @@ export function buildWorkflowCanvasRenderable(
       wrapMode: "word",
     }),
   )
+  if (layout.workflowRunId) {
+    wrapper.add(
+      new TextRenderable(renderer, {
+        content: `run: ${layout.workflowRunId} • status ${String(layout.workflowRunStatus).toLowerCase()}`,
+        fg: theme.secondary,
+        wrapMode: "word",
+      }),
+    )
+  }
   wrapper.add(
     new TextRenderable(renderer, {
       content: `Tab cycles nodes • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,

@@ -14,6 +14,7 @@ export type WorkflowGraphNodeLayout = {
   provider: string | null
   model: string | null
   effort: string | null
+  runStatus: string | null
   missing: boolean
   selected: boolean
   x: number
@@ -44,6 +45,8 @@ export type WorkflowGraphEndpointLayout = {
 export type WorkflowGraphLayout = {
   workflowId: string
   workflowAlias: string | null
+  workflowRunId: string | null
+  workflowRunStatus: string | null
   width: number
   height: number
   nodes: WorkflowGraphNodeLayout[]

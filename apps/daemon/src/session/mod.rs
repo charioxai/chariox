@@ -3,11 +3,13 @@ mod store;
 mod types;
 
 pub use service::SessionService;
+pub use service::{WorkflowCompletionUpdate, WorkflowDispatch};
 pub use store::SessionStore;
 pub use types::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
     SessionStatus, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
-    WorkflowNodeDefinition, WorktreeIsolationMode,
+    WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus, WorktreeIsolationMode,
 };

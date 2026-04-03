@@ -112,6 +112,7 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<PromptCompletion, DaemonError> {
         let (_session, completed) = self.sessions.complete_active_prompt_only(session_id)?;
+        self.reconcile_workflow_prompt_completed(session_id, &completed)?;
         self.clear_prompt_activity(session_id);
         let started_next = if self
             .sessions
@@ -196,9 +197,31 @@ impl DaemonApp {
                 return Ok(None);
             };
             let target_agent_id = next.target_agent_id().to_string();
+            let is_workflow_prompt =
+                Self::is_workflow_prompt_source_attachment_id(next.source_attachment_id());
             let provider_run_id =
                 match self.ensure_active_provider_run_for_agent(session_id, &target_agent_id) {
                     Ok(provider_run_id) => provider_run_id,
+                    Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
+                        match self.ensure_workflow_provider_run_for_agent(session_id, &target_agent_id)
+                        {
+                            Ok(provider_run_id) => provider_run_id,
+                            Err(error) => {
+                                self.record_notice(
+                                    session_id,
+                                    None,
+                                    self.attachments.list_session_attachment_ids(session_id),
+                                    format!(
+                                        "Skipped queued workflow prompt `{}` because Arroba could not launch the provider run for agent `{}`: {}",
+                                        next.id(),
+                                        target_agent_id,
+                                        error
+                                    ),
+                                );
+                                continue;
+                            }
+                        }
+                    }
                     Err(error) => {
                         self.record_notice(
                             session_id,
@@ -218,6 +241,24 @@ impl DaemonApp {
             if let Err(error) =
                 self.ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
+                if is_workflow_prompt {
+                    let active = self.sessions.activate_prompt(session_id, next)?.1;
+                    if let Err(dispatch_error) = self.dispatch_prompt_to_provider(
+                        session_id,
+                        &provider_run_id,
+                        active.source_attachment_id(),
+                        active.prompt(),
+                        active.attachments(),
+                    ) {
+                        let cancelled = self.sessions.cancel_active_prompt(session_id)?.1;
+                        self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
+                        self.clear_prompt_activity(session_id);
+                        return Err(dispatch_error);
+                    }
+                    self.reconcile_workflow_prompt_started(session_id, &active)?;
+                    self.note_prompt_started(session_id);
+                    return Ok(Some(active));
+                }
                 self.record_notice(
                     session_id,
                     Some(&provider_run_id),
@@ -252,6 +293,7 @@ impl DaemonApp {
             }
 
             let active = self.sessions.activate_prompt(session_id, next)?.1;
+            self.reconcile_workflow_prompt_started(session_id, &active)?;
             self.note_prompt_started(session_id);
             return Ok(Some(active));
         }
@@ -375,11 +417,14 @@ impl DaemonApp {
                 .active_prompt()
                 .map(|prompt| prompt.status());
             if active_prompt_status == Some(PromptStatus::Cancelling) {
-                let _ = self
+                let cancelled = self
                     .sessions
-                    .finalize_active_prompt_cancellation(session_id)?;
+                    .finalize_active_prompt_cancellation(session_id)?
+                    .1;
+                self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
             } else {
-                let _ = self.sessions.complete_active_prompt_only(session_id)?;
+                let completed = self.sessions.complete_active_prompt_only(session_id)?.1;
+                self.reconcile_workflow_prompt_completed(session_id, &completed)?;
             }
             self.clear_prompt_activity(session_id);
         }
@@ -423,6 +468,7 @@ impl DaemonApp {
         let (_session, prompt) = self
             .sessions
             .finalize_active_prompt_cancellation(session_id)?;
+        self.reconcile_workflow_prompt_cancelled(session_id, &prompt)?;
         self.clear_prompt_activity(session_id);
         let started_next = if self
             .sessions

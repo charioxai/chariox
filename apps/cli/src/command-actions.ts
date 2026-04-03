@@ -8,6 +8,7 @@ import type {
   WorkflowDefinition,
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
+  WorkflowRun,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -64,6 +65,18 @@ type WorkflowNodePayload = {
 type WorkflowEdgePayload = {
   edge: WorkflowEdgeDefinition
   workflow: WorkflowDefinition
+  session: RuntimeSession
+}
+
+type WorkflowRunInvokePayload = {
+  workflow_run: WorkflowRun
+  workflow: WorkflowDefinition
+  endpoint: WorkflowEndpointDefinition
+  session: RuntimeSession
+}
+
+type WorkflowRunCancelPayload = {
+  workflow_run: WorkflowRun
   session: RuntimeSession
 }
 
@@ -153,6 +166,13 @@ type CommandActionDeps = {
     toNodeId: string,
   ) => Promise<WorkflowEdgePayload>
   removeWorkflowEdge: (workflowRef: string, edgeId: string) => Promise<WorkflowEdgePayload>
+  invokeWorkflowEndpoint?: (
+    workflowRef: string,
+    endpointRef: string,
+    prompt?: string | null,
+  ) => Promise<WorkflowRunInvokePayload>
+  listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
+  cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
   refreshSplitPaneFocusRepaint: () => void
   formatSessionList: (sessions: SessionListEntry[], currentSessionId?: string) => string
@@ -201,6 +221,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     return {
       error: `agent '${reference}' is not a node in workflow '${workflowRef}'; add it first with /workflow node add <workflow-ref> <agent-id>`,
     }
+  }
+
+  const formatWorkflowRunSummary = (workflowRun: WorkflowRun) => {
+    return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}]`
   }
 
   const handleSessionCommand = async (
@@ -581,6 +605,65 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "run") {
+      const workflowRef = args[1]
+      const endpointRef = args[2]
+      const prompt = args.slice(3).join(" ").trim()
+      if (!workflowRef || !endpointRef) {
+        deps.flashFooter("usage: /workflow run <workflow-ref> <endpoint-ref> [prompt]", "error")
+        return
+      }
+      if (!deps.invokeWorkflowEndpoint) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const payload = await deps.invokeWorkflowEndpoint(workflowRef, endpointRef, prompt || null)
+      deps.applySessionState(payload.session)
+      deps.upsertWorkflowDefinition(payload.workflow)
+      deps.selectWorkflowCanvas(payload.workflow.id)
+      deps.showWorkflowScreen()
+      deps.flashFooter(
+        `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+        "info",
+      )
+      return
+    }
+
+    if (subcommand === "runs") {
+      if (!deps.listWorkflowRuns) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const workflowRef = args[1] ?? null
+      const workflowRuns = await deps.listWorkflowRuns(workflowRef)
+      deps.flashFooter(
+        workflowRuns.length === 0
+          ? (workflowRef ? `no workflow runs for ${workflowRef}` : "no workflow runs in session")
+          : `workflow runs: ${workflowRuns.map(formatWorkflowRunSummary).join(", ")}`,
+        "info",
+      )
+      return
+    }
+
+    if (subcommand === "cancel") {
+      const workflowRunRef = args[1]
+      if (!workflowRunRef) {
+        deps.flashFooter("usage: /workflow cancel <run-ref>", "error")
+        return
+      }
+      if (!deps.cancelWorkflowRun) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const payload = await deps.cancelWorkflowRun(workflowRunRef)
+      deps.applySessionState(payload.session)
+      deps.flashFooter(
+        `cancelled workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+        "info",
+      )
+      return
+    }
+
     if (subcommand === "node") {
       const action = args[1]
       const workflowRef = args[2]
@@ -776,7 +859,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run <workflow-ref> <endpoint-ref> [prompt] | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

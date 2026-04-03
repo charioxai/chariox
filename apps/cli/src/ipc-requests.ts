@@ -196,6 +196,49 @@ export function removeWorkflowEdgeRequest(sessionId: string, workflowRef: string
   }
 }
 
+export function invokeWorkflowEndpointRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  prompt?: string | null,
+) {
+  return {
+    InvokeWorkflowEndpoint: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      prompt: prompt ?? null,
+    },
+  }
+}
+
+export function listWorkflowRunsRequest(sessionId: string, workflowRef?: string | null) {
+  return {
+    ListWorkflowRuns: {
+      session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
+    },
+  }
+}
+
+export function getWorkflowRunRequest(sessionId: string, workflowRunRef: string) {
+  return {
+    GetWorkflowRun: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+    },
+  }
+}
+
+export function cancelWorkflowRunRequest(sessionId: string, workflowRunRef: string) {
+  return {
+    CancelWorkflowRun: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+    },
+  }
+}
+
 export function updateSessionConfigRequest(
   sessionId: string,
   attachmentId: string,

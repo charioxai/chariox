@@ -10,6 +10,7 @@ import type {
   AgentInstance,
   RuntimeSession,
   WorkflowDefinition,
+  WorkflowRun,
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
@@ -29,6 +30,7 @@ export function buildWorkflowCanvasRenderable(
   options: {
     workflows: WorkflowDefinition[]
     agents: AgentInstance[]
+    workflowRuns: WorkflowRun[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void

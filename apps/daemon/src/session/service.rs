@@ -6,8 +6,22 @@ use crate::error::DaemonError;
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
+    WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowDispatch {
+    pub node_run: WorkflowNodeRun,
+    pub message: WorkflowMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowCompletionUpdate {
+    pub workflow_run: WorkflowRun,
+    pub dispatches: Vec<WorkflowDispatch>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionService {
@@ -19,6 +33,9 @@ pub struct SessionService {
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,
     next_workflow_edge_number: u64,
+    next_workflow_run_number: u64,
+    next_workflow_node_run_number: u64,
+    next_workflow_message_number: u64,
 }
 
 impl SessionService {
@@ -32,6 +49,9 @@ impl SessionService {
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,
             next_workflow_edge_number: 0,
+            next_workflow_run_number: 0,
+            next_workflow_node_run_number: 0,
+            next_workflow_message_number: 0,
         }
     }
 
@@ -216,6 +236,359 @@ impl SessionService {
             workflow_id: workflow.id().to_string(),
             endpoint_id: endpoint_ref.to_string(),
         })
+    }
+
+    pub fn list_workflow_runs(
+        &self,
+        session_id: &str,
+        workflow_ref: Option<&str>,
+    ) -> Result<Vec<WorkflowRun>, DaemonError> {
+        let workflow_id = workflow_ref
+            .map(|reference| self.resolve_workflow_ref(session_id, reference))
+            .transpose()?
+            .map(|workflow| workflow.id().to_string());
+        let session = self.get_session(session_id)?;
+        Ok(session
+            .workflow_runs()
+            .iter()
+            .filter(|workflow_run| {
+                workflow_id
+                    .as_deref()
+                    .is_none_or(|id| workflow_run.workflow_id() == id)
+            })
+            .cloned()
+            .collect())
+    }
+
+    pub fn resolve_workflow_run_ref(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let normalized_ref = workflow_run_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        let workflow_runs = session.workflow_runs();
+        if let Some(workflow_run) = workflow_runs
+            .iter()
+            .find(|workflow_run| workflow_run.id() == normalized_ref)
+        {
+            return Ok(workflow_run.clone());
+        }
+        let id_matches = workflow_runs
+            .iter()
+            .filter(|workflow_run| workflow_run.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        Err(DaemonError::WorkflowRunNotFound {
+            session_id: session_id.to_string(),
+            workflow_run_id: workflow_run_ref.to_string(),
+        })
+    }
+
+    pub fn invoke_workflow_endpoint(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
+        let endpoint = self.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
+        let entry_node = workflow.node(endpoint.entry_node_id()).ok_or_else(|| {
+            DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                node_id: endpoint.entry_node_id().to_string(),
+            }
+        })?;
+
+        let node_run = WorkflowNodeRun::new(
+            self.next_workflow_node_run_id(),
+            entry_node.id().to_string(),
+            entry_node.agent_id().to_string(),
+            WorkflowNodeRunStatus::Ready,
+        );
+        let messages = prompt
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                vec![WorkflowMessage::new(
+                    self.next_workflow_message_id(),
+                    None,
+                    entry_node.id().to_string(),
+                    "invocation",
+                    "workflow invoked",
+                    value.clone(),
+                )]
+            })
+            .unwrap_or_default();
+        let workflow_run = WorkflowRun::new(
+            self.next_workflow_run_id(),
+            workflow.id().to_string(),
+            endpoint.id().to_string(),
+            entry_node.id().to_string(),
+            prompt,
+            vec![node_run],
+            messages,
+        );
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.create_workflow_run(workflow_run))
+    }
+
+    pub fn cancel_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let workflow_run_id = self
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session
+            .workflow_run_mut(&workflow_run_id)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.clone(),
+            })?;
+        if matches!(
+            workflow_run.status(),
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+        ) {
+            return Err(DaemonError::InvalidWorkflowRunState {
+                workflow_run_id: workflow_run_id.clone(),
+                status: workflow_run.status(),
+                operation: "cancel workflow run",
+            });
+        }
+        workflow_run.set_status(WorkflowRunStatus::Stopped);
+        workflow_run.clear_active_node_run();
+        for node_run in workflow_run.node_runs_mut() {
+            if !matches!(
+                node_run.status(),
+                WorkflowNodeRunStatus::Completed
+                    | WorkflowNodeRunStatus::Failed
+                    | WorkflowNodeRunStatus::Stopped
+            ) {
+                node_run.set_status(WorkflowNodeRunStatus::Stopped);
+            }
+        }
+        Ok(workflow_run.clone())
+    }
+
+    pub fn start_workflow_node_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session
+            .workflow_run_mut(workflow_run_id)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id,
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        node_run.set_status(WorkflowNodeRunStatus::Running);
+        workflow_run.set_active_node_run(workflow_node_run_id.to_string());
+        workflow_run.set_status(WorkflowRunStatus::Running);
+        Ok(workflow_run.clone())
+    }
+
+    pub fn complete_workflow_node_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowCompletionUpdate, DaemonError> {
+        let (workflow_run, source_node_run, workflow) = {
+            let session = self
+                .store
+                .get(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+            let workflow_run = session
+                .workflow_run(workflow_run_id)
+                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_run_id: workflow_run_id.to_string(),
+                })?
+                .clone();
+            let source_node_run =
+                workflow_run
+                    .node_runs()
+                    .iter()
+                    .find(|node_run| node_run.id() == workflow_node_run_id)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_run.workflow_id().to_string(),
+                        reference: workflow_node_run_id.to_string(),
+                        message: "workflow node run was not found",
+                    })?;
+            let workflow = session
+                .workflow(workflow_run.workflow_id())
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_run.workflow_id().to_string(),
+                })?
+                .clone();
+            (workflow_run, source_node_run, workflow)
+        };
+        let dispatches = workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == source_node_run.node_id())
+            .map(|edge| {
+                let target_node =
+                    workflow
+                        .node(edge.to_node_id())
+                        .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                            session_id: session_id.to_string(),
+                            workflow_id: workflow.id().to_string(),
+                            reference: edge.to_node_id().to_string(),
+                            message: "target node does not exist",
+                        })?;
+                let payload = WorkflowHandoffPayload::new(
+                    workflow_run.id().to_string(),
+                    workflow.id().to_string(),
+                    source_node_run.id().to_string(),
+                    source_node_run.node_id().to_string(),
+                    source_node_run.agent_id().to_string(),
+                    target_node.id().to_string(),
+                    workflow_run.invocation_prompt().map(str::to_string),
+                );
+                let message = WorkflowMessage::new(
+                    self.next_workflow_message_id(),
+                    Some(source_node_run.id().to_string()),
+                    target_node.id().to_string(),
+                    "handoff",
+                    format!(
+                        "handoff from `{}` to `{}`",
+                        source_node_run.node_id(),
+                        target_node.id()
+                    ),
+                    serde_json::to_string(&payload).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "serialize workflow handoff payload",
+                            message: error.to_string(),
+                        }
+                    })?,
+                );
+                let node_run = WorkflowNodeRun::new(
+                    self.next_workflow_node_run_id(),
+                    target_node.id().to_string(),
+                    target_node.agent_id().to_string(),
+                    WorkflowNodeRunStatus::Ready,
+                );
+                Ok(WorkflowDispatch { node_run, message })
+            })
+            .collect::<Result<Vec<_>, DaemonError>>()?;
+
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session
+            .workflow_run_mut(workflow_run_id)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            })?;
+        let workflow_id_for_error = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id_for_error,
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        node_run.set_status(WorkflowNodeRunStatus::Completed);
+        node_run.set_summary(Some("completed".to_string()));
+        workflow_run.clear_active_node_run();
+        for dispatch in &dispatches {
+            workflow_run.add_message(dispatch.message.clone());
+            workflow_run.add_node_run(dispatch.node_run.clone());
+        }
+        workflow_run.set_status(if dispatches.is_empty() {
+            WorkflowRunStatus::Completed
+        } else {
+            WorkflowRunStatus::Waiting
+        });
+        Ok(WorkflowCompletionUpdate {
+            workflow_run: workflow_run.clone(),
+            dispatches,
+        })
+    }
+
+    pub fn stop_workflow_node_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session
+            .workflow_run_mut(workflow_run_id)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id,
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        node_run.set_status(WorkflowNodeRunStatus::Stopped);
+        workflow_run.clear_active_node_run();
+        workflow_run.set_status(WorkflowRunStatus::Stopped);
+        Ok(workflow_run.clone())
     }
 
     pub fn add_workflow_node(
@@ -731,6 +1104,29 @@ impl SessionService {
         Ok((session.clone(), outcome))
     }
 
+    pub fn submit_workflow_prompt(
+        &mut self,
+        session_id: &str,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        prompt: impl Into<String>,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let prompt_id = self.next_prompt_id();
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            source_attachment_id,
+            target_agent_id,
+            prompt,
+            super::PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run_id, workflow_node_run_id);
+        let session = self.get_session_mut_for_operation(session_id, "submit workflow prompt")?;
+        let outcome = session.submit_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
     pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,
@@ -1115,6 +1511,30 @@ impl SessionService {
             unix_epoch_ms() ^ self.next_workflow_edge_number.rotate_left(5)
         )
     }
+
+    fn next_workflow_run_id(&mut self) -> String {
+        self.next_workflow_run_number = self.next_workflow_run_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_run_number.rotate_left(3)
+        )
+    }
+
+    fn next_workflow_node_run_id(&mut self) -> String {
+        self.next_workflow_node_run_number = self.next_workflow_node_run_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_node_run_number.rotate_left(13)
+        )
+    }
+
+    fn next_workflow_message_id(&mut self) -> String {
+        self.next_workflow_message_number = self.next_workflow_message_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_message_number.rotate_left(15)
+        )
+    }
 }
 
 fn describe_session_match(session: &RuntimeSession) -> String {
@@ -1133,7 +1553,7 @@ mod tests {
     use crate::error::DaemonError;
     use crate::session::{
         CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
-        WorktreeIsolationMode,
+        WorkflowHandoffPayload, WorkflowNodeRunStatus, WorkflowRunStatus, WorktreeIsolationMode,
     };
 
     fn test_config() -> DaemonConfig {
@@ -1386,6 +1806,146 @@ mod tests {
             .remove_workflow_node(session.id(), workflow.id(), planner.id())
             .expect("node should be removed");
         assert_eq!(removed_node.id(), planner.id());
+    }
+
+    #[test]
+    fn creates_lists_resolves_and_cancels_workflow_runs() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("workflow node should be added");
+        let endpoint = service
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+
+        let workflow_run = service
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review this diff".to_string()),
+            )
+            .expect("workflow run should be created");
+        assert_eq!(workflow_run.workflow_id(), workflow.id());
+        assert_eq!(workflow_run.endpoint_id(), endpoint.id());
+        assert_eq!(workflow_run.entry_node_id(), node.id());
+        assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
+        assert_eq!(workflow_run.node_runs().len(), 1);
+        assert_eq!(workflow_run.node_runs()[0].status(), WorkflowNodeRunStatus::Ready);
+        assert_eq!(workflow_run.messages().len(), 1);
+        assert_eq!(workflow_run.messages()[0].target_node_id(), node.id());
+
+        let listed = service
+            .list_workflow_runs(session.id(), Some(workflow.id()))
+            .expect("workflow runs should list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id(), workflow_run.id());
+
+        let resolved = service
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should resolve");
+        assert_eq!(resolved.id(), workflow_run.id());
+
+        let cancelled = service
+            .cancel_workflow_run(session.id(), workflow_run.id())
+            .expect("workflow run should cancel");
+        assert_eq!(cancelled.status(), WorkflowRunStatus::Stopped);
+        assert_eq!(cancelled.active_node_run_id(), None);
+        assert_eq!(cancelled.node_runs()[0].status(), WorkflowNodeRunStatus::Stopped);
+
+        let error = service
+            .cancel_workflow_run(session.id(), workflow_run.id())
+            .expect_err("terminal workflow run should reject a second cancellation");
+        assert!(matches!(
+            error,
+            DaemonError::InvalidWorkflowRunState { .. }
+        ));
+    }
+
+    #[test]
+    fn completing_a_workflow_node_run_creates_structured_downstream_dispatches() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        let first = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("first workflow node should be added");
+        let second = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-2")
+            .expect("second workflow node should be added");
+        service
+            .add_workflow_edge(session.id(), workflow.id(), first.id(), second.id())
+            .expect("workflow edge should be added");
+        let endpoint = service
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                first.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+
+        let workflow_run = service
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review this diff".to_string()),
+            )
+            .expect("workflow run should be created");
+        let started = service
+            .start_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                workflow_run.node_runs()[0].id(),
+            )
+            .expect("entry node should start");
+        assert_eq!(started.status(), WorkflowRunStatus::Running);
+        assert_eq!(started.active_node_run_id(), Some(workflow_run.node_runs()[0].id()));
+
+        let completion = service
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                workflow_run.node_runs()[0].id(),
+            )
+            .expect("entry node completion should route downstream work");
+        assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Waiting);
+        assert_eq!(completion.dispatches.len(), 1);
+        assert_eq!(completion.dispatches[0].node_run.node_id(), second.id());
+        assert_eq!(completion.dispatches[0].message.target_node_id(), second.id());
+        let payload: WorkflowHandoffPayload =
+            serde_json::from_str(completion.dispatches[0].message.handoff_payload())
+                .expect("handoff payload should deserialize");
+        assert_eq!(payload.workflow_run_id(), workflow_run.id());
+        assert_eq!(payload.workflow_id(), workflow.id());
+        assert_eq!(payload.source_node_run_id(), workflow_run.node_runs()[0].id());
+        assert_eq!(payload.source_node_id(), first.id());
+        assert_eq!(payload.source_agent_id(), "agent-1");
+        assert_eq!(payload.target_node_id(), second.id());
+        assert_eq!(payload.invocation_prompt(), Some("review this diff"));
+
+        let resolved = service
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should resolve");
+        assert_eq!(resolved.status(), WorkflowRunStatus::Waiting);
+        assert_eq!(resolved.node_runs().len(), 2);
+        assert_eq!(resolved.messages().len(), 2);
     }
 
     #[test]

@@ -2,14 +2,19 @@ import type { WorkflowGraphNodeLayout } from "./types.js"
 
 type EdgeAnchorSide = "top" | "right" | "bottom" | "left"
 type EdgeAnchor = { x: number; y: number; side: EdgeAnchorSide }
+type ReciprocalLane = -1 | 1
 
 export function routeWorkflowEdge(
   fromNode: WorkflowGraphNodeLayout,
   toNode: WorkflowGraphNodeLayout,
+  options?: { reciprocalLane?: ReciprocalLane | null },
 ) {
   const fromAnchors = borderCenterAnchors(fromNode)
   const toAnchors = borderCenterAnchors(toNode)
   const chosenPair = chooseNearestAnchorPair(fromAnchors, toAnchors)
+  if (options?.reciprocalLane) {
+    return buildReciprocalPath(chosenPair.from, chosenPair.to, options.reciprocalLane)
+  }
   return buildOrthogonalPath(chosenPair.from, chosenPair.to, fromNode, toNode)
 }
 
@@ -77,6 +82,37 @@ function buildOrthogonalPath(
   return dedupeAdjacentPoints(scoreA <= scoreB ? pathA : pathB)
 }
 
+function buildReciprocalPath(
+  from: EdgeAnchor,
+  to: EdgeAnchor,
+  reciprocalLane: ReciprocalLane,
+) {
+  const fromOutward = stepOutsideAnchor(from)
+  const toOutward = stepOutsideAnchor(to)
+
+  if (Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)) {
+    const laneY = from.y + reciprocalLane * 2
+    return dedupeAdjacentPoints([
+      { x: from.x, y: from.y },
+      fromOutward,
+      { x: fromOutward.x, y: laneY },
+      { x: toOutward.x, y: laneY },
+      toOutward,
+      { x: to.x, y: to.y },
+    ])
+  }
+
+  const laneX = from.x + reciprocalLane * 2
+  return dedupeAdjacentPoints([
+    { x: from.x, y: from.y },
+    fromOutward,
+    { x: laneX, y: fromOutward.y },
+    { x: laneX, y: toOutward.y },
+    toOutward,
+    { x: to.x, y: to.y },
+  ])
+}
+
 function orthogonalPathScore(
   path: Array<{ x: number; y: number }>,
   fromNode: WorkflowGraphNodeLayout,
@@ -135,4 +171,19 @@ function dedupeAdjacentPoints(points: Array<{ x: number; y: number }>) {
     deduped.push(point)
   }
   return deduped
+}
+
+function stepOutsideAnchor(anchor: EdgeAnchor) {
+  switch (anchor.side) {
+    case "top":
+      return { x: anchor.x, y: anchor.y - 1 }
+    case "right":
+      return { x: anchor.x + 1, y: anchor.y }
+    case "bottom":
+      return { x: anchor.x, y: anchor.y + 1 }
+    case "left":
+      return { x: anchor.x - 1, y: anchor.y }
+    default:
+      return { x: anchor.x, y: anchor.y }
+  }
 }

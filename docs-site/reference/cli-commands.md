@@ -101,6 +101,13 @@ Cycle focus to the next agent.
 
 ## Workflow Commands
 
+Current status:
+
+- workflow definition commands and basic workflow runtime commands are available in the CLI
+- the daemon executes endpoint-triggered workflow runs with daemon-owned downstream handoffs
+- the workflow canvas now shows basic run status for the selected workflow and its nodes
+- there is still no `/workflow schedule` command
+
 ### `/workflow`
 
 Open the workflow canvas. If already on the workflow screen, nothing changes.
@@ -116,6 +123,18 @@ Resolve and show a workflow by id or alias.
 ### `/workflow new [alias]`
 
 Create a new workflow with an optional alias.
+
+### `/workflow run <workflow-ref> <endpoint-ref> [prompt]`
+
+Invoke a workflow endpoint, optionally with an invocation prompt.
+
+### `/workflow runs [workflow-ref]`
+
+List workflow runs in the current session, optionally filtered to one workflow.
+
+### `/workflow cancel <run-ref>`
+
+Cancel a workflow run by id or unique prefix.
 
 ### `/workflow <workflow-ref> <alias>`
 

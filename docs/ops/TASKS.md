@@ -26,7 +26,7 @@ A lightweight, repo-native task board so contributors and future agents can cont
 ## Backlog
 
 - [ ] **M4-002** Add daemon-scheduled multi-agent workflow runtime
-  - Note: The first management slice is now in place: kernel-backed workflow definitions, workflow/endpoint alias resolution, endpoint binding, and node/edge editing all exist. The remaining work is workflow rendering polish, endpoint publishing, run creation, and actual scheduling/structured handoffs on top of the same top-level session-agent runtime.
+  - Note: The first management slice is now in place: kernel-backed workflow definitions, workflow/endpoint alias resolution, endpoint binding, and node/edge editing all exist. Runtime phase 1 is landed too: daemon-owned `WorkflowRun` state plus local API invoke/list/get/cancel flow. The first scheduler slice now covers entry-node execution and simple daemon-owned downstream handoffs, and the CLI now wires `/workflow run`, `/workflow runs`, and `/workflow cancel` with basic canvas run visibility. Remaining work is richer completion payloads, fan-in/barrier semantics, deeper run inspection/history UI, and only then recurring schedules. See `docs/M4_WORKFLOW_RUNTIME_PLAN.md`.
 - [ ] **M5-001** Polish the TypeScript CLI as the reference Arroba client
   - Note: Finish the local UX, pane behavior, and command flow on the OpenCode-first path before adding more client surfaces.
 - [ ] **M6-001** Add multi-platform clients on the same daemon/protocol model

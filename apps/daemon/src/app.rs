@@ -6,6 +6,7 @@ mod prompt_lifecycle;
 mod provider_runtime;
 mod session_runtime;
 mod terminal_fanout;
+mod workflow_runtime;
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest};
 use crate::attachment::{AttachmentService, RuntimeAttachment};
@@ -416,7 +417,9 @@ impl DaemonApp {
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
         let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
-        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !Self::is_workflow_prompt_source_attachment_id(attachment_id) {
+            self.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
 
         if provider_run.state() != crate::provider::ProviderRunState::Running {

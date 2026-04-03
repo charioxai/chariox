@@ -54,6 +54,11 @@ pub enum DaemonError {
         workflow_id: String,
         edge_id: String,
     },
+    #[error("workflow run `{workflow_run_id}` was not found in session `{session_id}`")]
+    WorkflowRunNotFound {
+        session_id: String,
+        workflow_run_id: String,
+    },
     #[error("workflow edge `{from_node_id}` -> `{to_node_id}` already exists in workflow `{workflow_id}` for session `{session_id}`")]
     WorkflowEdgeConflict {
         session_id: String,
@@ -85,6 +90,12 @@ pub enum DaemonError {
         workflow_id: String,
         reference: String,
         message: &'static str,
+    },
+    #[error("workflow run `{workflow_run_id}` cannot perform `{operation}` while {status:?}")]
+    InvalidWorkflowRunState {
+        workflow_run_id: String,
+        status: crate::session::WorkflowRunStatus,
+        operation: &'static str,
     },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {

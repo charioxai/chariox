@@ -1,0 +1,203 @@
+# M4 Workflow Runtime Plan
+
+## Goal
+
+Turn the current workflow editor into a real daemon-scheduled workflow runtime.
+
+The first slice should focus on on-demand workflow runs started from existing workflow endpoints. Time-based schedules should come after the execution engine exists and is stable.
+
+## Current Baseline
+
+Already implemented:
+
+- workflow definitions stored on the daemon session state
+- workflow node, edge, and endpoint creation/removal/binding
+- workflow and endpoint alias resolution
+- workflow canvas rendering in the CLI
+- manual multi-agent session runtime with top-level session agents
+- `WorkflowRun`, `WorkflowNodeRun`, and `WorkflowMessage` runtime entities
+- local API invoke/list/get/cancel flow for workflow runs
+- daemon scheduling of the entry node for endpoint-triggered runs when an invocation prompt is present
+- daemon-owned downstream routing that creates structured handoff messages and schedules downstream node prompts
+- CLI `/workflow run`, `/workflow runs`, and `/workflow cancel` commands
+- basic workflow canvas runtime visibility for the selected workflow and its nodes
+
+Not implemented yet:
+
+- rich completion payloads sourced from actual node output rather than daemon-generated handoff metadata
+- fan-in/barrier semantics for nodes with multiple upstream edges
+- richer run inspection/history UI beyond the current selected-workflow status view
+- time-based or recurring workflow schedules
+
+## Key Gaps To Resolve First
+
+### 1. Reconcile the workflow model
+
+The long-form architecture/spec docs describe a richer workflow model than the runtime currently stores. The current daemon workflow definition is still only:
+
+- workflow id and optional alias
+- nodes that point to existing session agents
+- directed edges
+- endpoints bound to one entry node
+
+Before execution work starts, we should lock the v1 runtime model for:
+
+- workflow runs
+- node runs
+- node input queues / handoff messages
+- run and node statuses
+- execution validation rules
+
+### 2. Separate two meanings of scheduling
+
+There are two different scheduling problems:
+
+- execution scheduling: deciding which workflow node runs next
+- wall-clock scheduling: cron-like or recurring invocation of a workflow
+
+The next milestone should implement execution scheduling first. Wall-clock schedules should stay out of scope until manual workflow runs are working end to end.
+
+## Recommended Delivery Order
+
+### Phase 1. Runtime model and protocol surface
+
+Add daemon/runtime types for:
+
+- `WorkflowRun`
+- `WorkflowRunStatus`
+- `WorkflowNodeRun`
+- `WorkflowNodeRunStatus`
+- `WorkflowMessage` or equivalent structured handoff payload
+
+Add local API surface for:
+
+- invoke workflow endpoint
+- list workflow runs
+- get workflow run
+- cancel workflow run
+
+Add pushed runtime events/notices for:
+
+- run started
+- node started
+- node completed
+- message routed
+- run completed
+- run failed
+- run cancelled
+
+### Phase 2. Manual run creation from endpoints
+
+Add the first user-facing command set:
+
+- `/workflow run <workflow-ref> <endpoint-ref> [prompt]`
+- `/workflow runs [workflow-ref]`
+- `/workflow cancel <run-ref>`
+
+Rules for the first slice:
+
+- a run starts only from an existing endpoint
+- endpoint validation happens before any agent work begins
+- missing-agent nodes or invalid endpoint targets fail fast with explicit errors
+
+Status:
+
+- daemon-side endpoint invocation is landed through the local API
+- CLI slash-command wiring is still pending
+
+### Phase 3. First execution scheduler
+
+Build the daemon-owned execution scheduler on top of the existing top-level session-agent runtime.
+
+The first scheduler slice should be intentionally narrow:
+
+- on-demand runs only
+- one active turn per agent
+- no retries
+- no cron/recurring schedules
+- no attempt to support every graph shape on day one
+
+Recommended initial execution policy:
+
+- support linear and DAG workflows first
+- defer cycles until bounded-iteration policy exists
+- defer complex fan-in/barrier semantics until the basic handoff path is stable
+
+Status:
+
+- the first scheduler slice is landed for the entry node and simple downstream routing
+- endpoint invocation now submits a workflow-owned prompt onto the existing prompt queue and auto-launches a provider run for the bound agent if needed
+- node completion now creates one structured handoff message per outgoing edge and schedules one downstream node run per handoff through the same prompt/provider runtime
+- runs become `Completed` when no downstream work remains, or `Running`/`Waiting` as downstream node work is scheduled
+
+### Phase 4. Node completion and handoff contract
+
+Define how a node turn tells the daemon:
+
+- what outputs to route
+- which downstream nodes should receive them
+- whether the node considers itself complete, failed, or asking to stop
+
+This contract must be daemon-owned and machine-parseable. Do not rely on ad hoc natural-language parsing for workflow control.
+
+At minimum the daemon needs a structured completion payload with:
+
+- `workflow_run_id`
+- `node_run_id`
+- status
+- summary
+- artifacts or changed files
+- routed messages / handoff payloads
+- stop recommendation
+
+Status:
+
+- the daemon now owns a minimal structured handoff payload containing workflow run id, workflow id, source node run id, source node id, source agent id, target node id, and the root invocation prompt
+- completion routing is machine-owned rather than parsed from model prose
+- richer completion data such as artifacts, changed files, node-authored summaries, and explicit stop recommendations is still pending
+
+### Phase 5. CLI run visibility
+
+Once runs exist, the workflow canvas should show runtime state, not just graph structure.
+
+First-pass CLI additions:
+
+- active run id and status in the workflow header
+- per-node state such as idle, runnable, running, completed, failed
+- lightweight event log or footer notices for run progress
+- command-center entries for the new run commands
+
+Status:
+
+- CLI command wiring is landed for `/workflow run`, `/workflow runs`, and `/workflow cancel`
+- the workflow canvas now shows the selected workflow's display run id/status plus per-node status derived from that run
+- richer run browsing, run selection, and historical inspection are still pending
+
+### Phase 6. Time-based schedules
+
+Only after phases 1 through 5 are stable should we add recurring schedules.
+
+That later slice can introduce:
+
+- schedule metadata storage
+- `/workflow schedule ...` commands
+- cron validation
+- enable/disable controls
+- daemon-online-only execution semantics
+
+## Suggested Immediate Next Steps
+
+1. Lock the v1 execution model in code and docs before adding any slash command.
+2. Add daemon/runtime types plus local API requests/responses for manual workflow runs.
+3. Ship endpoint-triggered manual runs with a narrow DAG-first scheduler.
+4. Add richer run inspection beyond the current selected-workflow header/node status view.
+5. Enrich the completion contract with real node outputs, artifacts, and explicit stop/fail semantics.
+6. Add recurring schedules only after manual runs are proven in live drills.
+
+## Non-Goals For The First Slice
+
+- cron or recurring schedules
+- arbitrary cyclic graph execution
+- retries, backoff, or recovery orchestration
+- external API publishing of workflow endpoints
+- full historical replay/audit UI for runs

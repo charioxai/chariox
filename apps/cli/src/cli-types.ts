@@ -19,6 +19,7 @@ export type RuntimeSession = {
   agents: AgentInstance[]
   config_state: SessionConfigState
   workflows?: WorkflowDefinition[]
+  workflow_runs?: WorkflowRun[]
 }
 
 export type SessionConfigState = {
@@ -172,6 +173,42 @@ export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
+}
+
+export type WorkflowMessage = {
+  id: string
+  source_node_run_id: string | null
+  target_node_id: string
+  message_type: string
+  summary: string
+  handoff_payload: string
+  created_at_ms: number
+}
+
+export type WorkflowNodeRun = {
+  id: string
+  node_id: string
+  agent_id: string
+  status: string
+  summary: string | null
+  created_at_ms: number
+  started_at_ms: number | null
+  completed_at_ms: number | null
+}
+
+export type WorkflowRun = {
+  id: string
+  workflow_id: string
+  endpoint_id: string
+  entry_node_id: string
+  status: string
+  invocation_prompt: string | null
+  active_node_run_id: string | null
+  node_runs: WorkflowNodeRun[]
+  messages: WorkflowMessage[]
+  created_at_ms: number
+  started_at_ms: number | null
+  completed_at_ms: number | null
 }
 
 export type ReadDirectoryTreeResult = {

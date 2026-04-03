@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, WorkflowDefinition } from "./cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import {
   buildWorkflowGraphLayout,
   cycleWorkflowNodeId,
@@ -60,13 +60,53 @@ function layoutNode(id: string, x: number, y: number, width = 30, height = 8): W
     provider: "opencode",
     model: "openai/gpt-5.4",
     effort: "high",
+    runStatus: null,
     missing: false,
     selected: false,
     x,
     y,
     width,
     height,
-    lines: [id, "provider opencode", "model openai/gpt-5.4", "effort high"],
+    lines: [id, "provider opencode", "model openai/gpt-5.4", "effort high", "status idle"],
+  }
+}
+
+function workflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    id: "run-1",
+    workflow_id: "flow-1",
+    endpoint_id: "endpoint-a",
+    entry_node_id: "node-a",
+    status: "Running",
+    invocation_prompt: "review this diff",
+    active_node_run_id: "node-run-a",
+    node_runs: [
+      {
+        id: "node-run-a",
+        node_id: "node-a",
+        agent_id: "agent-a",
+        status: "Completed",
+        summary: "done",
+        created_at_ms: 1,
+        started_at_ms: 2,
+        completed_at_ms: 3,
+      },
+      {
+        id: "node-run-b",
+        node_id: "node-b",
+        agent_id: "agent-b",
+        status: "Running",
+        summary: null,
+        created_at_ms: 4,
+        started_at_ms: 5,
+        completed_at_ms: null,
+      },
+    ],
+    messages: [],
+    created_at_ms: 10,
+    started_at_ms: 11,
+    completed_at_ms: null,
+    ...overrides,
   }
 }
 
@@ -90,6 +130,7 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
       agent("agent-a"),
       agent("agent-b", { alias: "reviewer" }),
     ],
+    workflowRuns: [],
     selectedNodeId: "node-b",
   })
 
@@ -107,6 +148,7 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
   assert.equal(nodeB!.lines[0], "agent-b (reviewer)")
   assert.equal(nodeB!.lines[1], "provider opencode")
   assert.equal(nodeB!.lines[2], "model openai/gpt-5")
+  assert.equal(nodeB!.lines[4], "status idle")
   assert.equal(layout.endpoints[0]?.entryNodeId, "node-a")
 })
 
@@ -117,6 +159,7 @@ test("buildWorkflowGraphLayout applies live selection metadata to the active age
       agent("agent-a"),
       agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
     ],
+    workflowRuns: [],
     selectedNodeId: "node-b",
   })
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
@@ -124,6 +167,7 @@ test("buildWorkflowGraphLayout applies live selection metadata to the active age
   assert.equal(nodeB!.lines[1], "provider opencode")
   assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
   assert.equal(nodeB!.lines[3], "effort high")
+  assert.equal(nodeB!.lines[4], "status idle")
 })
 
 test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
@@ -133,6 +177,7 @@ test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
       agent("agent-a"),
       agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
     ],
+    workflowRuns: [],
     selectedNodeId: "node-b",
   })
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
@@ -140,6 +185,46 @@ test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
   assert.equal(nodeB!.lines[1], "provider opencode")
   assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
   assert.equal(nodeB!.lines[3], "effort high")
+  assert.equal(nodeB!.lines[4], "status idle")
+})
+
+test("buildWorkflowGraphLayout surfaces the newest active workflow run and node statuses", () => {
+  const completedRun = workflowRun({
+    id: "run-old",
+    status: "Completed",
+    created_at_ms: 5,
+    node_runs: [
+      {
+        id: "node-run-old-a",
+        node_id: "node-a",
+        agent_id: "agent-a",
+        status: "Completed",
+        summary: "done",
+        created_at_ms: 1,
+        started_at_ms: 2,
+        completed_at_ms: 3,
+      },
+    ],
+  })
+  const activeRun = workflowRun({
+    id: "run-new",
+    status: "Running",
+    created_at_ms: 20,
+  })
+  const layout = buildWorkflowGraphLayout({
+    workflow: workflow(),
+    agents: [agent("agent-a"), agent("agent-b"), agent("agent-c")],
+    workflowRuns: [completedRun, activeRun],
+    selectedNodeId: "node-b",
+  })
+  const nodeA = layout.nodes.find((node) => node.id === "node-a")
+  const nodeB = layout.nodes.find((node) => node.id === "node-b")
+  const nodeC = layout.nodes.find((node) => node.id === "node-c")
+  assert.equal(layout.workflowRunId, "run-new")
+  assert.equal(layout.workflowRunStatus, "Running")
+  assert.equal(nodeA?.lines[4], "status completed")
+  assert.equal(nodeB?.lines[4], "status running")
+  assert.equal(nodeC?.lines[4], "status idle")
 })
 
 test("routeWorkflowEdge connects nearest border centers across orientations", () => {
@@ -161,4 +246,60 @@ test("routeWorkflowEdge connects nearest border centers across orientations", ()
     { x: 39, y: 14 },
     { x: 60, y: 14 },
   ])
+})
+
+test("routeWorkflowEdge offsets reciprocal edges into separate lanes", () => {
+  const leftNode = layoutNode("left", 10, 10)
+  const rightNode = layoutNode("right", 60, 10)
+
+  const forward = routeWorkflowEdge(leftNode, rightNode, { reciprocalLane: -1 })
+  const reverse = routeWorkflowEdge(rightNode, leftNode, { reciprocalLane: 1 })
+
+  assert.deepEqual(forward, [
+    { x: 39, y: 14 },
+    { x: 40, y: 14 },
+    { x: 40, y: 12 },
+    { x: 59, y: 12 },
+    { x: 59, y: 14 },
+    { x: 60, y: 14 },
+  ])
+  assert.deepEqual(reverse, [
+    { x: 60, y: 14 },
+    { x: 59, y: 14 },
+    { x: 59, y: 16 },
+    { x: 40, y: 16 },
+    { x: 40, y: 14 },
+    { x: 39, y: 14 },
+  ])
+})
+
+test("buildWorkflowGraphLayout separates reciprocal edges so both remain visible", () => {
+  const reciprocalWorkflow: WorkflowDefinition = {
+    id: "flow-reciprocal",
+    alias: null,
+    nodes: [
+      { id: "node-a", agent_id: "agent-a" },
+      { id: "node-b", agent_id: "agent-b" },
+    ],
+    edges: [
+      { id: "edge-forward", from_node_id: "node-a", to_node_id: "node-b" },
+      { id: "edge-reverse", from_node_id: "node-b", to_node_id: "node-a" },
+    ],
+    endpoints: [],
+  }
+
+  const layout = buildWorkflowGraphLayout({
+    workflow: reciprocalWorkflow,
+    agents: [agent("agent-a"), agent("agent-b")],
+    workflowRuns: [],
+    selectedNodeId: null,
+  })
+
+  const forward = layout.edges.find((edge) => edge.id === "edge-forward")
+  const reverse = layout.edges.find((edge) => edge.id === "edge-reverse")
+
+  assert.ok(forward)
+  assert.ok(reverse)
+  assert.notDeepEqual(forward!.points, reverse!.points)
+  assert.notEqual(forward!.points[2]?.y, reverse!.points[2]?.y)
 })

@@ -1,4 +1,4 @@
-import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition } from "../cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
 import { routeWorkflowEdge } from "./routing.js"
 import type {
   WorkflowGraphEdgeLayout,
@@ -32,6 +32,7 @@ export function resolveWorkflowGraphMetrics(): WorkflowGraphMetrics {
 export function buildWorkflowGraphLayout(options: {
   workflow: WorkflowDefinition
   agents: AgentInstance[]
+  workflowRuns?: WorkflowRun[]
   selectedNodeId: string | null
 }): WorkflowGraphLayout {
   const metrics = resolveWorkflowGraphMetrics()
@@ -40,6 +41,10 @@ export function buildWorkflowGraphLayout(options: {
   const endpoints = options.workflow.endpoints ?? []
   const agentById = new Map(options.agents.map((agent) => [agent.id, agent] as const))
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const))
+  const displayRun = resolveWorkflowDisplayRun(options.workflow.id, options.workflowRuns ?? [])
+  const nodeRunStatusByNodeId = new Map(
+    (displayRun?.node_runs ?? []).map((nodeRun) => [nodeRun.node_id, nodeRun.status] as const),
+  )
   const componentIds = computeWeaklyConnectedComponents(nodes, edges)
   const layoutNodes: WorkflowGraphNodeLayout[] = []
   const layoutEdges: WorkflowGraphEdgeLayout[] = []
@@ -84,6 +89,7 @@ export function buildWorkflowGraphLayout(options: {
           provider,
           model,
           effort,
+          runStatus: nodeRunStatusByNodeId.get(node.id) ?? null,
           missing: !agent,
           selected: node.id === options.selectedNodeId,
           x: currentX,
@@ -97,6 +103,7 @@ export function buildWorkflowGraphLayout(options: {
             provider,
             model,
             effort,
+            runStatus: nodeRunStatusByNodeId.get(node.id) ?? null,
           }, metrics.nodeWidth),
         } satisfies WorkflowGraphNodeLayout
         nodeLayoutById.set(node.id, layoutNode)
@@ -129,11 +136,12 @@ export function buildWorkflowGraphLayout(options: {
       if (!fromNode || !toNode) {
         continue
       }
+      const reciprocalLane = resolveReciprocalLane(edge, componentEdges, fromNode, toNode)
       layoutEdges.push({
         id: edge.id,
         fromNodeId: edge.from_node_id,
         toNodeId: edge.to_node_id,
-        points: routeWorkflowEdge(fromNode, toNode),
+        points: routeWorkflowEdge(fromNode, toNode, reciprocalLane ? { reciprocalLane } : undefined),
       })
     }
 
@@ -150,6 +158,8 @@ export function buildWorkflowGraphLayout(options: {
   return {
     workflowId: options.workflow.id,
     workflowAlias: options.workflow.alias,
+    workflowRunId: displayRun?.id ?? null,
+    workflowRunStatus: displayRun?.status ?? null,
     width: graphWidth,
     height: graphHeight,
     nodes: layoutNodes,
@@ -260,6 +270,7 @@ function formatNodeLines(
     provider: string | null
     model: string | null
     effort: string | null
+    runStatus: string | null
   },
   width: number,
 ) {
@@ -269,6 +280,7 @@ function formatNodeLines(
     truncateLine(options.provider ? `provider ${options.provider}` : "provider -", innerWidth),
     truncateLine(options.model ? `model ${options.model}` : "model -", innerWidth),
     truncateLine(options.effort ? `effort ${options.effort}` : "effort -", innerWidth),
+    truncateLine(options.runStatus ? `status ${String(options.runStatus).toLowerCase()}` : "status idle", innerWidth),
   ]
 }
 
@@ -286,4 +298,39 @@ function uniquePreservingOrder(values: string[]) {
   return values.filter((value, index) => {
     return value.length > 0 && values.indexOf(value) === index
   })
+}
+
+function resolveReciprocalLane(
+  edge: WorkflowEdgeDefinition,
+  edges: WorkflowEdgeDefinition[],
+  fromNode: WorkflowGraphNodeLayout,
+  toNode: WorkflowGraphNodeLayout,
+): -1 | 1 | null {
+  const hasReciprocal = edges.some((candidate) =>
+    candidate.id !== edge.id
+    && candidate.from_node_id === edge.to_node_id
+    && candidate.to_node_id === edge.from_node_id
+  )
+  if (!hasReciprocal) {
+    return null
+  }
+
+  if (Math.abs(toNode.x - fromNode.x) >= Math.abs(toNode.y - fromNode.y)) {
+    return fromNode.x <= toNode.x ? -1 : 1
+  }
+  return fromNode.y <= toNode.y ? -1 : 1
+}
+
+function resolveWorkflowDisplayRun(workflowId: string, workflowRuns: WorkflowRun[]) {
+  const matchingRuns = workflowRuns.filter((workflowRun) => workflowRun.workflow_id === workflowId)
+  if (matchingRuns.length === 0) {
+    return null
+  }
+  const nonTerminalRuns = matchingRuns.filter((workflowRun) => !isTerminalWorkflowRunStatus(workflowRun.status))
+  const candidates = nonTerminalRuns.length > 0 ? nonTerminalRuns : matchingRuns
+  return [...candidates].sort((left, right) => right.created_at_ms - left.created_at_ms)[0] ?? null
+}
+
+function isTerminalWorkflowRunStatus(status: string) {
+  return status === "Completed" || status === "Failed" || status === "Stopped"
 }

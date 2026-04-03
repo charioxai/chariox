@@ -217,6 +217,334 @@ impl WorkflowDefinition {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowRunStatus {
+    Created,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowNodeRunStatus {
+    Created,
+    Ready,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowHandoffPayload {
+    workflow_run_id: String,
+    workflow_id: String,
+    source_node_run_id: String,
+    source_node_id: String,
+    source_agent_id: String,
+    target_node_id: String,
+    invocation_prompt: Option<String>,
+}
+
+impl WorkflowHandoffPayload {
+    pub fn new(
+        workflow_run_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        source_node_run_id: impl Into<String>,
+        source_node_id: impl Into<String>,
+        source_agent_id: impl Into<String>,
+        target_node_id: impl Into<String>,
+        invocation_prompt: Option<String>,
+    ) -> Self {
+        Self {
+            workflow_run_id: workflow_run_id.into(),
+            workflow_id: workflow_id.into(),
+            source_node_run_id: source_node_run_id.into(),
+            source_node_id: source_node_id.into(),
+            source_agent_id: source_agent_id.into(),
+            target_node_id: target_node_id.into(),
+            invocation_prompt,
+        }
+    }
+
+    pub fn workflow_run_id(&self) -> &str {
+        &self.workflow_run_id
+    }
+
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+
+    pub fn source_node_run_id(&self) -> &str {
+        &self.source_node_run_id
+    }
+
+    pub fn source_node_id(&self) -> &str {
+        &self.source_node_id
+    }
+
+    pub fn source_agent_id(&self) -> &str {
+        &self.source_agent_id
+    }
+
+    pub fn target_node_id(&self) -> &str {
+        &self.target_node_id
+    }
+
+    pub fn invocation_prompt(&self) -> Option<&str> {
+        self.invocation_prompt.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowMessage {
+    id: String,
+    source_node_run_id: Option<String>,
+    target_node_id: String,
+    message_type: String,
+    summary: String,
+    handoff_payload: String,
+    created_at_ms: u64,
+}
+
+impl WorkflowMessage {
+    pub fn new(
+        id: impl Into<String>,
+        source_node_run_id: Option<String>,
+        target_node_id: impl Into<String>,
+        message_type: impl Into<String>,
+        summary: impl Into<String>,
+        handoff_payload: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source_node_run_id,
+            target_node_id: target_node_id.into(),
+            message_type: message_type.into(),
+            summary: summary.into(),
+            handoff_payload: handoff_payload.into(),
+            created_at_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn source_node_run_id(&self) -> Option<&str> {
+        self.source_node_run_id.as_deref()
+    }
+
+    pub fn target_node_id(&self) -> &str {
+        &self.target_node_id
+    }
+
+    pub fn message_type(&self) -> &str {
+        &self.message_type
+    }
+
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    pub fn handoff_payload(&self) -> &str {
+        &self.handoff_payload
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowNodeRun {
+    id: String,
+    node_id: String,
+    agent_id: String,
+    status: WorkflowNodeRunStatus,
+    summary: Option<String>,
+    created_at_ms: u64,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+}
+
+impl WorkflowNodeRun {
+    pub fn new(
+        id: impl Into<String>,
+        node_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        status: WorkflowNodeRunStatus,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            node_id: node_id.into(),
+            agent_id: agent_id.into(),
+            status,
+            summary: None,
+            created_at_ms: unix_epoch_ms(),
+            started_at_ms: None,
+            completed_at_ms: None,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn status(&self) -> WorkflowNodeRunStatus {
+        self.status
+    }
+
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
+    }
+
+    pub fn set_status(&mut self, status: WorkflowNodeRunStatus) {
+        self.status = status;
+        if matches!(status, WorkflowNodeRunStatus::Running) && self.started_at_ms.is_none() {
+            self.started_at_ms = Some(unix_epoch_ms());
+        }
+        if matches!(
+            status,
+            WorkflowNodeRunStatus::Completed
+                | WorkflowNodeRunStatus::Failed
+                | WorkflowNodeRunStatus::Stopped
+        ) {
+            self.completed_at_ms = Some(unix_epoch_ms());
+        }
+    }
+
+    pub fn set_summary(&mut self, summary: Option<String>) {
+        self.summary = summary;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    id: String,
+    workflow_id: String,
+    endpoint_id: String,
+    entry_node_id: String,
+    status: WorkflowRunStatus,
+    invocation_prompt: Option<String>,
+    active_node_run_id: Option<String>,
+    node_runs: Vec<WorkflowNodeRun>,
+    messages: Vec<WorkflowMessage>,
+    created_at_ms: u64,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+}
+
+impl WorkflowRun {
+    pub fn new(
+        id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        entry_node_id: impl Into<String>,
+        invocation_prompt: Option<String>,
+        node_runs: Vec<WorkflowNodeRun>,
+        messages: Vec<WorkflowMessage>,
+    ) -> Self {
+        let active_node_run_id = node_runs.first().map(|run| run.id().to_string());
+        Self {
+            id: id.into(),
+            workflow_id: workflow_id.into(),
+            endpoint_id: endpoint_id.into(),
+            entry_node_id: entry_node_id.into(),
+            status: WorkflowRunStatus::Created,
+            invocation_prompt,
+            active_node_run_id,
+            node_runs,
+            messages,
+            created_at_ms: unix_epoch_ms(),
+            started_at_ms: None,
+            completed_at_ms: None,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+
+    pub fn endpoint_id(&self) -> &str {
+        &self.endpoint_id
+    }
+
+    pub fn entry_node_id(&self) -> &str {
+        &self.entry_node_id
+    }
+
+    pub fn status(&self) -> WorkflowRunStatus {
+        self.status
+    }
+
+    pub fn invocation_prompt(&self) -> Option<&str> {
+        self.invocation_prompt.as_deref()
+    }
+
+    pub fn active_node_run_id(&self) -> Option<&str> {
+        self.active_node_run_id.as_deref()
+    }
+
+    pub fn node_runs(&self) -> &[WorkflowNodeRun] {
+        &self.node_runs
+    }
+
+    pub fn node_runs_mut(&mut self) -> &mut [WorkflowNodeRun] {
+        &mut self.node_runs
+    }
+
+    pub fn messages(&self) -> &[WorkflowMessage] {
+        &self.messages
+    }
+
+    pub fn messages_mut(&mut self) -> &mut [WorkflowMessage] {
+        &mut self.messages
+    }
+
+    pub fn set_status(&mut self, status: WorkflowRunStatus) {
+        self.status = status;
+        if matches!(status, WorkflowRunStatus::Running) && self.started_at_ms.is_none() {
+            self.started_at_ms = Some(unix_epoch_ms());
+        }
+        if matches!(
+            status,
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+        ) {
+            self.completed_at_ms = Some(unix_epoch_ms());
+        }
+    }
+
+    pub fn clear_active_node_run(&mut self) {
+        self.active_node_run_id = None;
+    }
+
+    pub fn set_active_node_run(&mut self, workflow_node_run_id: impl Into<String>) {
+        self.active_node_run_id = Some(workflow_node_run_id.into());
+    }
+
+    pub fn add_node_run(&mut self, node_run: WorkflowNodeRun) -> WorkflowNodeRun {
+        self.node_runs.push(node_run.clone());
+        node_run
+    }
+
+    pub fn add_message(&mut self, message: WorkflowMessage) -> WorkflowMessage {
+        self.messages.push(message.clone());
+        message
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace_id: String,
@@ -338,6 +666,8 @@ pub struct PromptQueueItem {
     prompt: String,
     attachments: Vec<PromptAttachment>,
     status: PromptStatus,
+    workflow_run_id: Option<String>,
+    workflow_node_run_id: Option<String>,
 }
 
 impl PromptQueueItem {
@@ -355,11 +685,23 @@ impl PromptQueueItem {
             prompt: prompt.into(),
             attachments: Vec::new(),
             status,
+            workflow_run_id: None,
+            workflow_node_run_id: None,
         }
     }
 
     pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    pub fn with_workflow_context(
+        mut self,
+        workflow_run_id: impl Into<String>,
+        workflow_node_run_id: impl Into<String>,
+    ) -> Self {
+        self.workflow_run_id = Some(workflow_run_id.into());
+        self.workflow_node_run_id = Some(workflow_node_run_id.into());
         self
     }
 
@@ -385,6 +727,14 @@ impl PromptQueueItem {
 
     pub fn status(&self) -> PromptStatus {
         self.status
+    }
+
+    pub fn workflow_run_id(&self) -> Option<&str> {
+        self.workflow_run_id.as_deref()
+    }
+
+    pub fn workflow_node_run_id(&self) -> Option<&str> {
+        self.workflow_node_run_id.as_deref()
     }
 
     pub fn set_status(&mut self, status: PromptStatus) {
@@ -508,6 +858,7 @@ pub struct RuntimeSession {
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
+    workflow_runs: Vec<WorkflowRun>,
 }
 
 impl RuntimeSession {
@@ -548,6 +899,7 @@ impl RuntimeSession {
                 WorktreeIsolationMode::SharedSession,
             )],
             workflows: Vec::new(),
+            workflow_runs: Vec::new(),
         }
     }
 
@@ -617,6 +969,9 @@ impl RuntimeSession {
     pub fn workflows(&self) -> &[WorkflowDefinition] {
         &self.workflows
     }
+    pub fn workflow_runs(&self) -> &[WorkflowRun] {
+        &self.workflow_runs
+    }
 
     pub fn has_attachment(&self, attachment_id: &str) -> bool {
         self.attachment_ids.contains(attachment_id)
@@ -651,6 +1006,23 @@ impl RuntimeSession {
         self.workflows
             .iter_mut()
             .find(|workflow| workflow.id() == workflow_id)
+    }
+
+    pub fn create_workflow_run(&mut self, workflow_run: WorkflowRun) -> WorkflowRun {
+        self.workflow_runs.push(workflow_run.clone());
+        workflow_run
+    }
+
+    pub fn workflow_run(&self, workflow_run_id: &str) -> Option<&WorkflowRun> {
+        self.workflow_runs
+            .iter()
+            .find(|workflow_run| workflow_run.id() == workflow_run_id)
+    }
+
+    pub fn workflow_run_mut(&mut self, workflow_run_id: &str) -> Option<&mut WorkflowRun> {
+        self.workflow_runs
+            .iter_mut()
+            .find(|workflow_run| workflow_run.id() == workflow_run_id)
     }
 
     pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {
