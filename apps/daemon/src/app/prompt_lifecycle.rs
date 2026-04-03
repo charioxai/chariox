@@ -198,13 +198,13 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         loop {
-            let (_session, next_candidate) = self.sessions.pop_next_queued_prompt(session_id)?;
-            let Some(next) = next_candidate else {
+            let (_session, next_candidate) = self.sessions.peek_next_queued_prompt(session_id)?;
+            let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
-            let target_agent_id = next.target_agent_id().to_string();
+            let target_agent_id = peeked.target_agent_id().to_string();
             let is_workflow_prompt =
-                Self::is_workflow_prompt_source_attachment_id(next.source_attachment_id());
+                Self::is_workflow_prompt_source_attachment_id(peeked.source_attachment_id());
             let provider_run_id = match self
                 .ensure_active_provider_run_for_agent(session_id, &target_agent_id)
             {
@@ -219,13 +219,13 @@ impl DaemonApp {
                                     None,
                                     self.attachments.list_session_attachment_ids(session_id),
                                     format!(
-                                        "Skipped queued workflow prompt `{}` because Arroba could not launch the provider run for agent `{}`: {}",
-                                        next.id(),
+                                        "Deferred queued workflow prompt `{}` because Arroba could not launch the provider run for agent `{}`: {}",
+                                        peeked.id(),
                                         target_agent_id,
                                         error
                                     ),
                                 );
-                            continue;
+                            return Ok(None);
                         }
                     }
                 }
@@ -235,14 +235,20 @@ impl DaemonApp {
                             None,
                             self.attachments.list_session_attachment_ids(session_id),
                             format!(
-                                "Skipped queued prompt `{}` because Arroba could not activate the provider run for agent `{}`: {}",
-                                next.id(),
+                                "Deferred queued prompt `{}` because Arroba could not activate the provider run for agent `{}`: {}",
+                                peeked.id(),
                                 target_agent_id,
                                 error
                             ),
                         );
-                    continue;
+                    return Ok(None);
                 }
+            };
+
+            let (_session, next_candidate) =
+                self.sessions.activate_next_queued_prompt(session_id)?;
+            let Some(next) = next_candidate else {
+                continue;
             };
 
             if let Err(error) =

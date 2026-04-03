@@ -24,7 +24,7 @@ Already implemented:
 
 Not implemented yet:
 
-- fan-in/barrier semantics for nodes with multiple upstream edges
+- explicit per-node policy overrides (`input_gate` / `output_release`)
 - richer run inspection/history UI beyond the current selected-workflow status view
 - time-based or recurring workflow schedules
 
@@ -120,13 +120,13 @@ Recommended initial execution policy:
 
 - support linear and DAG workflows first
 - defer cycles until bounded-iteration policy exists
-- defer complex fan-in/barrier semantics until the basic handoff path is stable
+- keep `output_release = on_completion` until incremental output emission exists
 
 Status:
 
-- the first scheduler slice is landed for the entry node and simple downstream routing
+- the first scheduler slice is landed for the entry node, simple downstream routing, and default join-node buffering
 - endpoint invocation now submits a workflow-owned prompt onto the existing prompt queue and auto-launches a provider run for the bound agent if needed
-- node completion now creates one structured handoff message per outgoing edge and schedules one downstream node run per handoff through the same prompt/provider runtime
+- node completion now creates one structured handoff message per outgoing edge, stores those messages on the target side, and consumes them into exactly one downstream node run once the target's required upstream set is present
 - runs become `Completed` when no downstream work remains, or `Running`/`Waiting` as downstream node work is scheduled
 
 ### Phase 4. Node completion and handoff contract
@@ -182,7 +182,8 @@ Status:
 
 - docs now align on graph-derived execution and per-node policy
 - the current runtime still behaves like `output_release = on_completion`
-- barrier/fan-in enforcement for `all_inputs` nodes is still pending
+- default `all_inputs` barrier enforcement is now landed for join nodes (indegree `> 1`)
+- explicit per-node policy overrides and true `output_release = immediate` are still pending
 
 ### Phase 5. CLI run visibility
 

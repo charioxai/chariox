@@ -1491,6 +1491,12 @@ fn collect_ready_workflow_dispatches(
             continue;
         }
 
+        let source_node_by_run_id = workflow_run
+            .node_runs()
+            .iter()
+            .map(|node_run| (node_run.id().to_string(), node_run.node_id().to_string()))
+            .collect::<BTreeMap<_, _>>();
+
         let mut latest_message_index_by_source = BTreeMap::new();
         for (index, message) in workflow_run.messages().iter().enumerate() {
             if message.target_node_id() != target_node_id
@@ -1501,14 +1507,9 @@ fn collect_ready_workflow_dispatches(
             let Some(source_node_run_id) = message.source_node_run_id() else {
                 continue;
             };
-            let Some(source_node_run) = workflow_run
-                .node_runs()
-                .iter()
-                .find(|node_run| node_run.id() == source_node_run_id)
-            else {
+            let Some(source_node_id) = source_node_by_run_id.get(source_node_run_id) else {
                 continue;
             };
-            let source_node_id = source_node_run.node_id().to_string();
             let should_replace = latest_message_index_by_source
                 .get(&source_node_id)
                 .and_then(|existing_index| workflow_run.messages().get(*existing_index))
@@ -1516,7 +1517,7 @@ fn collect_ready_workflow_dispatches(
                     existing_message.created_at_ms() <= message.created_at_ms()
                 });
             if should_replace {
-                latest_message_index_by_source.insert(source_node_id, index);
+                latest_message_index_by_source.insert(source_node_id.to_string(), index);
             }
         }
 
@@ -1543,10 +1544,22 @@ fn collect_ready_workflow_dispatches(
             .iter()
             .filter_map(|index| workflow_run.messages().get(*index).cloned())
             .collect::<Vec<_>>();
-        for index in selected_indices {
-            if let Some(message) = workflow_run.messages_mut().get_mut(index) {
-                message.set_consumed_by_node_run_id(node_run.id().to_string());
+        for (index, message) in workflow_run.messages_mut().iter_mut().enumerate() {
+            if message.target_node_id() != target_node_id
+                || message.consumed_by_node_run_id().is_some()
+            {
+                continue;
             }
+            let Some(source_node_run_id) = message.source_node_run_id() else {
+                continue;
+            };
+            let Some(source_node_id) = source_node_by_run_id.get(source_node_run_id) else {
+                continue;
+            };
+            if !expected_source_node_ids.contains(source_node_id) {
+                continue;
+            }
+            message.set_consumed_by_node_run_id(node_run.id().to_string());
         }
         let node_run = workflow_run.add_node_run(node_run);
         dispatches.push(WorkflowDispatch {
