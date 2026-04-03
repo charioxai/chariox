@@ -741,6 +741,7 @@ impl SessionService {
         workflow_ref: &str,
         from_node_id: &str,
         to_node_id: &str,
+        output_schema_ref: Option<String>,
     ) -> Result<WorkflowEdgeDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
@@ -750,6 +751,7 @@ impl SessionService {
             self.next_workflow_edge_id(),
             from_node_id.to_string(),
             to_node_id.to_string(),
+            output_schema_ref,
         );
         let session =
             self.store
@@ -1977,13 +1979,25 @@ mod tests {
             .expect("reviewer node should be added");
 
         let edge = service
-            .add_workflow_edge(session.id(), workflow.id(), planner.id(), reviewer.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                planner.id(),
+                reviewer.id(),
+                None,
+            )
             .expect("edge should be added");
         assert_eq!(edge.from_node_id(), planner.id());
         assert_eq!(edge.to_node_id(), reviewer.id());
 
         let duplicate_edge = service
-            .add_workflow_edge(session.id(), workflow.id(), planner.id(), reviewer.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                planner.id(),
+                reviewer.id(),
+                None,
+            )
             .expect_err("duplicate edge should be rejected");
         assert!(matches!(
             duplicate_edge,
@@ -1991,7 +2005,13 @@ mod tests {
         ));
 
         let self_edge = service
-            .add_workflow_edge(session.id(), workflow.id(), planner.id(), planner.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                planner.id(),
+                planner.id(),
+                None,
+            )
             .expect_err("self edge should be rejected");
         assert!(matches!(
             self_edge,
@@ -2126,7 +2146,13 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-2")
             .expect("second workflow node should be added");
         service
-            .add_workflow_edge(session.id(), workflow.id(), first.id(), second.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                first.id(),
+                second.id(),
+                None,
+            )
             .expect("workflow edge should be added");
         let endpoint = service
             .create_workflow_endpoint(
@@ -2219,16 +2245,40 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-4")
             .expect("join node should be added");
         service
-            .add_workflow_edge(session.id(), workflow.id(), entry.id(), branch_one.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                entry.id(),
+                branch_one.id(),
+                None,
+            )
             .expect("entry should connect to branch one");
         service
-            .add_workflow_edge(session.id(), workflow.id(), entry.id(), branch_two.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                entry.id(),
+                branch_two.id(),
+                None,
+            )
             .expect("entry should connect to branch two");
         service
-            .add_workflow_edge(session.id(), workflow.id(), branch_one.id(), join.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                branch_one.id(),
+                join.id(),
+                None,
+            )
             .expect("branch one should connect to join");
         service
-            .add_workflow_edge(session.id(), workflow.id(), branch_two.id(), join.id())
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                branch_two.id(),
+                join.id(),
+                None,
+            )
             .expect("branch two should connect to join");
         let endpoint = service
             .create_workflow_endpoint(

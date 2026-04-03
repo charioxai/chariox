@@ -77,6 +77,8 @@ pub struct WorkflowEdgeDefinition {
     id: String,
     from_node_id: String,
     to_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema_ref: Option<String>,
 }
 
 impl WorkflowEdgeDefinition {
@@ -84,11 +86,13 @@ impl WorkflowEdgeDefinition {
         id: impl Into<String>,
         from_node_id: impl Into<String>,
         to_node_id: impl Into<String>,
+        output_schema_ref: Option<String>,
     ) -> Self {
         Self {
             id: id.into(),
             from_node_id: from_node_id.into(),
             to_node_id: to_node_id.into(),
+            output_schema_ref,
         }
     }
 
@@ -102,6 +106,10 @@ impl WorkflowEdgeDefinition {
 
     pub fn to_node_id(&self) -> &str {
         &self.to_node_id
+    }
+
+    pub fn output_schema_ref(&self) -> Option<&str> {
+        self.output_schema_ref.as_deref()
     }
 }
 
