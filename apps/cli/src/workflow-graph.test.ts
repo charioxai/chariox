@@ -3,11 +3,8 @@ import test from "node:test"
 
 import type { AgentInstance, WorkflowDefinition } from "./cli-types.js"
 import {
-  DEFAULT_WORKFLOW_ZOOM_INDEX,
   buildWorkflowGraphLayout,
   cycleWorkflowNodeId,
-  derivePointerAnchoredViewport,
-  deriveWorkflowZoomIndex,
   routeWorkflowEdge,
   resolveSelectedWorkflow,
   resolveSelectedWorkflowNodeId,
@@ -94,7 +91,6 @@ test("buildWorkflowGraphLayout arranges the graph north-south and marks missing 
       agent("agent-b", { alias: "reviewer" }),
     ],
     selectedNodeId: "node-b",
-    zoomIndex: DEFAULT_WORKFLOW_ZOOM_INDEX,
   })
 
   const nodeA = layout.nodes.find((node) => node.id === "node-a")
@@ -122,7 +118,6 @@ test("buildWorkflowGraphLayout applies live selection metadata to the active age
       agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
     ],
     selectedNodeId: "node-b",
-    zoomIndex: DEFAULT_WORKFLOW_ZOOM_INDEX,
   })
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
   assert.ok(nodeB)
@@ -139,31 +134,12 @@ test("buildWorkflowGraphLayout uses per-agent effort when present", () => {
       agent("agent-b", { provider: "opencode", model: "openai/gpt-5.4", effort: "high" }),
     ],
     selectedNodeId: "node-b",
-    zoomIndex: DEFAULT_WORKFLOW_ZOOM_INDEX,
   })
   const nodeB = layout.nodes.find((node) => node.id === "node-b")
   assert.ok(nodeB)
   assert.equal(nodeB!.lines[1], "provider opencode")
   assert.equal(nodeB!.lines[2], "model openai/gpt-5.4")
   assert.equal(nodeB!.lines[3], "effort high")
-})
-
-test("derivePointerAnchoredViewport preserves the pointer-relative anchor during zoom", () => {
-  const viewport = derivePointerAnchoredViewport({
-    viewportWidth: 80,
-    viewportHeight: 24,
-    pointerX: 20,
-    pointerY: 8,
-    scrollLeft: 30,
-    scrollTop: 10,
-    previousContentWidth: 200,
-    previousContentHeight: 100,
-    nextContentWidth: 300,
-    nextContentHeight: 150,
-  })
-
-  assert.deepEqual(viewport, { x: 55, y: 19 })
-  assert.equal(deriveWorkflowZoomIndex(DEFAULT_WORKFLOW_ZOOM_INDEX, "in") > DEFAULT_WORKFLOW_ZOOM_INDEX, true)
 })
 
 test("routeWorkflowEdge connects nearest border centers across orientations", () => {
@@ -173,16 +149,16 @@ test("routeWorkflowEdge connects nearest border centers across orientations", ()
   const rightNode = layoutNode("right", 60, 10)
 
   const downward = routeWorkflowEdge(topNode, bottomNode)
-  assert.deepEqual(downward[0], { x: 25, y: 18 })
-  assert.deepEqual(downward[downward.length - 1], { x: 25, y: 29 })
+  assert.deepEqual(downward[0], { x: 25, y: 17 })
+  assert.deepEqual(downward[downward.length - 1], { x: 25, y: 30 })
 
   const upward = routeWorkflowEdge(bottomNode, topNode)
-  assert.deepEqual(upward[0], { x: 25, y: 29 })
-  assert.deepEqual(upward[upward.length - 1], { x: 25, y: 18 })
+  assert.deepEqual(upward[0], { x: 25, y: 30 })
+  assert.deepEqual(upward[upward.length - 1], { x: 25, y: 17 })
 
   const horizontal = routeWorkflowEdge(leftNode, rightNode)
   assert.deepEqual(horizontal, [
-    { x: 40, y: 14 },
-    { x: 59, y: 14 },
+    { x: 39, y: 14 },
+    { x: 60, y: 14 },
   ])
 })

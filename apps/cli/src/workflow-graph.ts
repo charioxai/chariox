@@ -1,8 +1,5 @@
 import type { AgentInstance, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition } from "./cli-types.js"
 
-export const WORKFLOW_ZOOM_LEVELS = [0.8, 1, 1.25, 1.5, 1.8] as const
-export const DEFAULT_WORKFLOW_ZOOM_INDEX = 1
-
 const BASE_NODE_WIDTH = 30
 const BASE_NODE_HEIGHT = 8
 const BASE_HORIZONTAL_GAP = 8
@@ -14,7 +11,6 @@ const MIN_NODE_WIDTH = 24
 const MIN_NODE_HEIGHT = 7
 
 export type WorkflowGraphMetrics = {
-  scale: number
   nodeWidth: number
   nodeHeight: number
   horizontalGap: number
@@ -67,17 +63,14 @@ export type WorkflowGraphLayout = {
   endpoints: WorkflowGraphEndpointLayout[]
 }
 
-export function resolveWorkflowZoomMetrics(zoomIndex: number): WorkflowGraphMetrics {
-  const clampedIndex = Math.max(0, Math.min(zoomIndex, WORKFLOW_ZOOM_LEVELS.length - 1))
-  const scale = WORKFLOW_ZOOM_LEVELS[clampedIndex]!
+export function resolveWorkflowGraphMetrics(): WorkflowGraphMetrics {
   return {
-    scale,
-    nodeWidth: Math.max(MIN_NODE_WIDTH, Math.round(BASE_NODE_WIDTH * scale)),
-    nodeHeight: Math.max(MIN_NODE_HEIGHT, Math.round(BASE_NODE_HEIGHT * scale)),
-    horizontalGap: Math.max(4, Math.round(BASE_HORIZONTAL_GAP * scale)),
-    verticalGap: Math.max(3, Math.round(BASE_VERTICAL_GAP * scale)),
-    componentGap: Math.max(4, Math.round(BASE_COMPONENT_GAP * scale)),
-    endpointGap: Math.max(2, Math.round(3 * scale)),
+    nodeWidth: Math.max(MIN_NODE_WIDTH, BASE_NODE_WIDTH),
+    nodeHeight: Math.max(MIN_NODE_HEIGHT, BASE_NODE_HEIGHT),
+    horizontalGap: Math.max(4, BASE_HORIZONTAL_GAP),
+    verticalGap: Math.max(3, BASE_VERTICAL_GAP),
+    componentGap: Math.max(4, BASE_COMPONENT_GAP),
+    endpointGap: Math.max(2, 3),
   }
 }
 
@@ -131,51 +124,12 @@ export function cycleWorkflowNodeId(
   return nodes[nextIndex]?.id ?? null
 }
 
-export function deriveWorkflowZoomIndex(currentZoomIndex: number, direction: "in" | "out") {
-  return Math.max(
-    0,
-    Math.min(
-      WORKFLOW_ZOOM_LEVELS.length - 1,
-      currentZoomIndex + (direction === "in" ? 1 : -1),
-    ),
-  )
-}
-
-export function derivePointerAnchoredViewport(options: {
-  viewportWidth: number
-  viewportHeight: number
-  pointerX: number
-  pointerY: number
-  scrollLeft: number
-  scrollTop: number
-  previousContentWidth: number
-  previousContentHeight: number
-  nextContentWidth: number
-  nextContentHeight: number
-}) {
-  const clampedPointerX = clamp(options.pointerX, 0, Math.max(0, options.viewportWidth - 1))
-  const clampedPointerY = clamp(options.pointerY, 0, Math.max(0, options.viewportHeight - 1))
-  const anchorRatioX = options.previousContentWidth <= 0
-    ? 0
-    : (options.scrollLeft + clampedPointerX) / Math.max(1, options.previousContentWidth)
-  const anchorRatioY = options.previousContentHeight <= 0
-    ? 0
-    : (options.scrollTop + clampedPointerY) / Math.max(1, options.previousContentHeight)
-  const nextScrollLeft = Math.round(anchorRatioX * options.nextContentWidth - clampedPointerX)
-  const nextScrollTop = Math.round(anchorRatioY * options.nextContentHeight - clampedPointerY)
-  return {
-    x: clamp(nextScrollLeft, 0, Math.max(0, options.nextContentWidth - options.viewportWidth)),
-    y: clamp(nextScrollTop, 0, Math.max(0, options.nextContentHeight - options.viewportHeight)),
-  }
-}
-
 export function buildWorkflowGraphLayout(options: {
   workflow: WorkflowDefinition
   agents: AgentInstance[]
   selectedNodeId: string | null
-  zoomIndex: number
 }): WorkflowGraphLayout {
-  const metrics = resolveWorkflowZoomMetrics(options.zoomIndex)
+  const metrics = resolveWorkflowGraphMetrics()
   const nodes = options.workflow.nodes ?? []
   const edges = options.workflow.edges ?? []
   const endpoints = options.workflow.endpoints ?? []
@@ -412,10 +366,10 @@ function borderCenterAnchors(node: WorkflowGraphNodeLayout): EdgeAnchor[] {
   const centerX = node.x + Math.floor(node.width / 2)
   const centerY = node.y + Math.floor(node.height / 2)
   return [
-    { side: "top", x: centerX, y: node.y - 1 },
-    { side: "right", x: node.x + node.width, y: centerY },
-    { side: "bottom", x: centerX, y: node.y + node.height },
-    { side: "left", x: node.x - 1, y: centerY },
+    { side: "top", x: centerX, y: node.y },
+    { side: "right", x: node.x + node.width - 1, y: centerY },
+    { side: "bottom", x: centerX, y: node.y + node.height - 1 },
+    { side: "left", x: node.x, y: centerY },
   ]
 }
 
@@ -569,10 +523,6 @@ function uniquePreservingOrder(values: string[]) {
     seen.add(value)
     return true
   })
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value))
 }
 
 function modulo(value: number, divisor: number) {

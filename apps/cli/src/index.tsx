@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url"
 import { clearTimeout, setInterval as startInterval, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, VRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, DiffRenderable, MarkdownRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextNodeRenderable, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -223,14 +223,10 @@ import {
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
 import {
-  DEFAULT_WORKFLOW_ZOOM_INDEX,
   buildWorkflowGraphLayout,
   cycleWorkflowNodeId,
-  derivePointerAnchoredViewport,
-  deriveWorkflowZoomIndex,
   resolveSelectedWorkflow,
   resolveSelectedWorkflowNodeId,
-  resolveWorkflowZoomMetrics,
   type WorkflowGraphLayout,
 } from "./workflow-graph.js"
 import parserConfig from "./parsers-config.js"
@@ -733,7 +729,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
-  const [workflowZoomIndex, setWorkflowZoomIndex] = createSignal(DEFAULT_WORKFLOW_ZOOM_INDEX)
   const setCenterMode = (_mode: "transcript") => {}
   const setDirectoryTreeState = (_value: null) => {}
   let stopRequestInFlight = false
@@ -3610,20 +3605,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         agents: sessionState().agents,
         selectedWorkflowId: selectedWorkflowId(),
         selectedNodeId: selectedWorkflowNodeId(),
-        zoomIndex: workflowZoomIndex(),
         onSelectNode: (nodeId) => {
           setSelectedWorkflowNodeId(nodeId)
           rebuildTranscript()
-        },
-        onZoom: (direction, event) => {
-          if (!transcriptScrollbox) {
-            return
-          }
-          zoomWorkflowCanvas(
-            direction,
-            event.x - transcriptScrollbox.x,
-            event.y - transcriptScrollbox.y,
-          )
         },
       })
       transcriptScrollbox.add(emptyTranscriptRenderable)
@@ -4688,47 +4672,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       response,
       "WorkflowEdgeRemoved",
     )
-  }
-  function zoomWorkflowCanvas(direction: "in" | "out", pointerX: number, pointerY: number) {
-    if (!workflowScreenActive() || !transcriptScrollbox) {
-      return
-    }
-    const workflow = selectedWorkflow()
-    if (!workflow) {
-      return
-    }
-    const nextZoomIndex = deriveWorkflowZoomIndex(workflowZoomIndex(), direction)
-    if (nextZoomIndex === workflowZoomIndex()) {
-      return
-    }
-    const previousLayout = buildWorkflowGraphLayout({
-      workflow,
-      agents: sessionState().agents,
-      selectedNodeId: selectedWorkflowNodeId(),
-      zoomIndex: workflowZoomIndex(),
-    })
-    const nextLayout = buildWorkflowGraphLayout({
-      workflow,
-      agents: sessionState().agents,
-      selectedNodeId: selectedWorkflowNodeId(),
-      zoomIndex: nextZoomIndex,
-    })
-    const viewport = derivePointerAnchoredViewport({
-      viewportWidth: transcriptScrollbox.width,
-      viewportHeight: transcriptScrollbox.height,
-      pointerX,
-      pointerY,
-      scrollLeft: transcriptScrollbox.scrollLeft,
-      scrollTop: transcriptScrollbox.scrollTop,
-      previousContentWidth: previousLayout.width,
-      previousContentHeight: previousLayout.height,
-      nextContentWidth: nextLayout.width,
-      nextContentHeight: nextLayout.height,
-    })
-    setWorkflowZoomIndex(nextZoomIndex)
-    rebuildTranscript()
-    transcriptScrollbox.scrollTo(viewport)
-    transcriptScrollbox.requestRender()
   }
   const handleStdinData = (chunk: Buffer | string) => {
     const event = parseKeypress(chunk, { useKittyKeyboard: true })
@@ -6275,9 +6218,7 @@ function buildWorkflowCanvasRenderable(
     agents: AgentInstance[]
     selectedWorkflowId: string | null
     selectedNodeId: string | null
-    zoomIndex: number
     onSelectNode: (nodeId: string | null) => void
-    onZoom: (direction: "in" | "out", event: { x: number; y: number }) => void
   },
 ) {
   const selectedWorkflow = resolveSelectedWorkflow(options.workflows, options.selectedWorkflowId)
@@ -6290,9 +6231,7 @@ function buildWorkflowCanvasRenderable(
     workflow: selectedWorkflow,
     agents: options.agents,
     selectedNodeId,
-    zoomIndex: options.zoomIndex,
   })
-  const metrics = resolveWorkflowZoomMetrics(options.zoomIndex)
   const wrapper = new BoxRenderable(renderer, {
     flexDirection: "column",
     gap: 1,
@@ -6302,19 +6241,6 @@ function buildWorkflowCanvasRenderable(
     paddingTop: 1,
     paddingBottom: 1,
   })
-
-  const handleMouseScroll = (event: { scroll?: { direction: "up" | "down" | "left" | "right" }; preventDefault: () => void; stopPropagation: () => void; x: number; y: number }) => {
-    if (!event.scroll) {
-      return
-    }
-    if (event.scroll.direction !== "up" && event.scroll.direction !== "down") {
-      return
-    }
-    event.preventDefault()
-    event.stopPropagation()
-    options.onZoom(event.scroll.direction === "up" ? "in" : "out", { x: event.x, y: event.y })
-  }
-  wrapper.onMouseScroll = handleMouseScroll
 
   // Show all session agents in the workflow header, even before nodes are added.
   const agentLabels = options.agents.map((agent) => agent.agent_ref ?? agent.id)
@@ -6334,7 +6260,7 @@ function buildWorkflowCanvasRenderable(
   )
   wrapper.add(
     new TextRenderable(renderer, {
-      content: `Tab cycles nodes • wheel zooms • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,
+      content: `Tab cycles nodes • endpoints ${layout.endpoints.length} • edges ${layout.edges.length}`,
       fg: theme.textMuted,
       wrapMode: "word",
     }),
@@ -6347,20 +6273,6 @@ function buildWorkflowCanvasRenderable(
     minHeight: layout.height,
     position: "relative",
   })
-  graphArea.onMouseScroll = handleMouseScroll
-
-  const edgeLayer = new VRenderable(renderer, {
-    width: layout.width,
-    height: layout.height,
-    position: "absolute",
-    left: 0,
-    top: 0,
-    render(buffer) {
-      drawWorkflowGraphLayer(buffer, layout)
-    },
-  })
-  edgeLayer.onMouseScroll = handleMouseScroll
-  graphArea.add(edgeLayer)
 
   for (const node of layout.nodes) {
     const nodeBox = new BoxRenderable(renderer, {
@@ -6387,7 +6299,6 @@ function buildWorkflowCanvasRenderable(
       event.stopPropagation()
       options.onSelectNode(node.id)
     }
-    nodeBox.onMouseScroll = handleMouseScroll
     for (const [lineIndex, line] of node.lines.entries()) {
       nodeBox.add(
         new TextRenderable(renderer, {
@@ -6399,6 +6310,56 @@ function buildWorkflowCanvasRenderable(
       )
     }
     graphArea.add(nodeBox)
+  }
+
+  for (const endpoint of layout.endpoints) {
+    graphArea.add(
+      new TextRenderable(renderer, {
+        position: "absolute",
+        left: endpoint.labelX,
+        top: endpoint.labelY,
+        content: endpoint.label,
+        fg: theme.secondary,
+        wrapMode: "none",
+      }),
+    )
+    graphArea.add(
+      new TextRenderable(renderer, {
+        position: "absolute",
+        left: endpoint.markerX,
+        top: endpoint.markerY,
+        content: "o",
+        fg: theme.warning,
+        wrapMode: "none",
+      }),
+    )
+    if (endpoint.markerY + 1 < layout.height) {
+      graphArea.add(
+        new TextRenderable(renderer, {
+          position: "absolute",
+          left: endpoint.markerX,
+          top: endpoint.markerY + 1,
+          content: "|",
+          fg: theme.warning,
+          wrapMode: "none",
+        }),
+      )
+    }
+  }
+
+  for (const edge of layout.edges) {
+    for (const cell of buildWorkflowEdgeCells(edge.points)) {
+      graphArea.add(
+        new TextRenderable(renderer, {
+          position: "absolute",
+          left: cell.x,
+          top: cell.y,
+          content: cell.char,
+          fg: theme.secondary,
+          wrapMode: "none",
+        }),
+      )
+    }
   }
 
   const footer = new BoxRenderable(renderer, {
@@ -6433,30 +6394,10 @@ function buildWorkflowCanvasRenderable(
   return wrapper
 }
 
-function drawWorkflowGraphLayer(buffer: {
-  drawText: (text: string, x: number, y: number, fg: RGBA, bg?: RGBA, attributes?: number) => void
-  setCell: (x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number) => void
-}, layout: WorkflowGraphLayout) {
-  for (const endpoint of layout.endpoints) {
-    buffer.drawText(endpoint.label, endpoint.labelX, endpoint.labelY, theme.secondary)
-    buffer.setCell(endpoint.markerX, endpoint.markerY, "o", theme.warning, theme.backgroundPanel)
-    if (endpoint.markerY + 1 < layout.height) {
-      buffer.setCell(endpoint.markerX, endpoint.markerY + 1, "|", theme.warning, theme.backgroundPanel)
-    }
-  }
-  for (const edge of layout.edges) {
-    drawWorkflowEdge(buffer, edge.points)
-  }
-}
-
-function drawWorkflowEdge(
-  buffer: {
-    setCell: (x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number) => void
-  },
-  points: Array<{ x: number; y: number }>,
-) {
+function buildWorkflowEdgeCells(points: Array<{ x: number; y: number }>) {
+  const cells: Array<{ x: number; y: number; char: string }> = []
   if (points.length < 2) {
-    return
+    return cells
   }
   for (let index = 0; index < points.length - 1; index += 1) {
     const current = points[index]!
@@ -6469,7 +6410,7 @@ function drawWorkflowEdge(
         const char = lastSegment && atEnd
           ? (step > 0 ? "v" : "^")
           : "|"
-        buffer.setCell(current.x, y, char, theme.secondary, theme.backgroundPanel)
+        cells.push({ x: current.x, y, char })
         if (atEnd) {
           break
         }
@@ -6483,13 +6424,14 @@ function drawWorkflowEdge(
         const char = lastSegment && atEnd
           ? (step > 0 ? ">" : "<")
           : "-"
-        buffer.setCell(x, current.y, char, theme.secondary, theme.backgroundPanel)
+        cells.push({ x, y: current.y, char })
         if (atEnd) {
           break
         }
       }
     }
   }
+  return cells
 }
 
 function buildAsciiCanvasRenderable(

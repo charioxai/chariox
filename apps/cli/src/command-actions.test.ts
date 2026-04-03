@@ -337,6 +337,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
     agent_ref: "19c82a89",
     alias: "reviewer",
   })
+  const plannerRef = resolvedWorkflowAgent.agent_ref
+  const reviewerRef = reviewerAgent.agent_ref
   const handlers = createCommandActionHandlers({
     workspace: "workspace-1",
     worktree: "worktree-1",
@@ -746,8 +748,12 @@ test("workflow command opens the workflow screen and manages local workflows", a
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")
 
-  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow node add workflow-1 5f26c340", args: ["node", "add", "workflow-1", "5f26c340"] })
-  assert.equal(flashedMessage, "added workflow node node-1 for agent 5f26c340")
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: `/workflow node add workflow-1 ${plannerRef}`,
+    args: ["node", "add", "workflow-1", plannerRef],
+  })
+  assert.equal(flashedMessage, `added workflow node node-1 for agent ${plannerRef}`)
   assert.equal(addedWorkflowNodeAgentId, "agent-instance-1")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
@@ -756,8 +762,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
-    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
+    raw: `/workflow edge add workflow-1 ${plannerRef} ${reviewerRef}`,
+    args: ["edge", "add", "workflow-1", plannerRef, reviewerRef],
   })
   assert.equal(flashedMessage, "workflow edge already exists between those nodes")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
@@ -771,34 +777,26 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow workflow-1 5f26c340 19c82a89",
-    args: ["workflow-1", "5f26c340", "19c82a89"],
+    raw: `/workflow workflow-1 ${plannerRef} ${reviewerRef}`,
+    args: ["workflow-1", plannerRef, reviewerRef],
   })
   assert.equal(flashedMessage, "added workflow edge edge-1")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
-    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
+    raw: `/workflow edge add workflow-1 ${plannerRef} ${reviewerRef}`,
+    args: ["edge", "add", "workflow-1", plannerRef, reviewerRef],
   })
   assert.equal(flashedMessage, "workflow edge already exists between those nodes")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
-    raw: "/workflow edge add workflow-1 5f26c340 5f26c340",
-    args: ["edge", "add", "workflow-1", "5f26c340", "5f26c340"],
+    raw: `/workflow edge add workflow-1 ${plannerRef} ${plannerRef}`,
+    args: ["edge", "add", "workflow-1", plannerRef, plannerRef],
   })
   assert.equal(flashedMessage, "workflow edges must connect two different nodes")
-  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
-
-  await handlers.handleWorkflowCommand({
-    kind: "workflow",
-    raw: "/workflow edge add workflow-1 5f26c340 19c82a89",
-    args: ["edge", "add", "workflow-1", "5f26c340", "19c82a89"],
-  })
-  assert.equal(flashedMessage, "workflow edge already exists between those nodes")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow endpoint new workflow-1 node-1 start", args: ["endpoint", "new", "workflow-1", "node-1", "start"] })
