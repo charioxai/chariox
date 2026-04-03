@@ -53,6 +53,8 @@ impl WorkflowEndpointDefinition {
 pub struct WorkflowNodeDefinition {
     id: String,
     agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
 }
 
 impl WorkflowNodeDefinition {
@@ -60,6 +62,7 @@ impl WorkflowNodeDefinition {
         Self {
             id: id.into(),
             agent_id: agent_id.into(),
+            instructions: None,
         }
     }
 
@@ -69,6 +72,14 @@ impl WorkflowNodeDefinition {
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
+    }
+
+    pub fn set_instructions(&mut self, instructions: Option<String>) {
+        self.instructions = instructions;
     }
 }
 
@@ -179,6 +190,10 @@ impl WorkflowDefinition {
 
     pub fn node(&self, node_id: &str) -> Option<&WorkflowNodeDefinition> {
         self.nodes.iter().find(|node| node.id() == node_id)
+    }
+
+    pub fn node_mut(&mut self, node_id: &str) -> Option<&mut WorkflowNodeDefinition> {
+        self.nodes.iter_mut().find(|node| node.id() == node_id)
     }
 
     pub fn remove_node(&mut self, node_id: &str) -> Option<WorkflowNodeDefinition> {

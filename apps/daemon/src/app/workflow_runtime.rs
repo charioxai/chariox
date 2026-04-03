@@ -125,10 +125,12 @@ impl DaemonApp {
             node_run.id(),
             node_run.agent_id(),
             node_run.node_id(),
-            &Self::build_workflow_entry_prompt(
+            &self.build_workflow_entry_prompt(
+                session_id,
+                workflow_run.id(),
                 node_run.node_id(),
                 prompt,
-                Self::workflow_node_instruction_reference(
+                self.workflow_node_instruction_reference(
                     session_id,
                     workflow_run.id(),
                     node_run.node_id(),
@@ -214,9 +216,11 @@ impl DaemonApp {
                 dispatch.node_run.id(),
                 dispatch.node_run.agent_id(),
                 dispatch.node_run.node_id(),
-                &Self::build_workflow_handoff_prompt(
+                &self.build_workflow_handoff_prompt(
+                    session_id,
+                    workflow_run_id,
                     &dispatch.messages,
-                    Self::workflow_node_instruction_reference(
+                    self.workflow_node_instruction_reference(
                         session_id,
                         workflow_run_id,
                         dispatch.node_run.node_id(),
@@ -238,6 +242,9 @@ impl DaemonApp {
     }
 
     fn build_workflow_handoff_prompt(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
         messages: &[WorkflowMessage],
         instruction_ref: Option<String>,
     ) -> String {
@@ -259,16 +266,24 @@ impl DaemonApp {
             .as_deref()
             .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
             .unwrap_or_default();
+        let control_line = self
+            .workflow_node_control_reference(session_id, workflow_run_id, target_node_id)
+            .map(|path| format!("Control mailbox (daemon-managed): {path}\n\n"))
+            .unwrap_or_default();
         format!(
-            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}{}\n",
+            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}{}{}\n",
             payloads,
             target_node_id,
             reference_line,
+            control_line,
             workflow_output_contract_instructions()
         )
     }
 
     fn build_workflow_entry_prompt(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
         node_id: &str,
         prompt: &str,
         instruction_ref: Option<String>,
@@ -277,23 +292,38 @@ impl DaemonApp {
             .as_deref()
             .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
             .unwrap_or_default();
+        let control_line = self
+            .workflow_node_control_reference(session_id, workflow_run_id, node_id)
+            .map(|path| format!("Control mailbox (daemon-managed): {path}\n\n"))
+            .unwrap_or_default();
         format!(
-            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}{}\n",
+            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}{}{}\n",
             reference_line,
+            control_line,
             workflow_output_contract_instructions()
         )
     }
 
     fn workflow_node_instruction_reference(
+        &self,
         session_id: &str,
         workflow_run_id: &str,
         node_id: &str,
     ) -> Option<String> {
+        let workflow_run = self
+            .sessions()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()?;
+        let workflow = self
+            .sessions()
+            .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+            .ok()?;
+        let node = workflow.node(node_id);
         let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
         let root = Self::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
         let filename = format!("node-{node_id}.md");
         let path = root.join(filename);
-        if !path.exists() {
+        if !path.exists() || node.and_then(|node| node.instructions()).is_some() {
             if let Err(error) = std::fs::create_dir_all(&root) {
                 tracing::debug!(
                     ?error,
@@ -302,9 +332,14 @@ impl DaemonApp {
                 );
                 return None;
             }
-            let content = format!(
-                "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
-            );
+            let content = node
+                .and_then(|node| node.instructions())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
+                    )
+                });
             if let Err(error) = std::fs::write(&path, content) {
                 tracing::debug!(
                     ?error,
@@ -316,6 +351,23 @@ impl DaemonApp {
         }
         Some(path.to_string_lossy().to_string())
     }
+
+    fn workflow_node_control_reference(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        node_id: &str,
+    ) -> Option<String> {
+        let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
+        let root = Self::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+        let path = root.join(format!("node-{node_id}.md"));
+        if path.exists() {
+            Some(path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
 
     pub(crate) fn ensure_workflow_provider_run_for_agent(
         &mut self,
@@ -529,6 +581,12 @@ impl DaemonApp {
             completion_snapshot,
         )?;
         if !validation_warnings.is_empty() {
+            self.write_workflow_control_mailbox(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                &validation_warnings,
+            );
             for warning in &validation_warnings {
                 self.record_notice(
                     session_id,
@@ -554,6 +612,56 @@ impl DaemonApp {
             format!("Workflow run `{}` {state_suffix}.", workflow_run.id()),
         );
         Ok(())
+    }
+
+    fn write_workflow_control_mailbox(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        warnings: &[crate::session::WorkflowOutputValidationWarning],
+    ) {
+        let workflow_run = match self
+            .sessions()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+        {
+            Ok(run) => run,
+            Err(_) => return,
+        };
+        let node_id = match workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+        {
+            Some(node_run) => node_run.node_id(),
+            None => return,
+        };
+        let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
+        let root = Self::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+        if let Err(error) = std::fs::create_dir_all(&root) {
+            tracing::debug!(
+                ?error,
+                "Failed to create workflow control directory at {:?}",
+                root
+            );
+            return;
+        }
+        let path = root.join(format!("node-{node_id}.md"));
+        let body = warnings
+            .iter()
+            .map(|warning| format!("- edge {}: {}", warning.edge_id, warning.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "# Workflow Control Mailbox\n\nValidation warnings for node `{node_id}`:\n{body}\n"
+        );
+        if let Err(error) = std::fs::write(&path, content) {
+            tracing::debug!(
+                ?error,
+                "Failed to write workflow control mailbox at {:?}",
+                path
+            );
+        }
     }
 
     pub(crate) fn reconcile_workflow_prompt_cancelled(
@@ -627,7 +735,7 @@ fn workflow_completion_summary(source: &str) -> String {
 }
 
 fn workflow_output_contract_instructions() -> &'static str {
-    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts."
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, validate output.message JSON with ValidateWorkflowOutput before finalizing."
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

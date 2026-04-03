@@ -708,6 +708,41 @@ impl SessionService {
         Ok(workflow.add_node(node))
     }
 
+    pub fn update_workflow_node_instructions(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        node_id: &str,
+        instructions: Option<String>,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        let node = workflow
+            .node_mut(node_id)
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                node_id: node_id.to_string(),
+            })?;
+        node.set_instructions(instructions);
+        Ok(node.clone())
+    }
+
     pub fn remove_workflow_node(
         &mut self,
         session_id: &str,

@@ -283,6 +283,15 @@ pub struct RemoveWorkflowNodeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowNodeInstructionsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddWorkflowEdgeRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -378,6 +387,7 @@ pub enum LocalDaemonRequest {
     BindWorkflowEndpoint(BindWorkflowEndpointRequest),
     AddWorkflowNode(AddWorkflowNodeRequest),
     RemoveWorkflowNode(RemoveWorkflowNodeRequest),
+    UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest),
     AddWorkflowEdge(AddWorkflowEdgeRequest),
     RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
     InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest),
@@ -523,6 +533,11 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowNodeRemoved {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeInstructionsUpdated {
         node: WorkflowNodeDefinition,
         workflow: WorkflowDefinition,
         session: RuntimeSession,
@@ -946,6 +961,23 @@ impl DaemonApp {
                     session,
                 })
             }
+            LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => {
+                let node = self.sessions_mut().update_workflow_node_instructions(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.node_id,
+                    request.instructions.clone(),
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
             LocalDaemonRequest::AddWorkflowEdge(request) => {
                 let edge = self.sessions_mut().add_workflow_edge(
                     &request.session_id,
@@ -1086,7 +1118,7 @@ mod tests {
         ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
         RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
-        SubmitPromptRequest, UpdateSessionConfigRequest,
+        SubmitPromptRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
     };
 
     #[test]
@@ -1401,6 +1433,23 @@ mod tests {
             .expect("first workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+
+        match app
+            .handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+                UpdateWorkflowNodeInstructionsRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    node_id: node_a.id().to_string(),
+                    instructions: Some("You are the reviewer.".to_string()),
+                },
+            ))
+            .expect("workflow node instructions should update")
+        {
+            LocalDaemonResponse::WorkflowNodeInstructionsUpdated { node, .. } => {
+                assert_eq!(node.instructions(), Some("You are the reviewer."));
+            }
             _ => panic!("unexpected local response"),
         };
 
