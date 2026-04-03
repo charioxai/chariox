@@ -21,7 +21,9 @@ use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::provider::RuntimeProviderRun;
 use crate::session::RuntimeSession;
-use crate::terminal::{AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord};
+use crate::terminal::{
+    AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
+};
 
 const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
@@ -811,7 +813,9 @@ fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> 
         KernelEvent::AssistantMessageCompleted {
             recipient_attachment_ids,
             ..
-        } => recipient_attachment_ids.iter().any(|id| id == attachment_id),
+        } => recipient_attachment_ids
+            .iter()
+            .any(|id| id == attachment_id),
         KernelEvent::SessionSnapshot { .. }
         | KernelEvent::SessionUnavailable { .. }
         | KernelEvent::Heartbeat { .. }

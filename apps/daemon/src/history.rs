@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionHistoryEntryKind {
     UserPrompt,

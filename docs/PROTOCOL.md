@@ -657,10 +657,10 @@ Suggested events:
 When a session runs in multi-agent workflow mode:
 
 - the daemon MUST treat the workflow as a general directed graph
-- v1 validators may accept only `circular` and `hierarchical` topologies
-- every workflow MUST declare a coordinator node
-- the coordinator MUST receive the initial user prompt
-- the coordinator MUST decide final continue, stop, or completion behavior
+- execution policy MUST be derived from the graph rather than from a separate user-declared topology label
+- nodes with indegree `> 1` require explicit barrier/fan-in state
+- nodes with outdegree `> 1` are branching points and may release outputs to multiple children
+- cycles are a separate graph property and require bounded-cycle handling independent of input/output synchronization policy
 
 Required runtime entities:
 
@@ -683,8 +683,8 @@ Minimum fields:
 - `node_run_id`
 - `status`
 - `summary`
-- `artifacts` or changed files
-- `handoff_payload`
+- optional explicit `output`
+- optional artifact references or changed files
 - `stop_recommendation`
 
 Suggested event:
@@ -704,6 +704,7 @@ Suggested payload fields:
 - `target_node_id` or `target_node_run_id`
 - `message_type`
 - `summary`
+- `output`
 - `artifacts`
 - `handoff_payload`
 - `meta`
@@ -712,26 +713,31 @@ Suggested event:
 
 - `workflow.node.handoff`
 
-## 7.5 Topology and Barrier Semantics
+## 7.5 Graph-Derived Barrier and Release Semantics
 
-Circular topology rules in v1:
+Default v1 model:
 
-- each node has one incoming edge and one outgoing edge
-- the final node routes back to the coordinator
-- execution is serialized
-- the workflow uses bounded iteration or round limits
+- synchronization behavior is a per-node concern, not a workflow-wide topology label
+- `input_gate` controls when a node becomes runnable:
+  - `first_input`
+  - `all_inputs`
+- `output_release` controls when validated outputs are released downstream:
+  - `on_completion`
+  - `immediate`
 
-Hierarchical topology rules in v1:
+Default derivation rules:
 
-- the workflow forms a rooted tree
-- child branches may run in parallel
-- parent fan-in waits for all children by default
-- results propagate upward through structured aggregation
+- if a node has indegree `<= 1`, the default `input_gate` is `first_input`
+- if a node has indegree `> 1`, the default `input_gate` is `all_inputs`
+- the default `output_release` is `on_completion`
 
-Implementation priority note:
+Required rules:
 
-- circular topology should be implemented and stabilized first
-- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+- barrier/fan-in state MUST be tracked by the daemon on the receiving side
+- output release decisions MUST be daemon-owned even when a node emits output earlier
+- outputs may be placed into the target node's inbound queue before that node becomes runnable
+- a node with `all_inputs` gating MUST NOT start until the required parent outputs for that activation are present
+- cycles require bounded-cycle policy and MUST NOT be conflated with barrier semantics
 
 Suggested events:
 

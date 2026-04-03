@@ -1502,7 +1502,10 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(queued_state.focused_agent_id(), Some(reviewer.id()));
-    assert_eq!(queued_state.active_provider_run_id(), Some(default_run.id()));
+    assert_eq!(
+        queued_state.active_provider_run_id(),
+        Some(default_run.id())
+    );
     assert_eq!(
         queued_state
             .active_prompt()
@@ -1565,7 +1568,10 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
-    assert_eq!(settled_state.active_provider_run_id(), Some(reviewer_run.id()));
+    assert_eq!(
+        settled_state.active_provider_run_id(),
+        Some(reviewer_run.id())
+    );
     assert!(settled_state.queued_prompts().is_empty());
 
     if let Some(previous_bin) = previous_bin {

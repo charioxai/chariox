@@ -401,14 +401,14 @@ mod tests {
     use tokio::sync::oneshot;
 
     use crate::attachment::ClientCapabilityLevel;
-    use crate::local::{
-        AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
-        PumpTerminalOutputRequest, SpawnAgentRequest, SubmitPromptRequest,
-    };
     use crate::local::api::{
         AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
         CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
         InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
+    };
+    use crate::local::{
+        AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
+        PumpTerminalOutputRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -573,11 +573,13 @@ mod tests {
         };
 
         let node = match client
-            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: session.agents()[0].id().to_string(),
-            }))
+            .send(&LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: session.agents()[0].id().to_string(),
+                },
+            ))
             .expect("workflow node add should succeed")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -635,10 +637,12 @@ mod tests {
         assert_eq!(format!("{:?}", workflow_run.status()), "Running");
 
         let listed = match client
-            .send(&LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: Some(workflow.id().to_string()),
-            }))
+            .send(&LocalDaemonRequest::ListWorkflowRuns(
+                ListWorkflowRunsRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: Some(workflow.id().to_string()),
+                },
+            ))
             .expect("workflow runs list should succeed")
         {
             LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
@@ -698,10 +702,12 @@ mod tests {
         };
 
         let cancelled = match client
-            .send(&LocalDaemonRequest::CancelWorkflowRun(CancelWorkflowRunRequest {
-                session_id: session.id().to_string(),
-                workflow_run_ref: second_run.id().to_string(),
-            }))
+            .send(&LocalDaemonRequest::CancelWorkflowRun(
+                CancelWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: second_run.id().to_string(),
+                },
+            ))
             .expect("workflow run cancel should succeed")
         {
             LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } => workflow_run,
@@ -784,11 +790,13 @@ mod tests {
         };
 
         let first_node = match client
-            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: first_agent.id().to_string(),
-            }))
+            .send(&LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: first_agent.id().to_string(),
+                },
+            ))
             .expect("first workflow node add should succeed")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -796,11 +804,13 @@ mod tests {
         };
 
         let second_node = match client
-            .send(&LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: second_agent.id().to_string(),
-            }))
+            .send(&LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: second_agent.id().to_string(),
+                },
+            ))
             .expect("second workflow node add should succeed")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -808,12 +818,14 @@ mod tests {
         };
 
         match client
-            .send(&LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: first_node.id().to_string(),
-                to_node_id: second_node.id().to_string(),
-            }))
+            .send(&LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: first_node.id().to_string(),
+                    to_node_id: second_node.id().to_string(),
+                },
+            ))
             .expect("workflow edge add should succeed")
         {
             LocalDaemonResponse::WorkflowEdgeAdded { .. } => {}
@@ -873,7 +885,10 @@ mod tests {
         };
         assert_eq!(format!("{:?}", routed.status()), "Running");
         assert_eq!(routed.node_runs().len(), 2);
-        assert_eq!(routed.active_node_run_id(), Some(routed.node_runs()[1].id()));
+        assert_eq!(
+            routed.active_node_run_id(),
+            Some(routed.node_runs()[1].id())
+        );
         assert_eq!(routed.node_runs()[1].node_id(), second_node.id());
 
         match client

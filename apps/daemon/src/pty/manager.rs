@@ -290,11 +290,12 @@ impl PtyManager {
             return Ok(true);
         }
 
-        let mut process = self.processes.remove(&process_key).ok_or_else(|| {
-            DaemonError::PtyProcessNotFound {
-                provider_run_id: provider_run_id.to_string(),
-            }
-        })?;
+        let mut process =
+            self.processes
+                .remove(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
 
         let status = process
             .child

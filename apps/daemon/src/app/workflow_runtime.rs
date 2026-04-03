@@ -1,14 +1,33 @@
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
+
+use serde::Deserialize;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::history::SessionHistoryEntryKind;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    PromptQueueItem, PromptSubmissionOutcome, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowMessage, WorkflowRun,
+    PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
+    WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowEndpointDefinition,
+    WorkflowMessage, WorkflowOutputPayload, WorkflowRun,
 };
 
 const WORKFLOW_PROMPT_SOURCE_PREFIX: &str = "workflow-run:";
+const WORKFLOW_COMPLETION_SUMMARY_LIMIT: usize = 160;
+
+#[derive(Debug, Deserialize)]
+struct WorkflowStructuredOutputEnvelope {
+    summary: Option<String>,
+    output: Option<WorkflowStructuredOutputValue>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowStructuredOutputValue {
+    Text(String),
+    Object { message: String },
+}
 
 impl DaemonApp {
     pub fn invoke_workflow_endpoint_and_schedule(
@@ -21,12 +40,17 @@ impl DaemonApp {
         let workflow = self
             .sessions()
             .resolve_workflow_ref(session_id, workflow_ref)?;
-        let endpoint = self
-            .sessions()
-            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
-        let workflow_run =
-            self.sessions_mut()
-                .invoke_workflow_endpoint(session_id, workflow_ref, endpoint_ref, prompt)?;
+        let endpoint = self.sessions().resolve_workflow_endpoint_ref(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+        )?;
+        let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+        )?;
         if workflow_run
             .invocation_prompt()
             .is_some_and(|value| !value.trim().is_empty())
@@ -43,7 +67,7 @@ impl DaemonApp {
         attachment_id.starts_with(WORKFLOW_PROMPT_SOURCE_PREFIX)
     }
 
-    fn workflow_prompt_source_attachment_id(workflow_run_id: &str) -> String {
+    pub(crate) fn workflow_prompt_source_attachment_id(workflow_run_id: &str) -> String {
         format!("{WORKFLOW_PROMPT_SOURCE_PREFIX}{workflow_run_id}")
     }
 
@@ -61,22 +85,21 @@ impl DaemonApp {
                 status: workflow_run.status(),
                 operation: "schedule workflow run entry node",
             })?;
-        let node_run = workflow_run
-            .node_runs()
-            .first()
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let node_run = workflow_run.node_runs().first().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: workflow_run.workflow_id().to_string(),
                 reference: workflow_run.id().to_string(),
                 message: "workflow run has no entry node run",
-            })?;
+            }
+        })?;
         self.schedule_workflow_node_prompt(
             session_id,
             workflow_run.id(),
             node_run.id(),
             node_run.agent_id(),
             node_run.node_id(),
-            prompt,
+            &Self::build_workflow_entry_prompt(node_run.node_id(), prompt),
         )
     }
 
@@ -109,7 +132,8 @@ impl DaemonApp {
                     prompt.prompt(),
                     prompt.attachments(),
                 ) {
-                    if let Ok((_, cancelled)) = self.sessions_mut().cancel_active_prompt(session_id) {
+                    if let Ok((_, cancelled)) = self.sessions_mut().cancel_active_prompt(session_id)
+                    {
                         let _ = self.reconcile_workflow_prompt_cancelled(session_id, &cancelled);
                     }
                     self.clear_prompt_activity(session_id);
@@ -174,9 +198,17 @@ impl DaemonApp {
 
     fn build_workflow_handoff_prompt(message: &WorkflowMessage) -> String {
         format!(
-            "Workflow handoff payload (JSON):\n{}\n\nExecute workflow node `{}` using this payload as the authoritative upstream context.",
+            "Workflow handoff payload (JSON):\n{}\n\nExecute workflow node `{}` using this payload as the authoritative upstream context.\n\n{}\n",
             message.handoff_payload(),
-            message.target_node_id()
+            message.target_node_id(),
+            workflow_output_contract_instructions()
+        )
+    }
+
+    fn build_workflow_entry_prompt(node_id: &str, prompt: &str) -> String {
+        format!(
+            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}\n",
+            workflow_output_contract_instructions()
         )
     }
 
@@ -246,16 +278,141 @@ impl DaemonApp {
         Ok(())
     }
 
+    fn build_workflow_completion_snapshot(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Option<WorkflowCompletionSnapshot> {
+        let provider_run_id = provider_run_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?
+            .to_string();
+        let session = match self.sessions().get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.workflow",
+                    "failed to load session while building workflow completion snapshot",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "workflow_run_id": workflow_run_id,
+                        "workflow_node_run_id": workflow_node_run_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return None;
+            }
+        };
+        let Some(workflow_run) = session.workflow_run(workflow_run_id) else {
+            crate::logging::warn_with_fields(
+                "daemon.workflow",
+                "workflow run disappeared before completion snapshot could be built",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_node_run_id": workflow_node_run_id,
+                    "provider_run_id": provider_run_id,
+                }),
+            );
+            return None;
+        };
+        let Some(node_run) = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+        else {
+            crate::logging::warn_with_fields(
+                "daemon.workflow",
+                "workflow node run disappeared before completion snapshot could be built",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_node_run_id": workflow_node_run_id,
+                    "provider_run_id": provider_run_id,
+                }),
+            );
+            return None;
+        };
+        let history = match self.history.load(&session) {
+            Ok(history) => history,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.workflow",
+                    "failed to load session history for workflow completion snapshot",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "workflow_run_id": workflow_run_id,
+                        "workflow_node_run_id": workflow_node_run_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return None;
+            }
+        };
+        let started_at_ms = node_run
+            .started_at_ms()
+            .unwrap_or_else(|| node_run.created_at_ms());
+        let provider_output = history
+            .into_iter()
+            .filter(|entry| {
+                entry.provider_run_id.as_deref() == Some(provider_run_id.as_str())
+                    && entry.timestamp_ms >= started_at_ms
+                    && entry.kind == SessionHistoryEntryKind::ProviderOutput
+            })
+            .map(|entry| entry.text)
+            .collect::<Vec<_>>()
+            .join("");
+        let structured_output = parse_workflow_structured_output(&provider_output);
+        let summary = structured_output
+            .as_ref()
+            .and_then(|value| value.summary.as_deref())
+            .map(workflow_completion_summary)
+            .unwrap_or_else(|| workflow_completion_summary(&provider_output));
+        let artifacts =
+            self.collect_workflow_artifact_refs(session_id, workflow_run_id, started_at_ms);
+        let output_message = structured_output
+            .as_ref()
+            .and_then(|value| value.output.as_ref())
+            .map(|value| match value {
+                WorkflowStructuredOutputValue::Text(message) => message.trim().to_string(),
+                WorkflowStructuredOutputValue::Object { message } => message.trim().to_string(),
+            })
+            .filter(|message| !message.is_empty());
+        let output = match (output_message, artifacts) {
+            (Some(message), artifacts) => Some(WorkflowOutputPayload::new(message, artifacts)),
+            (None, artifacts) if !artifacts.is_empty() => {
+                Some(WorkflowOutputPayload::new("artifacts attached", artifacts))
+            }
+            _ => None,
+        };
+        if summary == "completed" && output.is_none() {
+            return None;
+        }
+
+        Some(WorkflowCompletionSnapshot::new(summary, output))
+    }
+
     pub(crate) fn reconcile_workflow_prompt_completed(
         &mut self,
         session_id: &str,
         prompt: &PromptQueueItem,
+        provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
         else {
             return Ok(());
         };
+        let completion_snapshot = self.build_workflow_completion_snapshot(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            provider_run_id,
+        );
         let WorkflowCompletionUpdate {
             workflow_run,
             dispatches,
@@ -263,6 +420,7 @@ impl DaemonApp {
             session_id,
             workflow_run_id,
             workflow_node_run_id,
+            completion_snapshot,
         )?;
         self.schedule_workflow_dispatches(session_id, workflow_run.id(), &dispatches);
         let state_suffix = match workflow_run.status() {
@@ -301,5 +459,116 @@ impl DaemonApp {
             format!("Workflow run `{}` was stopped.", workflow_run.id()),
         );
         Ok(())
+    }
+
+    fn collect_workflow_artifact_refs(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        started_at_ms: u64,
+    ) -> Vec<WorkflowArtifactRef> {
+        let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
+        let mut artifacts = Vec::new();
+        for root in Self::attachment_artifact_roots(session_id, &attachment_id) {
+            let kind = root
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|value| value.to_str())
+                .unwrap_or("artifact")
+                .trim_end_matches('s')
+                .to_string();
+            collect_workflow_artifacts_from_dir(&root, &kind, started_at_ms, &mut artifacts);
+        }
+        artifacts.sort_by(|left, right| left.id().cmp(right.id()));
+        artifacts
+    }
+}
+
+fn workflow_completion_summary(source: &str) -> String {
+    if source.trim().is_empty() {
+        return "completed".to_string();
+    }
+    let normalized = source
+        .split_whitespace()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return "completed".to_string();
+    }
+    if normalized.chars().count() <= WORKFLOW_COMPLETION_SUMMARY_LIMIT {
+        return normalized;
+    }
+
+    let truncated = normalized
+        .chars()
+        .take(WORKFLOW_COMPLETION_SUMMARY_LIMIT)
+        .collect::<String>();
+    format!("{truncated}...")
+}
+
+fn workflow_output_contract_instructions() -> &'static str {
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts."
+}
+
+fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {
+    let mut cursor = 0usize;
+    let mut parsed = None;
+    while let Some(start) = text[cursor..].find("```json") {
+        let block_start = cursor + start + "```json".len();
+        let remaining = &text[block_start..];
+        let Some(end) = remaining.find("```") else {
+            break;
+        };
+        let candidate = remaining[..end].trim();
+        if let Ok(value) = serde_json::from_str::<WorkflowStructuredOutputEnvelope>(candidate) {
+            parsed = Some(value);
+        }
+        cursor = block_start + end + "```".len();
+    }
+    parsed
+}
+
+fn collect_workflow_artifacts_from_dir(
+    root: &std::path::Path,
+    kind: &str,
+    started_at_ms: u64,
+    artifacts: &mut Vec<WorkflowArtifactRef>,
+) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_workflow_artifacts_from_dir(&path, kind, started_at_ms, artifacts);
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let modified_at_ms = modified
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        if modified_at_ms < started_at_ms {
+            continue;
+        }
+        let display_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact")
+            .to_string();
+        let path_string = path.to_string_lossy().into_owned();
+        artifacts.push(WorkflowArtifactRef::new(
+            format!("{kind}:{display_name}"),
+            kind.to_string(),
+            path_string,
+            display_name,
+        ));
     }
 }

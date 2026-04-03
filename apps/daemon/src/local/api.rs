@@ -821,14 +821,18 @@ impl DaemonApp {
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
             }
-            LocalDaemonRequest::ListWorkflows(request) => Ok(LocalDaemonResponse::WorkflowsListed {
-                workflows: self.sessions().list_workflows(&request.session_id)?,
-            }),
-            LocalDaemonRequest::ResolveWorkflow(request) => Ok(LocalDaemonResponse::WorkflowResolved {
-                workflow: self
-                    .sessions()
-                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
-            }),
+            LocalDaemonRequest::ListWorkflows(request) => {
+                Ok(LocalDaemonResponse::WorkflowsListed {
+                    workflows: self.sessions().list_workflows(&request.session_id)?,
+                })
+            }
+            LocalDaemonRequest::ResolveWorkflow(request) => {
+                Ok(LocalDaemonResponse::WorkflowResolved {
+                    workflow: self
+                        .sessions()
+                        .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
+                })
+            }
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
                 let endpoint = self.sessions_mut().create_workflow_endpoint(
                     &request.session_id,
@@ -956,12 +960,13 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
-                let (workflow_run, workflow, endpoint) = self.invoke_workflow_endpoint_and_schedule(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt,
-                )?;
+                let (workflow_run, workflow, endpoint) = self
+                    .invoke_workflow_endpoint_and_schedule(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        request.prompt,
+                    )?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowRunInvoked {
                     workflow_run,
@@ -1003,24 +1008,24 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::attachment::ClientCapabilityLevel;
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload};
+    use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
         AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
-        AliasWorkflowRequest, CancelWorkflowRunRequest,
-        AttachToSessionRequest, CancelActivePromptRequest, CaptureScreenshotCapabilityRequest,
-        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-        CycleAgentFocusRequest, DeleteSessionRequest,
-        DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
-        GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
-        InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-        ResolveWorkflowRequest,
-        PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
-        ResolveSessionRequest, RunShellCapabilityRequest, SpawnAgentRequest,
-        StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        AliasWorkflowRequest, AttachToSessionRequest, CancelActivePromptRequest,
+        CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
+        CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
+        DeleteSessionRequest, DetachFromSessionRequest, EditFileCapabilityRequest,
+        EndSessionRequest, FocusAgentRequest, GetSessionStateRequest, GetWorkflowRunRequest,
+        InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
+        RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        RunShellCapabilityRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
+        SubmitPromptRequest, UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -1296,10 +1301,12 @@ mod tests {
         assert_eq!(listed.len(), 1);
 
         let resolved = match app
-            .handle_local_request(LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: "review".to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::ResolveWorkflow(
+                ResolveWorkflowRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: "review".to_string(),
+                },
+            ))
             .expect("workflow resolve should succeed")
         {
             LocalDaemonResponse::WorkflowResolved { workflow } => workflow,
@@ -1308,11 +1315,13 @@ mod tests {
         assert_eq!(resolved.id(), workflow.id());
 
         let node_a = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: session.agents()[0].id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: session.agents()[0].id().to_string(),
+                },
+            ))
             .expect("first workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -1335,11 +1344,13 @@ mod tests {
         };
 
         let node_b = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: spawned.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: spawned.id().to_string(),
+                },
+            ))
             .expect("second workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -1392,12 +1403,14 @@ mod tests {
         assert_eq!(aliased_endpoint.alias(), Some("start"));
 
         let edge = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: node_a.id().to_string(),
-                to_node_id: node_b.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: node_a.id().to_string(),
+                    to_node_id: node_b.id().to_string(),
+                },
+            ))
             .expect("workflow edge should be added")
         {
             LocalDaemonResponse::WorkflowEdgeAdded { edge, .. } => edge,
@@ -1459,11 +1472,13 @@ mod tests {
         };
 
         let node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: session.agents()[0].id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: session.agents()[0].id().to_string(),
+                },
+            ))
             .expect("workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -1658,11 +1673,13 @@ mod tests {
         };
 
         let first_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: first_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: first_agent.id().to_string(),
+                },
+            ))
             .expect("first workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -1670,11 +1687,13 @@ mod tests {
         };
 
         let second_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: second_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: second_agent.id().to_string(),
+                },
+            ))
             .expect("second workflow node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -1682,12 +1701,14 @@ mod tests {
         };
 
         match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: first_node.id().to_string(),
-                to_node_id: second_node.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: first_node.id().to_string(),
+                    to_node_id: second_node.id().to_string(),
+                },
+            ))
             .expect("workflow edge should be added")
         {
             LocalDaemonResponse::WorkflowEdgeAdded { .. } => {}
@@ -1725,6 +1746,38 @@ mod tests {
         };
         assert_eq!(format!("{:?}", workflow_run.status()), "Running");
         assert_eq!(workflow_run.node_runs().len(), 1);
+        let workflow_attachment_id =
+            DaemonApp::workflow_prompt_source_attachment_id(workflow_run.id());
+        let provider_run_id = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session state should resolve")
+            .active_provider_run_id()
+            .expect("workflow invoke should activate a provider run")
+            .to_string();
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"```json\n{\"summary\":\"planner finished draft plan\",\"output\":{\"message\":\"Please review the attached generated plan and provide approval feedback.\"}}\n```\n",
+        );
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderTool,
+            None,
+            Vec::new(),
+            b"{\"tool\":\"rg\",\"status\":\"ok\"}\n",
+        );
+        let workflow_transfer_root =
+            DaemonApp::attachment_artifact_root(session.id(), &workflow_attachment_id, "transfers");
+        std::fs::create_dir_all(&workflow_transfer_root)
+            .expect("workflow transfer root should exist");
+        let workflow_artifact_path = workflow_transfer_root.join("generated-plan.md");
+        std::fs::write(&workflow_artifact_path, "# generated plan\n")
+            .expect("workflow artifact should be written");
 
         match app
             .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
@@ -1749,8 +1802,62 @@ mod tests {
         assert_eq!(format!("{:?}", routed.status()), "Running");
         assert_eq!(routed.node_runs().len(), 2);
         assert_eq!(routed.messages().len(), 2);
-        assert_eq!(routed.active_node_run_id(), Some(routed.node_runs()[1].id()));
+        assert_eq!(
+            routed.active_node_run_id(),
+            Some(routed.node_runs()[1].id())
+        );
         assert_eq!(routed.node_runs()[1].node_id(), second_node.id());
+        let completed_entry = routed
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.node_id() == first_node.id())
+            .expect("completed entry node should remain on the run");
+        assert_eq!(format!("{:?}", completed_entry.status()), "Completed");
+        assert!(completed_entry
+            .summary()
+            .is_some_and(|summary| summary.contains("planner finished draft plan")));
+        let completion = completed_entry
+            .completion()
+            .expect("completed entry node should retain a generic completion snapshot");
+        assert_eq!(completion.summary(), "planner finished draft plan");
+        let output = completion
+            .output()
+            .expect("completed entry node should retain explicit downstream output");
+        assert_eq!(
+            output.message(),
+            "Please review the attached generated plan and provide approval feedback."
+        );
+        assert_eq!(output.artifacts().len(), 1);
+        assert_eq!(output.artifacts()[0].kind(), "transfer");
+        assert_eq!(output.artifacts()[0].display_name(), "generated-plan.md");
+        assert_eq!(
+            output.artifacts()[0].path(),
+            workflow_artifact_path.to_string_lossy()
+        );
+        let handoff_message = routed
+            .messages()
+            .iter()
+            .find(|message| message.source_node_run_id() == Some(completed_entry.id()))
+            .expect("downstream handoff message should exist");
+        let handoff_payload: WorkflowHandoffPayload =
+            serde_json::from_str(handoff_message.handoff_payload())
+                .expect("handoff payload should deserialize");
+        let handoff_completion = handoff_payload
+            .completion()
+            .expect("handoff payload should carry the generic completion snapshot");
+        assert_eq!(handoff_completion.summary(), "planner finished draft plan");
+        let handoff_output = handoff_completion
+            .output()
+            .expect("handoff payload should carry explicit downstream output");
+        assert_eq!(
+            handoff_output.message(),
+            "Please review the attached generated plan and provide approval feedback."
+        );
+        assert_eq!(handoff_output.artifacts().len(), 1);
+        assert_eq!(
+            handoff_output.artifacts()[0].display_name(),
+            "generated-plan.md"
+        );
 
         match app
             .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {

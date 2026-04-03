@@ -436,7 +436,8 @@ pub(super) fn drain_opencode_events(
     }
 
     if state.pending_prompt_completion {
-        if saw_completion_candidate || !chunks.is_empty() || !state.active_tool_part_ids.is_empty() {
+        if saw_completion_candidate || !chunks.is_empty() || !state.active_tool_part_ids.is_empty()
+        {
             state.pending_prompt_completion_quiet_since = None;
         } else if let Some(quiet_since) = state.pending_prompt_completion_quiet_since {
             if quiet_since.elapsed() >= PROMPT_COMPLETION_SETTLE_WINDOW {
@@ -693,8 +694,8 @@ mod tests {
 
     use super::{
         drain_opencode_events, latest_assistant_usage_tokens, render_snapshot_output_chunks,
-        render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
-        PROMPT_COMPLETION_SETTLE_WINDOW,
+        render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState,
+        ToolTranscriptUpdate, PROMPT_COMPLETION_SETTLE_WINDOW,
     };
 
     #[test]
@@ -863,15 +864,17 @@ mod tests {
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
 
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
-            info: serde_json::from_value(json!({
-                "id": "message-1",
-                "sessionID": "session-1",
-                "role": "assistant",
-                "time": { "completed": 1 }
-            }))
-            .expect("message info should deserialize"),
-        })
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
         .expect("message update should send");
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
@@ -900,36 +903,40 @@ mod tests {
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
 
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
-            info: serde_json::from_value(json!({
-                "id": "message-1",
-                "sessionID": "session-1",
-                "role": "assistant",
-                "time": { "completed": 1 }
-            }))
-            .expect("message info should deserialize"),
-        })
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
         .expect("message update should send");
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
-            part: Box::new(OpenCodePart {
-                id: "tool-1".to_string(),
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                kind: "tool".to_string(),
-                text: String::new(),
-                tool: "bash".to_string(),
-                state: Some(OpenCodeToolState {
-                    status: "running".to_string(),
-                    input: json!({ "command": "git status" }),
-                    output: String::new(),
-                    title: String::new(),
-                    metadata: json!({}),
-                    error: String::new(),
-                    raw: String::new(),
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+                part: Box::new(OpenCodePart {
+                    id: "tool-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    message_id: "message-1".to_string(),
+                    kind: "tool".to_string(),
+                    text: String::new(),
+                    tool: "bash".to_string(),
+                    state: Some(OpenCodeToolState {
+                        status: "running".to_string(),
+                        input: json!({ "command": "git status" }),
+                        output: String::new(),
+                        title: String::new(),
+                        metadata: json!({}),
+                        error: String::new(),
+                        raw: String::new(),
+                    }),
+                    time: None,
                 }),
-                time: None,
-            }),
-        })
+            },
+        )
         .expect("running tool update should send");
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
@@ -944,26 +951,28 @@ mod tests {
             .expect("second drain should succeed");
         assert!(!second.prompt_completed);
 
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
-            part: Box::new(OpenCodePart {
-                id: "tool-1".to_string(),
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                kind: "tool".to_string(),
-                text: String::new(),
-                tool: "bash".to_string(),
-                state: Some(OpenCodeToolState {
-                    status: "completed".to_string(),
-                    input: json!({ "command": "git status" }),
-                    output: "On branch main".to_string(),
-                    title: String::new(),
-                    metadata: json!({}),
-                    error: String::new(),
-                    raw: String::new(),
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+                part: Box::new(OpenCodePart {
+                    id: "tool-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    message_id: "message-1".to_string(),
+                    kind: "tool".to_string(),
+                    text: String::new(),
+                    tool: "bash".to_string(),
+                    state: Some(OpenCodeToolState {
+                        status: "completed".to_string(),
+                        input: json!({ "command": "git status" }),
+                        output: "On branch main".to_string(),
+                        title: String::new(),
+                        metadata: json!({}),
+                        error: String::new(),
+                        raw: String::new(),
+                    }),
+                    time: None,
                 }),
-                time: None,
-            }),
-        })
+            },
+        )
         .expect("completed tool update should send");
 
         let third = drain_opencode_events(&mut state, "provider-run-1")
@@ -985,15 +994,17 @@ mod tests {
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
 
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
-            info: serde_json::from_value(json!({
-                "id": "message-1",
-                "sessionID": "session-1",
-                "role": "assistant",
-                "time": { "completed": 1 }
-            }))
-            .expect("message info should deserialize"),
-        })
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
         .expect("message update should send");
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
@@ -1005,18 +1016,20 @@ mod tests {
         assert!(!second.prompt_completed);
         assert!(state.pending_prompt_completion_quiet_since.is_some());
 
-        tx.send(crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
-            part: Box::new(OpenCodePart {
-                id: "part-1".to_string(),
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                kind: "text".to_string(),
-                text: "late output".to_string(),
-                tool: String::new(),
-                state: None,
-                time: None,
-            }),
-        })
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+                part: Box::new(OpenCodePart {
+                    id: "part-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    message_id: "message-1".to_string(),
+                    kind: "text".to_string(),
+                    text: "late output".to_string(),
+                    tool: String::new(),
+                    state: None,
+                    time: None,
+                }),
+            },
+        )
         .expect("late text update should send");
 
         let third = drain_opencode_events(&mut state, "provider-run-1")

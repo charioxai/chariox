@@ -9,7 +9,8 @@ pub use types::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
-    SessionStatus, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
-    WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
-    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus, WorktreeIsolationMode,
+    SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage,
+    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
+    WorkflowRun, WorkflowRunStatus, WorktreeIsolationMode,
 };

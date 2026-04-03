@@ -525,8 +525,8 @@ Arroba v1 MUST support both manually directed multi-agent workspaces and a workf
 
 Delivery priority inside v1:
 
-- circular topology is the earlier implementation target
-- hierarchical topology remains in scope for v1, but is expected to land later in v1 after the lower-level runtime and protocol foundations are stable
+- graph-derived serial execution is the earlier implementation target
+- graph-derived barrier/fan-in and bounded-cycle handling remain in scope for v1, but are expected to land later in v1 after the lower-level runtime and protocol foundations are stable
 
 Normative rules:
 
@@ -534,9 +534,10 @@ Normative rules:
 - Multi-agent manual mode is user-directed: the user selects the active top-level agent and the kernel routes direct interaction to that agent.
 - A workspace MAY contain multiple workflow definitions.
 - Multi-agent execution MUST be modeled as a general directed workflow graph.
-- v1 validates only two workflow topologies:
-  - circular
-  - hierarchical
+- Execution policy MUST be derived from the graph the user created rather than from a separate user-declared topology category.
+- Nodes with indegree `> 1` require barrier/fan-in handling.
+- Nodes with outdegree `> 1` are branching points.
+- Cycles are a separate graph property and MUST be handled independently from input/output synchronization policy.
 - The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer aggregation, and more advanced topologies can be added without redesigning the core workflow engine.
 - Contributors MUST NOT implement multi-agent behavior as topology-specific special cases scattered through unrelated codepaths.
 
@@ -606,14 +607,32 @@ Required kernel tools:
 
 ### 7.5.2 Sync vs Async Workflow Execution
 
-The workflow model should support both:
+Synchronization policy is per node.
 
-- `sync`
-  - validated messages are delivered when the turn ends
-- `async`
-  - validated messages are delivered as soon as they are produced during the turn
+Node-level execution policy:
 
-In both modes, every delivered message is considered final. Arroba does not distinguish a separate intermediate-message type by default.
+- `input_gate`
+  - `first_input`
+  - `all_inputs`
+- `output_release`
+  - `on_completion`
+  - `immediate`
+
+Default derivation rules:
+
+- if indegree `<= 1`, the default `input_gate` is `first_input`
+- if indegree `> 1`, the default `input_gate` is `all_inputs`
+- the default `output_release` is `on_completion`
+
+Rules:
+
+- `summary` is a human-facing completion field and MUST NOT be treated as the downstream workflow payload by default
+- downstream delivery SHOULD use explicit `output` messages plus optional artifact refs
+- if `output_release = on_completion`, validated outputs are released only when the turn ends
+- if `output_release = immediate`, validated outputs may be released as soon as they are produced
+- the daemon, not the node, decides when outputs are released downstream
+- for `all_inputs` gating, the daemon MAY enqueue released outputs on the target node before the target becomes runnable
+- cycles require bounded-cycle handling and are orthogonal to these node-level synchronization controls
 
 ### 7.5.3 Workflow/Agent Binding
 
@@ -626,34 +645,15 @@ Rules:
 - if a workflow node references an agent that no longer exists, that node MUST remain in the workflow and be marked missing/unavailable
 - workflows with missing nodes or missing endpoint targets MUST remain listable/editable and SHOULD be blocked from execution until repaired
 
-### 7.6 Circular Topology Rules
+### 7.6 Graph-Derived Barrier and Cycle Rules
 
-Circular topology is valid in v1 only if all are true:
+Rules:
 
-- each node has exactly one incoming edge and one outgoing edge
-- the last node connects back to the coordinator
-- execution is serialized
-- the workflow uses bounded iteration or round limits
-- execution stops when either:
-  - the max iteration or round limit is reached, or
-  - the coordinator declares completion or stop
-
-### 7.7 Hierarchical Topology Rules
-
-Hierarchical topology is valid in v1 only if all are true:
-
-- the workflow forms a rooted tree
-- the coordinator is the root
-- parent nodes may fan out to multiple children
-- child branches may run in parallel
-- parent fan-in waits for all children by default
-- results propagate upward through structured aggregation
-- the coordinator decides final stop or continue behavior
-
-Implementation priority note:
-
-- circular topology should be implemented and stabilized first
-- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+- barrier/fan-in is derived from inbound dependencies, not from a separate topology label
+- a node with indegree `> 1` SHOULD default to `all_inputs` gating unless explicitly overridden
+- branching is derived from outdegree, not from a workflow-wide mode
+- cycles SHOULD be detected from the graph before execution and handled through bounded-cycle policy
+- the runtime MUST avoid conflating cycle handling with barrier/fan-in semantics
 
 ### 7.8 Worktree Isolation Rules
 
@@ -661,7 +661,7 @@ Parallel code-writing branches MUST NOT share the same active worktree.
 
 Required rules:
 
-- in hierarchical workflows, each active code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
+- each active parallel code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
 - worktree assignment MUST be explicit in runtime state and the data model
 - the daemon MUST NOT allow parallel code-writing agents to mutate the same worktree concurrently
 

@@ -239,6 +239,94 @@ pub enum WorkflowNodeRunStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowArtifactRef {
+    id: String,
+    kind: String,
+    path: String,
+    display_name: String,
+}
+
+impl WorkflowArtifactRef {
+    pub fn new(
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        path: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            path: path.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowOutputPayload {
+    message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<WorkflowArtifactRef>,
+}
+
+impl WorkflowOutputPayload {
+    pub fn new(message: impl Into<String>, artifacts: Vec<WorkflowArtifactRef>) -> Self {
+        Self {
+            message: message.into(),
+            artifacts,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn artifacts(&self) -> &[WorkflowArtifactRef] {
+        &self.artifacts
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCompletionSnapshot {
+    summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<WorkflowOutputPayload>,
+}
+
+impl WorkflowCompletionSnapshot {
+    pub fn new(summary: impl Into<String>, output: Option<WorkflowOutputPayload>) -> Self {
+        Self {
+            summary: summary.into(),
+            output,
+        }
+    }
+
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    pub fn output(&self) -> Option<&WorkflowOutputPayload> {
+        self.output.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowHandoffPayload {
     workflow_run_id: String,
     workflow_id: String,
@@ -247,6 +335,8 @@ pub struct WorkflowHandoffPayload {
     source_agent_id: String,
     target_node_id: String,
     invocation_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completion: Option<WorkflowCompletionSnapshot>,
 }
 
 impl WorkflowHandoffPayload {
@@ -258,6 +348,7 @@ impl WorkflowHandoffPayload {
         source_agent_id: impl Into<String>,
         target_node_id: impl Into<String>,
         invocation_prompt: Option<String>,
+        completion: Option<WorkflowCompletionSnapshot>,
     ) -> Self {
         Self {
             workflow_run_id: workflow_run_id.into(),
@@ -267,6 +358,7 @@ impl WorkflowHandoffPayload {
             source_agent_id: source_agent_id.into(),
             target_node_id: target_node_id.into(),
             invocation_prompt,
+            completion,
         }
     }
 
@@ -296,6 +388,10 @@ impl WorkflowHandoffPayload {
 
     pub fn invocation_prompt(&self) -> Option<&str> {
         self.invocation_prompt.as_deref()
+    }
+
+    pub fn completion(&self) -> Option<&WorkflowCompletionSnapshot> {
+        self.completion.as_ref()
     }
 }
 
@@ -362,6 +458,8 @@ pub struct WorkflowNodeRun {
     agent_id: String,
     status: WorkflowNodeRunStatus,
     summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completion: Option<WorkflowCompletionSnapshot>,
     created_at_ms: u64,
     started_at_ms: Option<u64>,
     completed_at_ms: Option<u64>,
@@ -380,6 +478,7 @@ impl WorkflowNodeRun {
             agent_id: agent_id.into(),
             status,
             summary: None,
+            completion: None,
             created_at_ms: unix_epoch_ms(),
             started_at_ms: None,
             completed_at_ms: None,
@@ -406,6 +505,22 @@ impl WorkflowNodeRun {
         self.summary.as_deref()
     }
 
+    pub fn completion(&self) -> Option<&WorkflowCompletionSnapshot> {
+        self.completion.as_ref()
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn started_at_ms(&self) -> Option<u64> {
+        self.started_at_ms
+    }
+
+    pub fn completed_at_ms(&self) -> Option<u64> {
+        self.completed_at_ms
+    }
+
     pub fn set_status(&mut self, status: WorkflowNodeRunStatus) {
         self.status = status;
         if matches!(status, WorkflowNodeRunStatus::Running) && self.started_at_ms.is_none() {
@@ -423,6 +538,10 @@ impl WorkflowNodeRun {
 
     pub fn set_summary(&mut self, summary: Option<String>) {
         self.summary = summary;
+    }
+
+    pub fn set_completion(&mut self, completion: Option<WorkflowCompletionSnapshot>) {
+        self.completion = completion;
     }
 }
 
@@ -999,7 +1118,9 @@ impl RuntimeSession {
     }
 
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
-        self.workflows.iter().find(|workflow| workflow.id() == workflow_id)
+        self.workflows
+            .iter()
+            .find(|workflow| workflow.id() == workflow_id)
     }
 
     pub fn workflow_mut(&mut self, workflow_id: &str) -> Option<&mut WorkflowDefinition> {

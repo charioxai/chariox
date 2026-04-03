@@ -492,16 +492,17 @@ Required runtime concepts:
 
 Required rules:
 
-- Every multi-agent workflow MUST have a designated coordinator node.
-- The coordinator MUST receive the initial user prompt.
-- The coordinator MUST decide whether execution continues, stops, or completes.
-- In circular topology, the coordinator MUST be part of the cycle.
-- In hierarchical topology, the coordinator MUST be the root.
+- Execution policy MUST be derived from the graph the user created, not from a separate user-declared topology flag.
+- Nodes with indegree `<= 1` are serial with respect to input gating by default.
+- Nodes with indegree `> 1` require explicit barrier/fan-in handling.
+- Nodes with outdegree `> 1` are branching points and may release outputs to multiple children.
+- Cycles are a separate graph property and MUST be handled independently from input/output synchronization policy.
+- The runtime SHOULD support per-node execution policy rather than a workflow-wide sync/async switch.
 
 Implementation priority note:
 
-- circular topology should be implemented and stabilized first
-- hierarchical topology should follow later in v1 on top of the same generic workflow engine
+- graph-derived serial execution is the earlier implementation target
+- graph-derived barrier/fan-in and bounded-cycle handling should follow on top of the same generic workflow engine
 
 ### 4.4 Inter-Agent Communication Ownership
 
@@ -519,9 +520,15 @@ Each node completion artifact/report MUST include at least:
 
 - `status`
 - `summary`
-- `artifacts` or changed files
-- `handoff_payload`
+- optional explicit `output`
+- optional `artifacts` or changed files
 - `stop_recommendation`
+
+Rules:
+
+- `summary` is human-facing and audit-oriented; it is not the downstream workflow payload by default
+- downstream workflow delivery should use explicit output messages plus optional artifact refs
+- transcript history remains audit state, not workflow output
 
 ### 4.5 Worktree Isolation
 

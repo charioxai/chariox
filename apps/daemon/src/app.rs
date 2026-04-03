@@ -58,6 +58,36 @@ pub(crate) struct ActivePromptState {
 }
 
 impl DaemonApp {
+    pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
+        attachment_id
+            .chars()
+            .map(|ch| match ch {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                ch if ch.is_control() => '_',
+                ch => ch,
+            })
+            .collect()
+    }
+
+    pub(crate) fn attachment_artifact_root(
+        session_id: &str,
+        attachment_id: &str,
+        category: &str,
+    ) -> PathBuf {
+        std::env::temp_dir()
+            .join("arroba-session-artifacts")
+            .join(session_id)
+            .join(category)
+            .join(Self::artifact_attachment_segment(attachment_id))
+    }
+
+    pub(crate) fn attachment_artifact_roots(session_id: &str, attachment_id: &str) -> [PathBuf; 2] {
+        [
+            Self::attachment_artifact_root(session_id, attachment_id, "screenshots"),
+            Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
+        ]
+    }
+
     pub fn bootstrap(config: DaemonConfig) -> Result<Self, DaemonError> {
         config.validate()?;
 
@@ -350,10 +380,7 @@ impl DaemonApp {
             .capture(CaptureScreenshotRequest::new(
                 session_id,
                 attachment_id,
-                std::env::temp_dir()
-                    .join("arroba-session-artifacts")
-                    .join(session_id)
-                    .join("screenshots"),
+                Self::attachment_artifact_root(session_id, attachment_id, "screenshots"),
             ))
     }
 
@@ -372,6 +399,7 @@ impl DaemonApp {
                 session_id,
                 attachment_id,
                 PathBuf::from(session.worktree_id()),
+                Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
                 source_path,
                 display_name,
             ))

@@ -24,7 +24,6 @@ Already implemented:
 
 Not implemented yet:
 
-- rich completion payloads sourced from actual node output rather than daemon-generated handoff metadata
 - fan-in/barrier semantics for nodes with multiple upstream edges
 - richer run inspection/history UI beyond the current selected-workflow status view
 - time-based or recurring workflow schedules
@@ -140,21 +139,50 @@ Define how a node turn tells the daemon:
 
 This contract must be daemon-owned and machine-parseable. Do not rely on ad hoc natural-language parsing for workflow control.
 
-At minimum the daemon needs a structured completion payload with:
+At minimum the daemon needs a daemon-owned, machine-parseable completion payload with:
 
-- `workflow_run_id`
-- `node_run_id`
-- status
 - summary
-- artifacts or changed files
-- routed messages / handoff payloads
-- stop recommendation
+- optional explicit output message
+- optional artifact references when a node explicitly produces them
+- source workflow/node/run references
+- enough generic metadata to let downstream nodes continue without relying on ad hoc prose parsing
 
 Status:
 
-- the daemon now owns a minimal structured handoff payload containing workflow run id, workflow id, source node run id, source node id, source agent id, target node id, and the root invocation prompt
+- the daemon now derives a human-facing summary for a completed node from actual provider output when that output is available
+- workflow-owned prompts now instruct the node to emit a machine-parseable JSON envelope with separate `summary` and explicit downstream `output.message`
+- the daemon includes optional artifact refs in the output payload by scanning workflow-owned artifact roots namespaced to the workflow source attachment
+- downstream handoff payloads now include workflow run id, workflow id, source node run id, source node id, source agent id, target node id, the root invocation prompt, and the optional summary-plus-output completion payload
+- completed node runs now persist the same summary-plus-output completion payload instead of treating summary itself as the downstream payload
 - completion routing is machine-owned rather than parsed from model prose
-- richer completion data such as artifacts, changed files, node-authored summaries, and explicit stop recommendations is still pending
+- audit transcript remains in session history for later inspection and is intentionally not forwarded downstream as workflow output
+- typed/domain-specific payloads are intentionally still out of scope
+- richer completion data such as changed files and explicit stop recommendations is still pending
+
+### Phase 4.1 Node-Level Release/Gating Policy
+
+Execution policy should be modeled per node, not as a user-declared workflow topology mode.
+
+Target model:
+
+- `input_gate`
+  - `first_input`
+  - `all_inputs`
+- `output_release`
+  - `on_completion`
+  - `immediate`
+
+Default derivation:
+
+- indegree `<= 1` => `first_input`
+- indegree `> 1` => `all_inputs`
+- default `output_release = on_completion`
+
+Status:
+
+- docs now align on graph-derived execution and per-node policy
+- the current runtime still behaves like `output_release = on_completion`
+- barrier/fan-in enforcement for `all_inputs` nodes is still pending
 
 ### Phase 5. CLI run visibility
 

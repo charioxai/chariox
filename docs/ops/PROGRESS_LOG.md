@@ -327,3 +327,21 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added built-in local log inspection through `arroba-cli logs`.
 - Removed the previous ad hoc CLI debug-file hook and daemon IPC debug stderr hook in favor of the shared logger.
 - Updated contributor and agent guidance so future debug work must extend the shared logging system instead of introducing separate mechanisms.
+
+### Workflow runtime completion snapshot update
+
+- Extended workflow node completion so the daemon now derives a summary-only completion payload from persisted provider output for the exact provider run that settled the node.
+- Persisted that summary-only payload on completed `WorkflowNodeRun` records and forwarded it in downstream workflow handoff payloads, while keeping the full transcript only in session history for audit rather than as workflow output.
+- Added daemon coverage proving that downstream handoffs retain the upstream node summary when provider output exists before prompt completion.
+
+### Workflow runtime artifact reference update
+
+- Added optional artifact refs to the workflow completion payload so a completed node can forward `summary + artifacts` without forwarding transcript data.
+- Namespaced session artifacts by attachment/workflow source under the daemon artifact root so workflow-owned artifacts can be discovered without sweeping unrelated session files.
+- Added daemon coverage proving that a workflow-owned artifact appears on the completed node run and in the downstream handoff payload.
+
+### Workflow explicit output contract update
+
+- Changed the workflow runtime contract so `summary` remains human-facing while downstream routing uses an explicit `output.message` plus optional artifact refs.
+- Updated workflow-owned prompts to request a structured JSON completion envelope with separate `summary` and `output`.
+- Reframed the docs around graph-derived execution and per-node gating/release policy instead of user-declared circular vs hierarchical workflow modes.

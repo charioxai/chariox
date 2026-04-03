@@ -27,11 +27,7 @@ impl DaemonApp {
             self.providers
                 .get_run_for_agent(session_id, &target_agent_id)
                 .map(|run| run.id().to_string())
-                .or_else(|| {
-                    session_before
-                        .active_provider_run_id()
-                        .map(str::to_string)
-                })
+                .or_else(|| session_before.active_provider_run_id().map(str::to_string))
         } else {
             Some(self.ensure_active_provider_run_for_agent(session_id, &target_agent_id)?)
         };
@@ -54,11 +50,12 @@ impl DaemonApp {
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
-                let provider_run_id = provider_run_id.as_deref().ok_or_else(|| {
-                    DaemonError::NoActiveProviderRun {
-                        session_id: session_id.to_string(),
-                    }
-                })?;
+                let provider_run_id =
+                    provider_run_id
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                            session_id: session_id.to_string(),
+                        })?;
                 self.echo_prompt_to_other_attachments(
                     session_id,
                     provider_run_id,
@@ -111,8 +108,17 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<PromptCompletion, DaemonError> {
+        let provider_run_id = self
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
         let (_session, completed) = self.sessions.complete_active_prompt_only(session_id)?;
-        self.reconcile_workflow_prompt_completed(session_id, &completed)?;
+        self.reconcile_workflow_prompt_completed(
+            session_id,
+            &completed,
+            provider_run_id.as_deref(),
+        )?;
         self.clear_prompt_activity(session_id);
         let started_next = if self
             .sessions
@@ -199,15 +205,16 @@ impl DaemonApp {
             let target_agent_id = next.target_agent_id().to_string();
             let is_workflow_prompt =
                 Self::is_workflow_prompt_source_attachment_id(next.source_attachment_id());
-            let provider_run_id =
-                match self.ensure_active_provider_run_for_agent(session_id, &target_agent_id) {
-                    Ok(provider_run_id) => provider_run_id,
-                    Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
-                        match self.ensure_workflow_provider_run_for_agent(session_id, &target_agent_id)
-                        {
-                            Ok(provider_run_id) => provider_run_id,
-                            Err(error) => {
-                                self.record_notice(
+            let provider_run_id = match self
+                .ensure_active_provider_run_for_agent(session_id, &target_agent_id)
+            {
+                Ok(provider_run_id) => provider_run_id,
+                Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
+                    match self.ensure_workflow_provider_run_for_agent(session_id, &target_agent_id)
+                    {
+                        Ok(provider_run_id) => provider_run_id,
+                        Err(error) => {
+                            self.record_notice(
                                     session_id,
                                     None,
                                     self.attachments.list_session_attachment_ids(session_id),
@@ -218,12 +225,12 @@ impl DaemonApp {
                                         error
                                     ),
                                 );
-                                continue;
-                            }
+                            continue;
                         }
                     }
-                    Err(error) => {
-                        self.record_notice(
+                }
+                Err(error) => {
+                    self.record_notice(
                             session_id,
                             None,
                             self.attachments.list_session_attachment_ids(session_id),
@@ -234,9 +241,9 @@ impl DaemonApp {
                                 error
                             ),
                         );
-                        continue;
-                    }
-                };
+                    continue;
+                }
+            };
 
             if let Err(error) =
                 self.ensure_attachment_in_session(session_id, next.source_attachment_id())
@@ -424,7 +431,11 @@ impl DaemonApp {
                 self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
             } else {
                 let completed = self.sessions.complete_active_prompt_only(session_id)?.1;
-                self.reconcile_workflow_prompt_completed(session_id, &completed)?;
+                self.reconcile_workflow_prompt_completed(
+                    session_id,
+                    &completed,
+                    Some(provider_run_id),
+                )?;
             }
             self.clear_prompt_activity(session_id);
         }

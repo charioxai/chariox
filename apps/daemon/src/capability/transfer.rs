@@ -10,6 +10,7 @@ pub struct StoreTransferredFileRequest {
     pub session_id: String,
     pub attachment_id: String,
     pub worktree_root: PathBuf,
+    pub artifact_root: PathBuf,
     pub source_path: PathBuf,
     pub display_name: Option<String>,
 }
@@ -19,6 +20,7 @@ impl StoreTransferredFileRequest {
         session_id: impl Into<String>,
         attachment_id: impl Into<String>,
         worktree_root: PathBuf,
+        artifact_root: PathBuf,
         source_path: PathBuf,
         display_name: Option<String>,
     ) -> Self {
@@ -26,6 +28,7 @@ impl StoreTransferredFileRequest {
             session_id: session_id.into(),
             attachment_id: attachment_id.into(),
             worktree_root,
+            artifact_root,
             source_path,
             display_name,
         }
@@ -70,17 +73,15 @@ impl FileTransferService {
         })?;
 
         let artifact_id = format!("transfer-{}-{}", timestamp_ms(), std::process::id());
-        let artifact_root = std::env::temp_dir()
-            .join("arroba-session-artifacts")
-            .join(&request.session_id)
-            .join("transfers");
-        std::fs::create_dir_all(&artifact_root).map_err(|error| {
+        std::fs::create_dir_all(&request.artifact_root).map_err(|error| {
             DaemonError::TransferCapabilityFailed {
                 session_id: request.session_id.clone(),
                 message: error.to_string(),
             }
         })?;
-        let stored_path = artifact_root.join(format!("{}-{}", artifact_id, stored_name));
+        let stored_path = request
+            .artifact_root
+            .join(format!("{}-{}", artifact_id, stored_name));
         let bytes = std::fs::copy(&source_path, &stored_path).map_err(|error| {
             DaemonError::TransferCapabilityFailed {
                 session_id: request.session_id.clone(),
@@ -157,6 +158,11 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
+                std::env::temp_dir()
+                    .join("arroba-session-artifacts")
+                    .join("session-1")
+                    .join("transfers")
+                    .join("attachment-1"),
                 source,
                 None,
             ))
@@ -186,6 +192,11 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
+                std::env::temp_dir()
+                    .join("arroba-session-artifacts")
+                    .join("session-1")
+                    .join("transfers")
+                    .join("attachment-1"),
                 source,
                 Some("foo/bar.txt".to_string()),
             ))
@@ -209,6 +220,11 @@ mod tests {
                 "session-1",
                 "attachment-1",
                 root,
+                std::env::temp_dir()
+                    .join("arroba-session-artifacts")
+                    .join("session-1")
+                    .join("transfers")
+                    .join("attachment-1"),
                 source,
                 Some("...".to_string()),
             ))

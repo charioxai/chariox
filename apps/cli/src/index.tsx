@@ -199,6 +199,11 @@ import {
   type WorkspaceScreenMode,
 } from "./workspace-screen.js"
 import { createWorkflowController, deriveWorkflowSelectionState } from "./workflow-controller.js"
+import {
+  deriveWorkflowPromptState,
+  formatWorkflowPromptPlaceholder,
+  isWorkflowCommandInput,
+} from "./workflow-prompt-state.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
   appendPreviewLine,
@@ -801,7 +806,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
   const multiAgentMode = () => isAttached() && sessionState().agents.length > 1
+  const workflowScreenShowing = () => isAttached() && workspaceScreenMode() === "workflow"
   const splitAgentResponseMode = () => isAttached() && sessionState().agents.length > 1 && multiAgentResponseLayout() === "split"
+  const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
+    workflowScreenActive: workflowScreenShowing(),
+    workflows: sessionState().workflows ?? [],
+    workflowRuns: sessionState().workflow_runs ?? [],
+    selectedWorkflowId: selectedWorkflowId(),
+    selectedWorkflowNodeId: selectedWorkflowNodeId(),
+  }))
   const responsePaneSelection = () => selectResponsePaneAgents(
     sessionState().agents,
     focusedAgentId(),
@@ -1488,7 +1501,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       statusLine: statusLine(),
     })
   }
-  const promptPlaceholder = () => (isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER)
+  const promptPlaceholder = () => {
+    if (!isAttached()) {
+      return SESSION_NEW_PLACEHOLDER
+    }
+    return formatWorkflowPromptPlaceholder({
+      workflowScreenActive: workflowScreenShowing(),
+      state: workflowPromptState(),
+      attachedPlaceholder: ATTACHED_PROMPT_PLACEHOLDER,
+      detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
+    })
+  }
   const restorePromptHistory = (sessionId: string | null) => {
     const nextEntries = sessionId
       ? sessionPromptHistoryEntries(untrack(preferencesState), sessionId)
@@ -1581,6 +1604,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     promptInput.placeholder = promptPlaceholder()
   }
+  createEffect(() => {
+    promptPlaceholder()
+    syncPromptPlaceholder()
+  })
   const clearPendingPromptAttachments = () => {
     setPendingAttachments([])
     refreshPromptAttachmentHighlights()
@@ -4273,7 +4300,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       syncPromptTextSnapshot()
       return
     }
-    const handledCommand = await executeSlashCommand(rawPrompt, {
+    const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
+    const handledCommand = allowSlashCommandSubmission
+      ? await executeSlashCommand(rawPrompt, {
       onExit: requestExit,
       onWaiting: requestWaitingRoom,
       onStop: requestPromptStop,
@@ -4345,6 +4374,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
       },
     })
+      : null
     if (handledCommand) {
       promptInput.clear()
       syncPromptTextSnapshot()
@@ -4360,6 +4390,53 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       promptInput.clear()
       syncPromptTextSnapshot()
       return
+    }
+
+    if (workflowScreenShowing()) {
+      const workflowPrompt = workflowPromptState()
+      if (!workflowPrompt.enabled) {
+        flashFooter(`prompt disabled: ${workflowPrompt.disabledReason ?? "workflow prompt unavailable"}`, "info")
+        return
+      }
+      if (pendingAttachments().length > 0) {
+        flashFooter("workflow endpoint prompts do not support attachments", "error")
+        return
+      }
+      if (!workflowPrompt.workflow || !workflowPrompt.endpoint) {
+        flashFooter("workflow prompt target unavailable", "error")
+        return
+      }
+      const workflowInvocationPrompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
+
+      try {
+        const payload = await invokeWorkflowEndpoint(
+          workflowPrompt.workflow.id,
+          workflowPrompt.endpoint.id,
+          workflowInvocationPrompt,
+        )
+        flashFooter(
+          `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+          "info",
+        )
+        const promptHistorySessionId = sessionState().id
+        const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
+        setPromptHistoryEntries(nextPromptHistoryEntries)
+        setPromptHistoryIndex(null)
+        setPromptHistoryDraft(null)
+        void persistPromptHistory(promptHistorySessionId, nextPromptHistoryEntries).catch((error) => {
+          appLogger?.warn("failed to persist prompt history", {
+            session_id: promptHistorySessionId,
+            error: formatError(error),
+          })
+        })
+        promptInput.clear()
+        syncPromptTextSnapshot()
+        clearPendingPromptAttachments()
+        return
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+        return
+      }
     }
 
     const prompt = trimmed ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
@@ -5232,7 +5309,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       height={dimensions().height}
       fatalError={fatalError() !== null}
       responsePaneRows={responsePaneRows}
-      promptPlaceholder={isAttached() ? ATTACHED_PROMPT_PLACEHOLDER : SESSION_NEW_PLACEHOLDER}
+      promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptKeyBindings={PROMPT_KEYBINDINGS}
       onRootMouseUp={retainPromptFocus}

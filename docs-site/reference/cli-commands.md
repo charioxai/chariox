@@ -104,7 +104,7 @@ Cycle focus to the next agent.
 Current status:
 
 - workflow definition commands and basic workflow runtime commands are available in the CLI
-- the daemon executes endpoint-triggered workflow runs with daemon-owned downstream handoffs
+- the daemon executes endpoint-triggered workflow runs with daemon-owned downstream handoffs and explicit `output.message` payloads, plus optional artifact refs when a workflow-owned artifact is produced
 - the workflow canvas now shows basic run status for the selected workflow and its nodes
 - there is still no `/workflow schedule` command
 
