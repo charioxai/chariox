@@ -18,6 +18,7 @@ pub use api::{
     RemoveWorkflowNodeRequest, ResizeTerminalRequest, ResolveSessionRequest,
     ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest,
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+    ValidateWorkflowOutputRequest,
 };
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

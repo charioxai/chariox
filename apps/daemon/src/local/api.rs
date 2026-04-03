@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use jsonschema::JSONSchema;
 
 use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
@@ -293,6 +295,15 @@ pub struct AddWorkflowEdgeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateWorkflowOutputRequest {
+    pub session_id: String,
+    pub output_schema_ref: String,
+    pub output_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowOutputValidationPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveWorkflowEdgeRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -373,6 +384,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
+    ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +552,10 @@ pub enum LocalDaemonResponse {
     WorkflowRunCancelled {
         workflow_run: WorkflowRun,
         session: RuntimeSession,
+    },
+    WorkflowOutputValidated {
+        valid: bool,
+        warning: Option<String>,
     },
 }
 
@@ -1003,8 +1019,47 @@ impl DaemonApp {
                     session,
                 })
             }
+            LocalDaemonRequest::ValidateWorkflowOutput(request) => {
+                let result = validate_workflow_output_schema(
+                    &request.output_schema_ref,
+                    &request.output_json,
+                );
+                match result {
+                    Ok(()) => Ok(LocalDaemonResponse::WorkflowOutputValidated {
+                        valid: true,
+                        warning: None,
+                    }),
+                    Err(message) => Ok(LocalDaemonResponse::WorkflowOutputValidated {
+                        valid: false,
+                        warning: Some(message),
+                    }),
+                }
+            }
         }
     }
+}
+
+fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
+    let schema_source = std::fs::read_to_string(schema_ref)
+        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
+    let schema_value =
+        serde_json::from_str::<Value>(&schema_source)
+            .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
+    let output_value = serde_json::from_str::<Value>(output_json)
+        .map_err(|error| format!("output is not valid JSON: {error}"))?;
+    let compiled = JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(&schema_value)
+        .map_err(|error| format!("schema ref `{schema_ref}` failed to compile: {error}"))?;
+    if let Err(errors) = compiled.validate(&output_value) {
+        let message = errors
+            .into_iter()
+            .next()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "schema validation failed".to_string());
+        return Err(message);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
