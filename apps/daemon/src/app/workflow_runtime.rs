@@ -137,6 +137,7 @@ impl DaemonApp {
                     workflow_run.id(),
                     node_run.node_id(),
                 ),
+                None,
             ),
         )
     }
@@ -165,15 +166,17 @@ impl DaemonApp {
                 dispatch.node_run.id(),
                 dispatch.node_run.agent_id(),
                 dispatch.node_run.node_id(),
-                &self.build_workflow_handoff_prompt(
+                &self.build_workflow_entry_prompt(
                     session_id,
                     workflow_run_id,
-                    &dispatch.messages,
+                    dispatch.node_run.node_id(),
+                    "",
                     self.workflow_node_instruction_reference(
                         session_id,
                         workflow_run_id,
                         dispatch.node_run.node_id(),
                     ),
+                    Some(&dispatch.messages),
                 ),
             ) {
                 self.record_notice(
@@ -190,45 +193,6 @@ impl DaemonApp {
         }
     }
 
-    fn build_workflow_handoff_prompt(
-        &self,
-        session_id: &str,
-        workflow_run_id: &str,
-        messages: &[WorkflowMessage],
-        instruction_ref: Option<String>,
-    ) -> String {
-        let handoff_payloads = messages
-            .iter()
-            .map(|message| {
-                serde_json::from_str::<serde_json::Value>(message.handoff_payload()).unwrap_or_else(
-                    |_| serde_json::Value::String(message.handoff_payload().to_string()),
-                )
-            })
-            .collect::<Vec<_>>();
-        let payloads =
-            serde_json::to_string_pretty(&handoff_payloads).unwrap_or_else(|_| "[]".to_string());
-        let target_node_id = messages
-            .first()
-            .map(|message| message.target_node_id())
-            .unwrap_or("-");
-        let reference_line = instruction_ref
-            .as_deref()
-            .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
-            .unwrap_or_default();
-        let control_line = self
-            .workflow_node_control_reference(session_id, workflow_run_id, target_node_id)
-            .map(|path| format!("Control mailbox (daemon-managed): {path}\n\n"))
-            .unwrap_or_default();
-        format!(
-            "Workflow handoff payloads (JSON array):\n{}\n\nExecute workflow node `{}` using these upstream contexts as the authoritative inputs.\n\n{}{}{}\n",
-            payloads,
-            target_node_id,
-            reference_line,
-            control_line,
-            workflow_output_contract_instructions()
-        )
-    }
-
     fn build_workflow_entry_prompt(
         &self,
         session_id: &str,
@@ -236,6 +200,7 @@ impl DaemonApp {
         node_id: &str,
         prompt: &str,
         instruction_ref: Option<String>,
+        handoff_messages: Option<&[WorkflowMessage]>,
     ) -> String {
         let reference_line = instruction_ref
             .as_deref()
@@ -245,8 +210,44 @@ impl DaemonApp {
             .workflow_node_control_reference(session_id, workflow_run_id, node_id)
             .map(|path| format!("Control mailbox (daemon-managed): {path}\n\n"))
             .unwrap_or_default();
+        let workflow_prompt = self
+            .sessions()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()
+            .and_then(|run| run.invocation_prompt().map(str::to_string))
+            .unwrap_or_default();
+        let handoff_payloads = handoff_messages
+            .map(|messages| {
+                messages
+                    .iter()
+                    .map(|message| {
+                        serde_json::from_str::<serde_json::Value>(message.handoff_payload())
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(
+                                    message.handoff_payload().to_string(),
+                                )
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let payloads = serde_json::to_string_pretty(&handoff_payloads)
+            .unwrap_or_else(|_| "[]".to_string());
+        let payload_block = if handoff_payloads.is_empty() {
+            String::new()
+        } else {
+            format!("Workflow handoff payloads (JSON array):\n{}\n\n", payloads)
+        };
+        let entry_line = if prompt.trim().is_empty() {
+            String::new()
+        } else {
+            format!("Endpoint prompt:\n{prompt}\n\n")
+        };
         format!(
-            "Workflow entry prompt for node `{node_id}`:\n{prompt}\n\n{}{}{}\n",
+            "{}Workflow-level prompt:\n{}\n\n{}{}{}{}\n",
+            entry_line,
+            workflow_prompt,
+            payload_block,
             reference_line,
             control_line,
             workflow_output_contract_instructions()
