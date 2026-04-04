@@ -70,6 +70,15 @@ Planned:
 - move any workflow-specific queue advancement decisions into scheduler
 - formalize scheduler hooks into transport for prompt submission/advancement only
 
+Status update:
+
+- workflow scheduling now lives in `apps/daemon/src/scheduler/runtime.rs`
+- workflow prompt lifecycle callbacks (`started/completed/cancelled`) are handled by scheduler runtime, not `DaemonApp`
+- transport owns workflow prompt dispatch and cancellation cleanup
+- `DaemonApp` now delegates workflow progression decisions to scheduler runtime
+
+Status: **Complete**
+
 ### Phase 5. I/O Collision Manager Integration
 
 Goal:
@@ -83,4 +92,3 @@ Planned:
 
 - introduce resource lock interface and worktree scoping
 - wire lock checks into workflow-driven file writes
-
