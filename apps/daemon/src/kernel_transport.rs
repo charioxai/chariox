@@ -156,7 +156,7 @@ where
         loop {
             {
                 let mut app = pump_app.lock().await;
-                crate::scheduler::SchedulerService::pump_active_prompts(&mut app);
+                crate::transport::TransportService::pump_active_prompts(&mut app);
             }
             sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
         }

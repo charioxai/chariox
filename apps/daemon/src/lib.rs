@@ -12,6 +12,7 @@ pub mod prompt_transcript;
 pub mod provider;
 pub mod pty;
 pub mod scheduler;
+pub mod transport;
 pub mod session;
 pub mod session_history_page;
 pub mod terminal;

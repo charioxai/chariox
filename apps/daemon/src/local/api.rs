@@ -708,7 +708,7 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
-                let outcome = crate::scheduler::SchedulerService::schedule_direct_prompt(
+                let outcome = crate::transport::TransportService::schedule_direct_prompt(
                     self,
                     &request.session_id,
                     &request.attachment_id,
@@ -721,7 +721,7 @@ impl DaemonApp {
             }
             LocalDaemonRequest::CompletePrompt(request) => {
                 Ok(LocalDaemonResponse::PromptCompleted {
-                    completion: crate::scheduler::SchedulerService::complete_active_prompt(
+                    completion: crate::transport::TransportService::complete_active_prompt(
                         self,
                         &request.session_id,
                     )?,
@@ -729,7 +729,7 @@ impl DaemonApp {
             }
             LocalDaemonRequest::CancelActivePrompt(request) => {
                 Ok(LocalDaemonResponse::PromptCancelled {
-                    cancellation: crate::scheduler::SchedulerService::cancel_active_prompt(
+                    cancellation: crate::transport::TransportService::cancel_active_prompt(
                         self,
                         &request.session_id,
                         &request.attachment_id,

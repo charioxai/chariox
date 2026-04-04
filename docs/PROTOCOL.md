@@ -204,6 +204,15 @@ Future unified node-transport fields should also allow:
 
 For the current local baseline, the kernel exposes a request/response plus pushed-event surface over a daemon-owned WebSocket transport.
 
+Transport scope (current definition):
+
+- connects clients (CLI, relay, agent adapters)
+- maintains live session state subscriptions
+- emits output/notices/config updates to attachments
+- enforces prompt flow control policies (queue advancement, idle/timeout completion, cancellation transitions)
+- provides request/response dispatch for the local transport
+- bridges the transport contract across local and remote transports
+
 Current implementation notes:
 
 - the TypeScript CLI now defaults to `ws://127.0.0.1:${ARROBA_KERNEL_PORT:-43118}/kernel`

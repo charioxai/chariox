@@ -137,8 +137,8 @@ The kernel is the source of truth for live runtime state.
 
 Kernel component boundaries:
 
-- **Scheduler**: owns prompt/workflow scheduling, queueing, and execution state transitions.
-- **Transport**: owns the kernel-facing transport contract and local transport runtime. Relay is an external member that speaks the same transport contract.
+- **Scheduler**: owns workflow execution scheduling (node readiness, graph progression, run state transitions).
+- **Transport**: owns the kernel-facing transport contract, local transport runtime, and prompt flow control (queue advancement, prompt idle/timeout policy, cancellation/complete transitions). Relay is an external member that speaks the same transport contract.
 - **I/O Collision Manager**: owns resource locking and conflict prevention across agents (file paths, ports, shared resources).
 
 Node membership model:
