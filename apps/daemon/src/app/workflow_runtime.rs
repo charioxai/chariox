@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::history::SessionHistoryEntryKind;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
+    PromptQueueItem, WorkflowArtifactRef, WorkflowCompletionSnapshot,
     WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowEndpointDefinition,
     WorkflowMessage, WorkflowOutputPayload, WorkflowRun,
 };
@@ -139,79 +139,6 @@ impl DaemonApp {
                 ),
             ),
         )
-    }
-
-    pub(crate) fn schedule_workflow_node_prompt(
-        &mut self,
-        session_id: &str,
-        workflow_run_id: &str,
-        workflow_node_run_id: &str,
-        target_agent_id: &str,
-        node_id: &str,
-        prompt: &str,
-    ) -> Result<(), DaemonError> {
-        self.schedule_workflow_node_prompt_inner(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            target_agent_id,
-            node_id,
-            prompt,
-        )
-    }
-
-    fn schedule_workflow_node_prompt_inner(
-        &mut self,
-        session_id: &str,
-        workflow_run_id: &str,
-        workflow_node_run_id: &str,
-        target_agent_id: &str,
-        node_id: &str,
-        prompt: &str,
-    ) -> Result<(), DaemonError> {
-        let (_session, outcome) = self.sessions_mut().submit_workflow_prompt(
-            session_id,
-            &Self::workflow_prompt_source_attachment_id(workflow_run_id),
-            target_agent_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            prompt.to_string(),
-        )?;
-
-        match outcome {
-            PromptSubmissionOutcome::Started { prompt } => {
-                let provider_run_id =
-                    self.ensure_workflow_provider_run_for_agent(session_id, target_agent_id)?;
-                if let Err(error) = self.dispatch_prompt_to_provider(
-                    session_id,
-                    &provider_run_id,
-                    prompt.source_attachment_id(),
-                    prompt.prompt(),
-                    prompt.attachments(),
-                ) {
-                    if let Ok((_, cancelled)) = self.sessions_mut().cancel_active_prompt(session_id)
-                    {
-                        let _ = self.reconcile_workflow_prompt_cancelled(session_id, &cancelled);
-                    }
-                    crate::transport::flow_control::clear_prompt_activity(self, session_id);
-                    return Err(error);
-                }
-                self.reconcile_workflow_prompt_started(session_id, &prompt)?;
-                crate::transport::flow_control::note_prompt_started(self, session_id);
-            }
-            PromptSubmissionOutcome::Queued { .. } => {
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachments().list_session_attachment_ids(session_id),
-                    format!(
-                        "Workflow run `{workflow_run_id}` queued node `{node_id}` behind the current active prompt."
-                    ),
-                );
-            }
-        }
-
-        Ok(())
     }
 
     fn schedule_workflow_dispatches(

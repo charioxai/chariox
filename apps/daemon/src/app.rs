@@ -659,7 +659,7 @@ impl DaemonApp {
         Ok(provider_run)
     }
 
-    fn dispatch_prompt_to_provider(
+    pub(crate) fn dispatch_prompt_to_provider(
         &mut self,
         session_id: &str,
         provider_run_id: &str,

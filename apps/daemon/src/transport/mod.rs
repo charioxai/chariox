@@ -1,6 +1,8 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion};
+use crate::session::{
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem,
+};
 
 pub(crate) mod flow_control;
 
@@ -34,5 +36,37 @@ impl TransportService {
 
     pub fn pump_active_prompts(app: &mut DaemonApp) {
         app.pump_active_prompt_outputs();
+    }
+
+    pub fn dispatch_workflow_prompt(
+        app: &mut DaemonApp,
+        session_id: &str,
+        target_agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let provider_run_id =
+            app.ensure_workflow_provider_run_for_agent(session_id, target_agent_id)?;
+        app.dispatch_prompt_to_provider(
+            session_id,
+            &provider_run_id,
+            prompt.source_attachment_id(),
+            prompt.prompt(),
+            prompt.attachments(),
+        )?;
+        flow_control::note_prompt_started(app, session_id);
+        Ok(())
+    }
+
+    pub fn cancel_active_prompt_after_dispatch_failure(
+        app: &mut DaemonApp,
+        session_id: &str,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        match app.sessions_mut().cancel_active_prompt(session_id) {
+            Ok((_, cancelled)) => {
+                flow_control::clear_prompt_activity(app, session_id);
+                Ok(Some(cancelled))
+            }
+            Err(_) => Ok(None),
+        }
     }
 }

@@ -1,5 +1,7 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+
+pub mod runtime;
 pub struct SchedulerService;
 
 impl SchedulerService {
@@ -12,7 +14,8 @@ impl SchedulerService {
         node_id: &str,
         prompt: &str,
     ) -> Result<(), DaemonError> {
-        app.schedule_workflow_node_prompt(
+        runtime::schedule_workflow_node_prompt(
+            app,
             session_id,
             workflow_run_id,
             workflow_node_run_id,
