@@ -204,14 +204,17 @@ impl DaemonApp {
             };
             let target_agent_id = peeked.target_agent_id().to_string();
             let is_workflow_prompt =
-                Self::is_workflow_prompt_source_attachment_id(peeked.source_attachment_id());
+                crate::scheduler::runtime::is_workflow_prompt_attachment(peeked.source_attachment_id());
             let provider_run_id = match self
                 .ensure_active_provider_run_for_agent(session_id, &target_agent_id)
             {
                 Ok(provider_run_id) => provider_run_id,
                 Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
-                    match self.ensure_workflow_provider_run_for_agent(session_id, &target_agent_id)
-                    {
+                    match crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                        self,
+                        session_id,
+                        &target_agent_id,
+                    ) {
                         Ok(provider_run_id) => provider_run_id,
                         Err(error) => {
                             self.record_notice(

@@ -53,6 +53,18 @@ pub fn schedule_workflow_node_prompt(
     Ok(())
 }
 
+pub fn is_workflow_prompt_attachment(attachment_id: &str) -> bool {
+    DaemonApp::is_workflow_prompt_source_attachment_id(attachment_id)
+}
+
+pub fn ensure_workflow_provider_run_for_agent(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<String, DaemonError> {
+    app.ensure_workflow_provider_run_for_agent(session_id, agent_id)
+}
+
 pub fn on_workflow_prompt_started(
     app: &mut DaemonApp,
     session_id: &str,
