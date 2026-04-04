@@ -109,16 +109,14 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
         ))
         .expect("provider run should launch");
 
-    let first_outcome = app
-        .submit_prompt(
+    let first_outcome = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             first.id(),
             "first integration prompt\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let second_outcome = app
-        .submit_prompt(
+    let second_outcome = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             second.id(),
             "second integration prompt\n",
@@ -179,16 +177,14 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             first.id(),
             "first integration prompt\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             second.id(),
             "second integration prompt\n",
@@ -198,8 +194,7 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
 
     app.detach(second.id())
         .expect("queued prompt source should detach cleanly");
-    let completion = app
-        .complete_active_prompt(session.id())
+    let completion = arroba_daemon::transport::TransportService::complete_active_prompt(&mut app, session.id())
         .expect("active prompt should complete");
 
     assert!(completion.started_next.is_none());
@@ -516,16 +511,14 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "first auto prompt\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "second auto prompt\n",
@@ -582,16 +575,14 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "first exit prompt\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "second exit prompt\n",
@@ -750,16 +741,14 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "first prompt should fail\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "second prompt should run\n",
@@ -847,16 +836,14 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "first prompt should cancel\n",
             Vec::new(),
         )
         .expect("first prompt should start");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "second prompt after cancel\n",
@@ -864,8 +851,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         )
         .expect("second prompt should queue");
 
-    let cancellation = app
-        .cancel_active_prompt(session.id(), attachment.id())
+    let cancellation = arroba_daemon::transport::TransportService::cancel_active_prompt(&mut app, session.id(), attachment.id())
         .expect("active prompt should cancel");
     assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
     assert!(cancellation.started_next.is_none());
@@ -950,8 +936,7 @@ fn event_stream_disconnect_reconnects_without_restarting_the_provider_run() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "prompt after reconnect\n",
@@ -1030,8 +1015,7 @@ fn event_stream_reconnect_retries_temporary_http_failures_without_restarting_the
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "prompt after transient reconnect failures\n",
@@ -1122,8 +1106,7 @@ fn external_opencode_endpoint_accepts_prompts_and_streams_output() {
     app.resize_terminal(session.id(), 120, 40)
         .expect("external endpoint resize should be a no-op");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "prompt through external endpoint\n",
@@ -1266,8 +1249,7 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
 
     app.focus_agent(session.id(), default_agent.id())
         .expect("default agent should focus");
-    let first_submission = app
-        .submit_prompt(
+    let first_submission = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "default agent prompt\n",
@@ -1304,8 +1286,7 @@ fn focused_agent_prompts_route_to_distinct_opencode_runs_and_history() {
 
     app.focus_agent(session.id(), reviewer.id())
         .expect("reviewer agent should focus");
-    let second_submission = app
-        .submit_prompt(
+    let second_submission = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "review agent prompt\n",
@@ -1443,8 +1424,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
 
     app.focus_agent(session.id(), default_agent.id())
         .expect("default agent should focus");
-    let started = app
-        .submit_prompt(
+    let started = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "keep streaming while focus changes\n",
@@ -1563,8 +1543,7 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
 
     app.focus_agent(session.id(), default_agent.id())
         .expect("default agent should focus");
-    let first_submission = app
-        .submit_prompt(
+    let first_submission = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "default agent prompt stays active\n",
@@ -1580,8 +1559,7 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
 
     app.focus_agent(session.id(), reviewer.id())
         .expect("reviewer agent should focus while default agent is running");
-    let second_submission = app
-        .submit_prompt(
+    let second_submission = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "reviewer prompt should queue\n",
@@ -1722,8 +1700,7 @@ fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             first.id(),
             "prompt survives detach\n",
@@ -1826,8 +1803,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 
     app.focus_agent(session.id(), default_agent.id())
         .expect("default agent should focus");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "first exit prompt on default\n",
@@ -1837,8 +1813,7 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 
     app.focus_agent(session.id(), reviewer.id())
         .expect("reviewer agent should focus");
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "reviewer prompt after default exit\n",
@@ -2035,8 +2010,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
         ))
         .expect("provider run should launch");
 
-    let _ = app
-        .submit_prompt(
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(&mut app, 
             session.id(),
             attachment.id(),
             "prompt without session status polling\n",
