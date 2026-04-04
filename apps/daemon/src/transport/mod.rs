@@ -2,6 +2,8 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion};
 
+pub(crate) mod flow_control;
+
 pub struct TransportService;
 
 impl TransportService {

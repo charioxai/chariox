@@ -1,9 +1,8 @@
-use std::time::Instant;
-
-use crate::app::{ActivePromptState, DaemonApp};
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::pty::PtyProcessState;
 use crate::session::{PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome};
+use crate::transport::flow_control;
 
 impl DaemonApp {
     pub fn submit_prompt(
@@ -71,10 +70,10 @@ impl DaemonApp {
                     prompt.attachments(),
                 ) {
                     let _ = self.sessions.cancel_active_prompt(session_id);
-                    self.clear_prompt_activity(session_id);
+                    flow_control::clear_prompt_activity(self, session_id);
                     return Err(error);
                 }
-                self.note_prompt_started(session_id);
+                flow_control::note_prompt_started(self, session_id);
             }
             PromptSubmissionOutcome::Queued { prompt } => {
                 if let Some(provider_run_id) = provider_run_id.as_deref() {
@@ -119,7 +118,7 @@ impl DaemonApp {
             &completed,
             provider_run_id.as_deref(),
         )?;
-        self.clear_prompt_activity(session_id);
+        flow_control::clear_prompt_activity(self, session_id);
         let started_next = if self
             .sessions
             .get_session(session_id)?
@@ -175,7 +174,7 @@ impl DaemonApp {
         }
 
         let (_session, prompt) = self.sessions.begin_cancelling_active_prompt(session_id)?;
-        self.note_prompt_settlement_requested(session_id);
+        flow_control::note_prompt_settlement_requested(self, session_id);
         self.record_notice(
             session_id,
             Some(&provider_run_id),
@@ -265,11 +264,11 @@ impl DaemonApp {
                     ) {
                         let cancelled = self.sessions.cancel_active_prompt(session_id)?.1;
                         self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
-                        self.clear_prompt_activity(session_id);
+                        flow_control::clear_prompt_activity(self, session_id);
                         return Err(dispatch_error);
                     }
                     self.reconcile_workflow_prompt_started(session_id, &active)?;
-                    self.note_prompt_started(session_id);
+                    flow_control::note_prompt_started(self, session_id);
                     return Ok(Some(active));
                 }
                 self.record_notice(
@@ -307,76 +306,9 @@ impl DaemonApp {
 
             let active = self.sessions.activate_prompt(session_id, next)?.1;
             self.reconcile_workflow_prompt_started(session_id, &active)?;
-            self.note_prompt_started(session_id);
+            flow_control::note_prompt_started(self, session_id);
             return Ok(Some(active));
         }
-    }
-
-    pub(crate) fn note_prompt_started(&mut self, session_id: &str) {
-        self.prompt_activity.insert(
-            session_id.to_string(),
-            ActivePromptState {
-                last_output_at: None,
-            },
-        );
-    }
-
-    pub(crate) fn note_prompt_output(&mut self, session_id: &str) {
-        if let Some(state) = self.prompt_activity.get_mut(session_id) {
-            state.last_output_at = Some(Instant::now());
-        }
-    }
-
-    pub(crate) fn clear_prompt_activity(&mut self, session_id: &str) {
-        self.prompt_activity.remove(session_id);
-    }
-
-    pub(crate) fn note_prompt_settlement_requested(&mut self, session_id: &str) {
-        self.prompt_activity
-            .entry(session_id.to_string())
-            .and_modify(|state| state.last_output_at = Some(Instant::now()))
-            .or_insert(ActivePromptState {
-                last_output_at: Some(Instant::now()),
-            });
-    }
-
-    pub(crate) fn maybe_complete_active_prompt(
-        &mut self,
-        session_id: &str,
-    ) -> Result<(), DaemonError> {
-        let should_complete = self
-            .prompt_activity
-            .get(session_id)
-            .and_then(|state| state.last_output_at)
-            .map(|last_output_at| last_output_at.elapsed() >= self.prompt_idle_timeout)
-            .unwrap_or(false);
-
-        if !should_complete {
-            return Ok(());
-        }
-
-        if self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt()
-            .is_none()
-        {
-            self.clear_prompt_activity(session_id);
-            return Ok(());
-        }
-
-        if self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt()
-            .map(|prompt| prompt.status())
-            == Some(PromptStatus::Cancelling)
-        {
-            let _ = self.finalize_active_prompt_cancellation(session_id)?;
-        } else {
-            let _ = self.complete_active_prompt(session_id)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn reconcile_provider_run_exit(
@@ -443,7 +375,7 @@ impl DaemonApp {
                     Some(provider_run_id),
                 )?;
             }
-            self.clear_prompt_activity(session_id);
+            flow_control::clear_prompt_activity(self, session_id);
         }
         self.providers.clear_runtime(provider_run_id);
         let started_next = if had_active_prompt {
@@ -486,7 +418,7 @@ impl DaemonApp {
             .sessions
             .finalize_active_prompt_cancellation(session_id)?;
         self.reconcile_workflow_prompt_cancelled(session_id, &prompt)?;
-        self.clear_prompt_activity(session_id);
+        flow_control::clear_prompt_activity(self, session_id);
         let started_next = if self
             .sessions
             .get_session(session_id)?

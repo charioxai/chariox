@@ -193,11 +193,11 @@ impl DaemonApp {
                     {
                         let _ = self.reconcile_workflow_prompt_cancelled(session_id, &cancelled);
                     }
-                    self.clear_prompt_activity(session_id);
+                    crate::transport::flow_control::clear_prompt_activity(self, session_id);
                     return Err(error);
                 }
                 self.reconcile_workflow_prompt_started(session_id, &prompt)?;
-                self.note_prompt_started(session_id);
+                crate::transport::flow_control::note_prompt_started(self, session_id);
             }
             PromptSubmissionOutcome::Queued { .. } => {
                 self.record_notice(

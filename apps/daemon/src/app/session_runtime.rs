@@ -100,7 +100,7 @@ impl DaemonApp {
             for run in terminated_runs {
                 self.pty.remove_process(run.id())?;
             }
-            self.prompt_activity.remove(attachment.session_id());
+            crate::transport::flow_control::clear_prompt_activity(self, attachment.session_id());
         }
 
         crate::logging::info_with_fields(
@@ -143,7 +143,7 @@ impl DaemonApp {
             .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
             .collect();
 
-        self.prompt_activity.remove(session_id);
+        crate::transport::flow_control::clear_prompt_activity(self, session_id);
         let ended = self.sessions.end_session(session_id)?;
         crate::logging::info_with_fields(
             "daemon.session",

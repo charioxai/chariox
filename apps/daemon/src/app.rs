@@ -45,8 +45,8 @@ pub struct DaemonApp {
     transfer_capabilities: FileTransferService,
     pty: PtyManager,
     providers: ProviderProcessService,
-    prompt_activity: BTreeMap<String, ActivePromptState>,
-    prompt_idle_timeout: Duration,
+    pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
+    pub(crate) prompt_idle_timeout: Duration,
     sessions: SessionService,
     history: SessionHistoryStore,
     terminal: TerminalStreamService,
@@ -54,7 +54,7 @@ pub struct DaemonApp {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActivePromptState {
-    last_output_at: Option<Instant>,
+    pub(crate) last_output_at: Option<Instant>,
 }
 
 impl DaemonApp {
@@ -578,11 +578,11 @@ impl DaemonApp {
             }
         };
         if !chunks.is_empty() {
-            self.note_prompt_output(session_id);
+            crate::transport::flow_control::note_prompt_output(self, session_id);
         }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if !exited {
-            self.maybe_complete_active_prompt(session_id)?;
+            crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         }
 
         Ok(chunks
@@ -759,7 +759,7 @@ impl DaemonApp {
                         TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
                     )
                 }) {
-                    self.note_prompt_output(session_id);
+                    crate::transport::flow_control::note_prompt_output(self, session_id);
                 }
                 (
                     result.prompt_completed,
@@ -797,11 +797,11 @@ impl DaemonApp {
         } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
         } else if provider_idle && active_prompt_status.is_some() {
-            let _ = self.maybe_complete_active_prompt(session_id)?;
+            let _ = crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         } else if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External
             && active_prompt_status.is_some()
         {
-            let _ = self.maybe_complete_active_prompt(session_id)?;
+            let _ = crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         }
         Ok(records)
     }

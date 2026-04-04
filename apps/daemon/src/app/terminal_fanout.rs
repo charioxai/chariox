@@ -154,7 +154,7 @@ impl DaemonApp {
                 TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
             )
         }) {
-            self.note_prompt_output(session_id);
+            crate::transport::flow_control::note_prompt_output(self, session_id);
         }
 
         for completion in &poll_result.completions {
