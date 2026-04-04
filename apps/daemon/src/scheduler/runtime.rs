@@ -56,20 +56,15 @@ pub fn schedule_workflow_run_entry_node(
         node_run.id(),
         node_run.agent_id(),
         node_run.node_id(),
-        &build_workflow_turn_prompt(
+        &prepare_workflow_turn_prompt(
             app,
             session_id,
             workflow_run.id(),
+            node_run.id(),
             node_run.node_id(),
             endpoint_prompt,
-            workflow_node_instruction_reference(
-                app,
-                session_id,
-                workflow_run.id(),
-                node_run.node_id(),
-            ),
             None,
-        ),
+        )?,
     )
 }
 
@@ -90,6 +85,30 @@ pub fn schedule_workflow_dispatches(
                 dispatch.node_run.node_id()
             ),
         );
+        let prompt = match prepare_workflow_turn_prompt(
+            app,
+            session_id,
+            workflow_run_id,
+            dispatch.node_run.id(),
+            dispatch.node_run.node_id(),
+            "",
+            Some(&dispatch.messages),
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                app.record_notice(
+                    session_id,
+                    None,
+                    app.attachments().list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow run `{workflow_run_id}` could not prepare downstream node `{}`: {}",
+                        dispatch.node_run.node_id(),
+                        error
+                    ),
+                );
+                continue;
+            }
+        };
         if let Err(error) = schedule_workflow_node_prompt(
             app,
             session_id,
@@ -97,20 +116,7 @@ pub fn schedule_workflow_dispatches(
             dispatch.node_run.id(),
             dispatch.node_run.agent_id(),
             dispatch.node_run.node_id(),
-            &build_workflow_turn_prompt(
-                app,
-                session_id,
-                workflow_run_id,
-                dispatch.node_run.node_id(),
-                "",
-                workflow_node_instruction_reference(
-                    app,
-                    session_id,
-                    workflow_run_id,
-                    dispatch.node_run.node_id(),
-                ),
-                Some(&dispatch.messages),
-            ),
+            &prompt,
         ) {
             app.record_notice(
                 session_id,
@@ -135,6 +141,25 @@ pub fn schedule_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
+    let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
+    let mailbox_content =
+        workflow_node_control_contents(session_id, workflow_run_id, node_id);
+    let handoff_payloads_json = prompt
+        .split("Workflow handoff payloads (JSON array):\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "[]")
+        .map(str::to_string);
+    app.sessions_mut().prepare_workflow_turn(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        delivery_token,
+        prompt.to_string(),
+        mailbox_content,
+        handoff_payloads_json,
+    )?;
     let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
         session_id,
         &workflow_prompt_source_attachment_id(workflow_run_id),
@@ -156,6 +181,11 @@ pub fn schedule_workflow_node_prompt(
                 }
                 return Err(error);
             }
+            app.sessions_mut().mark_workflow_turn_dispatched(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
             on_workflow_prompt_started(app, session_id, &prompt)?;
         }
         PromptSubmissionOutcome::Queued { .. } => {
@@ -307,6 +337,22 @@ pub fn on_workflow_prompt_completed(
             );
         }
     }
+    if validation_warnings.is_empty() {
+        let updated = app.sessions_mut().mark_workflow_turn_validated_completed(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        if updated
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .and_then(|node_run| node_run.turn_envelope())
+            .is_some_and(|envelope| envelope.state() == crate::session::WorkflowTurnRuntimeState::ValidatedCompleted)
+        {
+            clear_workflow_control_mailbox(session_id, workflow_run_id, workflow_node_run_id, &updated);
+        }
+    }
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
     let state_suffix = match workflow_run.status() {
         WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
@@ -347,21 +393,51 @@ pub fn on_workflow_prompt_cancelled(
     Ok(())
 }
 
+fn prepare_workflow_turn_prompt(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    node_id: &str,
+    endpoint_prompt: &str,
+    handoff_messages: Option<&[WorkflowMessage]>,
+) -> Result<String, DaemonError> {
+    let instruction_ref =
+        workflow_node_instruction_reference(app, session_id, workflow_run_id, node_id);
+    let mailbox_content = workflow_node_control_contents(session_id, workflow_run_id, node_id);
+    let handoff_payloads_json = serialize_handoff_payloads_json(handoff_messages);
+    let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
+    Ok(build_workflow_turn_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        endpoint_prompt,
+        instruction_ref,
+        mailbox_content,
+        handoff_payloads_json,
+        &delivery_token,
+    ))
+}
+
 fn build_workflow_turn_prompt(
     app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
-    node_id: &str,
+    _workflow_node_run_id: &str,
     endpoint_prompt: &str,
     instruction_ref: Option<String>,
-    handoff_messages: Option<&[WorkflowMessage]>,
+    mailbox_content: Option<String>,
+    handoff_payloads_json: Option<String>,
+    delivery_token: &str,
 ) -> String {
     let reference_line = instruction_ref
         .as_deref()
         .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
         .unwrap_or_default();
-    let control_line = workflow_node_control_reference(app, session_id, workflow_run_id, node_id)
-        .map(|path| format!("Control mailbox (daemon-managed): {path}\n\n"))
+    let control_line = mailbox_content
+        .as_deref()
+        .map(|content| format!("Control mailbox:\n{content}\n\n"))
         .unwrap_or_default();
     let workflow_prompt = app
         .sessions()
@@ -369,35 +445,30 @@ fn build_workflow_turn_prompt(
         .ok()
         .and_then(|run| run.invocation_prompt().map(str::to_string))
         .unwrap_or_default();
-    let handoff_payloads = handoff_messages
-        .map(|messages| {
-            messages
-                .iter()
-                .map(|message| {
-                    serde_json::from_str::<serde_json::Value>(message.handoff_payload())
-                        .unwrap_or_else(|_| {
-                            serde_json::Value::String(message.handoff_payload().to_string())
-                        })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let payloads = serde_json::to_string_pretty(&handoff_payloads)
-        .unwrap_or_else(|_| "[]".to_string());
-    let payload_block = if handoff_payloads.is_empty() {
+    let payload_block = if handoff_payloads_json
+        .as_deref()
+        .is_none_or(|payloads| payloads.trim().is_empty() || payloads.trim() == "[]")
+    {
         String::new()
     } else {
-        format!("Workflow handoff payloads (JSON array):\n{}\n\n", payloads)
+        format!(
+            "Workflow handoff payloads (JSON array):\n{}\n\n",
+            handoff_payloads_json.as_deref().unwrap_or("[]")
+        )
     };
     let entry_line = if endpoint_prompt.trim().is_empty() {
         String::new()
     } else {
         format!("Endpoint prompt:\n{endpoint_prompt}\n\n")
     };
+    let ack_line = format!(
+        "Before producing substantive output, emit this acknowledgment line exactly once on its own line:\nACK_WORKFLOW_TURN {delivery_token}\n\nThis line is for runtime delivery tracking and is separate from the final validated workflow output.\n\n"
+    );
     format!(
-        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}\n",
+        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}\n",
         entry_line,
         workflow_prompt,
+        ack_line,
         payload_block,
         reference_line,
         control_line,
@@ -453,8 +524,7 @@ fn workflow_node_instruction_reference(
     Some(path.to_string_lossy().to_string())
 }
 
-fn workflow_node_control_reference(
-    _app: &DaemonApp,
+fn workflow_node_control_contents(
     session_id: &str,
     workflow_run_id: &str,
     node_id: &str,
@@ -462,11 +532,10 @@ fn workflow_node_control_reference(
     let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
     let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
     let path = root.join(format!("node-{node_id}.md"));
-    if path.exists() {
-        Some(path.to_string_lossy().to_string())
-    } else {
-        None
-    }
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn build_workflow_completion_snapshot(
@@ -632,6 +701,51 @@ fn write_workflow_control_mailbox(
             path
         );
     }
+}
+
+fn clear_workflow_control_mailbox(
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    workflow_run: &WorkflowRun,
+) {
+    let Some(node_id) = workflow_run
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)
+        .map(|node_run| node_run.node_id())
+    else {
+        return;
+    };
+    let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
+    let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+    let path = root.join(format!("node-{node_id}.md"));
+    let _ = std::fs::remove_file(path);
+}
+
+fn serialize_handoff_payloads_json(handoff_messages: Option<&[WorkflowMessage]>) -> Option<String> {
+    let handoff_payloads = handoff_messages
+        .map(|messages| {
+            messages
+                .iter()
+                .map(|message| {
+                    serde_json::from_str::<serde_json::Value>(message.handoff_payload())
+                        .unwrap_or_else(|_| {
+                            serde_json::Value::String(message.handoff_payload().to_string())
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if handoff_payloads.is_empty() {
+        None
+    } else {
+        serde_json::to_string_pretty(&handoff_payloads).ok()
+    }
+}
+
+fn workflow_turn_delivery_token(workflow_node_run_id: &str) -> String {
+    format!("workflow-ack:{workflow_node_run_id}")
 }
 
 fn collect_workflow_artifact_refs(

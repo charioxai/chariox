@@ -325,6 +325,14 @@ pub struct ValidateWorkflowOutputRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AckWorkflowTurnRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+    pub workflow_node_run_id: String,
+    pub delivery_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveWorkflowEdgeRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -409,6 +417,7 @@ pub enum LocalDaemonRequest {
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
     ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
+    AckWorkflowTurn(AckWorkflowTurnRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -591,6 +600,10 @@ pub enum LocalDaemonResponse {
     WorkflowOutputValidated {
         valid: bool,
         warning: Option<String>,
+    },
+    WorkflowTurnAcknowledged {
+        workflow_run: WorkflowRun,
+        session: RuntimeSession,
     },
 }
 
@@ -1100,6 +1113,24 @@ impl DaemonApp {
                     }),
                 }
             }
+            LocalDaemonRequest::AckWorkflowTurn(request) => {
+                let workflow_run_id = self
+                    .sessions()
+                    .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
+                    .id()
+                    .to_string();
+                let workflow_run = self.sessions_mut().ack_workflow_turn(
+                    &request.session_id,
+                    &workflow_run_id,
+                    &request.workflow_node_run_id,
+                    &request.delivery_token,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
+                    workflow_run,
+                    session,
+                })
+            }
         }
     }
 }
@@ -1129,16 +1160,20 @@ fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
     use std::thread;
     use std::time::{Duration, Instant};
 
     use crate::attachment::ClientCapabilityLevel;
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload};
+    use crate::session::{
+        CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload,
+        WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
+    };
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
-        AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
+        AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
         AliasWorkflowRequest, AttachToSessionRequest, CancelActivePromptRequest,
         CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
         CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
@@ -2079,6 +2114,468 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Completed".to_string(), "Completed".to_string()]
         );
+    }
+
+    #[test]
+    fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-ack", "worktree-ack"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let first_agent = spawn_workflow_test_agent(&mut app, session.id(), "first");
+        let second_agent = spawn_workflow_test_agent(&mut app, session.id(), "second");
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("ack-flow".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let first_node = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: first_agent.id().to_string(),
+            }))
+            .expect("first node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+        let second_node = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: second_agent.id().to_string(),
+            }))
+            .expect("second node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+                UpdateWorkflowNodeInstructionsRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    node_id: first_node.id().to_string(),
+                    instructions: Some("# First node\nProduce a tiny JSON payload.\n".to_string()),
+                },
+            ))
+            .expect("first node instructions should be updated");
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+                UpdateWorkflowNodeInstructionsRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    node_id: second_node.id().to_string(),
+                    instructions: Some("# Second node\nSummarize the handoff.\n".to_string()),
+                },
+            ))
+            .expect("second node instructions should be updated");
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: first_node.id().to_string(),
+                to_node_id: second_node.id().to_string(),
+                output_schema_ref: None,
+                validation_policy: None,
+            }))
+            .expect("edge should be added");
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: first_node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("endpoint should be created")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+
+        let (workflow_run, invoke_session) = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("kick off the ack flow".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                session,
+                ..
+            } => (workflow_run, session),
+            _ => panic!("unexpected local response"),
+        };
+        let active_prompt = invoke_session
+            .active_prompt()
+            .expect("workflow invoke should create an active prompt");
+        assert!(active_prompt.prompt().contains("Endpoint prompt:\nkick off the ack flow"));
+        assert!(active_prompt.prompt().contains("Node instruction reference (daemon-managed):"));
+        assert!(active_prompt.prompt().contains("ACK_WORKFLOW_TURN"));
+        assert!(!active_prompt.prompt().contains("Control mailbox (daemon-managed):"));
+
+        let first_run_id = workflow_run.node_runs()[0].id().to_string();
+        let first_token = "workflow-ack:".to_string() + &first_run_id;
+        match app
+            .handle_local_request(LocalDaemonRequest::AckWorkflowTurn(
+                AckWorkflowTurnRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: first_run_id.clone(),
+                    delivery_token: first_token,
+                },
+            ))
+            .expect("workflow turn ack should succeed")
+        {
+            LocalDaemonResponse::WorkflowTurnAcknowledged { workflow_run, .. } => {
+                let envelope = workflow_run.node_runs()[0]
+                    .turn_envelope()
+                    .expect("first turn envelope should exist");
+                assert_eq!(envelope.state(), WorkflowTurnRuntimeState::Acknowledged);
+            }
+            _ => panic!("unexpected local response"),
+        }
+
+        let provider_run_id = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session state should resolve")
+            .active_provider_run_id()
+            .expect("provider run should be active")
+            .to_string();
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"```json\n{\"summary\":\"first finished\",\"output\":{\"message\":\"{\\\"value\\\":1}\"}}\n```\n",
+        );
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("first workflow prompt should complete");
+
+        let routed = match app
+            .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        let first_completed = routed
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == first_run_id)
+            .expect("first node run should remain");
+        let first_envelope = first_completed
+            .turn_envelope()
+            .expect("first node run should retain its envelope");
+        assert_eq!(
+            first_envelope.state(),
+            WorkflowTurnRuntimeState::ValidatedCompleted
+        );
+        assert!(first_envelope.rendered_prompt().is_none());
+        assert!(first_envelope.handoff_payloads_json().is_none());
+        assert_eq!(routed.messages().len(), 1);
+
+        let second_active_prompt = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .cloned()
+            .expect("second node prompt should be active");
+        assert!(second_active_prompt
+            .prompt()
+            .contains("Workflow handoff payloads (JSON array):"));
+        assert!(second_active_prompt.prompt().contains("ACK_WORKFLOW_TURN"));
+
+        let second_run_id = routed
+            .active_node_run_id()
+            .expect("second node should be active")
+            .to_string();
+        let second_token = "workflow-ack:".to_string() + &second_run_id;
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AckWorkflowTurn(
+                AckWorkflowTurnRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: second_run_id.clone(),
+                    delivery_token: second_token,
+                },
+            ))
+            .expect("second workflow turn ack should succeed");
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"```json\n{\"summary\":\"second finished\",\"output\":{\"message\":\"{\\\"done\\\":true}\"}}\n```\n",
+        );
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("second workflow prompt should complete");
+        let completed = match app
+            .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("completed workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(format!("{:?}", completed.status()), "Completed");
+        let second_completed = completed
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == second_run_id)
+            .expect("second node should complete");
+        let second_envelope = second_completed
+            .turn_envelope()
+            .expect("second node turn envelope should exist");
+        assert_eq!(
+            second_envelope.state(),
+            WorkflowTurnRuntimeState::ValidatedCompleted
+        );
+        assert!(completed.messages().is_empty());
+    }
+
+    #[test]
+    fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-mailbox", "worktree-mailbox"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let first_agent = spawn_workflow_test_agent(&mut app, session.id(), "loop-a");
+        let second_agent = spawn_workflow_test_agent(&mut app, session.id(), "loop-b");
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("mailbox-flow".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let first_node = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: first_agent.id().to_string(),
+            }))
+            .expect("first node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+        let second_node = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: second_agent.id().to_string(),
+            }))
+            .expect("second node should be added")
+        {
+            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+            _ => panic!("unexpected local response"),
+        };
+        let schema_path = std::env::temp_dir().join(format!(
+            "arroba-mailbox-schema-{}.json",
+            crate::session::unix_epoch_ms()
+        ));
+        fs::write(
+            &schema_path,
+            "{\n  \"type\": \"object\",\n  \"required\": [\"ok\"],\n  \"properties\": {\"ok\": {\"type\": \"boolean\"}}\n}\n",
+        )
+        .expect("schema file should be written");
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: first_node.id().to_string(),
+                to_node_id: second_node.id().to_string(),
+                output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
+                validation_policy: Some(WorkflowOutputValidationPolicy::Warn),
+            }))
+            .expect("first edge should be added");
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                from_node_id: second_node.id().to_string(),
+                to_node_id: first_node.id().to_string(),
+                output_schema_ref: None,
+                validation_policy: None,
+            }))
+            .expect("second edge should be added");
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: first_node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("endpoint should be created")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("start loop".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AckWorkflowTurn(
+                AckWorkflowTurnRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: node_run_id.clone(),
+                    delivery_token: format!("workflow-ack:{node_run_id}"),
+                },
+            ))
+            .expect("ack should succeed");
+        let provider_run_id = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_provider_run_id()
+            .expect("provider run should be active")
+            .to_string();
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"```json\n{\"summary\":\"warn branch\",\"output\":{\"message\":\"not-json\"}}\n```\n",
+        );
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("warning workflow prompt should complete");
+
+        let after_warning = match app
+            .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("updated workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        let first_completed = after_warning
+            .node_runs()
+            .iter()
+            .find(|run| run.id() == node_run_id)
+            .expect("first node run should remain");
+        assert_eq!(
+            first_completed
+                .turn_envelope()
+                .expect("turn envelope should remain")
+                .state(),
+            WorkflowTurnRuntimeState::Acknowledged
+        );
+        assert!(first_completed
+            .turn_envelope()
+            .expect("turn envelope should remain")
+            .rendered_prompt()
+            .is_some());
+
+        let second_run_id = after_warning
+            .active_node_run_id()
+            .expect("second node should now be active")
+            .to_string();
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::AckWorkflowTurn(
+                AckWorkflowTurnRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: second_run_id.clone(),
+                    delivery_token: format!("workflow-ack:{second_run_id}"),
+                },
+            ))
+            .expect("second node ack should succeed");
+        app.fan_out_output(
+            session.id(),
+            &provider_run_id,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"```json\n{\"summary\":\"loop back\",\"output\":{\"message\":\"{\\\"ok\\\":true}\"}}\n```\n",
+        );
+        let _ = app
+            .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+                session_id: session.id().to_string(),
+            }))
+            .expect("second node prompt should complete");
+
+        let active_prompt = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .cloned()
+            .expect("first node should be active again");
+        assert!(active_prompt.prompt().contains("Control mailbox:"));
+        assert!(active_prompt
+            .prompt()
+            .contains("output.message is not valid JSON"));
+        assert!(!active_prompt
+            .prompt()
+            .contains("Control mailbox (daemon-managed):"));
     }
 
     #[test]

@@ -677,6 +677,25 @@ Required rules:
 - the daemon MUST reject or flag invalid output payloads and surface the validation errors to the node
 - validation failures MUST follow a daemon-owned policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
 
+Runtime delivery and retention rules:
+
+- workflow dispatch delivery acknowledgment is part of the runtime contract, not a direct daemon/kernel-only escape hatch
+- the runtime MUST expose a dedicated workflow-turn acknowledgment operation distinct from output validation
+- the runtime MUST persist the rendered workflow turn envelope until the turn reaches a validated terminal state
+- transient workflow inputs such as mailbox content and handoff payloads MUST NOT be deleted at dispatch time
+- transient workflow inputs MAY be marked delivered when the node acknowledges the turn, but MUST remain retained until the node turn completes and final validation passes
+- transient workflow inputs become eligible for deletion only after the turn is both acknowledged and completed with validation success
+- if a provider run disconnects or becomes unreachable before that validated terminal state, the runtime MUST retain enough durable dispatch state to retry or reconcile the turn
+
+Suggested workflow turn runtime states:
+
+- `prepared`
+- `dispatched`
+- `acknowledged`
+- `validated_completed`
+- `cancelled`
+- `failed`
+
 ### 7.6 Graph-Derived Barrier and Cycle Rules
 
 Rules:

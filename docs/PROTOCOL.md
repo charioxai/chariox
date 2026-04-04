@@ -451,6 +451,7 @@ Queue and turn direction:
 - each workflow agent should have an inbound queue
 - turn start should use a kernel-owned `consume_input_messages` tool
 - output validation should use a kernel-owned `validate_output_messages` tool
+- workflow turn delivery acknowledgment should use a runtime-owned `ack_workflow_turn` operation
 - a running turn should not re-open its input set mid-turn; newly arrived messages remain queued for a later turn
 
 ## 5.0 Capability API Baseline
@@ -721,9 +722,30 @@ Required rules:
 - the daemon MUST maintain an optional workflow-level prompt used as shared context for all nodes
 - the daemon MUST provide a stable reference so nodes can reload instructions after compaction
 - the daemon MUST expose a kernel-owned output validation tool to workflow nodes
+- the runtime MUST expose a dedicated workflow-turn acknowledgment operation separate from output validation
 - node completion output SHOULD be validated against per-edge schema constraints before routing
 - invalid output MUST be rejected or flagged and surfaced back to the node as a validation error
 - validation failures SHOULD follow daemon policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
+
+Workflow turn durability rules:
+
+- the runtime MUST persist the rendered workflow turn envelope, including workflow-level prompt text, mailbox content, and handoff payloads, before dispatch
+- dispatch success alone MUST NOT make transient workflow inputs eligible for deletion
+- transient workflow inputs MUST remain retained until the turn reaches a validated terminal state
+- the validated terminal state is reached only after:
+  - the node has acknowledged the turn, and
+  - the node turn has completed, and
+  - final output validation has passed
+- if the provider disconnects or becomes unreachable before that state, the runtime MUST retain enough dispatch state to retry or reconcile the turn safely
+
+Suggested workflow turn runtime states:
+
+- `prepared`
+- `dispatched`
+- `acknowledged`
+- `validated_completed`
+- `cancelled`
+- `failed`
 
 ## 7.4 Handoff Contract
 

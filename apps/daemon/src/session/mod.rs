@@ -13,5 +13,6 @@ pub use types::{
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowRun, WorkflowRunStatus, WorktreeIsolationMode,
+    WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorktreeIsolationMode,
 };

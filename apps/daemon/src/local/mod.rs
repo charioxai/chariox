@@ -5,6 +5,7 @@ mod provider_requests;
 
 pub use api::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
+    AckWorkflowTurnRequest,
     AliasWorkflowRequest, AttachToSessionRequest, BindWorkflowEndpointRequest,
     CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
     CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,

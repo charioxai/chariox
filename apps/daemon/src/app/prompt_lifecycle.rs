@@ -275,6 +275,15 @@ impl DaemonApp {
                         flow_control::clear_prompt_activity(self, session_id);
                         return Err(dispatch_error);
                     }
+                    if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                        (active.workflow_run_id(), active.workflow_node_run_id())
+                    {
+                        self.sessions_mut().mark_workflow_turn_dispatched(
+                            session_id,
+                            workflow_run_id,
+                            workflow_node_run_id,
+                        )?;
+                    }
                     crate::scheduler::runtime::on_workflow_prompt_started(
                         self,
                         session_id,
@@ -317,6 +326,15 @@ impl DaemonApp {
             }
 
             let active = self.sessions.activate_prompt(session_id, next)?.1;
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                (active.workflow_run_id(), active.workflow_node_run_id())
+            {
+                self.sessions_mut().mark_workflow_turn_dispatched(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+            }
             crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
             flow_control::note_prompt_started(self, session_id);
             return Ok(Some(active));

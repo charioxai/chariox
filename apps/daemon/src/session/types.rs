@@ -276,6 +276,112 @@ pub enum WorkflowNodeRunStatus {
     Stopped,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTurnRuntimeState {
+    Prepared,
+    Dispatched,
+    Acknowledged,
+    ValidatedCompleted,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowTurnEnvelope {
+    delivery_token: String,
+    state: WorkflowTurnRuntimeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rendered_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mailbox_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff_payloads_json: Option<String>,
+    prepared_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dispatched_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    acknowledged_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validated_completed_at_ms: Option<u64>,
+}
+
+impl WorkflowTurnEnvelope {
+    pub fn new(
+        delivery_token: impl Into<String>,
+        rendered_prompt: String,
+        mailbox_content: Option<String>,
+        handoff_payloads_json: Option<String>,
+    ) -> Self {
+        Self {
+            delivery_token: delivery_token.into(),
+            state: WorkflowTurnRuntimeState::Prepared,
+            rendered_prompt: Some(rendered_prompt),
+            mailbox_content,
+            handoff_payloads_json,
+            prepared_at_ms: unix_epoch_ms(),
+            dispatched_at_ms: None,
+            acknowledged_at_ms: None,
+            validated_completed_at_ms: None,
+        }
+    }
+
+    pub fn delivery_token(&self) -> &str {
+        &self.delivery_token
+    }
+
+    pub fn state(&self) -> WorkflowTurnRuntimeState {
+        self.state
+    }
+
+    pub fn rendered_prompt(&self) -> Option<&str> {
+        self.rendered_prompt.as_deref()
+    }
+
+    pub fn mailbox_content(&self) -> Option<&str> {
+        self.mailbox_content.as_deref()
+    }
+
+    pub fn handoff_payloads_json(&self) -> Option<&str> {
+        self.handoff_payloads_json.as_deref()
+    }
+
+    pub fn mark_dispatched(&mut self) {
+        self.state = WorkflowTurnRuntimeState::Dispatched;
+        if self.dispatched_at_ms.is_none() {
+            self.dispatched_at_ms = Some(unix_epoch_ms());
+        }
+    }
+
+    pub fn mark_acknowledged(&mut self) {
+        self.state = WorkflowTurnRuntimeState::Acknowledged;
+        if self.acknowledged_at_ms.is_none() {
+            self.acknowledged_at_ms = Some(unix_epoch_ms());
+        }
+    }
+
+    pub fn mark_validated_completed(&mut self) {
+        self.state = WorkflowTurnRuntimeState::ValidatedCompleted;
+        if self.validated_completed_at_ms.is_none() {
+            self.validated_completed_at_ms = Some(unix_epoch_ms());
+        }
+    }
+
+    pub fn mark_cancelled(&mut self) {
+        self.state = WorkflowTurnRuntimeState::Cancelled;
+    }
+
+    pub fn mark_failed(&mut self) {
+        self.state = WorkflowTurnRuntimeState::Failed;
+    }
+
+    pub fn clear_transient_inputs(&mut self) {
+        self.rendered_prompt = None;
+        self.mailbox_content = None;
+        self.handoff_payloads_json = None;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowArtifactRef {
     id: String,
@@ -521,6 +627,8 @@ pub struct WorkflowNodeRun {
     summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<WorkflowCompletionSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_envelope: Option<WorkflowTurnEnvelope>,
     created_at_ms: u64,
     started_at_ms: Option<u64>,
     completed_at_ms: Option<u64>,
@@ -540,6 +648,7 @@ impl WorkflowNodeRun {
             status,
             summary: None,
             completion: None,
+            turn_envelope: None,
             created_at_ms: unix_epoch_ms(),
             started_at_ms: None,
             completed_at_ms: None,
@@ -574,6 +683,14 @@ impl WorkflowNodeRun {
         self.created_at_ms
     }
 
+    pub fn turn_envelope(&self) -> Option<&WorkflowTurnEnvelope> {
+        self.turn_envelope.as_ref()
+    }
+
+    pub fn turn_envelope_mut(&mut self) -> Option<&mut WorkflowTurnEnvelope> {
+        self.turn_envelope.as_mut()
+    }
+
     pub fn started_at_ms(&self) -> Option<u64> {
         self.started_at_ms
     }
@@ -603,6 +720,10 @@ impl WorkflowNodeRun {
 
     pub fn set_completion(&mut self, completion: Option<WorkflowCompletionSnapshot>) {
         self.completion = completion;
+    }
+
+    pub fn set_turn_envelope(&mut self, turn_envelope: Option<WorkflowTurnEnvelope>) {
+        self.turn_envelope = turn_envelope;
     }
 }
 
@@ -722,6 +843,13 @@ impl WorkflowRun {
     pub fn add_message(&mut self, message: WorkflowMessage) -> WorkflowMessage {
         self.messages.push(message.clone());
         message
+    }
+
+    pub fn retain_messages(
+        &mut self,
+        mut predicate: impl FnMut(&WorkflowMessage) -> bool,
+    ) {
+        self.messages.retain(|message| predicate(message));
     }
 }
 

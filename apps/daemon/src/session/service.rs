@@ -11,7 +11,7 @@ use super::{
     WorkflowCompletionSnapshot, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition,
     WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputValidationPolicy, WorkflowRun,
-    WorkflowRunStatus,
+    WorkflowRunStatus, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,6 +444,9 @@ impl SessionService {
                     | WorkflowNodeRunStatus::Stopped
             ) {
                 node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                if let Some(envelope) = node_run.turn_envelope_mut() {
+                    envelope.mark_cancelled();
+                }
             }
         }
         Ok(workflow_run.clone())
@@ -474,13 +477,198 @@ impl SessionService {
             .find(|node_run| node_run.id() == workflow_node_run_id)
             .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
-                workflow_id,
+                workflow_id: workflow_id.clone(),
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
         node_run.set_status(WorkflowNodeRunStatus::Running);
         workflow_run.set_active_node_run(workflow_node_run_id.to_string());
         workflow_run.set_status(WorkflowRunStatus::Running);
+        Ok(workflow_run.clone())
+    }
+
+    pub fn prepare_workflow_turn(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        delivery_token: String,
+        rendered_prompt: String,
+        mailbox_content: Option<String>,
+        handoff_payloads_json: Option<String>,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        node_run.set_turn_envelope(Some(WorkflowTurnEnvelope::new(
+            delivery_token,
+            rendered_prompt,
+            mailbox_content,
+            handoff_payloads_json,
+        )));
+        Ok(workflow_run.clone())
+    }
+
+    pub fn mark_workflow_turn_dispatched(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn envelope was not prepared",
+            }
+        })?;
+        envelope.mark_dispatched();
+        Ok(workflow_run.clone())
+    }
+
+    pub fn ack_workflow_turn(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        delivery_token: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn envelope was not prepared",
+            }
+        })?;
+        if envelope.delivery_token() != delivery_token {
+            return Err(DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id,
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn delivery token did not match",
+            });
+        }
+        if matches!(
+            envelope.state(),
+            WorkflowTurnRuntimeState::Dispatched | WorkflowTurnRuntimeState::Acknowledged
+        ) {
+            envelope.mark_acknowledged();
+        }
+        Ok(workflow_run.clone())
+    }
+
+    pub fn mark_workflow_turn_validated_completed(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run
+            .node_runs_mut()
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn envelope was not prepared",
+            }
+        })?;
+        if envelope.state() != WorkflowTurnRuntimeState::Acknowledged {
+            return Ok(workflow_run.clone());
+        }
+        envelope.mark_validated_completed();
+        envelope.clear_transient_inputs();
+        workflow_run
+            .retain_messages(|message| message.consumed_by_node_run_id() != Some(workflow_node_run_id));
         Ok(workflow_run.clone())
     }
 
@@ -688,8 +876,11 @@ impl SessionService {
                 workflow_id,
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
-            })?;
+        })?;
         node_run.set_status(WorkflowNodeRunStatus::Stopped);
+        if let Some(envelope) = node_run.turn_envelope_mut() {
+            envelope.mark_cancelled();
+        }
         workflow_run.clear_active_node_run();
         workflow_run.set_status(WorkflowRunStatus::Stopped);
         Ok(workflow_run.clone())
