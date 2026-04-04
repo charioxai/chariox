@@ -14,15 +14,6 @@ const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
 const PROMPT_COMPLETION_SETTLE_WINDOW: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenCodePollResult {
-    pub chunks: Vec<OpenCodeOutputChunk>,
-    pub completions: Vec<OpenCodeAssistantCompletion>,
-    pub prompt_completed: bool,
-    pub provider_idle: bool,
-    pub notices: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeOutputChunk {
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,

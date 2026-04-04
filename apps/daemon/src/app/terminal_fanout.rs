@@ -140,49 +140,6 @@ impl DaemonApp {
             );
         }
     }
-
-    pub(crate) fn render_opencode_output(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-        poll_result: crate::provider::OpenCodePollResult,
-    ) -> Vec<TerminalOutputRecord> {
-        if poll_result.chunks.iter().any(|chunk| {
-            matches!(
-                chunk.kind,
-                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
-            )
-        }) {
-            crate::transport::flow_control::note_prompt_output(self, session_id);
-        }
-
-        for completion in &poll_result.completions {
-            self.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-                &completion.message_id,
-                completion.completed_at_ms,
-            );
-        }
-
-        poll_result
-            .chunks
-            .into_iter()
-            .map(|chunk| {
-                self.fan_out_output(
-                    session_id,
-                    provider_run_id,
-                    chunk.kind,
-                    chunk.merge_key,
-                    recipient_attachment_ids.clone(),
-                    &chunk.bytes,
-                )
-            })
-            .collect()
-    }
-
     pub(crate) fn echo_prompt_to_other_attachments(
         &mut self,
         session_id: &str,

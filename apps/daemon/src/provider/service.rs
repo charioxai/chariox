@@ -6,14 +6,15 @@ use crate::session::{PromptAttachment, SessionService};
 use super::{
     codex_runtime::{
         abort_codex_turn, drain_codex_events, initialize_codex_runtime, submit_codex_prompt,
-        CodexPollResult, CodexRuntimeState,
+        CodexRuntimeState,
     },
     opencode_binding::{
         abort_opencode_session, initialize_opencode_runtime, runtime_is_healthy,
         submit_opencode_prompt, sync_opencode_run_selection, OpenCodeRunSelection,
     },
-    opencode_runtime::{drain_opencode_events, OpenCodePollResult, OpenCodeRuntimeState},
-    LaunchProviderRequest, ProviderRegistry, ProviderRunState, RuntimeProviderRun,
+    opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
+    LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunState, RuntimeProviderRun,
 };
 
 #[derive(Debug)]
@@ -370,7 +371,7 @@ impl ProviderProcessService {
     pub fn poll_structured_output(
         &mut self,
         provider_run_id: &str,
-    ) -> Result<Option<StructuredPollResult>, DaemonError> {
+    ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "codex" {
             let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
@@ -381,7 +382,21 @@ impl ProviderProcessService {
                 }
             })?;
             let poll = drain_codex_events(provider_run_id, state)?;
-            return Ok(Some(StructuredPollResult::Codex(poll)));
+            return Ok(Some(ProviderPromptSignalBatch {
+                chunks: poll
+                    .chunks
+                    .into_iter()
+                    .map(|chunk| ProviderPromptChunk {
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        bytes: chunk.bytes,
+                    })
+                    .collect(),
+                completions: Vec::new(),
+                prompt_completed: poll.prompt_completed,
+                provider_idle: poll.provider_idle,
+                notices: poll.notices,
+            }));
         }
         if run.adapter_key() != "opencode" {
             return Ok(None);
@@ -389,13 +404,28 @@ impl ProviderProcessService {
 
         let drain = self.drain_opencode_events(provider_run_id)?;
 
-        Ok(Some(StructuredPollResult::OpenCode(OpenCodePollResult {
-            chunks: drain.chunks,
-            completions: drain.completions,
+        Ok(Some(ProviderPromptSignalBatch {
+            chunks: drain
+                .chunks
+                .into_iter()
+                .map(|chunk| ProviderPromptChunk {
+                    kind: chunk.kind,
+                    merge_key: chunk.merge_key,
+                    bytes: chunk.bytes,
+                })
+                .collect(),
+            completions: drain
+                .completions
+                .into_iter()
+                .map(|completion| ProviderAssistantCompletion {
+                    message_id: completion.message_id,
+                    completed_at_ms: completion.completed_at_ms,
+                })
+                .collect(),
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
             notices: drain.notices,
-        })))
+        }))
     }
 
     pub fn mark_run_ended(
@@ -554,11 +584,6 @@ impl ProviderProcessService {
 
         Ok(drain)
     }
-}
-
-pub enum StructuredPollResult {
-    OpenCode(OpenCodePollResult),
-    Codex(CodexPollResult),
 }
 
 impl Default for ProviderProcessService {

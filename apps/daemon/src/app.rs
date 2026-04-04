@@ -21,7 +21,7 @@ use crate::capability::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::provider::{ProviderProcessService, RuntimeProviderRun, StructuredPollResult};
+use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::pty::PtyManager;
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptStatus, RuntimeSession, SessionConfigState,
@@ -445,7 +445,7 @@ impl DaemonApp {
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
         let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
-        if !Self::is_workflow_prompt_source_attachment_id(attachment_id) {
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
             self.ensure_attachment_in_session(session_id, attachment_id)?;
         }
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -723,64 +723,47 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        let (prompt_completed, provider_idle, records) = match poll_result {
-            StructuredPollResult::OpenCode(result) => {
-                for notice in &result.notices {
-                    self.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        recipient_attachment_ids.clone(),
-                        notice.to_string(),
-                    );
-                }
-                (
-                    result.prompt_completed,
-                    result.provider_idle,
-                    self.render_opencode_output(
-                        session_id,
-                        provider_run_id,
-                        recipient_attachment_ids.clone(),
-                        result,
-                    ),
+        for notice in &poll_result.notices {
+            self.record_notice(
+                session_id,
+                Some(provider_run_id),
+                recipient_attachment_ids.clone(),
+                notice.to_string(),
+            );
+        }
+        if poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+            )
+        }) {
+            crate::transport::flow_control::note_prompt_output(self, session_id);
+        }
+        for completion in &poll_result.completions {
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+        }
+        let prompt_completed = poll_result.prompt_completed;
+        let provider_idle = poll_result.provider_idle;
+        let records = poll_result
+            .chunks
+            .into_iter()
+            .map(|chunk| {
+                self.fan_out_output(
+                    session_id,
+                    provider_run_id,
+                    chunk.kind,
+                    chunk.merge_key,
+                    recipient_attachment_ids.clone(),
+                    &chunk.bytes,
                 )
-            }
-            StructuredPollResult::Codex(result) => {
-                for notice in &result.notices {
-                    self.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        recipient_attachment_ids.clone(),
-                        notice.to_string(),
-                    );
-                }
-                if result.chunks.iter().any(|chunk| {
-                    matches!(
-                        chunk.kind,
-                        TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
-                    )
-                }) {
-                    crate::transport::flow_control::note_prompt_output(self, session_id);
-                }
-                (
-                    result.prompt_completed,
-                    result.provider_idle,
-                    result
-                        .chunks
-                        .into_iter()
-                        .map(|chunk| {
-                            self.fan_out_output(
-                                session_id,
-                                provider_run_id,
-                                chunk.kind,
-                                chunk.merge_key,
-                                recipient_attachment_ids.clone(),
-                                &chunk.bytes,
-                            )
-                        })
-                        .collect(),
-                )
-            }
-        };
+            })
+            .collect();
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
             return Ok(records);

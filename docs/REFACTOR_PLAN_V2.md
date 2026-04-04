@@ -49,12 +49,13 @@ Goal:
 - keep provider adapters responsible only for translating provider events into structured signals
 - keep transport responsible for flow control and prompt lifecycle transitions
 
-Status: **In Progress**
+Status: **Complete**
 
-Planned:
+Shipped:
 
-- audit provider runtime paths for remaining transport-owned policy
-- document explicit adapter output contract (output chunks, completion signals, idle signal)
+- provider adapters now translate provider-specific events into a shared transport-facing prompt signal batch
+- `DaemonApp` prompt pumping no longer branches on OpenCode vs Codex result types
+- transport/prompt lifecycle now consumes only generic output chunks, assistant completions, completion signals, idle signals, and notices
 
 ### Phase 4. Workflow Scheduler Simplification
 
@@ -63,21 +64,14 @@ Goal:
 - isolate workflow graph progression policy from prompt lifecycle
 - make workflow scheduler independent of transport idle heuristics
 
-Status: **Planned**
+Status: **Complete**
 
-Planned:
+Shipped:
 
-- move any workflow-specific queue advancement decisions into scheduler
-- formalize scheduler hooks into transport for prompt submission/advancement only
-
-Status update:
-
-- workflow scheduling now lives in `apps/daemon/src/scheduler/runtime.rs`
+- workflow scheduling, workflow prompt composition, workflow dispatch fanout, workflow completion snapshot building, and workflow control mailbox writing now live in `apps/daemon/src/scheduler/runtime.rs`
 - workflow prompt lifecycle callbacks (`started/completed/cancelled`) are handled by scheduler runtime, not `DaemonApp`
 - transport owns workflow prompt dispatch and cancellation cleanup
-- `DaemonApp` now delegates workflow progression decisions to scheduler runtime
-
-Status: **Complete**
+- `app/workflow_runtime.rs` is reduced to the workflow invocation entrypoint and delegates scheduling logic to scheduler runtime
 
 ### Phase 5. I/O Collision Manager Integration
 

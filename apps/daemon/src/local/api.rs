@@ -1937,7 +1937,7 @@ mod tests {
         assert_eq!(format!("{:?}", workflow_run.status()), "Running");
         assert_eq!(workflow_run.node_runs().len(), 1);
         let workflow_attachment_id =
-            DaemonApp::workflow_prompt_source_attachment_id(workflow_run.id());
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id());
         let provider_run_id = app
             .sessions()
             .get_session(session.id())

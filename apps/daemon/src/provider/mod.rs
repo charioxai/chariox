@@ -17,16 +17,15 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, ProviderAuthStatus,
     ProviderLoginStart,
 };
-pub use codex_runtime::{CodexPollResult, CodexRuntimeState};
+pub use codex_runtime::CodexRuntimeState;
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, OpenCodeSessionSnapshot,
 };
-pub use opencode_runtime::OpenCodePollResult;
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
-pub use service::{ProviderProcessService, StructuredPollResult};
+pub use service::ProviderProcessService;
 pub use types::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderRunState,
-    RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderAssistantCompletion, ProviderLaunchResult,
+    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunState, RuntimeProviderRun,
 };

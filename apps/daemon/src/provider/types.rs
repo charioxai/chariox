@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::terminal::TerminalOutputKind;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderRunState {
     Starting,
@@ -232,4 +234,26 @@ impl RuntimeProviderRun {
     pub fn mark_ended(&mut self) {
         self.state = ProviderRunState::Ended;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPromptChunk {
+    pub kind: TerminalOutputKind,
+    pub merge_key: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAssistantCompletion {
+    pub message_id: String,
+    pub completed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderPromptSignalBatch {
+    pub chunks: Vec<ProviderPromptChunk>,
+    pub completions: Vec<ProviderAssistantCompletion>,
+    pub prompt_completed: bool,
+    pub provider_idle: bool,
+    pub notices: Vec<String>,
 }

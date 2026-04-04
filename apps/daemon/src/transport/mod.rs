@@ -44,8 +44,11 @@ impl TransportService {
         target_agent_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        let provider_run_id =
-            app.ensure_workflow_provider_run_for_agent(session_id, target_agent_id)?;
+        let provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+            app,
+            session_id,
+            target_agent_id,
+        )?;
         app.dispatch_prompt_to_provider(
             session_id,
             &provider_run_id,
