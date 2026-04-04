@@ -723,7 +723,7 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        let (prompt_completed, records) = match poll_result {
+        let (prompt_completed, provider_idle, records) = match poll_result {
             StructuredPollResult::OpenCode(result) => {
                 for notice in &result.notices {
                     self.record_notice(
@@ -735,6 +735,7 @@ impl DaemonApp {
                 }
                 (
                     result.prompt_completed,
+                    result.provider_idle,
                     self.render_opencode_output(
                         session_id,
                         provider_run_id,
@@ -762,6 +763,7 @@ impl DaemonApp {
                 }
                 (
                     result.prompt_completed,
+                    result.provider_idle,
                     result
                         .chunks
                         .into_iter()
@@ -794,6 +796,12 @@ impl DaemonApp {
             }
         } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
+        } else if provider_idle && active_prompt_status.is_some() {
+            let _ = self.maybe_complete_active_prompt(session_id)?;
+        } else if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External
+            && active_prompt_status.is_some()
+        {
+            let _ = self.maybe_complete_active_prompt(session_id)?;
         }
         Ok(records)
     }

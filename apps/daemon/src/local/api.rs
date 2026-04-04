@@ -721,13 +721,19 @@ impl DaemonApp {
             }
             LocalDaemonRequest::CompletePrompt(request) => {
                 Ok(LocalDaemonResponse::PromptCompleted {
-                    completion: self.complete_active_prompt(&request.session_id)?,
+                    completion: crate::scheduler::SchedulerService::complete_active_prompt(
+                        self,
+                        &request.session_id,
+                    )?,
                 })
             }
             LocalDaemonRequest::CancelActivePrompt(request) => {
                 Ok(LocalDaemonResponse::PromptCancelled {
-                    cancellation: self
-                        .cancel_active_prompt(&request.session_id, &request.attachment_id)?,
+                    cancellation: crate::scheduler::SchedulerService::cancel_active_prompt(
+                        self,
+                        &request.session_id,
+                        &request.attachment_id,
+                    )?,
                 })
             }
             LocalDaemonRequest::UpdateSessionConfig(request) => {
