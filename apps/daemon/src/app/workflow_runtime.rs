@@ -9,8 +9,8 @@ use crate::error::DaemonError;
 use crate::history::SessionHistoryEntryKind;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    PromptQueueItem, WorkflowArtifactRef, WorkflowCompletionSnapshot,
-    WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowEndpointDefinition,
+    WorkflowArtifactRef, WorkflowCompletionSnapshot,
+    WorkflowDefinition, WorkflowDispatch, WorkflowEndpointDefinition,
     WorkflowMessage, WorkflowOutputPayload, WorkflowRun,
 };
 
@@ -32,7 +32,7 @@ enum WorkflowStructuredOutputValue {
 }
 
 impl DaemonApp {
-    fn workflow_max_turns(&self, session_id: &str) -> Option<usize> {
+    pub(crate) fn workflow_max_turns(&self, session_id: &str) -> Option<usize> {
         let session = self.sessions().get_session(session_id).ok()?;
         session
             .config_state()
@@ -141,7 +141,7 @@ impl DaemonApp {
         )
     }
 
-    fn schedule_workflow_dispatches(
+    pub(crate) fn schedule_workflow_dispatches(
         &mut self,
         session_id: &str,
         workflow_run_id: &str,
@@ -354,37 +354,7 @@ impl DaemonApp {
         }
     }
 
-    pub(crate) fn reconcile_workflow_prompt_started(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-    ) -> Result<(), DaemonError> {
-        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-        else {
-            return Ok(());
-        };
-        let workflow_run = self.sessions_mut().start_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        )?;
-        self.record_notice(
-            session_id,
-            self.sessions()
-                .get_session(session_id)?
-                .active_provider_run_id(),
-            self.attachments().list_session_attachment_ids(session_id),
-            format!(
-                "Workflow run `{}` started on agent `{}`.",
-                workflow_run.id(),
-                prompt.target_agent_id()
-            ),
-        );
-        Ok(())
-    }
-
-    fn build_workflow_completion_snapshot(
+    pub(crate) fn build_workflow_completion_snapshot(
         &self,
         session_id: &str,
         workflow_run_id: &str,
@@ -502,73 +472,7 @@ impl DaemonApp {
         Some(WorkflowCompletionSnapshot::new(summary, output))
     }
 
-    pub(crate) fn reconcile_workflow_prompt_completed(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-        provider_run_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-        else {
-            return Ok(());
-        };
-        let completion_snapshot = self.build_workflow_completion_snapshot(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            provider_run_id,
-        );
-        let max_turns = self.workflow_max_turns(session_id);
-        let WorkflowCompletionUpdate {
-            workflow_run,
-            dispatches,
-            validation_warnings,
-        } = self.sessions_mut().complete_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            completion_snapshot,
-            max_turns,
-        )?;
-        if !validation_warnings.is_empty() {
-            self.write_workflow_control_mailbox(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-                &validation_warnings,
-            );
-            for warning in &validation_warnings {
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachments().list_session_attachment_ids(session_id),
-                    format!(
-                        "Workflow output validation warning on edge `{}`: {}",
-                        warning.edge_id, warning.message
-                    ),
-                );
-            }
-        }
-        self.schedule_workflow_dispatches(session_id, workflow_run.id(), &dispatches);
-        let state_suffix = match workflow_run.status() {
-            crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
-            crate::session::WorkflowRunStatus::Completed => "completed",
-            crate::session::WorkflowRunStatus::Stopped => {
-                "stopped after reaching the max turn limit"
-            }
-            _ => "updated",
-        };
-        self.record_notice(
-            session_id,
-            None,
-            self.attachments().list_session_attachment_ids(session_id),
-            format!("Workflow run `{}` {state_suffix}.", workflow_run.id()),
-        );
-        Ok(())
-    }
-
-    fn write_workflow_control_mailbox(
+    pub(crate) fn write_workflow_control_mailbox(
         &self,
         session_id: &str,
         workflow_run_id: &str,
@@ -616,30 +520,6 @@ impl DaemonApp {
                 path
             );
         }
-    }
-
-    pub(crate) fn reconcile_workflow_prompt_cancelled(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-    ) -> Result<(), DaemonError> {
-        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-        else {
-            return Ok(());
-        };
-        let workflow_run = self.sessions_mut().stop_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        )?;
-        self.record_notice(
-            session_id,
-            None,
-            self.attachments().list_session_attachment_ids(session_id),
-            format!("Workflow run `{}` was stopped.", workflow_run.id()),
-        );
-        Ok(())
     }
 
     fn collect_workflow_artifact_refs(

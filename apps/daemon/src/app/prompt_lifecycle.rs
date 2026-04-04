@@ -113,7 +113,8 @@ impl DaemonApp {
             .active_provider_run_id()
             .map(str::to_string);
         let (_session, completed) = self.sessions.complete_active_prompt_only(session_id)?;
-        self.reconcile_workflow_prompt_completed(
+        crate::scheduler::runtime::on_workflow_prompt_completed(
+            self,
             session_id,
             &completed,
             provider_run_id.as_deref(),
@@ -263,11 +264,19 @@ impl DaemonApp {
                         active.attachments(),
                     ) {
                         let cancelled = self.sessions.cancel_active_prompt(session_id)?.1;
-                        self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
+                        crate::scheduler::runtime::on_workflow_prompt_cancelled(
+                            self,
+                            session_id,
+                            &cancelled,
+                        )?;
                         flow_control::clear_prompt_activity(self, session_id);
                         return Err(dispatch_error);
                     }
-                    self.reconcile_workflow_prompt_started(session_id, &active)?;
+                    crate::scheduler::runtime::on_workflow_prompt_started(
+                        self,
+                        session_id,
+                        &active,
+                    )?;
                     flow_control::note_prompt_started(self, session_id);
                     return Ok(Some(active));
                 }
@@ -305,7 +314,7 @@ impl DaemonApp {
             }
 
             let active = self.sessions.activate_prompt(session_id, next)?.1;
-            self.reconcile_workflow_prompt_started(session_id, &active)?;
+            crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
             flow_control::note_prompt_started(self, session_id);
             return Ok(Some(active));
         }
@@ -366,10 +375,15 @@ impl DaemonApp {
                     .sessions
                     .finalize_active_prompt_cancellation(session_id)?
                     .1;
-                self.reconcile_workflow_prompt_cancelled(session_id, &cancelled)?;
+                crate::scheduler::runtime::on_workflow_prompt_cancelled(
+                    self,
+                    session_id,
+                    &cancelled,
+                )?;
             } else {
                 let completed = self.sessions.complete_active_prompt_only(session_id)?.1;
-                self.reconcile_workflow_prompt_completed(
+                crate::scheduler::runtime::on_workflow_prompt_completed(
+                    self,
                     session_id,
                     &completed,
                     Some(provider_run_id),
@@ -417,7 +431,7 @@ impl DaemonApp {
         let (_session, prompt) = self
             .sessions
             .finalize_active_prompt_cancellation(session_id)?;
-        self.reconcile_workflow_prompt_cancelled(session_id, &prompt)?;
+        crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, &prompt)?;
         flow_control::clear_prompt_activity(self, session_id);
         let started_next = if self
             .sessions

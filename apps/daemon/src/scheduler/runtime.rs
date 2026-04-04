@@ -1,6 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::PromptSubmissionOutcome;
+use crate::session::{PromptQueueItem, PromptSubmissionOutcome, WorkflowCompletionUpdate};
 use crate::transport::TransportService;
 
 pub fn schedule_workflow_node_prompt(
@@ -32,11 +32,11 @@ pub fn schedule_workflow_node_prompt(
                 if let Ok(Some(cancelled)) =
                     TransportService::cancel_active_prompt_after_dispatch_failure(app, session_id)
                 {
-                    let _ = app.reconcile_workflow_prompt_cancelled(session_id, &cancelled);
+                    let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
                 }
                 return Err(error);
             }
-            app.reconcile_workflow_prompt_started(session_id, &prompt)?;
+            on_workflow_prompt_started(app, session_id, &prompt)?;
         }
         PromptSubmissionOutcome::Queued { .. } => {
             app.record_notice(
@@ -50,5 +50,123 @@ pub fn schedule_workflow_node_prompt(
         }
     }
 
+    Ok(())
+}
+
+pub fn on_workflow_prompt_started(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<(), DaemonError> {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return Ok(());
+    };
+    let workflow_run = app.sessions_mut().start_workflow_node_run(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )?;
+    app.record_notice(
+        session_id,
+        app.sessions()
+            .get_session(session_id)?
+            .active_provider_run_id(),
+        app.attachments().list_session_attachment_ids(session_id),
+        format!(
+            "Workflow run `{}` started on agent `{}`.",
+            workflow_run.id(),
+            prompt.target_agent_id()
+        ),
+    );
+    Ok(())
+}
+
+pub fn on_workflow_prompt_completed(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_run_id: Option<&str>,
+) -> Result<(), DaemonError> {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return Ok(());
+    };
+    let completion_snapshot = app.build_workflow_completion_snapshot(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        provider_run_id,
+    );
+    let max_turns = app.workflow_max_turns(session_id);
+    let WorkflowCompletionUpdate {
+        workflow_run,
+        dispatches,
+        validation_warnings,
+    } = app.sessions_mut().complete_workflow_node_run(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        completion_snapshot,
+        max_turns,
+    )?;
+    if !validation_warnings.is_empty() {
+        app.write_workflow_control_mailbox(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            &validation_warnings,
+        );
+        for warning in &validation_warnings {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow output validation warning on edge `{}`: {}",
+                    warning.edge_id, warning.message
+                ),
+            );
+        }
+    }
+    app.schedule_workflow_dispatches(session_id, workflow_run.id(), &dispatches);
+    let state_suffix = match workflow_run.status() {
+        crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+        crate::session::WorkflowRunStatus::Completed => "completed",
+        crate::session::WorkflowRunStatus::Stopped => "stopped after reaching the max turn limit",
+        _ => "updated",
+    };
+    app.record_notice(
+        session_id,
+        None,
+        app.attachments().list_session_attachment_ids(session_id),
+        format!("Workflow run `{}` {state_suffix}.", workflow_run.id()),
+    );
+    Ok(())
+}
+
+pub fn on_workflow_prompt_cancelled(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<(), DaemonError> {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return Ok(());
+    };
+    let workflow_run = app.sessions_mut().stop_workflow_node_run(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )?;
+    app.record_notice(
+        session_id,
+        None,
+        app.attachments().list_session_attachment_ids(session_id),
+        format!("Workflow run `{}` was stopped.", workflow_run.id()),
+    );
     Ok(())
 }
