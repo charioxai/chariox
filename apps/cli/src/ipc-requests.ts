@@ -283,6 +283,22 @@ export function getProviderCatalogRequest() {
   return { GetProviderCatalog: null }
 }
 
+export function getProviderAuthStatusRequest(provider: string) {
+  return {
+    GetProviderAuthStatus: {
+      provider,
+    },
+  }
+}
+
+export function startProviderLoginRequest(provider: string) {
+  return {
+    StartProviderLogin: {
+      provider,
+    },
+  }
+}
+
 export function readDirectoryTreeRequest(sessionId: string, attachmentId: string, treePath: string | null, maxDepth: number) {
   return {
     ReadDirectoryTree: {
@@ -313,15 +329,25 @@ export function getSessionHistoryRequest(
   }
 }
 
-export function launchProviderRunRequest(sessionId: string, accountProfile: string, model: string, effort: string, agentId?: string | null) {
+export function launchProviderRunRequest(
+  sessionId: string,
+  provider: string,
+  accountProfile: string,
+  model: string,
+  effort: string,
+  agentId?: string | null,
+) {
+  const normalizedModel = provider === "codex" && model.startsWith("codex/")
+    ? model.slice("codex/".length)
+    : model
   return {
     LaunchProviderRun: {
       session_id: sessionId,
       agent_id: agentId ?? null,
-      adapter_key: "opencode",
-      provider: "opencode",
+      adapter_key: provider,
+      provider,
       account_profile: accountProfile,
-      model,
+      model: normalizedModel,
       variant: effort.trim() || null,
     },
   }

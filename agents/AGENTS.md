@@ -857,15 +857,17 @@ Conceptual structure:
   - session manager
   - PTY manager
   - provider adapter host
+  - I/O collision manager
   - context tracker
-  - capability service
-  - git/worktree manager
-  - scheduler
+- capability service
+- git/worktree manager
+- scheduler
+- workflow prompt registry (workflow-level shared prompt)
 
 - Fastify Server
   - auth
   - machine/session registry
-  - relay
+  - relay (transport member, not a second kernel)
   - presence
   - schedules metadata
 

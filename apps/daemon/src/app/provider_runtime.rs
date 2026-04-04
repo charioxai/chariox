@@ -28,7 +28,9 @@ impl DaemonApp {
                 "session_id": request.session_id.clone(),
             }),
         );
-        if request.adapter_key == "opencode" && request.working_directory.is_none() {
+        if (request.adapter_key == "opencode" || request.adapter_key == "codex")
+            && request.working_directory.is_none()
+        {
             let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
                 self.agents
                     .get_agent(agent_id)

@@ -1,6 +1,6 @@
 use super::{
-    plan_opencode_launch, AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
-    RuntimeProviderRun,
+    plan_codex_launch, plan_opencode_launch, AgentEndpointMode, LaunchProviderRequest,
+    ProviderLaunchResult, RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -24,18 +24,19 @@ impl ProviderRegistry {
     pub fn registered_adapter_count(&self) -> usize {
         #[cfg(test)]
         {
-            3
+            4
         }
 
         #[cfg(not(test))]
         {
-            2
+            3
         }
     }
 
     pub fn resolve(&self, key: &str) -> Option<&'static dyn AgentEndpointAdapter> {
         match key {
             DevStubAdapter::KEY => Some(&DEV_STUB_ADAPTER),
+            CodexAdapter::KEY => Some(&CODEX_ADAPTER),
             OpenCodeAdapter::KEY => Some(&OPENCODE_ADAPTER),
             #[cfg(test)]
             FailingPtyAdapter::KEY => Some(&FAILING_PTY_ADAPTER),
@@ -103,7 +104,43 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = plan_opencode_launch()?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
-        launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
+        if launch.endpoint_mode == AgentEndpointMode::Managed {
+            launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
+        }
+        launch.working_directory = request.working_directory.clone();
+        Ok(launch)
+    }
+
+    fn park(&self, _run: &RuntimeProviderRun) {}
+
+    fn resume(&self, _run: &RuntimeProviderRun) {}
+
+    fn terminate(&self, _run: &RuntimeProviderRun) {}
+}
+
+#[derive(Debug, Default)]
+struct CodexAdapter;
+
+impl CodexAdapter {
+    const KEY: &'static str = "codex";
+}
+
+static CODEX_ADAPTER: CodexAdapter = CodexAdapter;
+
+impl AgentEndpointAdapter for CodexAdapter {
+    fn key(&self) -> &'static str {
+        Self::KEY
+    }
+
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
+        let mut launch = plan_codex_launch()?;
+        launch.process_label = format!("codex:{}:{}", request.provider, request.model);
+        if launch.endpoint_mode == AgentEndpointMode::Managed {
+            launch.pty_target = Some(format!("codex-pty:{}", request.session_id));
+        }
         launch.working_directory = request.working_directory.clone();
         Ok(launch)
     }

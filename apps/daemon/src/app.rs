@@ -21,7 +21,7 @@ use crate::capability::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::provider::{ProviderProcessService, RuntimeProviderRun};
+use crate::provider::{ProviderProcessService, RuntimeProviderRun, StructuredPollResult};
 use crate::pty::PtyManager;
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptStatus, RuntimeSession, SessionConfigState,
@@ -564,12 +564,8 @@ impl DaemonApp {
             return Ok(Vec::new());
         }
 
-        if provider_run.adapter_key() == "opencode" {
-            return self.pump_opencode_output(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            );
+        if provider_run.adapter_key() == "opencode" || provider_run.adapter_key() == "codex" {
+            return self.pump_structured_output(session_id, provider_run_id, recipient_attachment_ids);
         }
 
         let chunks = match self.pty.drain_output(provider_run_id) {
@@ -696,7 +692,7 @@ impl DaemonApp {
         )
     }
 
-    fn pump_opencode_output(
+    fn pump_structured_output(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
@@ -727,21 +723,62 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        for notice in &poll_result.notices {
-            self.record_notice(
-                session_id,
-                Some(provider_run_id),
-                recipient_attachment_ids.clone(),
-                notice.to_string(),
-            );
-        }
-        let prompt_completed = poll_result.prompt_completed;
-        let records = self.render_opencode_output(
-            session_id,
-            provider_run_id,
-            recipient_attachment_ids,
-            poll_result,
-        );
+        let (prompt_completed, records) = match poll_result {
+            StructuredPollResult::OpenCode(result) => {
+                for notice in &result.notices {
+                    self.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        recipient_attachment_ids.clone(),
+                        notice.to_string(),
+                    );
+                }
+                (
+                    result.prompt_completed,
+                    self.render_opencode_output(
+                        session_id,
+                        provider_run_id,
+                        recipient_attachment_ids.clone(),
+                        result,
+                    ),
+                )
+            }
+            StructuredPollResult::Codex(result) => {
+                for notice in &result.notices {
+                    self.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        recipient_attachment_ids.clone(),
+                        notice.to_string(),
+                    );
+                }
+                if result.chunks.iter().any(|chunk| {
+                    matches!(
+                        chunk.kind,
+                        TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+                    )
+                }) {
+                    self.note_prompt_output(session_id);
+                }
+                (
+                    result.prompt_completed,
+                    result
+                        .chunks
+                        .into_iter()
+                        .map(|chunk| {
+                            self.fan_out_output(
+                                session_id,
+                                provider_run_id,
+                                chunk.kind,
+                                chunk.merge_key,
+                                recipient_attachment_ids.clone(),
+                                &chunk.bytes,
+                            )
+                        })
+                        .collect(),
+                )
+            }
+        };
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
             return Ok(records);

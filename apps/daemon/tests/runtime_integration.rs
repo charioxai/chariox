@@ -21,13 +21,19 @@ use arroba_daemon::local::{
 };
 use arroba_daemon::provider::{LaunchProviderRequest, ProviderRunState};
 use arroba_daemon::session::{
-    CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus, WorkflowNodeRunStatus,
-    WorkflowRunStatus,
+    CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
+    WorkflowNodeRunStatus, WorkflowRunStatus,
 };
 use arroba_daemon::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
 
 static OPENCODE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn opencode_env_guard() -> std::sync::MutexGuard<'static, ()> {
+    OPENCODE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
 
 #[test]
 fn session_lifecycle_round_trip_cleans_runtime_state() {
@@ -207,7 +213,7 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
 
 #[test]
 fn workflow_runs_progress_without_terminal_pumps() {
-    let _guard = OPENCODE_ENV_LOCK.lock().unwrap();
+    let _guard = opencode_env_guard();
     env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
 
     let mut app =
@@ -544,15 +550,12 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
 }
 
 #[test]
-fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
-    let _guard = OPENCODE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    let fixture_path = create_opencode_fixture_script(1);
+fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process() {
+    let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::remove_var("ARROBA_OPENCODE_BIN");
     env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
@@ -604,12 +607,13 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
         recipients,
         |output, app| {
             output.contains("fixture response: first exit prompt")
+                && output.contains("fixture response: second exit prompt")
                 && app
-                    .providers()
-                    .get_run(run.id())
-                    .expect("run should remain queryable")
-                    .state()
-                    == ProviderRunState::Ended
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
         },
     );
 
@@ -618,14 +622,16 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
         .get_session(session.id())
         .expect("session should still exist");
     assert!(output.contains("fixture response: first exit prompt"));
-    assert_eq!(session_state.active_provider_run_id(), None);
+    assert!(output.contains("fixture response: second exit prompt"));
+    assert_eq!(session_state.active_provider_run_id(), Some(run.id()));
     assert!(session_state.active_prompt().is_none());
+    assert!(session_state.queued_prompts().is_empty());
     assert_eq!(
         app.providers()
             .get_run(run.id())
             .expect("run should remain queryable")
             .state(),
-        ProviderRunState::Ended
+        ProviderRunState::Running
     );
     assert!(!app.pty().has_process(run.id()));
 
@@ -640,7 +646,6 @@ fn unexpected_provider_exit_marks_run_ended_and_clears_active_prompt() {
         env::remove_var("ARROBA_OPENCODE_PORT");
     }
     mock_server.stop();
-    let _ = fs::remove_file(&fixture_path);
 }
 
 #[test]
@@ -1779,15 +1784,12 @@ fn detaching_the_last_attachment_keeps_an_active_turn_available_on_rejoin() {
 }
 
 #[test]
-fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
-    let _guard = OPENCODE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    let fixture_path = create_opencode_fixture_script(5);
+fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
+    let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
+    env::remove_var("ARROBA_OPENCODE_BIN");
     env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
@@ -1882,7 +1884,10 @@ fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
 
         if default_text.contains("fixture response: first exit prompt on default")
             && reviewer_text.contains("fixture response: reviewer prompt after default exit")
-            && default_run_state == ProviderRunState::Ended
+            && matches!(
+                default_run_state,
+                ProviderRunState::Running | ProviderRunState::Parked
+            )
             && session_state.active_prompt().is_none()
         {
             break;
@@ -1914,8 +1919,17 @@ fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
             .get_run(default_run.id())
             .expect("default run should remain queryable")
             .state(),
-        ProviderRunState::Ended
+        ProviderRunState::Parked
     );
+    assert_eq!(
+        app.providers()
+            .get_run(reviewer_run.id())
+            .expect("reviewer run should remain queryable")
+            .state(),
+        ProviderRunState::Running
+    );
+    assert!(!app.pty().has_process(default_run.id()));
+    assert!(!app.pty().has_process(reviewer_run.id()));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -1928,14 +1942,11 @@ fn unexpected_active_run_exit_advances_queued_work_on_another_agents_run() {
         env::remove_var("ARROBA_OPENCODE_PORT");
     }
     mock_server.stop();
-    let _ = fs::remove_file(&fixture_path);
 }
 
 #[test]
 fn opencode_launch_requires_explicit_port_override() {
-    let _guard = OPENCODE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+    let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
@@ -1991,9 +2002,7 @@ fn opencode_launch_requires_explicit_port_override() {
 
 #[test]
 fn opencode_event_stream_does_not_depend_on_session_status_polling() {
-    let _guard = OPENCODE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+    let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_omit_session_status(true);
@@ -2066,7 +2075,7 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
             .state(),
         ProviderRunState::Running
     );
-    assert!(app.pty().has_process(run.id()));
+    assert!(!app.pty().has_process(run.id()));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -2079,7 +2088,6 @@ fn opencode_event_stream_does_not_depend_on_session_status_polling() {
         env::remove_var("ARROBA_OPENCODE_PORT");
     }
     mock_server.stop();
-    let _ = fs::remove_file(&fixture_path);
 }
 
 fn wait_for_terminal_output(

@@ -25,6 +25,7 @@ Target direction:
 
 - one kernel-owned bidirectional transport for terminal clients
 - one transport shape for both local and remote terminal members, with relay as a forwarding layer rather than a second authority
+- relay is an external member that speaks the same transport contract, not a second kernel
 - generic agent-facing transport remains deferred; current agent integrations continue to use native/provider-specific adapter protocols
 - WebSocket is the current and recommended transport for the kernel-client path
 
@@ -708,6 +709,7 @@ Workflow nodes require daemon-owned instruction and validation surfaces.
 Required rules:
 
 - the daemon MUST maintain per-node instruction content used as system or preamble context
+- the daemon MUST maintain an optional workflow-level prompt used as shared context for all nodes
 - the daemon MUST provide a stable reference so nodes can reload instructions after compaction
 - the daemon MUST expose a kernel-owned output validation tool to workflow nodes
 - node completion output SHOULD be validated against per-edge schema constraints before routing

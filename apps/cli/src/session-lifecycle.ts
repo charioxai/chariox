@@ -73,6 +73,7 @@ type SessionLifecycleDeps = {
   getSessionState: (sessionId: string) => Promise<RuntimeSession>
   launchProviderRun: (
     sessionId: string,
+    provider: string,
     accountProfile: string,
     model: string,
     effort: string,
@@ -204,6 +205,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.cliOptions.effort = launch.effort
       const run = await deps.launchProviderRun(
         session.id,
+        deps.cliOptions.provider ?? "opencode",
         deps.cliOptions.accountProfile,
         launch.model,
         launch.effort,

@@ -4,6 +4,10 @@ use crate::error::DaemonError;
 use crate::session::{PromptAttachment, SessionService};
 
 use super::{
+    codex_runtime::{
+        abort_codex_turn, drain_codex_events, initialize_codex_runtime, submit_codex_prompt,
+        CodexPollResult, CodexRuntimeState,
+    },
     opencode_binding::{
         abort_opencode_session, initialize_opencode_runtime, runtime_is_healthy,
         submit_opencode_prompt, sync_opencode_run_selection, OpenCodeRunSelection,
@@ -15,6 +19,7 @@ use super::{
 #[derive(Debug)]
 pub struct ProviderProcessService {
     registry: ProviderRegistry,
+    codex_runs: BTreeMap<String, CodexRuntimeState>,
     opencode_runs: BTreeMap<String, OpenCodeRuntimeState>,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
@@ -24,6 +29,7 @@ impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
             registry: ProviderRegistry::new(),
+            codex_runs: BTreeMap::new(),
             opencode_runs: BTreeMap::new(),
             runs: BTreeMap::new(),
             next_run_number: 0,
@@ -253,6 +259,12 @@ impl ProviderProcessService {
     }
 
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        if run.adapter_key() == "codex" {
+            let (state, selection) = initialize_codex_runtime(run)?;
+            self.codex_runs.insert(run.id().to_string(), state);
+            self.apply_codex_run_selection(run.id(), selection)?;
+            return Ok(());
+        }
         if run.adapter_key() != "opencode" {
             return Ok(());
         }
@@ -266,6 +278,9 @@ impl ProviderProcessService {
     }
 
     pub fn runtime_is_healthy(&self, run_id: &str) -> bool {
+        if self.codex_runs.contains_key(run_id) {
+            return true;
+        }
         let Some(state) = self.opencode_runs.get(run_id) else {
             return false;
         };
@@ -273,6 +288,9 @@ impl ProviderProcessService {
     }
 
     pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
+        if self.codex_runs.contains_key(provider_run_id) {
+            return Ok(());
+        }
         let Some(state) = self.opencode_runs.get(provider_run_id) else {
             return Ok(());
         };
@@ -281,13 +299,25 @@ impl ProviderProcessService {
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
+        self.codex_runs.remove(provider_run_id);
         if let Some(state) = self.opencode_runs.remove(provider_run_id) {
             state.stop();
         }
     }
 
-    pub fn abort_structured_runtime(&self, provider_run_id: &str) -> Result<bool, DaemonError> {
+    pub fn abort_structured_runtime(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() == "codex" {
+            let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                }
+            })?;
+            abort_codex_turn(provider_run_id, state)?;
+            return Ok(true);
+        }
         if run.adapter_key() != "opencode" {
             return Ok(false);
         }
@@ -304,11 +334,23 @@ impl ProviderProcessService {
     }
 
     pub fn submit_structured_prompt(
-        &self,
+        &mut self,
         run: &RuntimeProviderRun,
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<bool, DaemonError> {
+        if run.adapter_key() == "codex" {
+            let state = self
+                .codex_runs
+                .get_mut(run.id())
+                .ok_or_else(|| DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                })?;
+            submit_codex_prompt(run, state, prompt, attachments)?;
+            return Ok(true);
+        }
         if run.adapter_key() != "opencode" {
             return Ok(false);
         }
@@ -328,21 +370,32 @@ impl ProviderProcessService {
     pub fn poll_structured_output(
         &mut self,
         provider_run_id: &str,
-    ) -> Result<Option<OpenCodePollResult>, DaemonError> {
+    ) -> Result<Option<StructuredPollResult>, DaemonError> {
         let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() == "codex" {
+            let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                }
+            })?;
+            let poll = drain_codex_events(provider_run_id, state)?;
+            return Ok(Some(StructuredPollResult::Codex(poll)));
+        }
         if run.adapter_key() != "opencode" {
             return Ok(None);
         }
 
         let drain = self.drain_opencode_events(provider_run_id)?;
 
-        Ok(Some(OpenCodePollResult {
+        Ok(Some(StructuredPollResult::OpenCode(OpenCodePollResult {
             chunks: drain.chunks,
             completions: drain.completions,
             prompt_completed: drain.prompt_completed,
             provider_idle: drain.provider_idle,
             notices: drain.notices,
-        }))
+        })))
     }
 
     pub fn mark_run_ended(
@@ -424,6 +477,25 @@ impl ProviderProcessService {
         Ok(())
     }
 
+    fn apply_codex_run_selection(
+        &mut self,
+        provider_run_id: &str,
+        selection: super::CodexRunSelection,
+    ) -> Result<(), DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = selection.model {
+            if run.model() != model {
+                run.set_model(model);
+            }
+        }
+        if let Some(variant) = selection.variant {
+            if run.variant() != Some(variant.as_str()) {
+                run.set_variant(Some(variant));
+            }
+        }
+        Ok(())
+    }
+
     fn drain_opencode_events(
         &mut self,
         provider_run_id: &str,
@@ -482,6 +554,11 @@ impl ProviderProcessService {
 
         Ok(drain)
     }
+}
+
+pub enum StructuredPollResult {
+    OpenCode(OpenCodePollResult),
+    Codex(CodexPollResult),
 }
 
 impl Default for ProviderProcessService {

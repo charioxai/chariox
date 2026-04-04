@@ -135,6 +135,12 @@ The kernel is responsible for:
 
 The kernel is the source of truth for live runtime state.
 
+Kernel component boundaries:
+
+- **Scheduler**: owns prompt/workflow scheduling, queueing, and execution state transitions.
+- **Transport**: owns the kernel-facing transport contract and local transport runtime. Relay is an external member that speaks the same transport contract.
+- **I/O Collision Manager**: owns resource locking and conflict prevention across agents (file paths, ports, shared resources).
+
 Node membership model:
 
 - a member of a kernel-owned runtime domain may be local or remote
@@ -663,6 +669,7 @@ Workflow nodes require daemon-owned instruction artifacts and schema validation.
 Required rules:
 
 - the daemon MUST maintain per-node instruction content used as system or preamble context
+- the daemon MUST maintain an optional workflow-level prompt used as shared context for all nodes
 - the daemon MUST provide a stable reference (path or artifact ref) so a node can reload its instructions after compaction
 - node instruction artifacts MUST be daemon-managed and not silently overwritten by agents
 - the daemon MUST provide a kernel-owned validation tool for node outputs
@@ -688,7 +695,11 @@ Required rules:
 
 - each active parallel code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
 - worktree assignment MUST be explicit in runtime state and the data model
-- the daemon MUST NOT allow parallel code-writing agents to mutate the same worktree concurrently
+- the daemon MUST enforce write-safety through the I/O collision manager when multiple agents share a worktree
+- resource locks SHOULD be scoped by `resource_key` and MAY be further scoped by `worktree_id` when relevant
+- `resource_key` is an abstract identifier (file path, port, external resource), not inherently tied to git
+- if agents are isolated in distinct worktrees, the collision manager SHOULD treat them as independent scopes
+- if agents share a worktree, the collision manager MUST prevent conflicting writes to the same resource key
 
 ## 8. Attachments and Provider Adapter Model
 

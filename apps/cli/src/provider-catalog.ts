@@ -34,6 +34,23 @@ export function fallbackProviderCatalog() {
   return {
     all: [
       {
+        id: "codex",
+        name: "Codex",
+        models: {
+          "gpt-5.4": {
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+            },
+          },
+        },
+      },
+      {
         id: "openai",
         name: "OpenAI",
         models: {
@@ -51,9 +68,10 @@ export function fallbackProviderCatalog() {
       },
     ],
     default: {
+      codex: "gpt-5.4",
       openai: "gpt-5.4",
     },
-    connected: ["openai"],
+    connected: ["codex", "openai"],
   } satisfies ProviderCatalog
 }
 

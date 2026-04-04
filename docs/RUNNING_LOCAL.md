@@ -32,6 +32,7 @@ Required for the current local path:
 - `pnpm`
 - Bun 1.2+ for the TypeScript CLI
 - `opencode` installed locally, or `ARROBA_OPENCODE_BIN` set
+- `codex` installed locally, or `ARROBA_CODEX_BIN` set, if you want to use the Codex backend
 
 Install workspace dependencies first:
 
@@ -41,13 +42,14 @@ pnpm install
 
 ## 4. Required Runtime Configuration
 
-The current OpenCode path requires an explicit local port:
+The current structured provider paths require explicit local ports:
 
 ```bash
 export ARROBA_OPENCODE_PORT=43111
+export ARROBA_CODEX_PORT=43112
 ```
 
-Without that, the daemon will reject the OpenCode launch path.
+Without that, the daemon will reject the corresponding managed launch path.
 
 ## 5. Running The Daemon
 
@@ -62,7 +64,7 @@ What it does:
 - boots the daemon runtime
 - binds the kernel WebSocket listener
 - manages sessions and provider runs
-- launches and supervises the local OpenCode server path
+- launches and supervises the local OpenCode and Codex structured server paths
 
 ## 6. Running The Primary CLI
 
@@ -296,7 +298,39 @@ export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
 export ARROBA_OPENCODE_ENDPOINT=http://127.0.0.1:43111
 ```
 
-### 12.2 Bun / CLI Launcher
+### 12.3 Codex
+
+- `ARROBA_CODEX_PORT`
+  - required for the managed Codex launch path
+  - local port used for `codex app-server --listen ws://127.0.0.1:<port>`
+
+- `ARROBA_CODEX_BIN`
+  - optional
+  - overrides the `codex` executable path
+
+- `ARROBA_CODEX_ENDPOINT`
+  - optional
+  - treats Codex as an external structured endpoint instead of a daemon-launched managed process
+
+Examples:
+
+```bash
+export ARROBA_CODEX_PORT=43112
+export ARROBA_CODEX_BIN=/absolute/path/to/codex
+export ARROBA_CODEX_ENDPOINT=ws://127.0.0.1:43112
+```
+
+Codex login is available through the CLI:
+
+```text
+/provider codex
+/provider status
+/provider login
+```
+
+`/provider login` returns the provider-native device-login URL and code.
+
+### 12.4 Bun / CLI Launcher
 
 - `BUN_BIN`
   - optional
@@ -308,7 +342,7 @@ Example:
 export BUN_BIN=/absolute/path/to/bun
 ```
 
-### 12.3 Kernel Transport
+### 12.5 Kernel Transport
 
 - `ARROBA_DAEMON_SOCKET`
   - optional

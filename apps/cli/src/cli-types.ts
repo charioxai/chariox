@@ -73,6 +73,23 @@ export type RuntimeProviderRun = {
   state: string
 }
 
+export type ProviderAuthStatus = {
+  provider: string
+  auth_state: string
+  account_profile: string | null
+  login_hint: string | null
+  detected_version: string | null
+}
+
+export type ProviderLoginStart = {
+  provider: string
+  login_kind: string
+  login_id: string | null
+  auth_url: string | null
+  verification_url: string | null
+  user_code: string | null
+}
+
 export type PromptAttachmentPart = {
   url: string
   mime: string
@@ -228,6 +245,7 @@ export type CliOptions = {
   deleteSessionRef?: string
   alias?: string
   clientId: string
+  provider?: string
   model: string
   accountProfile: string
   effort: string

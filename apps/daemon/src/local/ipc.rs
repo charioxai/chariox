@@ -411,7 +411,7 @@ mod tests {
         PumpTerminalOutputRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
-    use crate::{DaemonApp, DaemonConfig};
+    use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
         read_sync_frame, run_local_ipc_server, LocalDaemonRequest, LocalDaemonResponse,
@@ -817,6 +817,21 @@ mod tests {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
             other => panic!("unexpected response: {other:?}"),
         };
+
+        let duplicate_node = client
+            .send(&LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: first_agent.id().to_string(),
+                },
+            ))
+            .expect_err("duplicate workflow node add should be rejected");
+        assert!(matches!(
+            duplicate_node,
+            DaemonError::LocalTransport { operation: "handle local response", ref message }
+                if message.contains("already has a node for agent")
+        ));
 
         let second_node = match client
             .send(&LocalDaemonRequest::AddWorkflowNode(

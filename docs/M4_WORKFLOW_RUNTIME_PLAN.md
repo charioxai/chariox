@@ -102,7 +102,7 @@ Rules for the first slice:
 Status:
 
 - daemon-side endpoint invocation is landed through the local API
-- CLI slash-command wiring is still pending
+- CLI slash-command wiring is landed for run/runs/cancel
 
 ### Phase 3. First execution scheduler
 
@@ -151,6 +151,7 @@ Status:
 
 - the daemon now derives a human-facing summary for a completed node from actual provider output when that output is available
 - workflow-owned prompts now instruct the node to emit a machine-parseable JSON envelope with separate `summary` and explicit downstream `output.message`
+- workflow-owned prompts can include an optional workflow-level prompt shared across nodes
 - the daemon includes optional artifact refs in the output payload by scanning workflow-owned artifact roots namespaced to the workflow source attachment
 - downstream handoff payloads now include workflow run id, workflow id, source node run id, source node id, source agent id, target node id, the root invocation prompt, and the optional summary-plus-output completion payload
 - completed node runs now persist the same summary-plus-output completion payload instead of treating summary itself as the downstream payload

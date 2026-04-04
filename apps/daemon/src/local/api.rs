@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use jsonschema::JSONSchema;
 
 use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
@@ -13,7 +13,9 @@ use crate::capability::{
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
-use crate::provider::{OpenCodeProviderCatalog, RuntimeProviderRun};
+use crate::provider::{
+    OpenCodeProviderCatalog, ProviderAuthStatus, ProviderLoginStart, RuntimeProviderRun,
+};
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, WorkflowDefinition,
@@ -84,6 +86,16 @@ pub struct GetProviderRunRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderCatalogRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderAuthStatusRequest {
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartProviderLoginRequest {
+    pub provider: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsRequest;
@@ -356,6 +368,8 @@ pub enum LocalDaemonRequest {
     GetSessionState(GetSessionStateRequest),
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
+    GetProviderAuthStatus(GetProviderAuthStatusRequest),
+    StartProviderLogin(StartProviderLoginRequest),
     GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -426,6 +440,12 @@ pub enum LocalDaemonResponse {
     },
     ProviderCatalog {
         catalog: OpenCodeProviderCatalog,
+    },
+    ProviderAuthStatus {
+        status: ProviderAuthStatus,
+    },
+    ProviderLoginStarted {
+        login: ProviderLoginStart,
     },
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
@@ -658,6 +678,12 @@ impl DaemonApp {
                 self.handle_get_provider_run_request(request)
             }
             LocalDaemonRequest::GetProviderCatalog(_) => self.handle_get_provider_catalog_request(),
+            LocalDaemonRequest::GetProviderAuthStatus(request) => {
+                self.handle_get_provider_auth_status_request(request)
+            }
+            LocalDaemonRequest::StartProviderLogin(request) => {
+                self.handle_start_provider_login_request(request)
+            }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(
                     &request.session_id,
@@ -682,7 +708,8 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
-                let outcome = self.submit_prompt(
+                let outcome = crate::scheduler::SchedulerService::schedule_direct_prompt(
+                    self,
                     &request.session_id,
                     &request.attachment_id,
                     &request.prompt,
@@ -1074,9 +1101,8 @@ impl DaemonApp {
 fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
     let schema_source = std::fs::read_to_string(schema_ref)
         .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
-    let schema_value =
-        serde_json::from_str::<Value>(&schema_source)
-            .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
+    let schema_value = serde_json::from_str::<Value>(&schema_source)
+        .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
     let output_value = serde_json::from_str::<Value>(output_json)
         .map_err(|error| format!("output is not valid JSON: {error}"))?;
     let compiled = JSONSchema::options()
@@ -1435,6 +1461,20 @@ mod tests {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
             _ => panic!("unexpected local response"),
         };
+
+        let duplicate_node = app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                },
+            ))
+            .expect_err("duplicate workflow node should be rejected");
+        assert!(matches!(
+            duplicate_node,
+            DaemonError::WorkflowNodeConflict { .. }
+        ));
 
         match app
             .handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(

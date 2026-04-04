@@ -21,13 +21,14 @@ export type FocusedStatusBadge = {
 type ProviderSelectionOptions = {
   providerRun: RuntimeProviderRun | null
   waitingRoomState: WaitingRoomState
+  defaultProvider?: string
   defaultModel: string
   defaultEffort: string
 }
 
 export function deriveCurrentProviderSelection(options: ProviderSelectionOptions) {
   return {
-    provider: options.providerRun?.provider ?? "opencode",
+    provider: options.providerRun?.provider ?? options.defaultProvider ?? "opencode",
     model: options.providerRun?.model ?? options.waitingRoomState.modelId ?? options.defaultModel,
     effort: options.providerRun?.variant ?? options.waitingRoomState.effort ?? options.defaultEffort,
   }

@@ -26,6 +26,7 @@ type BootstrapDeps = {
   launchProviderRun: (
     client: LocalIpcClient,
     sessionId: string,
+    provider: string,
     accountProfile: string,
     model: string,
     effort: string,
@@ -114,6 +115,7 @@ export async function bootstrapSession(
     providerRun = await deps.launchProviderRun(
       client,
       session.id,
+      options.provider ?? "opencode",
       options.accountProfile,
       options.model,
       options.effort,

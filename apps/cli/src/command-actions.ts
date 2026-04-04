@@ -1,5 +1,7 @@
 import type {
   AgentInstance,
+  ProviderAuthStatus,
+  ProviderLoginStart,
   RuntimeAttachment,
   RuntimeProviderRun,
   RuntimeSession,
@@ -112,6 +114,9 @@ type CommandActionDeps = {
   transitionToNoSession: (message: string) => void
   applyModelSelection: (value: string) => Promise<void>
   applyVariantSelection: (value: string) => Promise<void>
+  applyProviderSelection?: (value: string) => Promise<void>
+  getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
+  startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -300,14 +305,56 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const { value } = command
     if (!value) {
-      deps.flashFooter("usage: /provider opencode", "error")
+      deps.flashFooter("usage: /provider <opencode|codex|status|login>", "error")
       return
     }
-    if (value !== "opencode") {
+    const parts = value.split(/\s+/).filter(Boolean)
+    const [action, maybeProvider] = parts
+    if (action === "status") {
+      const provider = maybeProvider ?? deps.currentProviderId()
+      if (!deps.getProviderAuthStatus) {
+        deps.flashFooter("provider status is not available in this daemon", "error")
+        return
+      }
+      const status = await deps.getProviderAuthStatus(provider)
+      const details = status.account_profile
+        ? `${status.provider}: ${status.auth_state} as ${status.account_profile}`
+        : `${status.provider}: ${status.auth_state}`
+      deps.appendNotice(
+        [
+          details,
+          status.detected_version ? `version ${status.detected_version}` : null,
+          status.login_hint ?? null,
+        ].filter(Boolean).join(" • "),
+      )
+      deps.flashFooter(details, "info")
+      return
+    }
+    if (action === "login") {
+      const provider = maybeProvider ?? deps.currentProviderId()
+      if (!deps.startProviderLogin) {
+        deps.flashFooter("provider login is not available in this daemon", "error")
+        return
+      }
+      const login = await deps.startProviderLogin(provider)
+      const message = [
+        `${login.provider} login started`,
+        login.user_code ? `code ${login.user_code}` : null,
+        login.verification_url ?? login.auth_url ?? null,
+      ].filter(Boolean).join(" • ")
+      deps.appendNotice(message)
+      deps.flashFooter(message, "info")
+      return
+    }
+    if (value !== "opencode" && value !== "codex") {
       deps.flashFooter(`unknown provider: ${value}`, "error")
       return
     }
-    deps.flashFooter("OpenCode selected", "info")
+    if (deps.applyProviderSelection) {
+      await deps.applyProviderSelection(value)
+    } else {
+      deps.flashFooter(`${value} selected`, "info")
+    }
   }
 
   const handleModelCommand = async (

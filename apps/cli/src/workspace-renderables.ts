@@ -18,7 +18,7 @@ import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { WaitingRoomState } from "./waiting-room.js"
 import { arrobaArtFrame, waitingRoomRows } from "./waiting-room.js"
-import { buildWorkflowCanvasRenderable as buildWorkflowCanvasPaneRenderable } from "./workflow-graph/canvas.js"
+import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
 
@@ -26,7 +26,7 @@ export function buildEmptyTranscriptRenderable(renderer: RenderContext) {
   return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
 }
 
-export function buildWorkflowCanvasRenderable(
+export function buildWorkflowOutlineRenderable(
   renderer: RenderContext,
   options: {
     workflows: WorkflowDefinition[]
@@ -46,12 +46,12 @@ export function buildWorkflowCanvasRenderable(
     } | null
   },
 ) {
-  const canvas = buildWorkflowCanvasPaneRenderable(renderer, options)
-  if (!canvas) {
+  const outline = buildWorkflowOutlinePaneRenderable(renderer, options)
+  if (!outline) {
     return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
   }
   if (!options.inspector) {
-    return canvas
+    return outline
   }
   const wrapper = new BoxRenderable(renderer, {
     flexDirection: "row",
@@ -62,7 +62,7 @@ export function buildWorkflowCanvasRenderable(
     flexGrow: 2,
     minWidth: 40,
   })
-  left.add(canvas)
+  left.add(outline)
   wrapper.add(left)
 
   const inspectorConfig = options.inspector

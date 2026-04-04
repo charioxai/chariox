@@ -29,6 +29,18 @@ Leave the current workspace/session view and return to the waiting room.
 
 Select the active provider backend.
 
+Supported values:
+
+- `opencode`
+- `codex`
+
+Additional provider commands:
+
+- `/provider status [name]`
+  Show auth status for the current or named provider.
+- `/provider login [name]`
+  Start provider-native login for the current or named provider. For Codex this returns a device-login URL and one-time code.
+
 ### `/model <id>`
 
 Select the active model.
@@ -106,12 +118,12 @@ Current status:
 - workflow definition commands and basic workflow runtime commands are available in the CLI
 - the daemon executes endpoint-triggered workflow runs with daemon-owned downstream handoffs and explicit `output.message` payloads, plus optional artifact refs when a workflow-owned artifact is produced
 - join nodes now buffer inbound workflow messages on the target side and, by default, wait for all upstream parents before starting one aggregated node run
-- the workflow canvas now shows basic run status for the selected workflow and its nodes
+- the workflow outline now shows graph structure for every node, and expands the selected node with run status and other non-graph attributes
 - there is still no `/workflow schedule` command
 
 ### `/workflow`
 
-Open the workflow canvas. If already on the workflow screen, nothing changes.
+Open the workflow outline. If already on the workflow screen, nothing changes.
 
 ### `/workflow list`
 
@@ -184,7 +196,7 @@ Cycle to the next agent.
 
 ### `Ctrl+Tab`
 
-Switch between the agent screens and the workflow canvas.
+Switch between the agent screens and the workflow outline.
 
 ### `Ctrl+T`
 

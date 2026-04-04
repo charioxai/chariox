@@ -25,8 +25,9 @@ test("buildCommandCenterItems filters model options", () => {
     currentVariant: "high",
   })
 
-  assert.equal(items[0]?.kind, "model")
-  assert.equal(items[0]?.value, "openai/gpt-5.4")
+  assert.equal(items.every((item) => item.kind === "model"), true)
+  assert.equal(items.some((item) => item.value === "openai/gpt-5.4"), true)
+  assert.equal(items.some((item) => item.value === "codex/gpt-5.4"), true)
 })
 
 test("buildCommandCenterItems filters variant options", () => {
@@ -67,8 +68,8 @@ test("buildCommandCenterItems keeps provider options open after space", () => {
     currentVariant: "high",
   })
 
-  assert.equal(items[0]?.kind, "provider")
-  assert.equal(items[0]?.value, "opencode")
+  assert.equal(items.some((item) => item.kind === "provider" && item.value === "opencode"), true)
+  assert.equal(items.some((item) => item.kind === "provider" && item.value === "codex"), true)
 })
 
 test("buildCommandCenterItems shows multi-agent view options", () => {

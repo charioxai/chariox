@@ -1,8 +1,14 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{opencode_catalog_endpoint, LaunchProviderRequest, OpenCodeClient};
+use crate::provider::{
+    ensure_codex_catalog_endpoint, opencode_catalog_endpoint, CodexClient, LaunchProviderRequest,
+    OpenCodeClient, OpenCodeProviderCatalog,
+};
 
-use super::api::{GetProviderRunRequest, LaunchProviderRunRequest, LocalDaemonResponse};
+use super::api::{
+    GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
+    LocalDaemonResponse, StartProviderLoginRequest,
+};
 
 impl DaemonApp {
     pub(super) fn handle_launch_provider_run_request(
@@ -54,12 +60,30 @@ impl DaemonApp {
     pub(super) fn handle_get_provider_catalog_request(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let endpoint = opencode_catalog_endpoint()?;
-        let client = OpenCodeClient::new("catalog", endpoint)?;
-        let catalog = client.provider_catalog()?;
+        let mut catalogs = Vec::new();
+
+        if let Ok(endpoint) = opencode_catalog_endpoint() {
+            if let Ok(client) = OpenCodeClient::new("catalog", endpoint) {
+                if let Ok(catalog) = client.provider_catalog() {
+                    catalogs.push(catalog);
+                }
+            }
+        }
+        if let Ok(endpoint) = ensure_codex_catalog_endpoint() {
+            if let Ok(client) = CodexClient::new("catalog", endpoint) {
+                if let Ok(catalog) = client.provider_catalog() {
+                    catalogs.push(catalog);
+                }
+            }
+        }
+
+        let catalog = merge_provider_catalogs(catalogs).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "get_provider_catalog",
+            message: "no provider catalog sources were reachable".to_string(),
+        })?;
         crate::logging::info_with_fields(
             "daemon.local",
-            "Retrieved provider catalog from OpenCode",
+            "Retrieved merged provider catalog",
             serde_json::json!({
                 "provider_count": catalog.all.len(),
                 "providers": catalog.all.iter().map(|p| serde_json::json!({
@@ -73,4 +97,68 @@ impl DaemonApp {
         );
         Ok(LocalDaemonResponse::ProviderCatalog { catalog })
     }
+
+    pub(super) fn handle_get_provider_auth_status_request(
+        &mut self,
+        request: GetProviderAuthStatusRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request.provider.as_str() {
+            "codex" => {
+                let endpoint = ensure_codex_catalog_endpoint()?;
+                let client = CodexClient::new("provider-auth", endpoint)?;
+                Ok(LocalDaemonResponse::ProviderAuthStatus {
+                    status: client.auth_status()?,
+                })
+            }
+            provider => Err(DaemonError::LocalTransport {
+                operation: "get_provider_auth_status",
+                message: format!("provider `{provider}` does not expose an auth status API"),
+            }),
+        }
+    }
+
+    pub(super) fn handle_start_provider_login_request(
+        &mut self,
+        request: StartProviderLoginRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request.provider.as_str() {
+            "codex" => {
+                let endpoint = ensure_codex_catalog_endpoint()?;
+                let client = CodexClient::new("provider-login", endpoint)?;
+                Ok(LocalDaemonResponse::ProviderLoginStarted {
+                    login: client.start_login()?,
+                })
+            }
+            provider => Err(DaemonError::LocalTransport {
+                operation: "start_provider_login",
+                message: format!("provider `{provider}` does not expose a login API"),
+            }),
+        }
+    }
+}
+
+fn merge_provider_catalogs(catalogs: Vec<OpenCodeProviderCatalog>) -> Option<OpenCodeProviderCatalog> {
+    let mut iter = catalogs.into_iter();
+    let mut merged = iter.next()?;
+    for catalog in iter {
+        merged.connected.extend(catalog.connected);
+        merged.connected.sort();
+        merged.connected.dedup();
+        for (provider_id, model_id) in catalog.default {
+            merged.default.insert(provider_id, model_id);
+        }
+        for provider in catalog.all {
+            if let Some(existing) = merged.all.iter_mut().find(|item| item.id == provider.id) {
+                for (model_id, model) in provider.models {
+                    existing.models.insert(model_id, model);
+                }
+            } else {
+                merged.all.push(provider);
+            }
+        }
+    }
+    merged
+        .all
+        .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    Some(merged)
 }

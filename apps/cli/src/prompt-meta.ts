@@ -89,6 +89,9 @@ function formatModel(model: string) {
   if (!providerId) {
     return formatKnownLabel(modelId)
   }
+  if (/^codex$/i.test(providerId)) {
+    return formatKnownLabel(modelId)
+  }
   // Show provider first, then model name (e.g., "OpenAI GPT-5.4", "Zen Kimi 2.5")
   return `${formatKnownLabel(providerId)} ${formatKnownLabel(modelId)}`
 }
@@ -122,6 +125,9 @@ function formatKnownLabel(value: string) {
       }
       if (/^opencode$/i.test(part)) {
         return "OpenCode"
+      }
+      if (/^codex$/i.test(part)) {
+        return "Codex"
       }
       return part.charAt(0).toUpperCase() + part.slice(1)
     })

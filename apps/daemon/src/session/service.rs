@@ -368,11 +368,13 @@ impl SessionService {
         endpoint: &WorkflowEndpointDefinition,
     ) -> Result<(), DaemonError> {
         let entry_node_id = endpoint.entry_node_id();
-        workflow.node(entry_node_id).ok_or_else(|| DaemonError::WorkflowNodeNotFound {
-            session_id: session_id.to_string(),
-            workflow_id: workflow.id().to_string(),
-            node_id: entry_node_id.to_string(),
-        })?;
+        workflow
+            .node(entry_node_id)
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                node_id: entry_node_id.to_string(),
+            })?;
 
         let node_ids = workflow
             .nodes()
@@ -703,7 +705,7 @@ impl SessionService {
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let node = WorkflowNodeDefinition::new(self.next_workflow_node_id(), agent_id.to_string());
+        let next_node_id = self.next_workflow_node_id();
         let session =
             self.store
                 .get_mut(session_id)
@@ -717,6 +719,18 @@ impl SessionService {
                     session_id: session_id.to_string(),
                     workflow_id: workflow_id.clone(),
                 })?;
+        if workflow
+            .nodes()
+            .iter()
+            .any(|node| node.agent_id() == agent_id)
+        {
+            return Err(DaemonError::WorkflowNodeConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let node = WorkflowNodeDefinition::new(next_node_id, agent_id.to_string());
         Ok(workflow.add_node(node))
     }
 
@@ -1706,12 +1720,14 @@ fn validate_workflow_edge_output(
     let failure = |message: String| -> Result<Option<String>, DaemonError> {
         match policy {
             WorkflowOutputValidationPolicy::Warn => Ok(Some(message)),
-            WorkflowOutputValidationPolicy::Halt => Err(DaemonError::WorkflowOutputValidationFailed {
-                session_id: session_id.to_string(),
-                workflow_id: workflow.id().to_string(),
-                edge_id: edge.id().to_string(),
-                message,
-            }),
+            WorkflowOutputValidationPolicy::Halt => {
+                Err(DaemonError::WorkflowOutputValidationFailed {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    edge_id: edge.id().to_string(),
+                    message,
+                })
+            }
         }
     };
 
@@ -1720,9 +1736,8 @@ fn validate_workflow_edge_output(
         .and_then(|value| value.output())
         .ok_or_else(|| "missing workflow output payload".to_string())
         .and_then(|output| {
-            serde_json::from_str::<Value>(output.message()).map_err(|error| {
-                format!("output.message is not valid JSON: {error}")
-            })
+            serde_json::from_str::<Value>(output.message())
+                .map_err(|error| format!("output.message is not valid JSON: {error}"))
         });
 
     let output_value = match output {
@@ -1730,14 +1745,11 @@ fn validate_workflow_edge_output(
         Err(message) => return failure(message),
     };
 
-    let schema_source =
-        std::fs::read_to_string(schema_ref).map_err(|error| {
-            format!("schema ref `{schema_ref}` could not be read: {error}")
-        });
+    let schema_source = std::fs::read_to_string(schema_ref)
+        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"));
     let schema_value = match schema_source {
-        Ok(source) => serde_json::from_str::<Value>(&source).map_err(|error| {
-            format!("schema ref `{schema_ref}` is not valid JSON: {error}")
-        }),
+        Ok(source) => serde_json::from_str::<Value>(&source)
+            .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}")),
         Err(message) => return failure(message),
     };
     let schema_value = match schema_value {
@@ -1748,9 +1760,7 @@ fn validate_workflow_edge_output(
     let compiled = JSONSchema::options()
         .with_draft(jsonschema::Draft::Draft7)
         .compile(&schema_value)
-        .map_err(|error| {
-            format!("schema ref `{schema_ref}` failed to compile: {error}")
-        });
+        .map_err(|error| format!("schema ref `{schema_ref}` failed to compile: {error}"));
     let compiled = match compiled {
         Ok(value) => value,
         Err(message) => return failure(message),
@@ -2107,6 +2117,13 @@ mod tests {
         let planner = service
             .add_workflow_node(session.id(), workflow.id(), "agent-1")
             .expect("planner node should be added");
+        let duplicate_node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect_err("duplicate workflow node should be rejected");
+        assert!(matches!(
+            duplicate_node,
+            DaemonError::WorkflowNodeConflict { .. }
+        ));
         let reviewer = service
             .add_workflow_node(session.id(), workflow.id(), "agent-2")
             .expect("reviewer node should be added");

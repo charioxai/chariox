@@ -120,7 +120,8 @@ impl DaemonApp {
                 message: "workflow run has no entry node run",
             }
         })?;
-        self.schedule_workflow_node_prompt(
+        crate::scheduler::SchedulerService::schedule_workflow_node_prompt(
+            self,
             session_id,
             workflow_run.id(),
             node_run.id(),
@@ -140,7 +141,26 @@ impl DaemonApp {
         )
     }
 
-    fn schedule_workflow_node_prompt(
+    pub(crate) fn schedule_workflow_node_prompt(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        target_agent_id: &str,
+        node_id: &str,
+        prompt: &str,
+    ) -> Result<(), DaemonError> {
+        self.schedule_workflow_node_prompt_inner(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            target_agent_id,
+            node_id,
+            prompt,
+        )
+    }
+
+    fn schedule_workflow_node_prompt_inner(
         &mut self,
         session_id: &str,
         workflow_run_id: &str,
@@ -211,7 +231,8 @@ impl DaemonApp {
                     dispatch.node_run.node_id()
                 ),
             );
-            if let Err(error) = self.schedule_workflow_node_prompt(
+            if let Err(error) = crate::scheduler::SchedulerService::schedule_workflow_node_prompt(
+                self,
                 session_id,
                 workflow_run_id,
                 dispatch.node_run.id(),
@@ -321,7 +342,8 @@ impl DaemonApp {
             .ok()?;
         let node = workflow.node(node_id);
         let attachment_id = Self::workflow_prompt_source_attachment_id(workflow_run_id);
-        let root = Self::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
+        let root =
+            Self::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
         let filename = format!("node-{node_id}.md");
         let path = root.join(filename);
         if !path.exists() || node.and_then(|node| node.instructions()).is_some() {
@@ -368,7 +390,6 @@ impl DaemonApp {
             None
         }
     }
-
 
     pub(crate) fn ensure_workflow_provider_run_for_agent(
         &mut self,
@@ -606,7 +627,9 @@ impl DaemonApp {
         let state_suffix = match workflow_run.status() {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completed => "completed",
-            crate::session::WorkflowRunStatus::Stopped => "stopped after reaching the max turn limit",
+            crate::session::WorkflowRunStatus::Stopped => {
+                "stopped after reaching the max turn limit"
+            }
             _ => "updated",
         };
         self.record_notice(

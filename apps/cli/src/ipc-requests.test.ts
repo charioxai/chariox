@@ -26,7 +26,7 @@ test("getSessionHistoryRequest includes paging and agent targeting", () => {
 
 test("launchProviderRunRequest normalizes blank effort to null", () => {
   assert.deepEqual(
-    launchProviderRunRequest("session-1", "default", "gpt-5.4", " ", "agent-a"),
+    launchProviderRunRequest("session-1", "opencode", "default", "gpt-5.4", " ", "agent-a"),
     {
       LaunchProviderRun: {
         session_id: "session-1",

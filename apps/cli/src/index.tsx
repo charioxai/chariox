@@ -16,6 +16,8 @@ import type {
   BootstrapState,
   CaptureScreenshotResult,
   CliOptions,
+  ProviderAuthStatus,
+  ProviderLoginStart,
   PromptAttachmentPart,
   PromptSubmittedPayload,
   RuntimeAttachment,
@@ -64,6 +66,7 @@ import {
   detachFromSessionRequest,
   endSessionRequest,
   focusAgentRequest,
+  getProviderAuthStatusRequest,
   getProviderCatalogRequest,
   getProviderRunRequest,
   getSessionHistoryRequest,
@@ -75,6 +78,7 @@ import {
   resizeTerminalRequest,
   resolveSessionRequest,
   spawnAgentRequest,
+  startProviderLoginRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
   updateSessionConfigRequest,
@@ -224,7 +228,7 @@ import {
 import {
   buildEmptyTranscriptRenderable,
   buildNoSessionRenderable,
-  buildWorkflowCanvasRenderable,
+  buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
 import parserConfig from "./parsers-config.js"
 
@@ -264,7 +268,7 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
-  { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow canvas." },
+  { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow outline." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
@@ -574,11 +578,12 @@ async function main() {
   getLogger("cli.main")?.info("starting cli process", { argv })
   const options = parseArgs(argv)
   const preferences = await loadPreferences()
+  const configuredProviderPreferences = preferences.providers?.[options.provider ?? "opencode"]
   if (options.model === "default") {
-    options.model = preferences.providers?.opencode?.model ?? options.model
+    options.model = configuredProviderPreferences?.model ?? options.model
   }
   if (!options.effort.trim()) {
-    options.effort = preferences.providers?.opencode?.effort ?? options.effort
+    options.effort = configuredProviderPreferences?.effort ?? options.effort
   }
   const kernelEndpoint = options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
   const client = new LocalIpcClient(kernelEndpoint)
@@ -1130,7 +1135,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     options.model = update.nextModel
     options.effort = update.nextEffort
     if (update.shouldPersistProviderPreferences) {
-      void saveProviderPreferences("opencode", {
+      void saveProviderPreferences(options.provider ?? "opencode", {
         model: options.model,
         effort: options.effort,
       })
@@ -1201,6 +1206,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const run = await launchProviderRun(
       client,
       sessionState().id,
+      options.provider ?? "opencode",
       options.accountProfile,
       decision.launch.model,
       decision.launch.effort,
@@ -1231,6 +1237,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const run = await launchProviderRun(
       client,
       sessionState().id,
+      options.provider ?? "opencode",
       options.accountProfile,
       decision.launch.model,
       decision.launch.effort,
@@ -1241,15 +1248,59 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await maybeResize(client, sessionState().id)
     flashFooter(`variant set to ${decision.selectedVariant}`, "info")
   }
+  const applyProviderSelection = async (providerId: string) => {
+    if (providerId !== "opencode" && providerId !== "codex") {
+      flashFooter(`unknown provider: ${providerId}`, "error")
+      return
+    }
+    options.provider = providerId
+    const saved = preferencesState().providers?.[providerId]
+    if (saved?.model) {
+      options.model = saved.model
+    } else if (providerId === "codex" && !options.model.startsWith("codex/")) {
+      const codexDefault = selectConfiguredModel({
+        ...providerCatalogState(),
+        all: providerCatalogState().all.filter((provider) => provider.id === "codex"),
+      }, undefined)
+      if (codexDefault) {
+        options.model = codexDefault.id
+      }
+    }
+    if (saved?.effort != null) {
+      options.effort = saved.effort
+    }
+    reconcileWaitingRoom(waitingRoomState())
+    if (providerId === "codex") {
+      try {
+        const status = await getProviderAuthStatus(client, providerId)
+        if (status.auth_state !== "authenticated") {
+          appendNotice(
+            [
+              "Codex is not logged in.",
+              status.login_hint ?? "Run /provider login codex to authenticate.",
+            ].join(" "),
+          )
+        }
+      } catch (error) {
+        appLogger?.warn("provider auth status lookup failed after selection", {
+          provider: providerId,
+          error: formatError(error),
+        })
+      }
+    }
+    flashFooter(`${providerId === "codex" ? "Codex" : "OpenCode"} selected`, "info")
+  }
   const currentProviderSelection = () => deriveCurrentProviderSelection({
     providerRun: providerRunState(),
     waitingRoomState: waitingRoomState(),
+    defaultProvider: options.provider ?? "opencode",
     defaultModel: options.model,
     defaultEffort: options.effort,
   })
   const promptMetaParts = (): PromptMetaPart[] => derivePromptMetaState({
     providerRun: providerRunState(),
     waitingRoomState: waitingRoomState(),
+    defaultProvider: options.provider ?? "opencode",
     defaultModel: options.model,
     defaultEffort: options.effort,
   })
@@ -3630,7 +3681,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const visibleEntries = visibleTranscriptEntries()
     if (isAttached() && workflowScreenActive()) {
-      emptyTranscriptRenderable = buildWorkflowCanvasRenderable(renderer, {
+      emptyTranscriptRenderable = buildWorkflowOutlineRenderable(renderer, {
         workflows: sessionState().workflows ?? [],
         agents: sessionState().agents,
         workflowRuns: sessionState().workflow_runs ?? [],
@@ -3971,7 +4022,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     attachToSession: (sessionId, clientId) => attachToSession(client, sessionId, clientId),
     getSessionState: (sessionId) => getSessionState(client, sessionId),
     launchProviderRun: (sessionId, accountProfile, model, effort, targetAgentId) =>
-      launchProviderRun(client, sessionId, accountProfile, model, effort, targetAgentId),
+      launchProviderRun(client, sessionId, options.provider ?? "opencode", accountProfile, model, effort, targetAgentId),
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
     setProviderCatalogState,
     getProviderCatalog: () => getProviderCatalog(client, appLogger),
@@ -4090,7 +4141,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentProviderId: () => currentProviderSelection().provider,
+    currentProviderId: () => options.provider ?? "opencode",
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -4103,8 +4154,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     transitionToNoSession,
+    applyProviderSelection,
     applyModelSelection,
     applyVariantSelection,
+    getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
+    startProviderLogin: (provider) => startProviderLogin(client, provider),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)
@@ -4157,6 +4211,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       launchProviderRun(
         client,
         sessionState().id,
+        options.provider ?? "opencode",
         options.accountProfile,
         model,
         variant,
@@ -4229,6 +4284,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const run = await launchProviderRun(
         client,
         sessionState().id,
+        options.provider ?? "opencode",
         options.accountProfile,
         currentModelId(),
         currentVariantId(),
@@ -5583,7 +5639,13 @@ async function submitPromptWithRecovery(
       session_id: sessionId,
     })
     await client.send<Record<string, unknown>>(
-      launchProviderRunRequest(sessionId, options.accountProfile, options.model, options.effort),
+      launchProviderRunRequest(
+        sessionId,
+        options.provider ?? "opencode",
+        options.accountProfile,
+        options.model,
+        options.effort,
+      ),
     )
     await maybeResize(client, sessionId)
     logger?.info("relaunched provider after recoverable prompt failure", {
@@ -5611,6 +5673,7 @@ function isSessionUnavailableError(error: unknown): boolean {
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     clientId: `arroba-cli-${process.pid}`,
+    provider: "opencode",
     model: "default",
     accountProfile: "default",
     effort: "",
@@ -5651,6 +5714,9 @@ function parseArgs(args: string[]): CliOptions {
         break
       case "--model":
         options.model = next()
+        break
+      case "--provider":
+        options.provider = next()
         break
       case "--account-profile":
         options.accountProfile = next()
@@ -5819,14 +5885,33 @@ async function catchUpAttachedSession(
 async function launchProviderRun(
   client: LocalIpcClient,
   sessionId: string,
+  provider: string,
   accountProfile: string,
   model: string,
   effort: string,
   agentId?: string | null,
 ): Promise<RuntimeProviderRun> {
-  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, accountProfile, model, effort, agentId))
+  const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId))
   const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
   return payload.provider_run
+}
+
+async function getProviderAuthStatus(
+  client: LocalIpcClient,
+  provider: string,
+): Promise<ProviderAuthStatus> {
+  const response = await client.send<Record<string, unknown>>(getProviderAuthStatusRequest(provider))
+  const payload = expectVariant<{ status: ProviderAuthStatus }>(response, "ProviderAuthStatus")
+  return payload.status
+}
+
+async function startProviderLogin(
+  client: LocalIpcClient,
+  provider: string,
+): Promise<ProviderLoginStart> {
+  const response = await client.send<Record<string, unknown>>(startProviderLoginRequest(provider))
+  const payload = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted")
+  return payload.login
 }
 
 async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<void> {
@@ -5879,7 +5964,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow canvas\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow canvas\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

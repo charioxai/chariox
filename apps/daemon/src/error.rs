@@ -55,6 +55,12 @@ pub enum DaemonError {
         node_id: String,
         agent_id: String,
     },
+    #[error("workflow `{workflow_id}` in session `{session_id}` already has a node for agent `{agent_id}`")]
+    WorkflowNodeConflict {
+        session_id: String,
+        workflow_id: String,
+        agent_id: String,
+    },
     #[error("workflow edge `{edge_id}` was not found in workflow `{workflow_id}` for session `{session_id}`")]
     WorkflowEdgeNotFound {
         session_id: String,
