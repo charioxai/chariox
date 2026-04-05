@@ -75,6 +75,7 @@ import {
   focusAgentRequest,
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
+  getProviderCommandCatalogsRequest,
   getProviderRunRequest,
   getSessionHistoryRequest,
   getSessionStateRequest,
@@ -120,6 +121,10 @@ import {
   selectConfiguredVariant,
   type ProviderCatalog,
 } from "./provider-catalog.js"
+import {
+  fallbackProviderCommandCatalogs,
+  type ProviderCommandCatalogs,
+} from "./provider-command-catalog.js"
 import {
   applyHistoryDeferral,
   hydrateTranscriptEntries,
@@ -615,6 +620,7 @@ async function main() {
     logger: getLogger("cli.main"),
     listSessions,
     getProviderCatalog,
+    getProviderCommandCatalogs,
     createSession,
     resolveSession,
     attachToSession,
@@ -688,6 +694,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialEntries = initialBinding?.historyEntries ?? []
   const initialSessions = props.bootstrap.sessions
   const initialProviderCatalog = props.bootstrap.providerCatalog
+  const initialProviderCommandCatalogs = props.bootstrap.providerCommandCatalogs
   const initialPreferences = props.bootstrap.preferences
   const initialPromptHistory = initialBinding?.session
     ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
@@ -700,6 +707,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
   const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
+  const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1285,12 +1293,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
   const refreshWaitingRoomData = async () => {
-    const [sessions, catalog] = await Promise.all([
+    const [sessions, catalog, commandCatalogs] = await Promise.all([
       listSessions(client),
       getProviderCatalog(client, appLogger),
+      getProviderCommandCatalogs(client, appLogger),
     ])
     setAvailableSessions(sessions)
     setProviderCatalogState(catalog)
+    setProviderCommandCatalogState(commandCatalogs)
     reconcileWaitingRoom(waitingRoomState())
   }
   const applyModelSelection = async (modelId: string) => {
@@ -1427,6 +1437,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
       providerCatalog: providerCatalogState(),
+      providerCommandCatalogs: providerCommandCatalogState(),
       currentProvider: currentProviderSelection().provider === "codex" ? "codex" : "opencode",
       focusedProvider: focusedAgent()?.provider === "codex" ? "codex" : focusedAgent()?.provider === "opencode" ? "opencode" : null,
       currentModel: currentModelId(),
@@ -6033,6 +6044,30 @@ async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger 
       error: formatError(error),
     })
     return fallbackProviderCatalog()
+  }
+}
+
+async function getProviderCommandCatalogs(
+  client: LocalIpcClient,
+  logger?: ArrobaLogger | null,
+): Promise<ProviderCommandCatalogs> {
+  try {
+    const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
+    const payload = expectVariant<{ catalogs: ProviderCommandCatalogs }>(response, "ProviderCommandCatalogs")
+    logger?.info("Received provider command catalogs from daemon", {
+      providers: Object.values(payload.catalogs).map((catalog) => ({
+        provider: catalog.provider,
+        command_count: catalog.commands.length,
+        source: catalog.source,
+        discovery: catalog.discovery,
+      })),
+    })
+    return payload.catalogs
+  } catch (error) {
+    logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
+      error: formatError(error),
+    })
+    return fallbackProviderCommandCatalogs()
   }
 }
 

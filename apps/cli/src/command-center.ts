@@ -1,6 +1,6 @@
 import { catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
 import {
-  providerCommandCatalog,
+  type ProviderCommandCatalogs,
   providerNamespace,
   providerNamespaceDescription,
 } from "./provider-command-catalog.js"
@@ -16,6 +16,7 @@ export type CommandCenterItem = {
 
 type CommandContext = {
   providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
   currentProvider: BackendProviderId
   focusedProvider: BackendProviderId | null
   currentModel: string
@@ -202,7 +203,7 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
   if (context.focusedProvider) {
     const namespace = `${providerNamespace(context.focusedProvider)} `
     if (normalized === providerNamespace(context.focusedProvider) || normalized.startsWith(namespace)) {
-      return buildProviderNamespaceItems(normalized, context.focusedProvider)
+      return buildProviderNamespaceItems(normalized, context.focusedProvider, context.providerCommandCatalogs)
     }
   }
 
@@ -226,7 +227,7 @@ function rootItems(context: CommandContext) {
     .filter((node) => node.id !== "misc")
     .map((node) => mapRootGroup(node))
   if (context.focusedProvider) {
-    const catalog = providerCommandCatalog(context.focusedProvider)
+    const catalog = context.providerCommandCatalogs[context.focusedProvider] ?? emptyProviderCommandCatalog(context.focusedProvider)
     rootNodes.push({
       id: `provider-namespace-${context.focusedProvider}`,
       label: providerNamespace(context.focusedProvider),
@@ -244,8 +245,12 @@ function rootItems(context: CommandContext) {
   return [...rootNodes, ...miscNodes]
 }
 
-function buildProviderNamespaceItems(input: string, provider: BackendProviderId) {
-  const catalog = providerCommandCatalog(provider)
+function buildProviderNamespaceItems(
+  input: string,
+  provider: BackendProviderId,
+  catalogs: ProviderCommandCatalogs,
+) {
+  const catalog = catalogs[provider] ?? emptyProviderCommandCatalog(provider)
   const namespace = providerNamespace(provider)
   const rootItem: CommandCenterItem = {
     id: `provider-namespace-${provider}`,
@@ -391,7 +396,7 @@ function buildScopedCommandItems(input: string, context: CommandContext) {
         label: providerNamespace(context.focusedProvider),
         description: providerNamespaceDescription(
           context.focusedProvider,
-          providerCommandCatalog(context.focusedProvider).commands.length,
+          (context.providerCommandCatalogs[context.focusedProvider] ?? emptyProviderCommandCatalog(context.focusedProvider)).commands.length,
         ),
         value: `${providerNamespace(context.focusedProvider)} `,
       },
@@ -414,6 +419,15 @@ function buildScopedCommandItems(input: string, context: CommandContext) {
     return query ? filterCommandCenterItems(items, query) : items
   }
   return null
+}
+
+function emptyProviderCommandCatalog(provider: BackendProviderId) {
+  return {
+    provider,
+    source: "shipped" as const,
+    discovery: "none" as const,
+    commands: [],
+  }
 }
 
 function findDeepestScope(input: string, nodes: CommandNode[]): { node: CommandNode } | null {

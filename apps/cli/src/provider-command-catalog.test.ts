@@ -2,13 +2,13 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  fallbackProviderCommandCatalogs,
   parseProviderNamespaceCommand,
-  providerCommandCatalog,
   providerNamespace,
 } from "./provider-command-catalog.js"
 
 test("provider command catalogs default to shipped empty catalogs", () => {
-  const catalog = providerCommandCatalog("opencode")
+  const catalog = fallbackProviderCommandCatalogs().opencode
   assert.equal(catalog.source, "shipped")
   assert.equal(catalog.commands.length, 0)
 })

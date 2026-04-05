@@ -292,6 +292,10 @@ export function getProviderCatalogRequest() {
   return { GetProviderCatalog: null }
 }
 
+export function getProviderCommandCatalogsRequest() {
+  return { GetProviderCommandCatalogs: null }
+}
+
 export function getProviderAuthStatusRequest(provider: string) {
   return {
     GetProviderAuthStatus: {

@@ -1,6 +1,7 @@
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
+import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
 export type RuntimeSession = {
@@ -301,6 +302,7 @@ export type BootstrapState = {
   binding: SessionBinding | null
   sessions: RuntimeSession[]
   providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
   options: CliOptions
   preferences: ArrobaPreferences
 }

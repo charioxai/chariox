@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
+import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateTranscriptEntries } from "./transcript-history.js"
 
@@ -21,6 +22,7 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
     {
       listSessions: async () => [],
       getProviderCatalog: async () => catalog,
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => { throw new Error("should not resolve") },
       attachToSession: async () => { throw new Error("should not attach") },
@@ -37,6 +39,7 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
   assert.equal(bootstrap.binding, null)
   assert.deepEqual(bootstrap.sessions, [])
   assert.equal(bootstrap.providerCatalog, catalog)
+  assert.deepEqual(bootstrap.providerCommandCatalogs, fallbackProviderCommandCatalogs())
 })
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {
@@ -88,6 +91,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     {
       listSessions: async () => [session],
       getProviderCatalog: async () => catalog,
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => {
         calls.push("resolve")
@@ -194,6 +198,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
     {
       listSessions: async () => [session],
       getProviderCatalog: async () => catalog,
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
       createSession: async () => { throw new Error("should not create") },
       resolveSession: async () => session,
       attachToSession: async () => {

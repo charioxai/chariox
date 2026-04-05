@@ -1,8 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    ensure_codex_catalog_endpoint, logout_codex, opencode_catalog_endpoint, CodexClient,
-    LaunchProviderRequest, OpenCodeClient, OpenCodeProviderCatalog,
+    default_provider_command_catalogs, ensure_codex_catalog_endpoint, logout_codex,
+    opencode_catalog_endpoint, CodexClient, LaunchProviderRequest, OpenCodeClient,
+    OpenCodeProviderCatalog,
 };
 
 use super::api::{
@@ -97,6 +98,14 @@ impl DaemonApp {
             }),
         );
         Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    }
+
+    pub(super) fn handle_get_provider_command_catalogs_request(
+        &mut self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::ProviderCommandCatalogs {
+            catalogs: default_provider_command_catalogs(),
+        })
     }
 
     pub(super) fn handle_get_provider_auth_status_request(

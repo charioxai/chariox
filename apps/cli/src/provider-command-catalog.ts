@@ -14,7 +14,9 @@ export type ProviderCommandCatalog = {
   commands: ProviderCommandDescriptor[]
 }
 
-const EMPTY_PROVIDER_COMMAND_CATALOGS: Record<BackendProviderId, ProviderCommandCatalog> = {
+export type ProviderCommandCatalogs = Record<BackendProviderId, ProviderCommandCatalog>
+
+const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
   opencode: {
     provider: "opencode",
     source: "shipped",
@@ -37,8 +39,17 @@ export function providerNamespace(provider: BackendProviderId) {
   return `/${provider}`
 }
 
-export function providerCommandCatalog(provider: BackendProviderId): ProviderCommandCatalog {
-  return EMPTY_PROVIDER_COMMAND_CATALOGS[provider]
+export function fallbackProviderCommandCatalogs(): ProviderCommandCatalogs {
+  return {
+    opencode: {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS.opencode,
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.opencode.commands],
+    },
+    codex: {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS.codex,
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.codex.commands],
+    },
+  }
 }
 
 export function providerNamespaceDescription(provider: BackendProviderId, commandCount: number) {

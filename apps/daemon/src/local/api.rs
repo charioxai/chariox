@@ -12,7 +12,8 @@ use crate::capability::{
 };
 use crate::error::DaemonError;
 use crate::provider::{
-    OpenCodeProviderCatalog, ProviderAuthStatus, ProviderLoginStart, RuntimeProviderRun,
+    OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
+    RuntimeProviderRun,
 };
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
@@ -84,6 +85,9 @@ pub struct GetProviderRunRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderCatalogRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderCommandCatalogsRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderAuthStatusRequest {
@@ -385,6 +389,7 @@ pub enum LocalDaemonRequest {
     GetSessionState(GetSessionStateRequest),
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
+    GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
@@ -460,6 +465,9 @@ pub enum LocalDaemonResponse {
     },
     ProviderCatalog {
         catalog: OpenCodeProviderCatalog,
+    },
+    ProviderCommandCatalogs {
+        catalogs: BTreeMap<String, ProviderCommandCatalog>,
     },
     ProviderAuthStatus {
         status: ProviderAuthStatus,
@@ -709,6 +717,9 @@ impl DaemonApp {
                 self.handle_get_provider_run_request(request)
             }
             LocalDaemonRequest::GetProviderCatalog(_) => self.handle_get_provider_catalog_request(),
+            LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
+                self.handle_get_provider_command_catalogs_request()
+            }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
                 self.handle_get_provider_auth_status_request(request)
             }

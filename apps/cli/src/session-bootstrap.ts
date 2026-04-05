@@ -1,6 +1,7 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
+import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
 
 import type {
@@ -19,6 +20,7 @@ type BootstrapDeps = {
   logger?: ArrobaLogger | null
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
   getProviderCatalog: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCatalog>
+  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCommandCatalogs>
   createSession: (client: LocalIpcClient, workspace: string, worktree: string, alias?: string) => Promise<RuntimeSession>
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
@@ -67,6 +69,7 @@ export async function bootstrapSession(
 
   const sessions = await deps.listSessions(client)
   let providerCatalog = await deps.getProviderCatalog(client, deps.logger)
+  let providerCommandCatalogs = await deps.getProviderCommandCatalogs(client, deps.logger)
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)
   switch (decision.action) {
     case "create":
@@ -92,6 +95,7 @@ export async function bootstrapSession(
         binding: null,
         sessions,
         providerCatalog,
+        providerCommandCatalogs,
         options,
         preferences,
       }
@@ -103,6 +107,7 @@ export async function bootstrapSession(
       binding: null,
       sessions,
       providerCatalog,
+      providerCommandCatalogs,
       options,
       preferences,
     }
@@ -125,6 +130,7 @@ export async function bootstrapSession(
     providerRun = await deps.tryGetProviderRun(client, attachedSession.active_provider_run_id, deps.logger)
   }
   providerCatalog = await deps.getProviderCatalog(client, deps.logger)
+  providerCommandCatalogs = await deps.getProviderCommandCatalogs(client, deps.logger)
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
@@ -144,6 +150,7 @@ export async function bootstrapSession(
     },
     sessions,
     providerCatalog,
+    providerCommandCatalogs,
     options,
     preferences,
   }
