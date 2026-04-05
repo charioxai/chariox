@@ -26,7 +26,8 @@ pub use opencode_client::{
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub use service::ProviderProcessService;
 pub use types::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderAssistantCompletion, ProviderLaunchResult,
-    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunState, RuntimeMcpBinding,
+    AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
+    LaunchProviderRequest, ProviderAssistantCompletion, ProviderLaunchResult, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, RuntimeMcpBinding,
     RuntimeProviderRun,
 };

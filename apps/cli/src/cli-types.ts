@@ -71,6 +71,10 @@ export type RuntimeProviderRun = {
   variant: string | null
   usage_tokens_total: number | null
   state: string
+  control_capabilities?: {
+    operation: string
+    mode: string
+  }[]
 }
 
 export type ProviderAuthStatus = {

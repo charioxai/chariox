@@ -2829,6 +2829,75 @@ mod tests {
     }
 
     #[test]
+    fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capability() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-control", "worktree-control"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let unsupported_agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("unsupported-node".to_string()),
+                provider: "dev-invalid-pty".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                worktree_id: None,
+            }))
+            .expect("agent spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected local response"),
+        };
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("control-check".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let node = add_workflow_test_node(&mut app, session.id(), workflow.id(), unsupported_agent.id());
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("endpoint create should succeed")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        let error = app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("hello".to_string()),
+                },
+            ))
+            .expect_err("workflow invoke should fail when controls are unsupported");
+        assert!(matches!(
+            error,
+            DaemonError::WorkflowNodeControlUnsupported { operation, .. }
+                if operation == "ack_workflow_turn"
+        ));
+    }
+
+    #[test]
     fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

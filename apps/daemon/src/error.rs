@@ -55,6 +55,14 @@ pub enum DaemonError {
         node_id: String,
         agent_id: String,
     },
+    #[error("workflow node `{node_id}` in workflow `{workflow_id}` for session `{session_id}` does not support required control `{operation}` on agent `{agent_id}`")]
+    WorkflowNodeControlUnsupported {
+        session_id: String,
+        workflow_id: String,
+        node_id: String,
+        agent_id: String,
+        operation: &'static str,
+    },
     #[error("workflow `{workflow_id}` in session `{session_id}` already has a node for agent `{agent_id}`")]
     WorkflowNodeConflict {
         session_id: String,

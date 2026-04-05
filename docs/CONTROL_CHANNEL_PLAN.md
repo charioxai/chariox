@@ -74,6 +74,52 @@ Examples:
 
 These belong in the same subsystem even if some are not implemented yet.
 
+## Capability Variance Across Agents
+
+Different agents and providers will not support the same control operations.
+
+Arroba should handle that with:
+
+- one canonical set of control operations
+- one per-run control capability descriptor
+- preflight validation against required control operations
+
+The canonical operations stay stable at the Arroba layer.
+What varies per agent is:
+
+- whether an operation is supported
+- how it is executed
+
+Suggested runtime shape:
+
+- `ControlCapabilitySet`
+  - operation
+  - mode
+  - supported / unsupported
+
+Suggested execution modes:
+
+- `native`
+- `mcp`
+- `adapter_emulated`
+- `unsupported`
+
+Important rule:
+
+- capability must be computed per provider run, not only per provider family
+
+because support may vary by:
+
+- managed vs external run
+- whether MCP is attached
+- adapter version
+- runtime state
+
+Workflow implication:
+
+- workflow preflight should reject runs whose node agents do not support required control operations such as `ack_workflow_turn`
+- per-edge schema validation should only be considered runnable when the producing node supports `validate_workflow_output`
+
 ## Boundaries
 
 ### Transport owns

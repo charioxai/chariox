@@ -7,6 +7,46 @@ use serde::{Deserialize, Serialize};
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlOperation {
+    InterruptTurn,
+    CancelPrompt,
+    AckWorkflowTurn,
+    ValidateWorkflowOutput,
+    AttachFile,
+    RequestMemoryUpdate,
+    RequestCompactionSummary,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlCapabilityMode {
+    Native,
+    Mcp,
+    AdapterEmulated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlCapability {
+    operation: ControlOperation,
+    mode: ControlCapabilityMode,
+}
+
+impl ControlCapability {
+    pub fn new(operation: ControlOperation, mode: ControlCapabilityMode) -> Self {
+        Self { operation, mode }
+    }
+
+    pub fn operation(&self) -> ControlOperation {
+        self.operation
+    }
+
+    pub fn mode(&self) -> ControlCapabilityMode {
+        self.mode
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderRunState {
     Starting,
     Running,
@@ -44,6 +84,48 @@ impl fmt::Display for ProviderRunState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderResumeState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opencode_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_thread_id: Option<String>,
+}
+
+impl ProviderResumeState {
+    pub fn is_empty(&self) -> bool {
+        self.opencode_session_id.is_none() && self.codex_thread_id.is_none()
+    }
+
+    pub fn from_opencode_session_id(session_id: impl Into<String>) -> Self {
+        let mut state = Self::default();
+        state.set_opencode_session_id(session_id);
+        state
+    }
+
+    pub fn from_codex_thread_id(thread_id: impl Into<String>) -> Self {
+        let mut state = Self::default();
+        state.set_codex_thread_id(thread_id);
+        state
+    }
+
+    pub fn opencode_session_id(&self) -> Option<&str> {
+        self.opencode_session_id.as_deref()
+    }
+
+    pub fn codex_thread_id(&self) -> Option<&str> {
+        self.codex_thread_id.as_deref()
+    }
+
+    pub fn set_opencode_session_id(&mut self, session_id: impl Into<String>) {
+        self.opencode_session_id = Some(session_id.into());
+    }
+
+    pub fn set_codex_thread_id(&mut self, thread_id: impl Into<String>) {
+        self.codex_thread_id = Some(thread_id.into());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchProviderRequest {
     pub session_id: String,
@@ -55,6 +137,8 @@ pub struct LaunchProviderRequest {
     pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_state: Option<ProviderResumeState>,
 }
 
 impl LaunchProviderRequest {
@@ -75,6 +159,7 @@ impl LaunchProviderRequest {
             variant: None,
             working_directory: None,
             runtime_mcp_binding: None,
+            resume_state: None,
         }
     }
 
@@ -98,6 +183,11 @@ impl LaunchProviderRequest {
 
     pub fn with_runtime_mcp_binding(mut self, binding: RuntimeMcpBinding) -> Self {
         self.runtime_mcp_binding = Some(binding);
+        self
+    }
+
+    pub fn with_resume_state(mut self, resume_state: ProviderResumeState) -> Self {
+        self.resume_state = (!resume_state.is_empty()).then_some(resume_state);
         self
     }
 }
@@ -150,6 +240,10 @@ pub struct RuntimeProviderRun {
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    control_capabilities: Vec<ControlCapability>,
+    #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
+    resume_state: ProviderResumeState,
 }
 
 impl RuntimeProviderRun {
@@ -181,6 +275,49 @@ impl RuntimeProviderRun {
                 .runtime_mcp_binding
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
+            control_capabilities: default_control_capabilities(
+                &request.adapter_key,
+                launch_result.endpoint_mode,
+                request.runtime_mcp_binding.is_some(),
+            ),
+            resume_state: request.resume_state.clone().unwrap_or_default(),
+        }
+    }
+
+    pub fn from_control_capability_inference(
+        id: impl Into<String>,
+        session_id: String,
+        agent_instance_id: Option<String>,
+        adapter_key: String,
+    ) -> Self {
+        let inferred_has_runtime_mcp_binding = matches!(adapter_key.as_str(), "codex" | "opencode");
+        Self {
+            id: id.into(),
+            session_id,
+            agent_instance_id,
+            adapter_key: adapter_key.clone(),
+            provider: adapter_key.clone(),
+            account_profile: "default".to_string(),
+            model: String::new(),
+            variant: None,
+            usage_tokens_total: None,
+            state: ProviderRunState::Starting,
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "inferred-control-capabilities".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            working_directory: None,
+            structured_endpoint: None,
+            runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
+                .then(|| "inferred-managed-mcp".to_string()),
+            control_capabilities: default_control_capabilities(
+                &adapter_key,
+                AgentEndpointMode::Managed,
+                inferred_has_runtime_mcp_binding,
+            ),
+            resume_state: ProviderResumeState::default(),
         }
     }
 
@@ -208,6 +345,16 @@ impl RuntimeProviderRun {
 
     pub fn variant(&self) -> Option<&str> {
         self.variant.as_deref()
+    }
+
+    pub fn control_capabilities(&self) -> &[ControlCapability] {
+        &self.control_capabilities
+    }
+
+    pub fn supports_control_operation(&self, operation: ControlOperation) -> bool {
+        self.control_capabilities
+            .iter()
+            .any(|capability| capability.operation() == operation)
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -260,6 +407,14 @@ impl RuntimeProviderRun {
         self.runtime_mcp_auth_token.as_deref()
     }
 
+    pub fn resume_state(&self) -> &ProviderResumeState {
+        &self.resume_state
+    }
+
+    pub fn set_resume_state(&mut self, resume_state: ProviderResumeState) {
+        self.resume_state = resume_state;
+    }
+
     pub fn mark_running(&mut self) {
         self.state = ProviderRunState::Running;
     }
@@ -271,6 +426,47 @@ impl RuntimeProviderRun {
     pub fn mark_ended(&mut self) {
         self.state = ProviderRunState::Ended;
     }
+}
+
+fn default_control_capabilities(
+    adapter_key: &str,
+    endpoint_mode: AgentEndpointMode,
+    has_runtime_mcp_binding: bool,
+) -> Vec<ControlCapability> {
+    let mut capabilities = Vec::new();
+
+    if matches!(adapter_key, "codex" | "opencode") {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::InterruptTurn,
+            ControlCapabilityMode::Native,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::CancelPrompt,
+            ControlCapabilityMode::Native,
+        ));
+    }
+
+    if adapter_key == "dev-stub" {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::AckWorkflowTurn,
+            ControlCapabilityMode::AdapterEmulated,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::ValidateWorkflowOutput,
+            ControlCapabilityMode::AdapterEmulated,
+        ));
+    } else if endpoint_mode == AgentEndpointMode::Managed && has_runtime_mcp_binding {
+        capabilities.push(ControlCapability::new(
+            ControlOperation::AckWorkflowTurn,
+            ControlCapabilityMode::Mcp,
+        ));
+        capabilities.push(ControlCapability::new(
+            ControlOperation::ValidateWorkflowOutput,
+            ControlCapabilityMode::Mcp,
+        ));
+    }
+
+    capabilities
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +487,5 @@ pub struct ProviderPromptSignalBatch {
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
-    pub provider_idle: bool,
     pub notices: Vec<String>,
 }
