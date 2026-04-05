@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -25,11 +26,29 @@ struct WorkflowStructuredOutputEnvelope {
     output: Option<WorkflowStructuredOutputValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum WorkflowStructuredOutputValue {
     Text(String),
-    Object { message: String },
+    Object { message: Value },
+}
+
+impl WorkflowStructuredOutputValue {
+    fn into_output_message(self) -> Option<String> {
+        match self {
+            WorkflowStructuredOutputValue::Text(message) => {
+                let trimmed = message.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            }
+            WorkflowStructuredOutputValue::Object { message } => match message {
+                Value::String(message) => {
+                    let trimmed = message.trim().to_string();
+                    (!trimmed.is_empty()).then_some(trimmed)
+                }
+                other => Some(other.to_string()),
+            },
+        }
+    }
 }
 
 pub fn schedule_workflow_run_entry_node(
@@ -782,6 +801,19 @@ fn build_workflow_completion_snapshot(
         .collect::<Vec<_>>()
         .join("");
     let structured_output = parse_workflow_structured_output(&provider_output);
+    if structured_output.is_none() {
+        crate::logging::warn_with_fields(
+            "daemon.workflow",
+            "ignoring workflow turn completion without structured output block",
+            serde_json::json!({
+                "session_id": session_id,
+                "workflow_run_id": workflow_run_id,
+                "workflow_node_run_id": workflow_node_run_id,
+                "provider_run_id": provider_run_id,
+            }),
+        );
+        return None;
+    }
     let summary = structured_output
         .as_ref()
         .and_then(|value| value.summary.as_deref())
@@ -790,12 +822,8 @@ fn build_workflow_completion_snapshot(
     let artifacts = collect_workflow_artifact_refs(session_id, workflow_run_id, started_at_ms);
     let output_message = structured_output
         .as_ref()
-        .and_then(|value| value.output.as_ref())
-        .map(|value| match value {
-            WorkflowStructuredOutputValue::Text(message) => message.trim().to_string(),
-            WorkflowStructuredOutputValue::Object { message } => message.trim().to_string(),
-        })
-        .filter(|message| !message.is_empty());
+        .and_then(|value| value.output.clone())
+        .and_then(WorkflowStructuredOutputValue::into_output_message);
     let output = match (output_message, artifacts) {
         (Some(message), artifacts) => Some(WorkflowOutputPayload::new(message, artifacts)),
         (None, artifacts) if !artifacts.is_empty() => {
@@ -935,7 +963,7 @@ mod tests {
     use crate::session::{CreateSessionRequest, WorkflowMessage};
     use crate::{DaemonApp, DaemonConfig};
 
-    use super::prepare_workflow_turn_prompt;
+    use super::{parse_workflow_structured_output, prepare_workflow_turn_prompt};
 
     #[test]
     fn workflow_instruction_reference_is_written_under_agent_workdir() {
@@ -1086,6 +1114,25 @@ mod tests {
         let contents = fs::read_to_string(&expected_file).expect("instruction file should read");
         assert!(contents.contains("Read me from a workspace-local hidden file."));
         let _ = fs::remove_dir_all(PathBuf::from(workdir));
+    }
+
+    #[test]
+    fn workflow_structured_output_accepts_json_message_values() {
+        let parsed = parse_workflow_structured_output(
+            r#"
+```json
+{"summary":"fixed","output":{"message":{"ok":true,"source":"mailbox-fixed"}}}
+```
+"#,
+        )
+        .expect("structured output should parse");
+
+        let output = parsed
+            .output
+            .expect("structured output should contain output")
+            .into_output_message()
+            .expect("message should serialize");
+        assert_eq!(output, r#"{"ok":true,"source":"mailbox-fixed"}"#);
     }
 }
 

@@ -9,6 +9,10 @@ use crate::session::{WorkflowNodeRunStatus, WorkflowTurnRuntimeState};
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
 
+fn canonical_runtime_tool_name(tool_name: &str) -> &str {
+    tool_name.strip_prefix("arroba_").unwrap_or(tool_name)
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -88,7 +92,7 @@ pub fn dispatch_runtime_tool_call(
     app: &mut DaemonApp,
     call: RuntimeToolCall,
 ) -> Result<RuntimeToolResult, DaemonError> {
-    match call.tool_name.as_str() {
+    match canonical_runtime_tool_name(call.tool_name.as_str()) {
         ACK_WORKFLOW_TURN_TOOL => {
             let args =
                 serde_json::from_value::<AckWorkflowTurnArgs>(call.arguments).map_err(|error| {
@@ -168,6 +172,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
     tool_name: &str,
     arguments: Value,
 ) -> Result<RuntimeToolResult, DaemonError> {
+    let canonical_tool_name = canonical_runtime_tool_name(tool_name).to_string();
     let provider_run = app
         .providers()
         .get_run_by_runtime_mcp_auth_token(auth_token)
@@ -181,7 +186,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
             operation: "dispatch_authenticated_runtime_tool_call",
             message: "provider run is not bound to an agent".to_string(),
         })?;
-    let requested_delivery_token = match tool_name {
+    let requested_delivery_token = match canonical_tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
             .ok()
             .map(|args| args.delivery_token),
@@ -208,7 +213,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
     dispatch_runtime_tool_call(
         app,
         RuntimeToolCall {
-            tool_name: tool_name.to_string(),
+            tool_name: canonical_tool_name,
             arguments,
             context: WorkflowRuntimeToolContext {
                 session_id: provider_run.session_id().to_string(),
