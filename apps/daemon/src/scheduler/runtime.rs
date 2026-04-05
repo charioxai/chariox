@@ -1054,7 +1054,7 @@ fn workflow_completion_summary(source: &str) -> String {
 }
 
 fn workflow_output_contract_instructions() -> &'static str {
-    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing and validate your proposed output.message JSON against that schema ref."
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing. Pass the same delivery_token that was provided for `ack_workflow_turn`, and validate your proposed output.message JSON against that schema ref."
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

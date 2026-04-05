@@ -48,6 +48,8 @@ pub struct AckWorkflowTurnArgs {
 pub struct ValidateWorkflowOutputArgs {
     pub output_schema_ref: String,
     pub output_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -73,7 +75,8 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["output_schema_ref", "output_json"],
                 "properties": {
                     "output_schema_ref": {"type": "string"},
-                    "output_json": {"type": "string"}
+                    "output_json": {"type": "string"},
+                    "delivery_token": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
@@ -182,6 +185,11 @@ pub fn dispatch_authenticated_runtime_tool_call(
         ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
             .ok()
             .map(|args| args.delivery_token),
+        VALIDATE_WORKFLOW_OUTPUT_TOOL => {
+            serde_json::from_value::<ValidateWorkflowOutputArgs>(arguments.clone())
+                .ok()
+                .and_then(|args| args.delivery_token)
+        }
         _ => None,
     };
     let (workflow_run_ref, workflow_node_run_id) = resolve_authenticated_workflow_turn(
@@ -220,6 +228,27 @@ fn resolve_authenticated_workflow_turn(
     delivery_token: Option<&str>,
 ) -> Result<(String, String), DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if let Some(requested_delivery_token) = delivery_token {
+        let mut exact_matches = session
+            .workflow_runs()
+            .iter()
+            .flat_map(|workflow_run| {
+                workflow_run.node_runs().iter().filter_map(|node_run| {
+                    let envelope = node_run.turn_envelope()?;
+                    if envelope.delivery_token() != requested_delivery_token
+                        || node_run.agent_id() != agent_id
+                    {
+                        return None;
+                    }
+                    Some((workflow_run.id().to_string(), node_run.id().to_string()))
+                })
+            })
+            .collect::<Vec<_>>();
+        if exact_matches.len() == 1 {
+            return Ok(exact_matches.remove(0));
+        }
+    }
+
     let running_turns = session
         .workflow_runs()
         .iter()

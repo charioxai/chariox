@@ -2293,7 +2293,7 @@ fn collect_provider_output_until<F>(
 where
     F: Fn(&str, &DaemonApp) -> bool,
 {
-    let timeout_ms = output_timeout_ms().max(4_000);
+    let timeout_ms = output_timeout_ms().max(8_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut output = Vec::new();
 
