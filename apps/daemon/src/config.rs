@@ -14,6 +14,8 @@ pub struct DaemonConfig {
     pub kernel_websocket_port: u16,
     pub kernel_websocket_queue_capacity: usize,
     pub kernel_websocket_write_delay_ms: u64,
+    pub runtime_mcp_host: String,
+    pub runtime_mcp_port: u16,
     pub session_history_root: PathBuf,
 }
 
@@ -39,6 +41,12 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
+            runtime_mcp_host: env::var("ARROBA_MCP_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".to_string()),
+            runtime_mcp_port: env::var("ARROBA_MCP_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(43120),
             session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
@@ -63,6 +71,8 @@ impl DaemonConfig {
             kernel_websocket_port: 43118,
             kernel_websocket_queue_capacity: 128,
             kernel_websocket_write_delay_ms: 0,
+            runtime_mcp_host: "127.0.0.1".to_string(),
+            runtime_mcp_port: 43120,
             session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
@@ -105,6 +115,13 @@ impl DaemonConfig {
         )
     }
 
+    pub fn runtime_mcp_url(&self) -> String {
+        format!(
+            "http://{}:{}/mcp",
+            self.runtime_mcp_host, self.runtime_mcp_port
+        )
+    }
+
     pub fn default_local_socket_path(daemon_id: &str) -> PathBuf {
         default_runtime_dir().join(format!("{daemon_id}.sock"))
     }
@@ -133,6 +150,13 @@ impl DaemonConfig {
         if self.kernel_websocket_queue_capacity == 0 {
             return Err(DaemonError::InvalidConfig {
                 field: "kernel_websocket_queue_capacity",
+                message: "value must not be zero",
+            });
+        }
+        validate_non_empty("runtime_mcp_host", &self.runtime_mcp_host)?;
+        if self.runtime_mcp_port == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "runtime_mcp_port",
                 message: "value must not be zero",
             });
         }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -53,6 +54,7 @@ pub struct LaunchProviderRequest {
     pub model: String,
     pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
+    pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
 }
 
 impl LaunchProviderRequest {
@@ -72,6 +74,7 @@ impl LaunchProviderRequest {
             model: model.into(),
             variant: None,
             working_directory: None,
+            runtime_mcp_binding: None,
         }
     }
 
@@ -92,6 +95,26 @@ impl LaunchProviderRequest {
         self.working_directory = Some(working_directory);
         self
     }
+
+    pub fn with_runtime_mcp_binding(mut self, binding: RuntimeMcpBinding) -> Self {
+        self.runtime_mcp_binding = Some(binding);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMcpBinding {
+    pub server_url: String,
+    pub auth_token: String,
+}
+
+impl RuntimeMcpBinding {
+    pub fn new(server_url: impl Into<String>, auth_token: impl Into<String>) -> Self {
+        Self {
+            server_url: server_url.into(),
+            auth_token: auth_token.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +124,7 @@ pub struct ProviderLaunchResult {
     pub pty_target: Option<String>,
     pub pty_program: Option<String>,
     pub pty_args: Vec<String>,
+    pub pty_env: BTreeMap<String, String>,
     pub working_directory: Option<PathBuf>,
     pub structured_endpoint: Option<String>,
 }
@@ -122,8 +146,10 @@ pub struct RuntimeProviderRun {
     pty_target: Option<String>,
     pty_program: Option<String>,
     pty_args: Vec<String>,
+    pty_env: BTreeMap<String, String>,
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
+    runtime_mcp_auth_token: Option<String>,
 }
 
 impl RuntimeProviderRun {
@@ -148,8 +174,13 @@ impl RuntimeProviderRun {
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
             pty_args: launch_result.pty_args,
+            pty_env: launch_result.pty_env,
             working_directory: launch_result.working_directory,
             structured_endpoint: launch_result.structured_endpoint,
+            runtime_mcp_auth_token: request
+                .runtime_mcp_binding
+                .as_ref()
+                .map(|binding| binding.auth_token.clone()),
         }
     }
 
@@ -216,11 +247,17 @@ impl RuntimeProviderRun {
     pub fn pty_args(&self) -> &[String] {
         &self.pty_args
     }
+    pub fn pty_env(&self) -> &BTreeMap<String, String> {
+        &self.pty_env
+    }
     pub fn working_directory(&self) -> Option<&PathBuf> {
         self.working_directory.as_ref()
     }
     pub fn structured_endpoint(&self) -> Option<&str> {
         self.structured_endpoint.as_deref()
+    }
+    pub fn runtime_mcp_auth_token(&self) -> Option<&str> {
+        self.runtime_mcp_auth_token.as_deref()
     }
 
     pub fn mark_running(&mut self) {

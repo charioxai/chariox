@@ -142,8 +142,7 @@ pub fn schedule_workflow_node_prompt(
     prompt: &str,
 ) -> Result<(), DaemonError> {
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
-    let mailbox_content =
-        workflow_node_control_contents(session_id, workflow_run_id, node_id);
+    let mailbox_content = workflow_node_control_contents(session_id, workflow_run_id, node_id);
     let handoff_payloads_json = prompt
         .split("Workflow handoff payloads (JSON array):\n")
         .nth(1)
@@ -171,9 +170,12 @@ pub fn schedule_workflow_node_prompt(
 
     match outcome {
         PromptSubmissionOutcome::Started { prompt } => {
-            if let Err(error) =
-                TransportService::dispatch_workflow_prompt(app, session_id, target_agent_id, &prompt)
-            {
+            if let Err(error) = TransportService::dispatch_workflow_prompt(
+                app,
+                session_id,
+                target_agent_id,
+                &prompt,
+            ) {
                 if let Ok(Some(cancelled)) =
                     TransportService::cancel_active_prompt_after_dispatch_failure(app, session_id)
                 {
@@ -348,9 +350,16 @@ pub fn on_workflow_prompt_completed(
             .iter()
             .find(|node_run| node_run.id() == workflow_node_run_id)
             .and_then(|node_run| node_run.turn_envelope())
-            .is_some_and(|envelope| envelope.state() == crate::session::WorkflowTurnRuntimeState::ValidatedCompleted)
+            .is_some_and(|envelope| {
+                envelope.state() == crate::session::WorkflowTurnRuntimeState::ValidatedCompleted
+            })
         {
-            clear_workflow_control_mailbox(session_id, workflow_run_id, workflow_node_run_id, &updated);
+            clear_workflow_control_mailbox(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                &updated,
+            );
         }
     }
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
@@ -462,7 +471,7 @@ fn build_workflow_turn_prompt(
         format!("Endpoint prompt:\n{endpoint_prompt}\n\n")
     };
     let ack_line = format!(
-        "Before producing substantive output, emit this acknowledgment line exactly once on its own line:\nACK_WORKFLOW_TURN {delivery_token}\n\nThis line is for runtime delivery tracking and is separate from the final validated workflow output.\n\n"
+        "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output.\n\n"
     );
     format!(
         "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}\n",
@@ -492,7 +501,8 @@ fn workflow_node_instruction_reference(
         .ok()?;
     let node = workflow.node(node_id);
     let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
-    let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
+    let root =
+        DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
     let filename = format!("node-{node_id}.md");
     let path = root.join(filename);
     if !path.exists() || node.and_then(|node| node.instructions()).is_some() {
@@ -613,7 +623,9 @@ fn build_workflow_completion_snapshot(
             return None;
         }
     };
-    let started_at_ms = node_run.started_at_ms().unwrap_or_else(|| node_run.created_at_ms());
+    let started_at_ms = node_run
+        .started_at_ms()
+        .unwrap_or_else(|| node_run.created_at_ms());
     let provider_output = history
         .into_iter()
         .filter(|entry| {
@@ -793,7 +805,7 @@ fn workflow_completion_summary(source: &str) -> String {
 }
 
 fn workflow_output_contract_instructions() -> &'static str {
-    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, validate output.message JSON with ValidateWorkflowOutput before finalizing."
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing and validate your proposed output.message JSON against that schema ref."
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

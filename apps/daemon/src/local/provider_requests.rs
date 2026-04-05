@@ -1,13 +1,13 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    ensure_codex_catalog_endpoint, opencode_catalog_endpoint, CodexClient, LaunchProviderRequest,
-    OpenCodeClient, OpenCodeProviderCatalog,
+    ensure_codex_catalog_endpoint, logout_codex, opencode_catalog_endpoint, CodexClient,
+    LaunchProviderRequest, OpenCodeClient, OpenCodeProviderCatalog,
 };
 
 use super::api::{
     GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
-    LocalDaemonResponse, StartProviderLoginRequest,
+    LocalDaemonResponse, LogoutProviderRequest, StartProviderLoginRequest,
 };
 
 impl DaemonApp {
@@ -77,10 +77,11 @@ impl DaemonApp {
             }
         }
 
-        let catalog = merge_provider_catalogs(catalogs).ok_or_else(|| DaemonError::LocalTransport {
-            operation: "get_provider_catalog",
-            message: "no provider catalog sources were reachable".to_string(),
-        })?;
+        let catalog =
+            merge_provider_catalogs(catalogs).ok_or_else(|| DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: "no provider catalog sources were reachable".to_string(),
+            })?;
         crate::logging::info_with_fields(
             "daemon.local",
             "Retrieved merged provider catalog",
@@ -135,9 +136,29 @@ impl DaemonApp {
             }),
         }
     }
+
+    pub(super) fn handle_logout_provider_request(
+        &mut self,
+        request: LogoutProviderRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request.provider.as_str() {
+            "codex" => {
+                logout_codex()?;
+                Ok(LocalDaemonResponse::ProviderLoggedOut {
+                    provider: "codex".to_string(),
+                })
+            }
+            provider => Err(DaemonError::LocalTransport {
+                operation: "logout_provider",
+                message: format!("provider `{provider}` does not expose a logout API"),
+            }),
+        }
+    }
 }
 
-fn merge_provider_catalogs(catalogs: Vec<OpenCodeProviderCatalog>) -> Option<OpenCodeProviderCatalog> {
+fn merge_provider_catalogs(
+    catalogs: Vec<OpenCodeProviderCatalog>,
+) -> Option<OpenCodeProviderCatalog> {
     let mut iter = catalogs.into_iter();
     let mut merged = iter.next()?;
     for catalog in iter {

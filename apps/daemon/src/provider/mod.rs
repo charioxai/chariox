@@ -10,7 +10,7 @@ mod service;
 mod types;
 
 pub use codex::{
-    codex_catalog_endpoint, ensure_codex_catalog_endpoint, plan_codex_launch,
+    codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
     resolve_codex_executable,
 };
 pub use codex_client::{
@@ -27,5 +27,6 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub use service::ProviderProcessService;
 pub use types::{
     AgentEndpointMode, LaunchProviderRequest, ProviderAssistantCompletion, ProviderLaunchResult,
-    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunState, RuntimeProviderRun,
+    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderRunState, RuntimeMcpBinding,
+    RuntimeProviderRun,
 };

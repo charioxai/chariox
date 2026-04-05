@@ -4,9 +4,7 @@ use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 use crate::terminal::TerminalOutputKind;
 
-use super::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, RuntimeProviderRun,
-};
+use super::{CodexClient, CodexNotification, CodexRunSelection, CodexSocket, RuntimeProviderRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {

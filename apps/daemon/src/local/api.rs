@@ -1182,15 +1182,15 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     use super::{
-        AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
-        AliasWorkflowRequest, AttachToSessionRequest, CancelActivePromptRequest,
-        CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest, CompletePromptRequest,
-        CreateWorkflowEndpointRequest, CreateWorkflowRequest, CycleAgentFocusRequest,
-        DeleteSessionRequest, DetachFromSessionRequest, EditFileCapabilityRequest,
-        EndSessionRequest, FocusAgentRequest, GetSessionStateRequest, GetWorkflowRunRequest,
-        InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
-        ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
+        AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
+        CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
+        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+        CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
+        EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetSessionStateRequest,
+        GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
         RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
@@ -2126,7 +2126,8 @@ mod tests {
     }
 
     #[test]
-    fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes() {
+    fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes()
+    {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let session = match app
@@ -2152,22 +2153,26 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
         let first_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: first_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: first_agent.id().to_string(),
+                },
+            ))
             .expect("first node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
             _ => panic!("unexpected local response"),
         };
         let second_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: second_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: second_agent.id().to_string(),
+                },
+            ))
             .expect("second node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -2194,14 +2199,16 @@ mod tests {
             ))
             .expect("second node instructions should be updated");
         let _ = app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: first_node.id().to_string(),
-                to_node_id: second_node.id().to_string(),
-                output_schema_ref: None,
-                validation_policy: None,
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: first_node.id().to_string(),
+                    to_node_id: second_node.id().to_string(),
+                    output_schema_ref: None,
+                    validation_policy: None,
+                },
+            ))
             .expect("edge should be added");
         let endpoint = match app
             .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
@@ -2239,10 +2246,16 @@ mod tests {
         let active_prompt = invoke_session
             .active_prompt()
             .expect("workflow invoke should create an active prompt");
-        assert!(active_prompt.prompt().contains("Endpoint prompt:\nkick off the ack flow"));
-        assert!(active_prompt.prompt().contains("Node instruction reference (daemon-managed):"));
-        assert!(active_prompt.prompt().contains("ACK_WORKFLOW_TURN"));
-        assert!(!active_prompt.prompt().contains("Control mailbox (daemon-managed):"));
+        assert!(active_prompt
+            .prompt()
+            .contains("Endpoint prompt:\nkick off the ack flow"));
+        assert!(active_prompt
+            .prompt()
+            .contains("Node instruction reference (daemon-managed):"));
+        assert!(active_prompt.prompt().contains("`ack_workflow_turn`"));
+        assert!(!active_prompt
+            .prompt()
+            .contains("Control mailbox (daemon-managed):"));
 
         let first_run_id = workflow_run.node_runs()[0].id().to_string();
         let first_token = "workflow-ack:".to_string() + &first_run_id;
@@ -2323,7 +2336,9 @@ mod tests {
         assert!(second_active_prompt
             .prompt()
             .contains("Workflow handoff payloads (JSON array):"));
-        assert!(second_active_prompt.prompt().contains("ACK_WORKFLOW_TURN"));
+        assert!(second_active_prompt
+            .prompt()
+            .contains("`ack_workflow_turn`"));
 
         let second_run_id = routed
             .active_node_run_id()
@@ -2405,22 +2420,26 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
         let first_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: first_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: first_agent.id().to_string(),
+                },
+            ))
             .expect("first node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
             _ => panic!("unexpected local response"),
         };
         let second_node = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                agent_id: second_agent.id().to_string(),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    agent_id: second_agent.id().to_string(),
+                },
+            ))
             .expect("second node should be added")
         {
             LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
@@ -2436,24 +2455,28 @@ mod tests {
         )
         .expect("schema file should be written");
         let _ = app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: first_node.id().to_string(),
-                to_node_id: second_node.id().to_string(),
-                output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
-                validation_policy: Some(WorkflowOutputValidationPolicy::Warn),
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: first_node.id().to_string(),
+                    to_node_id: second_node.id().to_string(),
+                    output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
+                    validation_policy: Some(WorkflowOutputValidationPolicy::Warn),
+                },
+            ))
             .expect("first edge should be added");
         let _ = app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow.id().to_string(),
-                from_node_id: second_node.id().to_string(),
-                to_node_id: first_node.id().to_string(),
-                output_schema_ref: None,
-                validation_policy: None,
-            }))
+            .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+                AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    from_node_id: second_node.id().to_string(),
+                    to_node_id: first_node.id().to_string(),
+                    output_schema_ref: None,
+                    validation_policy: None,
+                },
+            ))
             .expect("second edge should be added");
         let endpoint = match app
             .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(

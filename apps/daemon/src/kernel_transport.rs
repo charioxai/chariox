@@ -162,6 +162,11 @@ where
         }
     });
 
+    let mcp_app = Arc::clone(&app);
+    tokio::spawn(async move {
+        let _ = crate::transport::mcp_server::run_mcp_http_server(mcp_app).await;
+    });
+
     loop {
         tokio::select! {
             _ = &mut shutdown => return Ok(()),

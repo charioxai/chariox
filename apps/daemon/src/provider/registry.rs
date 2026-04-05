@@ -72,6 +72,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
             pty_target: Some(format!("stub-pty:{}", request.session_id)),
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_env: std::collections::BTreeMap::new(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
         })
@@ -102,7 +103,7 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
-        let mut launch = plan_opencode_launch()?;
+        let mut launch = plan_opencode_launch(Some(request))?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         if launch.endpoint_mode == AgentEndpointMode::Managed {
             launch.pty_target = Some(format!("opencode-pty:{}", request.session_id));
@@ -136,7 +137,7 @@ impl AgentEndpointAdapter for CodexAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
-        let mut launch = plan_codex_launch()?;
+        let mut launch = plan_codex_launch(Some(request))?;
         launch.process_label = format!("codex:{}:{}", request.provider, request.model);
         if launch.endpoint_mode == AgentEndpointMode::Managed {
             launch.pty_target = Some(format!("codex-pty:{}", request.session_id));
@@ -183,6 +184,7 @@ impl AgentEndpointAdapter for FailingPtyAdapter {
             pty_target: Some(format!("invalid-pty:{}", request.session_id)),
             pty_program: Some("/definitely/not/a/real/provider".to_string()),
             pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
         })

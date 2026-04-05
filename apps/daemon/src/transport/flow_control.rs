@@ -47,7 +47,11 @@ pub(crate) fn maybe_complete_active_prompt(
         return Ok(());
     }
 
-    if app.sessions().get_session(session_id)?.active_prompt().is_none()
+    if app
+        .sessions()
+        .get_session(session_id)?
+        .active_prompt()
+        .is_none()
     {
         clear_prompt_activity(app, session_id);
         return Ok(());

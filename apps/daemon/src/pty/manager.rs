@@ -19,6 +19,7 @@ pub struct PtySpawnRequest {
     pub provider_run_id: String,
     pub program: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
     pub working_directory: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
@@ -76,6 +77,7 @@ impl PtyManager {
             provider_run_id: run.id().to_string(),
             program: program.to_string(),
             args: run.pty_args().to_vec(),
+            env: run.pty_env().clone(),
             working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
@@ -111,6 +113,9 @@ impl PtyManager {
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
             command.arg(arg);
+        }
+        for (key, value) in request.env {
+            command.env(key, value);
         }
         if let Some(working_directory) = request.working_directory {
             command.cwd(working_directory);
@@ -368,6 +373,7 @@ mod tests {
                 pty_target: Some("stub-pty:session-1".to_string()),
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
+                pty_env: std::collections::BTreeMap::new(),
                 working_directory: None,
                 structured_endpoint: None,
             },
@@ -390,6 +396,7 @@ mod tests {
                 pty_target: Some("stub-pty:session-1".to_string()),
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-lc".to_string(), "cat".to_string()],
+                pty_env: std::collections::BTreeMap::new(),
                 working_directory: None,
                 structured_endpoint: None,
             },

@@ -667,8 +667,9 @@ impl SessionService {
         }
         envelope.mark_validated_completed();
         envelope.clear_transient_inputs();
-        workflow_run
-            .retain_messages(|message| message.consumed_by_node_run_id() != Some(workflow_node_run_id));
+        workflow_run.retain_messages(|message| {
+            message.consumed_by_node_run_id() != Some(workflow_node_run_id)
+        });
         Ok(workflow_run.clone())
     }
 
@@ -876,7 +877,7 @@ impl SessionService {
                 workflow_id,
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
-        })?;
+            })?;
         node_run.set_status(WorkflowNodeRunStatus::Stopped);
         if let Some(envelope) = node_run.turn_envelope_mut() {
             envelope.mark_cancelled();

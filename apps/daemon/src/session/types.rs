@@ -845,10 +845,7 @@ impl WorkflowRun {
         message
     }
 
-    pub fn retain_messages(
-        &mut self,
-        mut predicate: impl FnMut(&WorkflowMessage) -> bool,
-    ) {
+    pub fn retain_messages(&mut self, mut predicate: impl FnMut(&WorkflowMessage) -> bool) {
         self.messages.retain(|message| predicate(message));
     }
 }

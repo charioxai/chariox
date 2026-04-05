@@ -1,10 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem,
-};
+use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem};
 
 pub(crate) mod flow_control;
+pub(crate) mod mcp_server;
 pub(crate) mod runtime_tools;
 
 pub struct TransportService;

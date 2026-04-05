@@ -238,6 +238,16 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    pub fn get_run_by_runtime_mcp_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .values()
+            .find(|run| run.runtime_mcp_auth_token() == Some(auth_token))
+            .cloned()
+    }
+
     pub fn terminate_session_runs(
         &mut self,
         sessions: &mut SessionService,
@@ -341,14 +351,14 @@ impl ProviderProcessService {
         attachments: &[PromptAttachment],
     ) -> Result<bool, DaemonError> {
         if run.adapter_key() == "codex" {
-            let state = self
-                .codex_runs
-                .get_mut(run.id())
-                .ok_or_else(|| DaemonError::ProviderProtocol {
-                    provider_run_id: run.id().to_string(),
-                    operation: "codex_thread_missing",
-                    message: "no Codex thread is bound to this provider run".to_string(),
-                })?;
+            let state =
+                self.codex_runs
+                    .get_mut(run.id())
+                    .ok_or_else(|| DaemonError::ProviderProtocol {
+                        provider_run_id: run.id().to_string(),
+                        operation: "codex_thread_missing",
+                        message: "no Codex thread is bound to this provider run".to_string(),
+                    })?;
             submit_codex_prompt(run, state, prompt, attachments)?;
             return Ok(true);
         }

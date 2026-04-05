@@ -86,12 +86,13 @@ pub fn dispatch_runtime_tool_call(
 ) -> Result<RuntimeToolResult, DaemonError> {
     match call.tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => {
-            let args = serde_json::from_value::<AckWorkflowTurnArgs>(call.arguments).map_err(
-                |error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_ack_workflow_turn",
-                    message: format!("invalid tool arguments: {error}"),
-                },
-            )?;
+            let args =
+                serde_json::from_value::<AckWorkflowTurnArgs>(call.arguments).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_ack_workflow_turn",
+                        message: format!("invalid tool arguments: {error}"),
+                    }
+                })?;
             let workflow_run_id = app
                 .sessions()
                 .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
@@ -113,13 +114,11 @@ pub fn dispatch_runtime_tool_call(
             })
         }
         VALIDATE_WORKFLOW_OUTPUT_TOOL => {
-            let args =
-                serde_json::from_value::<ValidateWorkflowOutputArgs>(call.arguments).map_err(
-                    |error| DaemonError::LocalTransport {
-                        operation: "runtime_tool_validate_workflow_output",
-                        message: format!("invalid tool arguments: {error}"),
-                    },
-                )?;
+            let args = serde_json::from_value::<ValidateWorkflowOutputArgs>(call.arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_workflow_output",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
             if !call.context.allowed_output_schema_refs.is_empty()
                 && !call
                     .context
@@ -157,6 +156,106 @@ pub fn dispatch_runtime_tool_call(
             message: format!("unsupported runtime tool `{other}`"),
         }),
     }
+}
+
+pub fn dispatch_authenticated_runtime_tool_call(
+    app: &mut DaemonApp,
+    auth_token: &str,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let provider_run = app
+        .providers()
+        .get_run_by_runtime_mcp_auth_token(auth_token)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "invalid runtime MCP auth token".to_string(),
+        })?;
+    let agent_id = provider_run
+        .agent_instance_id()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "provider run is not bound to an agent".to_string(),
+        })?;
+    let session = app.sessions().get_session(provider_run.session_id())?;
+    let prompt = session
+        .active_prompt()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "no active prompt for authenticated provider run".to_string(),
+        })?;
+    if prompt.target_agent_id() != agent_id {
+        return Err(DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "authenticated provider run is not responsible for the active prompt"
+                .to_string(),
+        });
+    }
+    let workflow_run_ref = prompt
+        .workflow_run_id()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "runtime tools are only available during workflow turns".to_string(),
+        })?;
+    let workflow_node_run_id =
+        prompt
+            .workflow_node_run_id()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: "workflow node run context is missing for the active prompt".to_string(),
+            })?;
+    let allowed_output_schema_refs = allowed_output_schema_refs_for_active_workflow_turn(
+        app,
+        provider_run.session_id(),
+        workflow_run_ref,
+        workflow_node_run_id,
+    )?;
+
+    dispatch_runtime_tool_call(
+        app,
+        RuntimeToolCall {
+            tool_name: tool_name.to_string(),
+            arguments,
+            context: WorkflowRuntimeToolContext {
+                session_id: provider_run.session_id().to_string(),
+                workflow_run_ref: workflow_run_ref.to_string(),
+                workflow_node_run_id: workflow_node_run_id.to_string(),
+                delivery_token: None,
+                allowed_output_schema_refs,
+            },
+        },
+    )
+}
+
+fn allowed_output_schema_refs_for_active_workflow_turn(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_ref: &str,
+    workflow_node_run_id: &str,
+) -> Result<Vec<String>, DaemonError> {
+    let workflow_run = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+    let workflow = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
+    let node_id = workflow_run
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)
+        .map(|node_run| node_run.node_id())
+        .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            reference: workflow_node_run_id.to_string(),
+            message: "workflow node run was not found while resolving runtime tool scope",
+        })?;
+    Ok(workflow
+        .edges()
+        .iter()
+        .filter(|edge| edge.from_node_id() == node_id)
+        .filter_map(|edge| edge.output_schema_ref().map(str::to_string))
+        .collect())
 }
 
 pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
@@ -209,10 +308,8 @@ mod tests {
 
     #[test]
     fn validation_tool_enforces_allowed_schema_refs() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "arroba-runtime-tools-{}",
-            std::process::id()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("arroba-runtime-tools-{}", std::process::id()));
         let _ = fs::create_dir_all(&temp_dir);
         let schema_path = temp_dir.join("schema.json");
         fs::write(
@@ -287,16 +384,24 @@ mod tests {
             }))
             .expect("workflow should exist")
         {
-            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow.id().to_string(),
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
             other => panic!("unexpected response: {other:?}"),
         };
-        let node_id = match app.handle_local_request(LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
-            session_id: session.id().to_string(),
-            workflow_ref: workflow_id.clone(),
-            agent_id: agent_id.clone(),
-        }))
-        .expect("node should be added") {
-            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node.id().to_string(),
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
             other => panic!("unexpected response: {other:?}"),
         };
         app.handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
@@ -308,15 +413,17 @@ mod tests {
             },
         ))
         .expect("instructions should update");
-        match app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
-            CreateWorkflowEndpointRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                entry_node_id: node_id.clone(),
-                alias: Some("entry".to_string()),
-            },
-        ))
-        .expect("endpoint should be added") {
+        match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    entry_node_id: node_id.clone(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("endpoint should be added")
+        {
             crate::local::LocalDaemonResponse::WorkflowEndpointCreated { .. } => {}
             other => panic!("unexpected response: {other:?}"),
         };
@@ -331,7 +438,9 @@ mod tests {
             ))
             .expect("workflow should invoke")
         {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
             other => panic!("unexpected response: {other:?}"),
         };
         let node_run = workflow_run

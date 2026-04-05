@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, OpenCodeClient, ProviderLaunchResult};
+use crate::provider::{
+    AgentEndpointMode, LaunchProviderRequest, OpenCodeClient, ProviderLaunchResult,
+};
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
 const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
@@ -27,7 +30,11 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     })
 }
 
-pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
+const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG";
+
+pub fn plan_opencode_launch(
+    request: Option<&LaunchProviderRequest>,
+) -> Result<ProviderLaunchResult, DaemonError> {
     if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -55,6 +62,7 @@ pub fn plan_opencode_launch() -> Result<ProviderLaunchResult, DaemonError> {
             "--port".to_string(),
             port.to_string(),
         ],
+        pty_env: runtime_mcp_env(request),
         working_directory: None,
         structured_endpoint: Some(base_url),
     })
@@ -79,9 +87,31 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
         pty_target: None,
         pty_program: None,
         pty_args: Vec::new(),
+        pty_env: BTreeMap::new(),
         working_directory: None,
         structured_endpoint: Some(endpoint),
     }
+}
+
+fn runtime_mcp_env(request: Option<&LaunchProviderRequest>) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    let Some(binding) = request.and_then(|request| request.runtime_mcp_binding.as_ref()) else {
+        return env;
+    };
+    let config = serde_json::json!({
+        "mcp": {
+            "arroba": {
+                "type": "remote",
+                "url": binding.server_url,
+                "enabled": true,
+                "headers": {
+                    "Authorization": format!("Bearer {}", binding.auth_token),
+                }
+            }
+        }
+    });
+    env.insert(OPENCODE_CONFIG_CONTENT_ENV.to_string(), config.to_string());
+    env
 }
 
 fn endpoint_is_healthy(base_url: &str) -> bool {
@@ -136,7 +166,7 @@ mod tests {
 
     use crate::DaemonError;
 
-    use crate::provider::AgentEndpointMode;
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{plan_opencode_launch, resolve_opencode_executable};
 
@@ -206,7 +236,7 @@ mod tests {
         let port = reserve_unused_port();
         std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
 
-        let launch = plan_opencode_launch().expect("launch plan should resolve");
+        let launch = plan_opencode_launch(None).expect("launch plan should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
@@ -233,6 +263,44 @@ mod tests {
     }
 
     #[test]
+    fn injects_runtime_mcp_config_into_managed_launch() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-opencode-resolve-test-{}-mcp",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        let port = reserve_unused_port();
+        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        ));
+        let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
+
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        let _ = fs::remove_file(&path);
+
+        let config = launch
+            .pty_env
+            .get("OPENCODE_CONFIG")
+            .expect("opencode config env should be set");
+        assert!(config.contains("\"mcp\""));
+        assert!(config.contains("http://127.0.0.1:43120/mcp"));
+        assert!(config.contains("Bearer token-123"));
+    }
+
+    #[test]
     fn requires_explicit_opencode_port_override() {
         let _guard = env_guard();
         let previous_bin = std::env::var_os("ARROBA_OPENCODE_BIN");
@@ -245,7 +313,7 @@ mod tests {
         let previous_port = std::env::var_os("ARROBA_OPENCODE_PORT");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
 
-        let error = plan_opencode_launch().expect_err("missing override should fail");
+        let error = plan_opencode_launch(None).expect_err("missing override should fail");
 
         if let Some(previous_bin) = previous_bin {
             std::env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -278,7 +346,7 @@ mod tests {
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");
 
-        let launch = plan_opencode_launch().expect("external endpoint should resolve");
+        let launch = plan_opencode_launch(None).expect("external endpoint should resolve");
 
         std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
 
@@ -309,7 +377,7 @@ mod tests {
         std::env::set_var("ARROBA_OPENCODE_PORT", &port);
         std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
 
-        let launch = plan_opencode_launch().expect("healthy endpoint should be reused");
+        let launch = plan_opencode_launch(None).expect("healthy endpoint should be reused");
 
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         std::env::remove_var("ARROBA_OPENCODE_PORT");

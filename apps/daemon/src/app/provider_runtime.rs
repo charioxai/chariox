@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
+use rand::distributions::{Alphanumeric, DistString};
+
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeMcpBinding,
+    RuntimeProviderRun,
 };
 
 impl DaemonApp {
@@ -45,6 +48,12 @@ impl DaemonApp {
                         .unwrap_or_default(),
                 )
             }));
+        }
+        if request.runtime_mcp_binding.is_none() {
+            request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                self.config.runtime_mcp_url(),
+                generate_runtime_mcp_auth_token(),
+            ));
         }
         let previous_active_run_id = self
             .sessions
@@ -272,4 +281,8 @@ impl DaemonApp {
             session_id: session_id.to_string(),
         })
     }
+}
+
+fn generate_runtime_mcp_auth_token() -> String {
+    Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
 }

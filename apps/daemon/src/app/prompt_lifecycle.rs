@@ -203,8 +203,9 @@ impl DaemonApp {
                 return Ok(None);
             };
             let target_agent_id = peeked.target_agent_id().to_string();
-            let is_workflow_prompt =
-                crate::scheduler::runtime::is_workflow_prompt_attachment(peeked.source_attachment_id());
+            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
+                peeked.source_attachment_id(),
+            );
             let provider_run_id = match self
                 .ensure_active_provider_run_for_agent(session_id, &target_agent_id)
             {
@@ -268,9 +269,7 @@ impl DaemonApp {
                     ) {
                         let cancelled = self.sessions.cancel_active_prompt(session_id)?.1;
                         crate::scheduler::runtime::on_workflow_prompt_cancelled(
-                            self,
-                            session_id,
-                            &cancelled,
+                            self, session_id, &cancelled,
                         )?;
                         flow_control::clear_prompt_activity(self, session_id);
                         return Err(dispatch_error);
@@ -285,9 +284,7 @@ impl DaemonApp {
                         )?;
                     }
                     crate::scheduler::runtime::on_workflow_prompt_started(
-                        self,
-                        session_id,
-                        &active,
+                        self, session_id, &active,
                     )?;
                     flow_control::note_prompt_started(self, session_id);
                     return Ok(Some(active));
@@ -397,9 +394,7 @@ impl DaemonApp {
                     .finalize_active_prompt_cancellation(session_id)?
                     .1;
                 crate::scheduler::runtime::on_workflow_prompt_cancelled(
-                    self,
-                    session_id,
-                    &cancelled,
+                    self, session_id, &cancelled,
                 )?;
             } else {
                 let completed = self.sessions.complete_active_prompt_only(session_id)?.1;

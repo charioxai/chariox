@@ -565,7 +565,11 @@ impl DaemonApp {
         }
 
         if provider_run.adapter_key() == "opencode" || provider_run.adapter_key() == "codex" {
-            return self.pump_structured_output(session_id, provider_run_id, recipient_attachment_ids);
+            return self.pump_structured_output(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+            );
         }
 
         let chunks = match self.pty.drain_output(provider_run_id) {

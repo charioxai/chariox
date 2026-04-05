@@ -48,14 +48,20 @@ pub struct ProviderLoginStart {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexNotification {
-    AgentMessageDelta { delta: String },
-    TurnStarted { turn_id: String },
+    AgentMessageDelta {
+        delta: String,
+    },
+    TurnStarted {
+        turn_id: String,
+    },
     TurnCompleted {
         turn_id: String,
         status: String,
         error_message: Option<String>,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -398,9 +404,8 @@ impl CodexClient {
             .send(Message::Text(initialize.to_string().into()))
             .map_err(|error| self.protocol_error("codex_initialize", error.to_string()))?;
         let response = self.read_next_message(socket, Duration::from_secs(10))?;
-        let message: JsonRpcMessage = serde_json::from_str(&response).map_err(|error| {
-            self.protocol_error("codex_initialize_parse", error.to_string())
-        })?;
+        let message: JsonRpcMessage = serde_json::from_str(&response)
+            .map_err(|error| self.protocol_error("codex_initialize_parse", error.to_string()))?;
         if message.result.is_none() {
             return Err(self.protocol_error(
                 "codex_initialize",

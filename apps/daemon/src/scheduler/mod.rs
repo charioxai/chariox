@@ -24,5 +24,4 @@ impl SchedulerService {
             prompt,
         )
     }
-
 }
