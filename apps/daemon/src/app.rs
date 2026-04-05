@@ -796,7 +796,8 @@ impl DaemonApp {
         } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
         } else if !prompt_completed
-            && provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External
+            && (active_prompt_status == Some(PromptStatus::Cancelling)
+                || provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External)
         {
             crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         }

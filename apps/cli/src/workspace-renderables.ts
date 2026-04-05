@@ -38,11 +38,12 @@ export function buildWorkflowOutlineRenderable(
     inspector?: {
       title: string
       meta: string[]
-      draft: string
+      body?: string | null
+      draft?: string
       placeholder?: string | null
       hint?: string | null
-      onDraftChange: (draft: string) => void
-      onEditorRef?: (editor: TextareaRenderable | null) => void
+      onDraftChange?: ((draft: string) => void) | null
+      onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
     } | null
   },
 ) {
@@ -96,24 +97,34 @@ export function buildWorkflowOutlineRenderable(
       }),
     )
   }
-  const textarea = new TextareaRenderable(renderer, {
-    flexGrow: 1,
-    minHeight: 8,
-    wrapMode: "word",
-    initialValue: inspectorConfig.draft,
-    backgroundColor: theme.backgroundPanel,
-    textColor: theme.text,
-    placeholder: inspectorConfig.placeholder ?? "Type instructions here",
-    placeholderColor: theme.textMuted,
-    onContentChange: () => {
-      inspectorConfig.onDraftChange(textarea.plainText)
-    },
-  })
-  textarea.onMouseUp = () => {
-    textarea.focus()
+  if (inspectorConfig.onDraftChange) {
+    const textarea = new TextareaRenderable(renderer, {
+      flexGrow: 1,
+      minHeight: 8,
+      wrapMode: "word",
+      initialValue: inspectorConfig.draft ?? "",
+      backgroundColor: theme.backgroundPanel,
+      textColor: theme.text,
+      placeholder: inspectorConfig.placeholder ?? "Type instructions here",
+      placeholderColor: theme.textMuted,
+      onContentChange: () => {
+        inspectorConfig.onDraftChange?.(textarea.plainText)
+      },
+    })
+    textarea.onMouseUp = () => {
+      textarea.focus()
+    }
+    inspectorConfig.onEditorRef?.(textarea)
+    inspector.add(textarea)
+  } else if (inspectorConfig.body) {
+    inspector.add(
+      new TextRenderable(renderer, {
+        content: inspectorConfig.body,
+        fg: theme.text,
+        wrapMode: "word",
+      }),
+    )
   }
-  inspectorConfig.onEditorRef?.(textarea)
-  inspector.add(textarea)
   if (inspectorConfig.hint) {
     inspector.add(
       new TextRenderable(renderer, {

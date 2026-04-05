@@ -216,6 +216,7 @@ import {
   deriveWorkflowPromptState,
   formatWorkflowPromptPlaceholder,
   isWorkflowCommandInput,
+  resolveActiveWorkflowRun,
 } from "./workflow-prompt-state.js"
 import { WorkspaceLayout } from "./workspace-layout.js"
 import {
@@ -958,6 +959,91 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       },
     }
   }
+  const workflowRuntimeInspector = () => {
+    const workflow = sessionState().workflows?.find((entry) => entry.id === selectedWorkflowId()) ?? null
+    if (!workflow) {
+      return null
+    }
+    const selectedNodeId = selectedWorkflowNodeId()
+    const selectedNode = workflow.nodes?.find((entry) => entry.id === selectedNodeId) ?? null
+    const selectedAgent = selectedNode
+      ? sessionState().agents.find((entry) => entry.id === selectedNode.agent_id) ?? null
+      : null
+    const workflowRun = resolveActiveWorkflowRun(workflow.id, sessionState().workflow_runs ?? [])
+      ?? [...(sessionState().workflow_runs ?? [])]
+        .filter((entry) => entry.workflow_id === workflow.id)
+        .sort((left, right) => right.created_at_ms - left.created_at_ms)[0]
+      ?? null
+    const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
+    const meta = [
+      `Workflow: ${workflowLabel}`,
+      `Selected node: ${selectedNode?.id ?? "-"}`,
+      `Agent: ${selectedAgent ? formatAgentLabel(selectedAgent) : selectedNode?.agent_id ?? "-"}`,
+      `Run: ${workflowRun?.id ?? "-"}`,
+      `Run status: ${String(workflowRun?.status ?? "idle").toLowerCase()}`,
+    ]
+    const nodeRuns = workflowRun?.node_runs ?? []
+    const selectedNodeRun = selectedNode
+      ? [...nodeRuns].filter((entry) => entry.node_id === selectedNode.id).sort((left, right) => right.created_at_ms - left.created_at_ms)[0] ?? null
+      : null
+    const failureEvents = workflowRun?.failure_events ?? []
+    const selectedNodeFailures = selectedNodeRun
+      ? failureEvents.filter((entry) => entry.source_node_run_id === selectedNodeRun.id)
+      : []
+    const lines: string[] = []
+    lines.push(`Failure events: ${failureEvents.length}`)
+    if (selectedNodeRun) {
+      lines.push("")
+      lines.push("Selected node run")
+      lines.push(`- id: ${selectedNodeRun.id}`)
+      lines.push(`- status: ${String(selectedNodeRun.status).toLowerCase()}`)
+      lines.push(`- summary: ${selectedNodeRun.summary ?? "-"}`)
+      if (selectedNodeRun.turn_envelope) {
+        lines.push(`- turn state: ${selectedNodeRun.turn_envelope.state}`)
+        lines.push(`- delivery token: ${selectedNodeRun.turn_envelope.delivery_token}`)
+        if (selectedNodeRun.turn_envelope.mailbox_content) {
+          lines.push("")
+          lines.push("Mailbox snapshot")
+          lines.push(selectedNodeRun.turn_envelope.mailbox_content)
+        }
+        if (selectedNodeRun.turn_envelope.handoff_payloads_json) {
+          lines.push("")
+          lines.push("Handoff snapshot")
+          lines.push(selectedNodeRun.turn_envelope.handoff_payloads_json)
+        }
+      }
+    }
+    if (selectedNodeFailures.length > 0) {
+      lines.push("")
+      lines.push("Selected node failure events")
+      for (const failure of selectedNodeFailures) {
+        lines.push(`- ${String(failure.kind).toLowerCase()} @ ${new Date(failure.timestamp_ms).toISOString()}`)
+        lines.push(`  ${failure.message}`)
+        if (failure.edge_ids.length > 0) {
+          lines.push(`  edges: ${failure.edge_ids.join(", ")}`)
+        }
+      }
+    } else if (failureEvents.length > 0) {
+      lines.push("")
+      lines.push("Recent workflow failure events")
+      for (const failure of failureEvents.slice(-5).reverse()) {
+        lines.push(`- ${String(failure.kind).toLowerCase()} @ ${new Date(failure.timestamp_ms).toISOString()}`)
+        lines.push(`  ${failure.message}`)
+      }
+    } else {
+      lines.push("")
+      lines.push("No failure events recorded for the current workflow run.")
+    }
+    return {
+      title: "Workflow Runtime",
+      meta,
+      body: lines.join("\n"),
+      hint: "Use /workflow runs, /workflow cancel, and /workflow resume to manage the current run.",
+    }
+  }
+  const workflowInspector = () => workflowNodeInstructionsEditor()
+    ? workflowNodeInstructionsInspector()
+    : workflowRuntimeInspector()
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
       return false
@@ -3759,7 +3845,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           setSelectedWorkflowNodeId(nodeId)
           rebuildTranscript()
         },
-        inspector: workflowNodeInstructionsInspector(),
+        inspector: workflowInspector(),
       })
       transcriptScrollbox.add(emptyTranscriptRenderable)
       transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
