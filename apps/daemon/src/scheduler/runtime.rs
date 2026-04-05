@@ -11,8 +11,10 @@ use crate::history::SessionHistoryEntryKind;
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
     PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
-    WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowMessage,
-    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
+    WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowMessage,
+    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun,
+    WorkflowRunStatus,
 };
 use crate::transport::TransportService;
 
@@ -201,6 +203,17 @@ pub fn schedule_workflow_node_prompt(
                 target_agent_id,
                 &prompt,
             ) {
+                record_and_route_workflow_failure(
+                    app,
+                    session_id,
+                    workflow_run_id,
+                    &WorkflowFailureEvent::new(
+                        WorkflowFailureKind::TransportFailure,
+                        workflow_node_run_id,
+                        Vec::new(),
+                        error.to_string(),
+                    ),
+                );
                 if let Ok(Some(cancelled)) =
                     TransportService::cancel_active_prompt_after_dispatch_failure(app, session_id)
                 {
@@ -227,6 +240,89 @@ pub fn schedule_workflow_node_prompt(
         }
     }
 
+    Ok(())
+}
+
+pub fn resume_workflow_run(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_ref: &str,
+) -> Result<WorkflowRun, DaemonError> {
+    let workflow_run = app.sessions_mut().resume_workflow_run(session_id, workflow_run_ref)?;
+    let resumable_node_runs = workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| {
+            node_run.status() == WorkflowNodeRunStatus::Ready
+                && node_run
+                    .turn_envelope()
+                    .and_then(|envelope| envelope.rendered_prompt())
+                    .is_some()
+        })
+        .map(|node_run| {
+            (
+                node_run.id().to_string(),
+                node_run.agent_id().to_string(),
+                node_run
+                    .turn_envelope()
+                    .and_then(|envelope| envelope.rendered_prompt())
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (workflow_node_run_id, agent_id, prompt) in resumable_node_runs {
+        resume_existing_workflow_node_prompt(
+            app,
+            session_id,
+            workflow_run.id(),
+            &workflow_node_run_id,
+            &agent_id,
+            &prompt,
+        )?;
+    }
+    app.sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run.id())
+}
+
+fn resume_existing_workflow_node_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    target_agent_id: &str,
+    prompt: &str,
+) -> Result<(), DaemonError> {
+    let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
+        session_id,
+        &workflow_prompt_source_attachment_id(workflow_run_id),
+        target_agent_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        prompt.to_string(),
+    )?;
+
+    match outcome {
+        PromptSubmissionOutcome::Started { prompt } => {
+            TransportService::dispatch_workflow_prompt(app, session_id, target_agent_id, &prompt)?;
+            app.sessions_mut().mark_workflow_turn_dispatched(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            on_workflow_prompt_started(app, session_id, &prompt)?;
+        }
+        PromptSubmissionOutcome::Queued { .. } => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` queued resumed node run `{workflow_node_run_id}` behind the current active prompt."
+                ),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -341,7 +437,7 @@ pub fn on_workflow_prompt_completed(
         session_id,
         workflow_run_id,
         workflow_node_run_id,
-        completion_snapshot,
+        completion_snapshot.clone(),
         max_turns,
     ) {
         Ok(update) => update,
@@ -350,6 +446,17 @@ pub fn on_workflow_prompt_completed(
             message,
             ..
         }) => {
+            record_and_route_workflow_failure(
+                app,
+                session_id,
+                workflow_run_id,
+                &WorkflowFailureEvent::new(
+                    WorkflowFailureKind::OutputValidationFailed,
+                    workflow_node_run_id,
+                    vec![edge_id.clone()],
+                    message.clone(),
+                ),
+            );
             app.sessions_mut()
                 .stop_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)?;
             app.record_notice(
@@ -365,14 +472,17 @@ pub fn on_workflow_prompt_completed(
         Err(error) => return Err(error),
     };
     if !validation_warnings.is_empty() {
-        write_workflow_control_mailbox(
-            app,
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            &validation_warnings,
-        );
         for warning in &validation_warnings {
+            let failure = WorkflowFailureEvent::new(
+                crate::session::classify_workflow_failure_kind(
+                    &completion_snapshot,
+                    &warning.message,
+                ),
+                workflow_node_run_id,
+                vec![warning.edge_id.clone()],
+                warning.message.clone(),
+            );
+            record_and_route_workflow_failure(app, session_id, workflow_run_id, &failure);
             app.record_notice(
                 session_id,
                 None,
@@ -439,6 +549,17 @@ pub fn on_workflow_prompt_cancelled(
         workflow_run_id,
         workflow_node_run_id,
     )?;
+    record_and_route_workflow_failure(
+        app,
+        session_id,
+        workflow_run_id,
+        &WorkflowFailureEvent::new(
+            WorkflowFailureKind::ProviderFailure,
+            workflow_node_run_id,
+            Vec::new(),
+            "workflow node run was stopped before validated completion",
+        ),
+    );
     app.record_notice(
         session_id,
         None,
@@ -446,6 +567,79 @@ pub fn on_workflow_prompt_cancelled(
         format!("Workflow run `{}` was stopped.", workflow_run.id()),
     );
     Ok(())
+}
+
+fn workflow_failure_policy() -> WorkflowFailurePolicy {
+    WorkflowFailurePolicy::default()
+}
+
+fn record_and_route_workflow_failure(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    failure: &WorkflowFailureEvent,
+) {
+    let _ = app.sessions_mut().record_workflow_failure_event(
+        session_id,
+        workflow_run_id,
+        failure.clone(),
+    );
+    let policy = workflow_failure_policy();
+    if policy.mode() != WorkflowFailurePolicyMode::Notify {
+        return;
+    }
+    route_workflow_failure_mailboxes(app, session_id, workflow_run_id, failure, &policy);
+}
+
+fn route_workflow_failure_mailboxes(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    failure: &WorkflowFailureEvent,
+    policy: &WorkflowFailurePolicy,
+) {
+    let workflow_run = match app.sessions().resolve_workflow_run_ref(session_id, workflow_run_id) {
+        Ok(run) => run,
+        Err(_) => return,
+    };
+    let workflow = match app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+    {
+        Ok(workflow) => workflow,
+        Err(_) => return,
+    };
+    let Some(source_node_run) = workflow_run
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == failure.source_node_run_id())
+    else {
+        return;
+    };
+    if policy.notify_source_node() {
+        write_workflow_control_mailbox_entry(
+            app,
+            session_id,
+            workflow_run_id,
+            source_node_run.node_id(),
+            failure,
+        );
+    }
+    if !policy.notify_sink_nodes() {
+        return;
+    }
+    for edge_id in failure.edge_ids() {
+        let Some(edge) = workflow.edge(edge_id) else {
+            continue;
+        };
+        write_workflow_control_mailbox_entry(
+            app,
+            session_id,
+            workflow_run_id,
+            edge.to_node_id(),
+            failure,
+        );
+    }
 }
 
 fn prepare_workflow_turn_prompt(
@@ -838,33 +1032,18 @@ fn build_workflow_completion_snapshot(
     Some(WorkflowCompletionSnapshot::new(summary, output))
 }
 
-fn write_workflow_control_mailbox(
+fn write_workflow_control_mailbox_entry(
     app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
-    workflow_node_run_id: &str,
-    warnings: &[crate::session::WorkflowOutputValidationWarning],
+    node_id: &str,
+    failure: &WorkflowFailureEvent,
 ) {
-    let workflow_run = match app
-        .sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-    {
-        Ok(run) => run,
-        Err(_) => return,
-    };
-    let node_id = match workflow_run
-        .node_runs()
-        .iter()
-        .find(|node_run| node_run.id() == workflow_node_run_id)
-    {
-        Some(node_run) => node_run.node_id(),
-        None => return,
-    };
     let Some(root) = workflow_runtime_artifact_root(
         app,
         session_id,
         workflow_run_id,
-        workflow_node_run_id,
+        failure.source_node_run_id(),
         "workflow-control",
     ) else {
         return;
@@ -878,14 +1057,46 @@ fn write_workflow_control_mailbox(
         return;
     }
     let path = root.join(format!("node-{node_id}.md"));
-    let body = warnings
-        .iter()
-        .map(|warning| format!("- edge {}: {}", warning.edge_id, warning.message))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let content = format!(
-        "# Workflow Control Mailbox\n\nValidation warnings for node `{node_id}`:\n{body}\n"
+    let existing = std::fs::read_to_string(&path).ok();
+    let header = "# Workflow Control Mailbox\n\n";
+    let existing_body = existing
+        .as_deref()
+        .unwrap_or("")
+        .strip_prefix(header)
+        .unwrap_or("")
+        .trim();
+    let edge_label = if failure.edge_ids().is_empty() {
+        "node-local".to_string()
+    } else {
+        failure
+            .edge_ids()
+            .iter()
+            .map(|edge_id| format!("edge {edge_id}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let entry = format!(
+        "- [{} @ {}] {}: {}",
+        match failure.kind() {
+            WorkflowFailureKind::MissingAck => "missing_ack",
+            WorkflowFailureKind::MissingStructuredOutput => "missing_structured_output",
+            WorkflowFailureKind::OutputValidationFailed => "output_validation_failed",
+            WorkflowFailureKind::ProviderFailure => "provider_failure",
+            WorkflowFailureKind::TransportFailure => "transport_failure",
+            WorkflowFailureKind::TurnStalled => "turn_stalled",
+        },
+        failure.timestamp_ms(),
+        edge_label,
+        failure.message()
     );
+    let body = if existing_body.is_empty() {
+        entry
+    } else if existing_body.lines().any(|line| line.trim() == entry) {
+        existing_body.to_string()
+    } else {
+        format!("{existing_body}\n{entry}")
+    };
+    let content = format!("{header}Notifications for node `{node_id}`:\n{body}\n");
     if let Err(error) = std::fs::write(&path, content) {
         tracing::debug!(
             ?error,

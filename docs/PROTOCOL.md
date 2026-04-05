@@ -741,6 +741,31 @@ Workflow turn durability rules:
   - final output validation has passed
 - if the provider disconnects or becomes unreachable before that state, the runtime MUST retain enough dispatch state to retry or reconcile the turn safely
 
+Workflow failure rules:
+
+- failures MUST be represented as structured workflow failure events, not just free-form notices
+- each workflow failure event MUST include:
+  - `kind`
+  - `source_node_run_id`
+  - `edge_ids`
+  - `message`
+  - `timestamp_ms`
+- the runtime MUST support at least two failure policy modes:
+  - `none`
+  - `notify`
+- the default mode SHOULD be `notify`
+- under `notify`, edge-related failures MUST be added to the mailbox of:
+  - the source node
+  - sink-side nodes on the affected edges
+- node-local failures without affected edges SHOULD notify the source node only
+- structured workflow failure events MUST be retrievable through runtime APIs
+
+Resume rules:
+
+- when a workflow run stops mid-execution, active node runs with preserved turn envelopes MUST be resumable
+- resuming a workflow run MUST preserve mailbox content, handoff payloads, and rendered prompt text for those node runs
+- the runtime does not need to reconstruct broader conversational history for this feature; agents continue from preserved workflow-turn context
+
 Suggested workflow turn runtime states:
 
 - `prepared`

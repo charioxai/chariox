@@ -90,6 +90,10 @@ export type ProviderLoginStart = {
   user_code: string | null
 }
 
+export type ProviderLogoutResult = {
+  provider: string
+}
+
 export type PromptAttachmentPart = {
   url: string
   mime: string
@@ -211,9 +215,34 @@ export type WorkflowNodeRun = {
   agent_id: string
   status: string
   summary: string | null
+  completion?: {
+    summary: string
+    output?: {
+      message: string
+    } | null
+  } | null
+  turn_envelope?: {
+    delivery_token: string
+    state: string
+    rendered_prompt?: string | null
+    mailbox_content?: string | null
+    handoff_payloads_json?: string | null
+    prepared_at_ms: number
+    dispatched_at_ms?: number | null
+    acknowledged_at_ms?: number | null
+    validated_completed_at_ms?: number | null
+  } | null
   created_at_ms: number
   started_at_ms: number | null
   completed_at_ms: number | null
+}
+
+export type WorkflowFailureEvent = {
+  kind: string
+  source_node_run_id: string
+  edge_ids: string[]
+  message: string
+  timestamp_ms: number
 }
 
 export type WorkflowRun = {
@@ -226,6 +255,7 @@ export type WorkflowRun = {
   active_node_run_id: string | null
   node_runs: WorkflowNodeRun[]
   messages: WorkflowMessage[]
+  failure_events?: WorkflowFailureEvent[]
   created_at_ms: number
   started_at_ms: number | null
   completed_at_ms: number | null

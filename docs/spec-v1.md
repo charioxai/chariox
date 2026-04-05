@@ -687,6 +687,31 @@ Runtime delivery and retention rules:
 - transient workflow inputs become eligible for deletion only after the turn is both acknowledged and completed with validation success
 - if a provider run disconnects or becomes unreachable before that validated terminal state, the runtime MUST retain enough durable dispatch state to retry or reconcile the turn
 
+Workflow failure and notification rules:
+
+- the runtime MUST classify workflow failures into structured kinds rather than only free-form notices
+- a workflow failure event MUST include:
+  - `kind`
+  - `source_node_run_id`
+  - related `edge_ids`
+  - `message`
+  - `timestamp_ms`
+- the runtime MUST support a failure-policy concept with at least:
+  - `none`
+  - `notify`
+- the default policy SHOULD be `notify`
+- under `notify`, the runtime MUST notify the source node and affected sink-side nodes for edge-related failures
+- node-local failures without related edges SHOULD notify the source node only
+- mailbox notifications are retry/control context and MUST remain available until the notified node reaches validated completion
+- workflow failure events MUST be queryable through structured runtime surfaces and MUST NOT rely only on free-form history text
+- runtime policy expansion beyond `none` and `notify` MAY be added later, but is out of scope for the current implementation
+
+Resume rules:
+
+- if a workflow run stops while node turns are active, the runtime MUST allow those active node runs to resume
+- resuming a stopped workflow run MUST preserve the rendered prompt, mailbox content, and handoff inputs for the stopped node runs
+- the runtime SHOULD resume the stopped node runs directly and let agents continue from preserved context rather than reconstructing extra history
+
 Suggested workflow turn runtime states:
 
 - `prepared`

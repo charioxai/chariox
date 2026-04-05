@@ -9,9 +9,10 @@ use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowDefinition, WorkflowEdgeDefinition,
-    WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition,
-    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputValidationPolicy, WorkflowRun,
-    WorkflowRunStatus, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
+    WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
+    WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,6 +671,79 @@ impl SessionService {
         workflow_run.retain_messages(|message| {
             message.consumed_by_node_run_id() != Some(workflow_node_run_id)
         });
+        Ok(workflow_run.clone())
+    }
+
+    pub fn record_workflow_failure_event(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        event: WorkflowFailureEvent,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        workflow_run.add_failure_event(event);
+        Ok(workflow_run.clone())
+    }
+
+    pub fn resume_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let workflow_run_id = self
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow_run = session.workflow_run_mut(&workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.clone(),
+            }
+        })?;
+        let resumable_node_ids = workflow_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| {
+                node_run.status() == WorkflowNodeRunStatus::Stopped
+                    && node_run.completion().is_none()
+                    && node_run
+                        .turn_envelope()
+                        .and_then(|envelope| envelope.rendered_prompt())
+                        .is_some()
+            })
+            .map(|node_run| node_run.id().to_string())
+            .collect::<Vec<_>>();
+        if resumable_node_ids.is_empty() {
+            return Err(DaemonError::InvalidWorkflowRunState {
+                workflow_run_id,
+                status: workflow_run.status(),
+                operation: "resume workflow run",
+            });
+        }
+        workflow_run.resume();
+        workflow_run.clear_active_node_run();
+        for node_run in workflow_run.node_runs_mut() {
+            if resumable_node_ids.iter().any(|id| id == node_run.id()) {
+                node_run.resume();
+            }
+        }
         Ok(workflow_run.clone())
     }
 
@@ -1968,6 +2042,19 @@ fn validate_workflow_edge_output(
     }
 
     Ok(None)
+}
+
+pub fn classify_workflow_failure_kind(
+    completion: &Option<WorkflowCompletionSnapshot>,
+    message: &str,
+) -> WorkflowFailureKind {
+    if completion.is_none() {
+        return WorkflowFailureKind::MissingStructuredOutput;
+    }
+    if message.contains("missing workflow output payload") {
+        return WorkflowFailureKind::MissingStructuredOutput;
+    }
+    WorkflowFailureKind::OutputValidationFailed
 }
 
 fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, DaemonError> {

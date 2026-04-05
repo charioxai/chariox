@@ -139,6 +139,101 @@ pub enum WorkflowOutputValidationPolicy {
     Halt,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowFailureKind {
+    MissingAck,
+    MissingStructuredOutput,
+    OutputValidationFailed,
+    ProviderFailure,
+    TransportFailure,
+    TurnStalled,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowFailurePolicyMode {
+    None,
+    Notify,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowFailurePolicy {
+    mode: WorkflowFailurePolicyMode,
+    notify_source_node: bool,
+    notify_sink_nodes: bool,
+}
+
+impl Default for WorkflowFailurePolicy {
+    fn default() -> Self {
+        Self {
+            mode: WorkflowFailurePolicyMode::Notify,
+            notify_source_node: true,
+            notify_sink_nodes: true,
+        }
+    }
+}
+
+impl WorkflowFailurePolicy {
+    pub fn mode(&self) -> WorkflowFailurePolicyMode {
+        self.mode
+    }
+
+    pub fn notify_source_node(&self) -> bool {
+        self.notify_source_node
+    }
+
+    pub fn notify_sink_nodes(&self) -> bool {
+        self.notify_sink_nodes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowFailureEvent {
+    kind: WorkflowFailureKind,
+    source_node_run_id: String,
+    edge_ids: Vec<String>,
+    message: String,
+    timestamp_ms: u64,
+}
+
+impl WorkflowFailureEvent {
+    pub fn new(
+        kind: WorkflowFailureKind,
+        source_node_run_id: impl Into<String>,
+        edge_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            source_node_run_id: source_node_run_id.into(),
+            edge_ids,
+            message: message.into(),
+            timestamp_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn kind(&self) -> WorkflowFailureKind {
+        self.kind
+    }
+
+    pub fn source_node_run_id(&self) -> &str {
+        &self.source_node_run_id
+    }
+
+    pub fn edge_ids(&self) -> &[String] {
+        &self.edge_ids
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        self.timestamp_ms
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
     id: String,
@@ -725,6 +820,11 @@ impl WorkflowNodeRun {
     pub fn set_turn_envelope(&mut self, turn_envelope: Option<WorkflowTurnEnvelope>) {
         self.turn_envelope = turn_envelope;
     }
+
+    pub fn resume(&mut self) {
+        self.status = WorkflowNodeRunStatus::Ready;
+        self.completed_at_ms = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -738,6 +838,8 @@ pub struct WorkflowRun {
     active_node_run_id: Option<String>,
     node_runs: Vec<WorkflowNodeRun>,
     messages: Vec<WorkflowMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    failure_events: Vec<WorkflowFailureEvent>,
     created_at_ms: u64,
     started_at_ms: Option<u64>,
     completed_at_ms: Option<u64>,
@@ -764,6 +866,7 @@ impl WorkflowRun {
             active_node_run_id,
             node_runs,
             messages,
+            failure_events: Vec::new(),
             created_at_ms: unix_epoch_ms(),
             started_at_ms: None,
             completed_at_ms: None,
@@ -810,6 +913,10 @@ impl WorkflowRun {
         &self.messages
     }
 
+    pub fn failure_events(&self) -> &[WorkflowFailureEvent] {
+        &self.failure_events
+    }
+
     pub fn messages_mut(&mut self) -> &mut [WorkflowMessage] {
         &mut self.messages
     }
@@ -845,8 +952,18 @@ impl WorkflowRun {
         message
     }
 
+    pub fn add_failure_event(&mut self, event: WorkflowFailureEvent) -> WorkflowFailureEvent {
+        self.failure_events.push(event.clone());
+        event
+    }
+
     pub fn retain_messages(&mut self, mut predicate: impl FnMut(&WorkflowMessage) -> bool) {
         self.messages.retain(|message| predicate(message));
+    }
+
+    pub fn resume(&mut self) {
+        self.status = WorkflowRunStatus::Waiting;
+        self.completed_at_ms = None;
     }
 }
 

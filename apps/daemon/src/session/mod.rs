@@ -3,7 +3,10 @@ mod store;
 mod types;
 
 pub use service::SessionService;
-pub use service::{WorkflowCompletionUpdate, WorkflowDispatch, WorkflowOutputValidationWarning};
+pub use service::{
+    classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
+    WorkflowOutputValidationWarning,
+};
 pub use store::SessionStore;
 pub use types::WorkflowOutputValidationPolicy;
 pub use types::{
@@ -11,8 +14,9 @@ pub use types::{
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowHandoffPayload, WorkflowMessage,
-    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorktreeIsolationMode,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
+    WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
+    WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState, WorktreeIsolationMode,
 };

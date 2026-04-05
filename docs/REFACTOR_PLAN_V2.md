@@ -106,3 +106,10 @@ Planned:
 - daemon-owned Arroba MCP server for runtime tools
 - automated managed-run MCP attachment for supported providers
 - later hardening pass for dynamic per-turn tool scoping, per-run isolation, and MCP connection health/reconnect handling
+
+Next runtime-resilience scope:
+
+- structured workflow failure events on workflow runs
+- default `notify` failure policy with mailbox routing to source and affected sink nodes
+- structured audit retrieval through workflow runtime surfaces
+- simplified resume for stopped active node runs using preserved turn envelopes

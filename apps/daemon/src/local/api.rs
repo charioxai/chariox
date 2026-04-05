@@ -369,6 +369,12 @@ pub struct CancelWorkflowRunRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -420,6 +426,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
+    ResumeWorkflowRun(ResumeWorkflowRunRequest),
     ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
     AckWorkflowTurn(AckWorkflowTurnRequest),
 }
@@ -601,6 +608,10 @@ pub enum LocalDaemonResponse {
         workflow_run: WorkflowRun,
     },
     WorkflowRunCancelled {
+        workflow_run: WorkflowRun,
+        session: RuntimeSession,
+    },
+    WorkflowRunResumed {
         workflow_run: WorkflowRun,
         session: RuntimeSession,
     },
@@ -1107,6 +1118,18 @@ impl DaemonApp {
                     session,
                 })
             }
+            LocalDaemonRequest::ResumeWorkflowRun(request) => {
+                let workflow_run = crate::scheduler::runtime::resume_workflow_run(
+                    self,
+                    &request.session_id,
+                    &request.workflow_run_ref,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowRunResumed {
+                    workflow_run,
+                    session,
+                })
+            }
             LocalDaemonRequest::ValidateWorkflowOutput(request) => {
                 let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
                     self,
@@ -1193,6 +1216,7 @@ mod tests {
         ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
         RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        ResumeWorkflowRunRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
         SubmitPromptRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
     };
@@ -2548,6 +2572,23 @@ mod tests {
             LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
             _ => panic!("unexpected local response"),
         };
+        assert!(after_warning.failure_events().iter().any(|event| {
+            matches!(
+                event.kind(),
+                crate::session::WorkflowFailureKind::OutputValidationFailed
+            ) && event.message().contains("output.message is not valid JSON")
+        }));
+        let second_active_prompt = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .cloned()
+            .expect("second node should be active");
+        assert!(second_active_prompt.prompt().contains("Control mailbox:"));
+        assert!(second_active_prompt
+            .prompt()
+            .contains("output.message is not valid JSON"));
         let first_completed = after_warning
             .node_runs()
             .iter()
@@ -2615,6 +2656,133 @@ mod tests {
         assert!(!active_prompt
             .prompt()
             .contains("Control mailbox (daemon-managed):"));
+    }
+
+    #[test]
+    fn local_request_api_resumes_stopped_active_workflow_node_runs() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-resume", "worktree-resume"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+        let _attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "resume-client".to_string(),
+                    capability_level: ClientCapabilityLevel::InteractiveStructured,
+                },
+            ))
+            .expect("attachment should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+        let agent = spawn_workflow_test_agent(&mut app, session.id(), "resume-node");
+        let workflow = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("resume-flow".to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let node = add_workflow_test_node(&mut app, session.id(), workflow.id(), agent.id());
+        let endpoint = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                },
+            ))
+            .expect("endpoint should be created")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    endpoint_ref: endpoint.id().to_string(),
+                    prompt: Some("resume prompt".to_string()),
+                },
+            ))
+            .expect("workflow invoke should succeed")
+        {
+            LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        let cancelled = match app
+            .handle_local_request(LocalDaemonRequest::CancelWorkflowRun(
+                CancelWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                },
+            ))
+            .expect("workflow run should stop")
+        {
+            LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(cancelled.status(), crate::session::WorkflowRunStatus::Stopped);
+        let _ = app
+            .sessions_mut()
+            .cancel_active_prompt(session.id())
+            .expect("active prompt should clear");
+        assert!(app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .is_none());
+
+        let resumed = match app
+            .handle_local_request(LocalDaemonRequest::ResumeWorkflowRun(
+                ResumeWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                },
+            ))
+            .expect("workflow run should resume")
+        {
+            LocalDaemonResponse::WorkflowRunResumed { workflow_run, .. } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        assert!(matches!(
+            resumed.status(),
+            crate::session::WorkflowRunStatus::Waiting | crate::session::WorkflowRunStatus::Running
+        ));
+        let active_prompt = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .cloned()
+            .expect("resumed workflow prompt should be active");
+        assert!(active_prompt.prompt().contains("resume prompt"));
+        let resumed_run = resumed
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_run.node_runs()[0].id())
+            .expect("node run should remain");
+        assert_eq!(resumed_run.status(), crate::session::WorkflowNodeRunStatus::Running);
+        assert!(resumed_run
+            .turn_envelope()
+            .and_then(|envelope| envelope.rendered_prompt())
+            .is_some());
     }
 
     #[test]

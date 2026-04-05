@@ -255,6 +255,15 @@ export function cancelWorkflowRunRequest(sessionId: string, workflowRunRef: stri
   }
 }
 
+export function resumeWorkflowRunRequest(sessionId: string, workflowRunRef: string) {
+  return {
+    ResumeWorkflowRun: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+    },
+  }
+}
+
 export function updateSessionConfigRequest(
   sessionId: string,
   attachmentId: string,
@@ -294,6 +303,14 @@ export function getProviderAuthStatusRequest(provider: string) {
 export function startProviderLoginRequest(provider: string) {
   return {
     StartProviderLogin: {
+      provider,
+    },
+  }
+}
+
+export function logoutProviderRequest(provider: string) {
+  return {
+    LogoutProvider: {
       provider,
     },
   }
