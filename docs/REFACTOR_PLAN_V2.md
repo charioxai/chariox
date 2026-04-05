@@ -123,3 +123,8 @@ Still ahead before this phase can be considered release-ready:
 - stronger per-run MCP isolation/auth hardening
 - MCP connection health/reconnect handling
 - failure taxonomy refinement so user/runtime stops are not reported as provider failures
+
+Related next architecture step:
+
+- consolidate cancel/interrupt, workflow MCP runtime tools, and later canonical provider control operations under one transport-owned control subsystem
+- keep mailboxing as scheduler-owned retry/control context, not as the interactive control lane
