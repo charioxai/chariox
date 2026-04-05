@@ -956,7 +956,10 @@ mod tests {
     async fn wait_for_socket(socket_path: &Path) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
 
-        while !socket_path.exists() {
+        loop {
+            if socket_path.exists() && StdUnixStream::connect(socket_path).is_ok() {
+                return;
+            }
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "timed out waiting for socket {}",

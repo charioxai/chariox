@@ -49,7 +49,38 @@ pub struct ProviderLoginStart {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexNotification {
     AgentMessageDelta {
+        item_id: String,
         delta: String,
+    },
+    ReasoningTextDelta {
+        item_id: String,
+        delta: String,
+    },
+    ReasoningSummaryTextDelta {
+        item_id: String,
+        delta: String,
+    },
+    ReasoningSummaryPartAdded {
+        item_id: String,
+        summary_index: usize,
+    },
+    ItemStarted {
+        item: Value,
+    },
+    ItemCompleted {
+        item: Value,
+    },
+    CommandExecutionOutputDelta {
+        item_id: String,
+        delta: String,
+    },
+    FileChangeOutputDelta {
+        item_id: String,
+        delta: String,
+    },
+    McpToolCallProgress {
+        item_id: String,
+        message: String,
     },
     TurnStarted {
         turn_id: String,
@@ -492,8 +523,92 @@ fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {
     let params = message.params.unwrap_or(Value::Null);
     match method.as_str() {
         "item/agentMessage/delta" => Some(CodexNotification::AgentMessageDelta {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             delta: params
                 .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "item/reasoning/textDelta" => Some(CodexNotification::ReasoningTextDelta {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            delta: params
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "item/reasoning/summaryTextDelta" => Some(CodexNotification::ReasoningSummaryTextDelta {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            delta: params
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "item/reasoning/summaryPartAdded" => Some(CodexNotification::ReasoningSummaryPartAdded {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            summary_index: params
+                .get("summaryIndex")
+                .and_then(Value::as_u64)
+                .unwrap_or_default() as usize,
+        }),
+        "item/started" => Some(CodexNotification::ItemStarted {
+            item: params.get("item").cloned().unwrap_or(Value::Null),
+        }),
+        "item/completed" => Some(CodexNotification::ItemCompleted {
+            item: params.get("item").cloned().unwrap_or(Value::Null),
+        }),
+        "item/commandExecution/outputDelta" => {
+            Some(CodexNotification::CommandExecutionOutputDelta {
+                item_id: params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                delta: params
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        }
+        "item/fileChange/outputDelta" => Some(CodexNotification::FileChangeOutputDelta {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            delta: params
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "item/mcpToolCall/progress" => Some(CodexNotification::McpToolCallProgress {
+            item_id: params
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            message: params
+                .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),

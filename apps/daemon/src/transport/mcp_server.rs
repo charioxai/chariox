@@ -307,6 +307,72 @@ mod tests {
     use super::handle_json_rpc_value;
 
     #[tokio::test]
+    async fn mcp_initialize_and_tools_list_return_runtime_tools() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+
+        let initialize = handle_json_rpc_value(
+            app.clone(),
+            "unused-token",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26"
+                }
+            }),
+        )
+        .await
+        .expect("initialize should succeed");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let initialize_body = initialize
+            .into_body()
+            .collect()
+            .await
+            .expect("initialize body should collect")
+            .to_bytes();
+        let initialize_value: Value =
+            serde_json::from_slice(&initialize_body).expect("initialize body should be json");
+        assert_eq!(
+            initialize_value["result"]["serverInfo"]["name"],
+            "arroba-runtime"
+        );
+
+        let tools_list = handle_json_rpc_value(
+            app.clone(),
+            "unused-token",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            }),
+        )
+        .await
+        .expect("tools/list should succeed");
+        assert_eq!(tools_list.status(), StatusCode::OK);
+        let tools_body = tools_list
+            .into_body()
+            .collect()
+            .await
+            .expect("tools list body should collect")
+            .to_bytes();
+        let tools_value: Value =
+            serde_json::from_slice(&tools_body).expect("tools list body should be json");
+        let tools = tools_value["result"]["tools"]
+            .as_array()
+            .expect("tools should be an array");
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "ack_workflow_turn"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "validate_workflow_output"));
+    }
+
+    #[tokio::test]
     async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = match app
@@ -440,5 +506,38 @@ mod tests {
             value["result"]["structuredContent"]["state"],
             "acknowledged"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_rejects_invalid_auth_token() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let response = handle_json_rpc_value(
+            app,
+            "invalid-token",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "ack_workflow_turn",
+                    "arguments": {
+                        "delivery_token": "workflow-ack:missing"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("request should return a json-rpc response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let value: Value = serde_json::from_slice(&body).expect("body should be json");
+        assert_eq!(value["error"]["code"], -32000);
     }
 }

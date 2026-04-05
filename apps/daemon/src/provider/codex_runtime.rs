@@ -185,7 +185,7 @@ fn apply_notification(
     provider_idle: &mut bool,
 ) {
     match notification {
-        CodexNotification::AgentMessageDelta { delta } => {
+        CodexNotification::AgentMessageDelta { delta, .. } => {
             if delta.is_empty() {
                 return;
             }
@@ -219,6 +219,7 @@ fn apply_notification(
         CodexNotification::Error { message } => {
             notices.push(message);
         }
+        _ => {}
     }
 }
 
