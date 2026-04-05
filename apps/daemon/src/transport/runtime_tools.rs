@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::session::{WorkflowNodeRunStatus, WorkflowTurnRuntimeState};
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
@@ -177,38 +178,13 @@ pub fn dispatch_authenticated_runtime_tool_call(
             operation: "dispatch_authenticated_runtime_tool_call",
             message: "provider run is not bound to an agent".to_string(),
         })?;
-    let session = app.sessions().get_session(provider_run.session_id())?;
-    let prompt = session
-        .active_prompt()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "dispatch_authenticated_runtime_tool_call",
-            message: "no active prompt for authenticated provider run".to_string(),
-        })?;
-    if prompt.target_agent_id() != agent_id {
-        return Err(DaemonError::LocalTransport {
-            operation: "dispatch_authenticated_runtime_tool_call",
-            message: "authenticated provider run is not responsible for the active prompt"
-                .to_string(),
-        });
-    }
-    let workflow_run_ref = prompt
-        .workflow_run_id()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "dispatch_authenticated_runtime_tool_call",
-            message: "runtime tools are only available during workflow turns".to_string(),
-        })?;
-    let workflow_node_run_id =
-        prompt
-            .workflow_node_run_id()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "dispatch_authenticated_runtime_tool_call",
-                message: "workflow node run context is missing for the active prompt".to_string(),
-            })?;
+    let (workflow_run_ref, workflow_node_run_id) =
+        resolve_authenticated_workflow_turn(app, provider_run.session_id(), agent_id)?;
     let allowed_output_schema_refs = allowed_output_schema_refs_for_active_workflow_turn(
         app,
         provider_run.session_id(),
-        workflow_run_ref,
-        workflow_node_run_id,
+        &workflow_run_ref,
+        &workflow_node_run_id,
     )?;
 
     dispatch_runtime_tool_call(
@@ -218,13 +194,69 @@ pub fn dispatch_authenticated_runtime_tool_call(
             arguments,
             context: WorkflowRuntimeToolContext {
                 session_id: provider_run.session_id().to_string(),
-                workflow_run_ref: workflow_run_ref.to_string(),
-                workflow_node_run_id: workflow_node_run_id.to_string(),
+                workflow_run_ref,
+                workflow_node_run_id,
                 delivery_token: None,
                 allowed_output_schema_refs,
             },
         },
     )
+}
+
+fn resolve_authenticated_workflow_turn(
+    app: &DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<(String, String), DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    if let Some(prompt) = session.active_prompt() {
+        if prompt.target_agent_id() == agent_id {
+            if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
+                (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+            {
+                return Ok((
+                    workflow_run_ref.to_string(),
+                    workflow_node_run_id.to_string(),
+                ));
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: "workflow node run context is missing for the active prompt".to_string(),
+            });
+        }
+    }
+
+    session
+        .workflow_runs()
+        .iter()
+        .filter(|workflow_run| workflow_run.active_node_run_id().is_some())
+        .find_map(|workflow_run| {
+            let active_node_run_id = workflow_run.active_node_run_id()?;
+            let node_run = workflow_run
+                .node_runs()
+                .iter()
+                .find(|candidate| candidate.id() == active_node_run_id)?;
+            let envelope = node_run.turn_envelope()?;
+            if node_run.agent_id() != agent_id
+                || node_run.status() != WorkflowNodeRunStatus::Running
+                || !matches!(
+                    envelope.state(),
+                    WorkflowTurnRuntimeState::Prepared
+                        | WorkflowTurnRuntimeState::Dispatched
+                        | WorkflowTurnRuntimeState::Acknowledged
+                )
+            {
+                return None;
+            }
+            Some((
+                workflow_run.id().to_string(),
+                node_run.id().to_string(),
+            ))
+        })
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "no active workflow turn for authenticated provider run".to_string(),
+        })
 }
 
 fn allowed_output_schema_refs_for_active_workflow_turn(
@@ -294,8 +326,9 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig};
 
     use super::{
-        dispatch_runtime_tool_call, workflow_runtime_tool_specs, RuntimeToolCall,
-        WorkflowRuntimeToolContext, ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL,
+        dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
+        workflow_runtime_tool_specs, RuntimeToolCall, WorkflowRuntimeToolContext,
+        ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL,
     };
 
     #[test]
@@ -522,5 +555,119 @@ mod tests {
         )
         .expect("allowed schema ref should validate");
         assert_eq!(result.payload["valid"], true);
+    }
+
+    #[test]
+    fn authenticated_ack_runtime_tool_resolves_workflow_turn_without_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-auth", "worktree-auth"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-auth",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-auth".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-auth".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-auth".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id,
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should be added");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id,
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+        let delivery_token = node_run
+            .turn_envelope()
+            .expect("turn envelope should be prepared")
+            .delivery_token()
+            .to_string();
+        let auth_token = app
+            .providers()
+            .get_run_for_agent(session.id(), &agent_id)
+            .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+            .expect("runtime auth token should exist");
+        app.sessions_mut()
+            .complete_active_prompt_only(session.id())
+            .expect("active prompt should be clearable for test");
+
+        let result = dispatch_authenticated_runtime_tool_call(
+            &mut app,
+            &auth_token,
+            ACK_WORKFLOW_TURN_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token,
+            }),
+        )
+        .expect("authenticated ack runtime tool should succeed");
+
+        assert_eq!(result.payload["state"], "acknowledged");
     }
 }
