@@ -142,7 +142,13 @@ pub fn schedule_workflow_node_prompt(
     prompt: &str,
 ) -> Result<(), DaemonError> {
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
-    let mailbox_content = workflow_node_control_contents(session_id, workflow_run_id, node_id);
+    let mailbox_content = workflow_node_control_contents(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        node_id,
+    );
     let handoff_payloads_json = prompt
         .split("Workflow handoff payloads (JSON array):\n")
         .nth(1)
@@ -355,6 +361,7 @@ pub fn on_workflow_prompt_completed(
             })
         {
             clear_workflow_control_mailbox(
+                app,
                 session_id,
                 workflow_run_id,
                 workflow_node_run_id,
@@ -411,9 +418,20 @@ fn prepare_workflow_turn_prompt(
     endpoint_prompt: &str,
     handoff_messages: Option<&[WorkflowMessage]>,
 ) -> Result<String, DaemonError> {
-    let instruction_ref =
-        workflow_node_instruction_reference(app, session_id, workflow_run_id, node_id);
-    let mailbox_content = workflow_node_control_contents(session_id, workflow_run_id, node_id);
+    let instruction_ref = workflow_node_instruction_reference(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        node_id,
+    );
+    let mailbox_content = workflow_node_control_contents(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        node_id,
+    );
     let handoff_payloads_json = serialize_handoff_payloads_json(handoff_messages);
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
     Ok(build_workflow_turn_prompt(
@@ -489,6 +507,7 @@ fn workflow_node_instruction_reference(
     app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
+    workflow_node_run_id: &str,
     node_id: &str,
 ) -> Option<String> {
     let workflow_run = app
@@ -500,9 +519,13 @@ fn workflow_node_instruction_reference(
         .resolve_workflow_ref(session_id, workflow_run.workflow_id())
         .ok()?;
     let node = workflow.node(node_id);
-    let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
-    let root =
-        DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-instructions");
+    let root = workflow_runtime_artifact_root(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        "workflow-instructions",
+    )?;
     let filename = format!("node-{node_id}.md");
     let path = root.join(filename);
     if !path.exists() || node.and_then(|node| node.instructions()).is_some() {
@@ -535,17 +558,59 @@ fn workflow_node_instruction_reference(
 }
 
 fn workflow_node_control_contents(
+    app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
+    workflow_node_run_id: &str,
     node_id: &str,
 ) -> Option<String> {
-    let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
-    let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+    let root = workflow_runtime_artifact_root(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        "workflow-control",
+    )?;
     let path = root.join(format!("node-{node_id}.md"));
     std::fs::read_to_string(path)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn workflow_runtime_artifact_root(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    category: &str,
+) -> Option<std::path::PathBuf> {
+    let session = app.sessions().get_session(session_id).ok()?;
+    let workflow_run = session.workflow_run(workflow_run_id)?;
+    let node_run = workflow_run
+        .node_runs()
+        .iter()
+        .find(|candidate| candidate.id() == workflow_node_run_id)?;
+    let base_directory = app
+        .providers()
+        .get_run_for_agent(session_id, node_run.agent_id())
+        .and_then(|run| run.working_directory().cloned())
+        .or_else(|| {
+            let worktree = std::path::PathBuf::from(session.worktree_id());
+            if worktree.is_absolute() {
+                Some(worktree)
+            } else {
+                std::env::current_dir().ok().map(|cwd| cwd.join(worktree))
+            }
+        })?;
+    Some(
+        base_directory
+            .join(".arroba")
+            .join("workflow-runtime")
+            .join(session_id)
+            .join(workflow_run_id)
+            .join(category),
+    )
 }
 
 fn build_workflow_completion_snapshot(
@@ -687,8 +752,15 @@ fn write_workflow_control_mailbox(
         Some(node_run) => node_run.node_id(),
         None => return,
     };
-    let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
-    let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+    let Some(root) = workflow_runtime_artifact_root(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        "workflow-control",
+    ) else {
+        return;
+    };
     if let Err(error) = std::fs::create_dir_all(&root) {
         tracing::debug!(
             ?error,
@@ -716,6 +788,7 @@ fn write_workflow_control_mailbox(
 }
 
 fn clear_workflow_control_mailbox(
+    app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
     workflow_node_run_id: &str,
@@ -729,8 +802,15 @@ fn clear_workflow_control_mailbox(
     else {
         return;
     };
-    let attachment_id = workflow_prompt_source_attachment_id(workflow_run_id);
-    let root = DaemonApp::attachment_artifact_root(session_id, &attachment_id, "workflow-control");
+    let Some(root) = workflow_runtime_artifact_root(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        "workflow-control",
+    ) else {
+        return;
+    };
     let path = root.join(format!("node-{node_id}.md"));
     let _ = std::fs::remove_file(path);
 }
@@ -758,6 +838,175 @@ fn serialize_handoff_payloads_json(handoff_messages: Option<&[WorkflowMessage]>)
 
 fn workflow_turn_delivery_token(workflow_node_run_id: &str) -> String {
     format!("workflow-ack:{workflow_node_run_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::local::{
+        AddWorkflowNodeRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+        InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
+        UpdateWorkflowNodeInstructionsRequest,
+    };
+    use crate::provider::LaunchProviderRequest;
+    use crate::session::{CreateSessionRequest, WorkflowMessage};
+    use crate::{DaemonApp, DaemonConfig};
+
+    use super::prepare_workflow_turn_prompt;
+
+    #[test]
+    fn workflow_instruction_reference_is_written_under_agent_workdir() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-scheduler",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-scheduler".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-scheduler".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workdir = std::env::temp_dir().join(format!(
+            "arroba-workflow-runtime-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&workdir);
+        fs::create_dir_all(&workdir).expect("workdir should exist");
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "test-model",
+            )
+            .with_agent_id(agent_id.clone())
+            .with_working_directory(workdir.clone()),
+        )
+        .expect("provider run should launch");
+
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-scheduler".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+            UpdateWorkflowNodeInstructionsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                node_id: node_id.clone(),
+                instructions: Some("Read me from a workspace-local hidden file.".to_string()),
+            },
+        ))
+        .expect("instructions should update");
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id.clone(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should exist");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id,
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run_id = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist")
+            .id()
+            .to_string();
+
+        let prompt = prepare_workflow_turn_prompt(
+            &app,
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            &node_id,
+            "start",
+            Option::<&[WorkflowMessage]>::None,
+        )
+        .expect("prompt should build");
+
+        let prefix = workdir
+            .join(".arroba")
+            .join("workflow-runtime")
+            .join(session.id())
+            .join(workflow_run.id())
+            .join("workflow-instructions");
+        let prefix_string = prefix.to_string_lossy().to_string();
+        assert!(
+            prompt.contains(&prefix_string),
+            "prompt should reference a file under agent workdir: {prompt}"
+        );
+        let expected_file = prefix.join(format!("node-{node_id}.md"));
+        assert!(expected_file.exists(), "instruction file should be written");
+        let contents = fs::read_to_string(&expected_file).expect("instruction file should read");
+        assert!(contents.contains("Read me from a workspace-local hidden file."));
+        let _ = fs::remove_dir_all(PathBuf::from(workdir));
+    }
 }
 
 fn collect_workflow_artifact_refs(
