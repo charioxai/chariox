@@ -1,4 +1,9 @@
 import { catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
+import {
+  providerCommandCatalog,
+  providerNamespace,
+  providerNamespaceDescription,
+} from "./provider-command-catalog.js"
 
 export type CommandCenterItem = {
   id: string
@@ -6,11 +11,13 @@ export type CommandCenterItem = {
   description: string
   kind: "command" | "group" | "provider" | "model" | "variant"
   value: string
+  searchAliases?: string[] | undefined
 }
 
 type CommandContext = {
   providerCatalog: ProviderCatalog
   currentProvider: BackendProviderId
+  focusedProvider: BackendProviderId | null
   currentModel: string
   currentVariant: string
 }
@@ -173,7 +180,7 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
   }
 
   if (normalized === "/") {
-    return rootItems()
+    return rootItems(context)
   }
 
   if (normalized.startsWith("/provider ")) {
@@ -192,12 +199,19 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
     return buildViewItems(normalized)
   }
 
-  const scoped = buildScopedCommandItems(normalized)
+  if (context.focusedProvider) {
+    const namespace = `${providerNamespace(context.focusedProvider)} `
+    if (normalized === providerNamespace(context.focusedProvider) || normalized.startsWith(namespace)) {
+      return buildProviderNamespaceItems(normalized, context.focusedProvider)
+    }
+  }
+
+  const scoped = buildScopedCommandItems(normalized, context)
   if (scoped) {
     return scoped
   }
 
-  return filterCommandCenterItems(rootItems(), normalized.slice(1).toLowerCase())
+  return filterCommandCenterItems(rootItems(context), normalized.slice(1).toLowerCase())
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
@@ -207,23 +221,72 @@ export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, cur
   return currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()
 }
 
-function rootItems() {
+function rootItems(context: CommandContext) {
   const rootNodes = COMMAND_TREE
     .filter((node) => node.id !== "misc")
-    .map((node) => ({
-      id: node.id,
-      label: node.label,
-      description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
-      kind: "group" as const,
-      value: node.value,
-    }))
+    .map((node) => mapRootGroup(node))
+  if (context.focusedProvider) {
+    const catalog = providerCommandCatalog(context.focusedProvider)
+    rootNodes.push({
+      id: `provider-namespace-${context.focusedProvider}`,
+      label: providerNamespace(context.focusedProvider),
+      description: providerNamespaceDescription(context.focusedProvider, catalog.commands.length),
+      kind: "group",
+      value: `${providerNamespace(context.focusedProvider)} `,
+      ...(catalog.commands.length > 0
+        ? {
+          searchAliases: catalog.commands.flatMap((command) => [command.name, command.description, command.value]),
+        }
+        : {}),
+    })
+  }
   const miscNodes = COMMAND_TREE.find((node) => node.id === "misc")?.children?.map(mapNodeToItem) ?? []
   return [...rootNodes, ...miscNodes]
+}
+
+function buildProviderNamespaceItems(input: string, provider: BackendProviderId) {
+  const catalog = providerCommandCatalog(provider)
+  const namespace = providerNamespace(provider)
+  const rootItem: CommandCenterItem = {
+    id: `provider-namespace-${provider}`,
+    label: namespace,
+    description: catalog.commands.length > 0
+      ? providerNamespaceDescription(provider, catalog.commands.length)
+      : `${providerNamespaceDescription(provider, 0)}; no registered completions for this provider version yet`,
+    kind: "group",
+    value: `${namespace} `,
+  }
+  if (input === namespace || input === `${namespace} `) {
+    return catalog.commands.length > 0
+      ? catalog.commands.map((command) => ({
+        id: `${provider}-${command.id}`,
+        label: command.name,
+        description: command.description,
+        kind: "command" as const,
+        value: `${namespace} ${command.value}`,
+      }))
+      : [rootItem]
+  }
+  const query = input.slice(`${namespace} `.length).trim().toLowerCase()
+  if (catalog.commands.length === 0) {
+    return filterCommandCenterItems([rootItem], query)
+  }
+  return filterCommandCenterItems(
+    catalog.commands.map((command) => ({
+      id: `${provider}-${command.id}`,
+      label: command.name,
+      description: command.description,
+      kind: "command" as const,
+      value: `${namespace} ${command.value}`,
+    })),
+    query,
+  )
 }
 
 function buildProviderItems(input: string, context: CommandContext) {
   const query = input.slice("/provider ".length).trim().toLowerCase()
   return filterCommandCenterItems([
+    mapNodeToItem(COMMAND_TREE.find((node) => node.id === "provider")!),
     {
       id: "provider-opencode",
       label: "OpenCode",
@@ -319,21 +382,36 @@ function buildViewItems(input: string) {
   ], query)
 }
 
-function buildScopedCommandItems(input: string) {
-  const nodes = collectCommandNodes(COMMAND_TREE)
+function buildScopedCommandItems(input: string, context: CommandContext) {
+  const scopeNodes = context.focusedProvider
+    ? [
+      ...COMMAND_TREE,
+      {
+        id: `provider-namespace-${context.focusedProvider}`,
+        label: providerNamespace(context.focusedProvider),
+        description: providerNamespaceDescription(
+          context.focusedProvider,
+          providerCommandCatalog(context.focusedProvider).commands.length,
+        ),
+        value: `${providerNamespace(context.focusedProvider)} `,
+      },
+    ]
+    : COMMAND_TREE
+  const nodes = collectCommandNodes(scopeNodes)
   const exactCommand = nodes.find((node) => !node.children?.length && input === node.value)
   if (exactCommand && input.endsWith(" ")) {
     return []
   }
 
-  const scope = findDeepestScope(input, COMMAND_TREE)
+  const scope = findDeepestScope(input, scopeNodes.filter((node) => node.value !== "/"))
   if (!scope) {
     return null
   }
 
   const query = input.slice(scope.node.value.length).trim().toLowerCase()
   if (scope.node.children?.length) {
-    return filterCommandCenterItems(scope.node.children.map(mapNodeToItem), query)
+    const items = [mapNodeToItem(scope.node), ...scope.node.children.map(mapNodeToItem)]
+    return query ? filterCommandCenterItems(items, query) : items
   }
   return null
 }
@@ -367,6 +445,18 @@ function mapNodeToItem(node: CommandNode): CommandCenterItem {
     description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
     kind: node.children?.length ? "group" : "command",
     value: node.value,
+    ...(node.children?.length ? { searchAliases: collectDescendantSearchAliases(node) } : {}),
+  }
+}
+
+function mapRootGroup(node: CommandNode): CommandCenterItem {
+  return {
+    id: node.id,
+    label: node.label,
+    description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
+    kind: "group",
+    value: node.value,
+    ...(node.children?.length ? { searchAliases: collectDescendantSearchAliases(node) } : {}),
   }
 }
 
@@ -387,10 +477,31 @@ function scoreCommandCenterItem(item: CommandCenterItem, query: string) {
   let score = 0
   for (const haystack of haystacks) {
     if (haystack.startsWith(query) || haystack.startsWith(`/${query}`)) {
+      score = Math.max(score, 4)
+    } else if (haystack.includes(query)) {
+      score = Math.max(score, 2)
+    }
+  }
+  for (const alias of item.searchAliases ?? []) {
+    const haystack = alias.toLowerCase()
+    if (haystack.startsWith(query) || haystack.startsWith(`/${query}`)) {
       score = Math.max(score, 3)
     } else if (haystack.includes(query)) {
       score = Math.max(score, 1)
     }
   }
   return score
+}
+
+function collectDescendantSearchAliases(node: CommandNode): string[] {
+  const aliases = new Set<string>()
+  for (const child of node.children ?? []) {
+    aliases.add(child.label)
+    aliases.add(child.value.trim())
+    aliases.add(child.description)
+    for (const alias of collectDescendantSearchAliases(child)) {
+      aliases.add(alias)
+    }
+  }
+  return [...aliases]
 }

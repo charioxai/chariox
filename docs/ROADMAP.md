@@ -261,7 +261,7 @@ Outcomes:
   - `request_compaction_summary`
 - provider installation/auth-state probing with native CLI login reuse
 - provider version probing plus shipped command catalogs for supported provider versions
-- best-effort `/agent` completion on unsupported provider versions with explicit warnings
+- best-effort `/<provider>` completion on unsupported provider versions with explicit warnings
 - transfer package generation for provider switch/machine reassignment/resume
 - dual memory model implementation:
   - short-term memory
@@ -328,5 +328,6 @@ Exit criteria:
 
 - richer workflow automation and policy hooks
 - broader messaging-client integrations
+- provider command driver registration so future adapters can install command catalogs into Arroba without hardcoding them in the CLI
 - advanced machine migration orchestration
 - optional content persistence with explicit governance

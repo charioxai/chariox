@@ -121,9 +121,9 @@ Capabilities in v1:
 Slash-command routing rules:
 
 - `/...` is parsed by Arroba before PTY forwarding
-- `/agent ...` is resolved against the active provider command catalog
+- `/<provider> ...` is resolved against the focused provider command catalog
 - ordinary non-command input continues through `terminal.input`
-- unsupported provider versions MAY produce warnings, but MUST NOT disable best-effort `/agent` completions by default
+- unsupported provider versions MAY produce warnings, but MUST NOT disable best-effort `/<provider> ...` completions by default
 
 ## 3.3 Control Lane (Structured Daemon->Provider Adapter)
 
@@ -135,12 +135,12 @@ Canonical operations in v1:
 
 These operations are not typed by users into ordinary terminal traffic.
 
-Arroba MAY route `/agent ...` invocations into the control lane after resolving the active provider command catalog.
+Arroba MAY route `/<provider> ...` invocations into the control lane after resolving the focused provider command catalog.
 
 OpenCode-specific structured adapter contract:
 
 - prompt submit maps to the provider session prompt operation
-- `/agent ...` command invoke maps to the provider session command operation
+- `/<provider> ...` command invoke maps to the provider session command operation
 - turn abort maps to the provider session abort operation
 - provider lifecycle and output state are consumed from the provider event stream rather than inferred from PTY EOF or PTY idleness
 - later providers such as Claude Code and Codex should fit behind the same daemon/client contract after the OpenCode-first cycle is closed
@@ -587,7 +587,7 @@ Behavior rules:
 - Arroba ships built-in command catalogs for supported provider version families
 - Arroba MAY augment those catalogs by reading supported custom-command files/config
 - Arroba SHOULD NOT rely on scraping human-oriented slash help output as the primary discovery mechanism
-- if the detected version is unsupported, Arroba warns but keeps best-effort `/agent` completions enabled
+- if the detected version is unsupported, Arroba warns but keeps best-effort `/<provider> ...` completions enabled
 
 ## 5.5 Provider Authentication
 

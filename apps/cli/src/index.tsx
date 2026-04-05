@@ -56,6 +56,7 @@ import {
   type CommandCenterItem,
 } from "./command-center.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
+import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
 import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
@@ -252,7 +253,8 @@ const BOOTSTRAP_HISTORY_MAX_CHARS = 100_000
 const HISTORY_PAGE_ROUND_COUNT = 1
 const LIVE_TRANSCRIPT_LIMIT = 400
 const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
-const STREAM_BATCH_WINDOW_MS = 16
+const STREAM_BATCH_WINDOW_MS = 48
+const CHROME_UPDATE_THROTTLE_MS = 48
 const TURN_COMPLETION_QUIET_MS = 1_500
 const COMMAND_CENTER_OVERLAY_FOOTPRINT = 3
 const ATTACHED_PROMPT_PLACEHOLDER = "Write your next prompt here"
@@ -806,6 +808,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let historyLoadGeneration = 0
   let pendingHistoryScrollRestore = 0
   let pendingSessionChromeUpdate = false
+  let pendingSessionChromeFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTranscriptRender = false
   let pendingResponsePaneRepaint = 0
   let pendingSplitPaneRefresh = 0
@@ -1425,6 +1428,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const items = buildCommandCenterItems(value, {
       providerCatalog: providerCatalogState(),
       currentProvider: currentProviderSelection().provider === "codex" ? "codex" : "opencode",
+      focusedProvider: focusedAgent()?.provider === "codex" ? "codex" : focusedAgent()?.provider === "opencode" ? "opencode" : null,
       currentModel: currentModelId(),
       currentVariant: currentVariantId(),
     })
@@ -2996,6 +3000,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ;(renderer as { requestRender?: () => void }).requestRender?.()
   }
 
+  const flushScheduledSessionChromeUpdate = () => {
+    if (pendingSessionChromeFlush) {
+      clearTimeout(pendingSessionChromeFlush)
+      pendingSessionChromeFlush = undefined
+    }
+    applySessionChromeUpdate()
+  }
+
   const flushDeferredUiUpdates = () => {
     if (pendingTranscriptRender) {
       pendingTranscriptRender = false
@@ -3007,7 +3019,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (pendingSessionChromeUpdate) {
       pendingSessionChromeUpdate = false
-      updateSessionChrome()
+      flushScheduledSessionChromeUpdate()
     }
   }
 
@@ -3211,19 +3223,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     dimensions().width
     sessionState().agents.length
     focusedAgentId()
+    applyResponseLayout()
+  })
+
+  createEffect(() => {
     providerRunState()?.model
     providerRunState()?.variant
-    // Track session working state for busy badge updates
     working()
     activeStatusLabel()
-    // Track agent states for busy badge updates in split view panes
+    providerActivityLabel()
+    streamingAgentId()
     for (const agent of sessionState().agents) {
       agent.is_processing
       agent.state
     }
     agentActivityLabels()
-    streamingAgentId()
-    applyResponseLayout()
+    updateSessionChrome()
   })
 
   const refreshSplitPaneFocusRepaint = () => {
@@ -3245,7 +3260,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     startTimeout(refresh, 16)
   }
 
-  const updateSessionChrome = () => {
+  const applySessionChromeUpdate = () => {
     if (uiBatchDepth > 0) {
       pendingSessionChromeUpdate = true
       return
@@ -3282,6 +3297,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     footerSummaryBox?.requestRender()
     renderStatusIndicator()
     renderSplitPaneFooters()
+  }
+
+  const shouldThrottleSessionChrome = () => (
+    working()
+    || Boolean(activeStatusLabel())
+    || Boolean(providerActivityLabel())
+    || Boolean(streamingAgentId())
+  )
+
+  const updateSessionChrome = () => {
+    if (uiBatchDepth > 0) {
+      pendingSessionChromeUpdate = true
+      return
+    }
+    if (!shouldThrottleSessionChrome()) {
+      flushScheduledSessionChromeUpdate()
+      return
+    }
+    if (pendingSessionChromeFlush) {
+      return
+    }
+    pendingSessionChromeFlush = startTimeout(() => {
+      pendingSessionChromeFlush = undefined
+      applySessionChromeUpdate()
+    }, CHROME_UPDATE_THROTTLE_MS)
   }
 
   const setAgentPanePreview = (agentId: string, text: string) => {
@@ -4602,6 +4642,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
+    const providerNamespaceCommand = parseProviderNamespaceCommand(
+      rawPrompt,
+      focusedAgent()?.provider === "codex" ? "codex" : focusedAgent()?.provider === "opencode" ? "opencode" : null,
+    )
     const slashCommand = allowSlashCommandSubmission ? parseSlashCommand(rawPrompt) : null
     if (slashCommand && isAttached()) {
       recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
@@ -4687,6 +4731,77 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setPromptHistoryDraft(null)
       if (shouldClearCommandCenterForSlashCommand(handledCommand)) {
         clearCommandCenter()
+      }
+      return
+    }
+    if (providerNamespaceCommand) {
+      const focusedProvider = focusedAgent()?.provider === "codex"
+        ? "codex"
+        : focusedAgent()?.provider === "opencode"
+          ? "opencode"
+          : null
+      if (providerNamespaceCommand.provider !== focusedProvider) {
+        flashFooter(
+          focusedProvider
+            ? `${providerNamespaceCommand.raw.split(/\s+/, 1)[0]} is unavailable while the focused agent uses ${focusedProvider}`
+            : "provider-native commands require a focused OpenCode or Codex agent",
+          "error",
+        )
+        return
+      }
+      if (!providerNamespaceCommand.forwardedCommand) {
+        flashFooter(`usage: ${providerNamespaceCommand.raw} <provider-command>`, "error")
+        return
+      }
+      if (workflowScreenShowing()) {
+        flashFooter("provider-native commands are unavailable while the workflow screen owns the prompt", "error")
+        return
+      }
+      if (pendingAttachments().length > 0) {
+        flashFooter("provider-native commands do not support attachments", "error")
+        return
+      }
+
+      const targetAgentId = focusedAgentId()
+      try {
+        activeToolLabels.clear()
+        setProviderActivityLabel(null)
+        setActiveStatusLabel(null)
+        const attachment = attachmentState()
+        if (!attachment) {
+          flashFooter("No session attached.", "error")
+          promptInput.clear()
+          syncPromptTextSnapshot()
+          return
+        }
+        const forwardedPrompt = `${providerNamespaceCommand.forwardedCommand}\n`
+        const response = await submitPromptWithRecovery(
+          client,
+          sessionState().id,
+          attachment.id,
+          forwardedPrompt,
+          [],
+          options,
+          appLogger,
+        )
+        const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+        applySessionState(payload.session)
+        setStreamingAgentId(payload.session.active_prompt?.target_agent_id ?? targetAgentId)
+        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), payload.session.active_prompt?.target_agent_id ?? targetAgentId)
+        setWorking(true)
+        updateSessionChrome()
+        recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
+        promptInput.clear()
+        syncPromptTextSnapshot()
+        clearPendingPromptAttachments()
+        clearCommandCenter()
+      } catch (error) {
+        appLogger?.error("provider namespace command failed", {
+          command: providerNamespaceCommand.raw,
+          error: formatError(error),
+        })
+        setFatalError(formatError(error))
+        updateSessionChrome()
       }
       return
     }
@@ -5524,6 +5639,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (pendingTurnCompletion) {
       clearTimeout(pendingTurnCompletion)
     }
+    if (pendingSessionChromeFlush) {
+      clearTimeout(pendingSessionChromeFlush)
+    }
   })
 
   const disposeKernelEventHandler = supportsKernelEventStream
@@ -6114,7 +6232,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

@@ -448,7 +448,7 @@ Required daemon-owned responsibilities:
 
 Current implementation note:
 
-- the local runtime already has session agent records, focused-agent metadata, and `/agent ...` management commands
+- the local runtime already has session agent records, focused-agent metadata, and Arroba-owned `/agent ...` management commands
 - the current CLI footer/chrome reflects that state, but transcript routing and provider execution are still effectively single-agent
 - the next implementation step is to make focused-agent changes affect both prompt routing and visible per-agent panes/history
 
@@ -574,7 +574,7 @@ Canonical control operations in v1:
 
 `request_memory_update` and `request_compaction_summary` are daemon-owned and distinct from normal user prompt/response traffic.
 
-`/agent ...` commands are resolved by Arroba first, then dispatched into adapter-owned behavior through the control lane or adapter-specific execution hooks.
+`/<provider> ...` commands are resolved by Arroba first, then dispatched into adapter-owned behavior through the control lane or adapter-specific execution hooks.
 
 Provider authentication is not part of the control lane in v1; adapters probe and report auth state, but login itself remains a provider-native local CLI flow on the host machine.
 
@@ -596,7 +596,7 @@ Target runtime flow:
 Target signal mapping:
 
 - prompt submit: OpenCode session prompt API
-- `/agent ...`: OpenCode command list plus session command API
+- `/<provider> ...`: OpenCode command list plus session command API
 - turn abort: OpenCode session abort API
 - turn busy/idle: OpenCode session status events
 - incremental text: OpenCode message-part delta and part-update events
@@ -711,7 +711,7 @@ Mandatory behavior:
 - remote client disconnect does not terminate session by default
 - workflow node failure propagation and retry policy MUST remain daemon-owned and explicit
 - workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
-- unsupported provider versions emit compatibility warnings but retain best-effort `/agent` completions
+- unsupported provider versions emit compatibility warnings but retain best-effort `/<provider> ...` completions
 - provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Arroba to take ownership of provider credentials
 
 ## 9. Deployment and Evolution Notes

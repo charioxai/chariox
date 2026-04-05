@@ -46,7 +46,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Finish one provider deeply before expanding provider breadth.
 - Support multiple top-level Arroba-managed agents inside one session, each with its own runtime context.
 - Let users invoke Arroba actions through daemon-owned slash commands.
-- Reserve `/agent ...` as the provider-specific command namespace exposed by Arroba.
+- Reserve `/<provider> ...` as the provider-specific command namespace exposed by Arroba for the focused agent provider, while `/agent ...` remains Arroba-owned agent management.
 - Support daemon-owned capabilities for shell, file, git, screenshot, scheduling, and transfer workflows.
 - Support transferring a file to the daemon host and attaching it to the active provider when the provider supports attachment.
 - Keep the provider control boundary intentionally small in v1.
@@ -233,7 +233,7 @@ In v1, the canonical control surface contains three operations:
 - `request_memory_update`
 - `request_compaction_summary`
 
-The control lane may also carry `/agent ...` command invocations after Arroba resolves the active provider command catalog and target adapter behavior.
+The control lane may also carry `/<provider> ...` command invocations after Arroba resolves the focused provider command catalog and target adapter behavior.
 
 OpenCode-specific v1.1 target:
 
@@ -264,7 +264,7 @@ Arroba owns the slash-command namespace.
 Required rules:
 
 - `/...` is reserved for Arroba command dispatch and completion.
-- `/agent ...` is the provider-specific namespace exposed by the active Arroba adapter.
+- `/<provider> ...` is the provider-specific namespace exposed by the focused Arroba adapter.
 - command completion is daemon-managed and may depend on session, provider, and attachment context.
 - ordinary non-command input continues to flow through the terminal lane unchanged.
 
@@ -278,7 +278,7 @@ Provider command discovery policy:
 - Arroba ships built-in provider command catalogs for explicitly supported provider version families.
 - Arroba augments those catalogs by reading supported custom-command files or config locations when the provider supports that model.
 - Arroba does not rely on scraping human-oriented `/help` output as the primary compatibility mechanism.
-- if the detected provider version is unsupported, Arroba MUST warn the user but MUST still keep best-effort `/agent` completions enabled.
+- if the detected provider version is unsupported, Arroba MUST warn the user but MUST still keep best-effort `/<provider> ...` completions enabled.
 
 ### 6.5 Agent-Scoped Extensions
 
