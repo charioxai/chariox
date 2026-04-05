@@ -17,10 +17,31 @@ export function buildWorkflowOutline(options: {
   const nodeRunStatusByNodeId = new Map(
     (displayRun?.node_runs ?? []).map((nodeRun) => [nodeRun.node_id, nodeRun.status] as const),
   )
+  const nodeIdByNodeRunId = new Map(
+    (displayRun?.node_runs ?? []).map((nodeRun) => [nodeRun.id, nodeRun.node_id] as const),
+  )
+  const selectedNodeFailures = (displayRun?.failure_events ?? [])
+    .filter((event) => nodeIdByNodeRunId.get(event.source_node_run_id) === options.selectedNodeId)
+    .sort((left, right) => right.timestamp_ms - left.timestamp_ms)
+  const failureCountByNodeId = new Map<string, number>()
+  for (const event of displayRun?.failure_events ?? []) {
+    const nodeId = nodeIdByNodeRunId.get(event.source_node_run_id)
+    if (!nodeId) {
+      continue
+    }
+    failureCountByNodeId.set(nodeId, (failureCountByNodeId.get(nodeId) ?? 0) + 1)
+  }
   const endpointIndexById = new Map(endpoints.map((endpoint, index) => [endpoint.id, index] as const))
   const edgeIndexById = new Map(edges.map((edge, index) => [edge.id, index] as const))
   const nodesOutline: WorkflowOutlineNodeItem[] = nodes.map((node) => {
     const agent = agentById.get(node.agent_id) ?? null
+    const recentFailures = node.id === options.selectedNodeId
+      ? selectedNodeFailures.slice(0, 3).map((event) => ({
+        kind: event.kind,
+        message: event.message,
+        timestampMs: event.timestamp_ms,
+      }))
+      : []
     return {
       id: node.id,
       agentId: node.agent_id,
@@ -48,6 +69,8 @@ export function buildWorkflowOutline(options: {
           id: endpoint.id,
           alias: endpoint.alias,
         })),
+      failureCount: failureCountByNodeId.get(node.id) ?? 0,
+      recentFailures,
     }
   })
 
@@ -56,6 +79,7 @@ export function buildWorkflowOutline(options: {
     workflowAlias: options.workflow.alias,
     workflowRunId: displayRun?.id ?? null,
     workflowRunStatus: displayRun?.status ?? null,
+    workflowFailureCount: displayRun?.failure_events?.length ?? 0,
     edgeCount: edges.length,
     endpointCount: endpoints.length,
     nodeCount: nodes.length,

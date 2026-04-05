@@ -34,6 +34,13 @@ impl TransportService {
         app.cancel_active_prompt(session_id, attachment_id)
     }
 
+    pub fn cancel_active_prompt_for_runtime(
+        app: &mut DaemonApp,
+        session_id: &str,
+    ) -> Result<PromptCancellation, DaemonError> {
+        app.cancel_active_prompt_for_runtime(session_id)
+    }
+
     pub fn pump_active_prompts(app: &mut DaemonApp) {
         app.pump_active_prompt_outputs();
     }
@@ -44,18 +51,42 @@ impl TransportService {
         target_agent_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        let provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+        let mut provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
             app,
             session_id,
             target_agent_id,
         )?;
-        app.dispatch_prompt_to_provider(
-            session_id,
-            &provider_run_id,
-            prompt.source_attachment_id(),
-            prompt.prompt(),
-            prompt.attachments(),
-        )?;
+        let dispatch = |app: &mut DaemonApp, provider_run_id: &str| {
+            app.dispatch_prompt_to_provider(
+                session_id,
+                provider_run_id,
+                prompt.source_attachment_id(),
+                prompt.prompt(),
+                prompt.attachments(),
+            )
+        };
+        if let Err(error) = dispatch(app, &provider_run_id) {
+            match error {
+                DaemonError::InvalidProviderRunState { .. }
+                | DaemonError::NoActiveProviderRun { .. } => {
+                    provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                        app,
+                        session_id,
+                        target_agent_id,
+                    )?;
+                    dispatch(app, &provider_run_id)?;
+                }
+                DaemonError::PtyWrite { .. } | DaemonError::PtyProcessNotFound { .. } => {
+                    provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                        app,
+                        session_id,
+                        target_agent_id,
+                    )?;
+                    dispatch(app, &provider_run_id)?;
+                }
+                other => return Err(other),
+            }
+        }
         flow_control::note_prompt_started(app, session_id);
         Ok(())
     }

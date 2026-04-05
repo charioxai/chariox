@@ -86,6 +86,11 @@ type WorkflowRunCancelPayload = {
   session: RuntimeSession
 }
 
+type WorkflowRunResumePayload = {
+  workflow_run: WorkflowRun
+  session: RuntimeSession
+}
+
 type CommandActionDeps = {
   workspace: string
   worktree: string
@@ -117,6 +122,7 @@ type CommandActionDeps = {
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
+  logoutProvider?: (provider: string) => Promise<{ provider: string }>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -188,6 +194,7 @@ type CommandActionDeps = {
   ) => Promise<WorkflowRunInvokePayload>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
+  resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
   updateWorkflowNodeInstructions?: (
     workflowRef: string,
     nodeId: string,
@@ -248,7 +255,10 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   }
 
   const formatWorkflowRunSummary = (workflowRun: WorkflowRun) => {
-    return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}]`
+    const failureSummary = (workflowRun.failure_events?.length ?? 0) > 0
+      ? `, failures ${workflowRun.failure_events?.length ?? 0}`
+      : ""
+    return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}${failureSummary}]`
   }
 
   const handleSessionCommand = async (
@@ -305,7 +315,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const { value } = command
     if (!value) {
-      deps.flashFooter("usage: /provider <opencode|codex|status|login>", "error")
+      deps.flashFooter("usage: /provider <opencode|codex|status|login|logout|reauth>", "error")
       return
     }
     const parts = value.split(/\s+/).filter(Boolean)
@@ -339,6 +349,35 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const login = await deps.startProviderLogin(provider)
       const message = [
         `${login.provider} login started`,
+        login.user_code ? `code ${login.user_code}` : null,
+        login.verification_url ?? login.auth_url ?? null,
+      ].filter(Boolean).join(" • ")
+      deps.appendNotice(message)
+      deps.flashFooter(message, "info")
+      return
+    }
+    if (action === "logout") {
+      const provider = maybeProvider ?? deps.currentProviderId()
+      if (!deps.logoutProvider) {
+        deps.flashFooter("provider logout is not available in this daemon", "error")
+        return
+      }
+      const loggedOut = await deps.logoutProvider(provider)
+      const message = `${loggedOut.provider} logged out`
+      deps.appendNotice(message)
+      deps.flashFooter(message, "info")
+      return
+    }
+    if (action === "reauth") {
+      const provider = maybeProvider ?? deps.currentProviderId()
+      if (!deps.logoutProvider || !deps.startProviderLogin) {
+        deps.flashFooter("provider reauth is not available in this daemon", "error")
+        return
+      }
+      await deps.logoutProvider(provider)
+      const login = await deps.startProviderLogin(provider)
+      const message = [
+        `${login.provider} reauth started`,
         login.user_code ? `code ${login.user_code}` : null,
         login.verification_url ?? login.auth_url ?? null,
       ].filter(Boolean).join(" • ")
@@ -769,6 +808,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "resume") {
+      const workflowRunRef = args[1]
+      if (!workflowRunRef) {
+        deps.flashFooter("usage: /workflow resume <run-ref>", "error")
+        return
+      }
+      if (!deps.resumeWorkflowRun) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const payload = await deps.resumeWorkflowRun(workflowRunRef)
+      deps.applySessionState(payload.session)
+      deps.flashFooter(
+        `resumed workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+        "info",
+      )
+      return
+    }
+
     if (subcommand === "node") {
       const action = args[1]
       const workflowRef = args[2]
@@ -1046,7 +1104,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

@@ -88,7 +88,7 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   )
 })
 
-test("provider command can switch backends and start codex login", async () => {
+test("provider command can switch backends and manage codex auth", async () => {
   const events: string[] = []
   let flashedMessage = ""
   let notice = ""
@@ -134,6 +134,7 @@ test("provider command can switch backends and start codex login", async () => {
       verification_url: "https://auth.openai.com/codex/device",
       user_code: "ABCD-1234",
     }),
+    logoutProvider: async (provider) => ({ provider }),
     setMultiAgentResponseLayout: () => {},
     applyResponseLayout: () => {},
     updateSessionResponseLayout: async () => ({ session: makeSession(), config: makeSession().config_state }),
@@ -175,10 +176,12 @@ test("provider command can switch backends and start codex login", async () => {
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider codex", value: "codex" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider status", value: "status" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider login", value: "login" })
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider logout", value: "logout" })
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider reauth", value: "reauth" })
 
   assert.deepEqual(events, ["provider:codex"])
-  assert.equal(flashedMessage, "codex login started • code ABCD-1234 • https://auth.openai.com/codex/device")
-  assert.equal(notice, "codex login started • code ABCD-1234 • https://auth.openai.com/codex/device")
+  assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
+  assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
 })
 
 test("agent spawn refreshes session state after launching the provider run", async () => {
@@ -429,6 +432,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let cancelledWorkflowRunRef: string | null = null
+  let resumedWorkflowRunRef: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const workflowRuns: WorkflowRun[] = []
@@ -655,6 +659,20 @@ test("workflow command opens the workflow screen and manages local workflows", a
         id: workflowRunRef,
         status: "Stopped",
         active_node_run_id: null,
+      }
+      workflowRuns.splice(0, workflowRuns.length, workflow_run)
+      return {
+        workflow_run,
+        session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
+      }
+    },
+    resumeWorkflowRun: async (workflowRunRef) => {
+      resumedWorkflowRunRef = workflowRunRef
+      const workflow_run = {
+        ...(workflowRuns.find((candidate) => candidate.id === workflowRunRef) ?? workflowRuns[0]!),
+        id: workflowRunRef,
+        status: "Running",
+        active_node_run_id: "node-run-1",
       }
       workflowRuns.splice(0, workflowRuns.length, workflow_run)
       return {
@@ -938,6 +956,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(cancelledWorkflowRunRef, "run-1")
   assert.equal(flashedMessage, "cancelled workflow run run-1 [stopped]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow resume run-1",
+    args: ["resume", "run-1"],
+  })
+  assert.equal(resumedWorkflowRunRef, "run-1")
+  assert.equal(flashedMessage, "resumed workflow run run-1 [running]")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")

@@ -146,6 +146,21 @@ impl DaemonApp {
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.cancel_active_prompt_internal(session_id, Some(attachment_id))
+    }
+
+    pub(crate) fn cancel_active_prompt_for_runtime(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PromptCancellation, DaemonError> {
+        self.cancel_active_prompt_internal(session_id, None)
+    }
+
+    fn cancel_active_prompt_internal(
+        &mut self,
+        session_id: &str,
+        attachment_id: Option<&str>,
+    ) -> Result<PromptCancellation, DaemonError> {
         let active_prompt = self
             .sessions
             .get_session(session_id)?
@@ -171,21 +186,33 @@ impl DaemonApp {
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
 
         if !self.providers.abort_structured_runtime(&provider_run_id)? {
-            self.send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
+            self.send_provider_input(
+                session_id,
+                &provider_run_id,
+                attachment_id.unwrap_or(active_prompt.source_attachment_id()),
+                b"\x03",
+            )?;
         }
 
         let (_session, prompt) = self.sessions.begin_cancelling_active_prompt(session_id)?;
         flow_control::note_prompt_settlement_requested(self, session_id);
-        self.record_notice(
-            session_id,
-            Some(&provider_run_id),
-            self.other_attachment_ids(session_id, attachment_id),
-            format!(
+        let recipients = match attachment_id {
+            Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
+            None => self.attachments.list_session_attachment_ids(session_id),
+        };
+        let message = match attachment_id {
+            Some(attachment_id) => format!(
                 "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
                 active_prompt.id(),
                 provider_run.id()
             ),
-        );
+            None => format!(
+                "Arroba requested cancellation of active prompt `{}` on provider run `{}`.",
+                active_prompt.id(),
+                provider_run.id()
+            ),
+        };
+        self.record_notice(session_id, Some(&provider_run_id), recipients, message);
 
         Ok(PromptCancellation {
             prompt,

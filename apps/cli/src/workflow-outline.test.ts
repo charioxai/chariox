@@ -121,6 +121,36 @@ test("renderWorkflowOutlineToText keeps graph structure visible while expanding 
   assert.match(rendered, /instructions\n  inspect diff/)
 })
 
+test("workflow outline surfaces failure counts and selected-node failure details", () => {
+  const outline = buildWorkflowOutline({
+    workflow: workflow(),
+    agents: [
+      agent("agent-a", { agent_ref: "a1", alias: "lead", effort: "high" }),
+      agent("agent-b", { agent_ref: "b1", effort: "low" }),
+      agent("agent-c", { agent_ref: "c1" }),
+    ],
+    workflowRuns: [workflowRun({
+      failure_events: [
+        {
+          kind: "OutputValidationFailed",
+          source_node_run_id: "node-run-a",
+          edge_ids: ["edge-a"],
+          message: "output.message must be an object with ok=true",
+          timestamp_ms: 100,
+        },
+      ],
+    })],
+    selectedNodeId: "node-a",
+  })
+
+  const rendered = renderWorkflowOutlineToText(outline)
+
+  assert.match(rendered, /run: run-1 • status running • failures 1/)
+  assert.match(rendered, /failures 1/)
+  assert.match(rendered, /recent failure events/)
+  assert.match(rendered, /outputvalidationfailed • output\.message must be an object with ok=true/i)
+})
+
 test("non-selected workflow nodes omit non-graph attributes in the outline text", () => {
   const outline = buildWorkflowOutline({
     workflow: workflow(),

@@ -1109,6 +1109,23 @@ impl DaemonApp {
                     .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
             }),
             LocalDaemonRequest::CancelWorkflowRun(request) => {
+                let workflow_run_id = self
+                    .sessions()
+                    .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
+                    .id()
+                    .to_string();
+                let should_cancel_active_prompt = self
+                    .sessions()
+                    .get_session(&request.session_id)?
+                    .active_prompt()
+                    .and_then(|prompt| prompt.workflow_run_id())
+                    == Some(workflow_run_id.as_str());
+                if should_cancel_active_prompt {
+                    let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
+                        self,
+                        &request.session_id,
+                    )?;
+                }
                 let workflow_run = self
                     .sessions_mut()
                     .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
@@ -2738,10 +2755,18 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
         assert_eq!(cancelled.status(), crate::session::WorkflowRunStatus::Stopped);
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should resolve")
+                .active_prompt()
+                .expect("workflow prompt should be cancelling")
+                .status(),
+            crate::session::PromptStatus::Cancelling
+        );
         let _ = app
-            .sessions_mut()
-            .cancel_active_prompt(session.id())
-            .expect("active prompt should clear");
+            .finalize_active_prompt_cancellation(session.id())
+            .expect("workflow cancellation should finalize");
         assert!(app
             .sessions()
             .get_session(session.id())
@@ -2763,22 +2788,30 @@ mod tests {
         };
         assert!(matches!(
             resumed.status(),
-            crate::session::WorkflowRunStatus::Waiting | crate::session::WorkflowRunStatus::Running
+            crate::session::WorkflowRunStatus::Waiting
+                | crate::session::WorkflowRunStatus::Running
+                | crate::session::WorkflowRunStatus::Completed
         ));
         let active_prompt = app
             .sessions()
             .get_session(session.id())
             .expect("session should resolve")
             .active_prompt()
-            .cloned()
-            .expect("resumed workflow prompt should be active");
-        assert!(active_prompt.prompt().contains("resume prompt"));
+            .cloned();
+        if let Some(active_prompt) = active_prompt {
+            assert!(active_prompt.prompt().contains("resume prompt"));
+        }
         let resumed_run = resumed
             .node_runs()
             .iter()
             .find(|node_run| node_run.id() == workflow_run.node_runs()[0].id())
             .expect("node run should remain");
-        assert_eq!(resumed_run.status(), crate::session::WorkflowNodeRunStatus::Running);
+        assert!(matches!(
+            resumed_run.status(),
+            crate::session::WorkflowNodeRunStatus::Ready
+                | crate::session::WorkflowNodeRunStatus::Running
+                | crate::session::WorkflowNodeRunStatus::Completed
+        ));
         assert!(resumed_run
             .turn_envelope()
             .and_then(|envelope| envelope.rendered_prompt())

@@ -57,6 +57,16 @@ export function buildWorkflowOutlineNodeLines(node: WorkflowOutlineNodeItem): Ou
   lines.push({ content: `model ${node.model ?? "-"}`, tone: "detail" })
   lines.push({ content: `effort ${node.effort ?? "-"}`, tone: "detail" })
   lines.push({ content: `status ${String(node.runStatus ?? "idle").toLowerCase()}`, tone: "detail" })
+  lines.push({ content: `failures ${node.failureCount}`, tone: node.failureCount > 0 ? "section" : "detail" })
+  if (node.recentFailures.length > 0) {
+    lines.push({ content: "recent failure events", tone: "section" })
+    for (const failure of node.recentFailures) {
+      lines.push({
+        content: `  ${String(failure.kind).toLowerCase()} • ${failure.message}`,
+        tone: "detail",
+      })
+    }
+  }
   lines.push({ content: "instructions", tone: "section" })
   const instructionsLines = splitInstructions(node.instructions)
   for (const instructionLine of instructionsLines) {
@@ -71,7 +81,9 @@ export function buildWorkflowOutlineNodeLines(node: WorkflowOutlineNodeItem): Ou
 export function renderWorkflowOutlineToText(outline: WorkflowOutline) {
   const lines = [
     `workflow: ${outline.workflowAlias ? `${outline.workflowId} (${outline.workflowAlias})` : outline.workflowId}${outline.agentLabels.length > 0 ? `, agents: ${outline.agentLabels.join(", ")}` : ""}`,
-    ...(outline.workflowRunId ? [`run: ${outline.workflowRunId} • status ${String(outline.workflowRunStatus).toLowerCase()}`] : []),
+    ...(outline.workflowRunId
+      ? [`run: ${outline.workflowRunId} • status ${String(outline.workflowRunStatus).toLowerCase()}${outline.workflowFailureCount > 0 ? ` • failures ${outline.workflowFailureCount}` : ""}`]
+      : []),
     `Tab cycles nodes • nodes ${outline.nodeCount} • endpoints ${outline.endpointCount} • edges ${outline.edgeCount}`,
   ]
   for (const node of outline.nodes) {

@@ -18,6 +18,7 @@ import type {
   CliOptions,
   ProviderAuthStatus,
   ProviderLoginStart,
+  ProviderLogoutResult,
   PromptAttachmentPart,
   PromptSubmittedPayload,
   RuntimeAttachment,
@@ -45,10 +46,15 @@ import {
 } from "./background-effects.js"
 import {
   executeSlashCommand,
+  parseSlashCommand,
   shouldClearCommandCenterForSlashCommand,
   type ParsedSlashCommand,
 } from "./commands.js"
-import { buildCommandCenterItems, type CommandCenterItem } from "./command-center.js"
+import {
+  buildCommandCenterItems,
+  shouldSubmitExactCommandCenterMatch,
+  type CommandCenterItem,
+} from "./command-center.js"
 import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntries } from "./agent-pane-state.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
@@ -72,6 +78,7 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  logoutProviderRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
@@ -106,8 +113,10 @@ import {
 } from "./prompt-attachments.js"
 import type { PromptMetaPart, PromptMetaTone } from "./prompt-meta.js"
 import {
+  type BackendProviderId,
   fallbackProviderCatalog,
   selectConfiguredModel,
+  selectConfiguredVariant,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import {
@@ -689,7 +698,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
-    createWaitingRoomState(initialSessions, initialProviderCatalog, options.model, options.effort),
+    createWaitingRoomState(
+      initialSessions,
+      initialProviderCatalog,
+      (options.provider ?? "opencode") as BackendProviderId,
+      options.model,
+      options.effort,
+    ),
   )
   const [commandCenterQuery, setCommandCenterQuery] = createSignal("")
   const [commandCenterItems, setCommandCenterItems] = createSignal<CommandCenterItem[]>([])
@@ -1129,13 +1144,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       nextState: next,
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      currentProvider: (options.provider ?? "opencode") as BackendProviderId,
       currentModel: options.model,
     })
     setWaitingRoomState(update.normalizedState)
+    options.provider = update.nextProvider
     options.model = update.nextModel
     options.effort = update.nextEffort
     if (update.shouldPersistProviderPreferences) {
-      void saveProviderPreferences(options.provider ?? "opencode", {
+      void saveProviderPreferences(update.nextProvider, {
         model: options.model,
         effort: options.effort,
       })
@@ -1153,6 +1170,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         state: waitingRoomState(),
         sessions: availableSessions(),
         catalog: providerCatalogState(),
+        currentProvider: (options.provider ?? "opencode") as BackendProviderId,
         currentModel: options.model,
       })
       if (decision.action === "create") {
@@ -1192,6 +1210,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
+      currentProvider: (options.provider ?? "opencode") as BackendProviderId,
       configuredEffort: options.effort,
     })
     if (decision.kind === "error") {
@@ -1206,7 +1225,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const run = await launchProviderRun(
       client,
       sessionState().id,
-      options.provider ?? "opencode",
+      decision.launch.provider,
       options.accountProfile,
       decision.launch.model,
       decision.launch.effort,
@@ -1221,6 +1240,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const decision = deriveWaitingRoomVariantSelectionDecision({
       variant,
       currentModelId: currentModelId(),
+      currentProviderId: (options.provider ?? "opencode") as BackendProviderId,
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
@@ -1237,7 +1257,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const run = await launchProviderRun(
       client,
       sessionState().id,
-      options.provider ?? "opencode",
+      decision.launch.provider,
       options.accountProfile,
       decision.launch.model,
       decision.launch.effort,
@@ -1255,21 +1275,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     options.provider = providerId
     const saved = preferencesState().providers?.[providerId]
-    if (saved?.model) {
-      options.model = saved.model
-    } else if (providerId === "codex" && !options.model.startsWith("codex/")) {
-      const codexDefault = selectConfiguredModel({
-        ...providerCatalogState(),
-        all: providerCatalogState().all.filter((provider) => provider.id === "codex"),
-      }, undefined)
-      if (codexDefault) {
-        options.model = codexDefault.id
-      }
+    const selected = selectConfiguredModel(
+      providerCatalogState(),
+      saved?.model ?? options.model,
+      providerId,
+    )
+    if (selected) {
+      options.model = selected.id
     }
     if (saved?.effort != null) {
       options.effort = saved.effort
+    } else if (selected) {
+      options.effort = selectConfiguredVariant(selected, options.effort)
     }
-    reconcileWaitingRoom(waitingRoomState())
+    reconcileWaitingRoom({
+      ...waitingRoomState(),
+      providerId,
+      modelId: options.model,
+      effort: options.effort,
+    })
     if (providerId === "codex") {
       try {
         const status = await getProviderAuthStatus(client, providerId)
@@ -1314,6 +1338,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setCommandCenterQuery(value)
     const items = buildCommandCenterItems(value, {
       providerCatalog: providerCatalogState(),
+      currentProvider: currentProviderSelection().provider === "codex" ? "codex" : "opencode",
       currentModel: currentModelId(),
       currentVariant: currentVariantId(),
     })
@@ -1333,7 +1358,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     commandCenterBox.zIndex = 10
   }
   const selectCommandCenterItem = async (item: CommandCenterItem) => {
-    if (item.kind === "command") {
+    if (item.kind === "command" || item.kind === "group") {
       if (!item.value.endsWith(" ")) {
         try {
           clearCommandCenter()
@@ -1403,6 +1428,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderCommandCenter()
   }
   const selectedCommandCenterItem = () => commandCenterItems()[commandCenterIndex()] ?? commandCenterItems()[0] ?? null
+  const commandCenterVisibleRowCount = () => Math.max(4, Math.min(10, dimensions().height - (promptInput?.height ?? 1) - 10))
   const handleCommandCenterKey = (event: {
     name: string
     ctrl?: boolean
@@ -1450,15 +1476,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!item) {
       return false
     }
-    // If the item ends with space and the prompt already contains this command,
-    // close the command center and let submitPrompt handle the actual execution
-    if (item.value.endsWith(" ")) {
-      const currentPrompt = promptInput?.plainText ?? ""
-      if (currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()) {
-        clearCommandCenter()
-        syncCommandCenter("")
-        return false
-      }
+    const currentPrompt = promptInput?.plainText ?? ""
+    // Leaf commands like `/session attach ` should submit once fully typed.
+    // Parent groups like `/workflow` should expand to their subcommands instead.
+    if (shouldSubmitExactCommandCenterMatch(item, currentPrompt)) {
+      clearCommandCenter()
+      syncCommandCenter("")
+      return false
     }
     void selectCommandCenterItem(item)
     return true
@@ -1489,8 +1513,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       gap: 0,
     })
 
-    for (const [index, item] of commandCenterItems().entries()) {
-      const selected = index === commandCenterIndex()
+    const items = commandCenterItems()
+    const selectedIndex = Math.min(commandCenterIndex(), Math.max(0, items.length - 1))
+    const visibleRowCount = commandCenterVisibleRowCount()
+    const windowStart = Math.max(0, Math.min(selectedIndex - Math.floor(visibleRowCount / 2), Math.max(0, items.length - visibleRowCount)))
+    const visibleItems = items.slice(windowStart, windowStart + visibleRowCount)
+
+    if (windowStart > 0) {
+      panel.add(new TextRenderable(renderer, {
+        content: `  ${windowStart} more above`,
+        fg: theme.textMuted,
+        wrapMode: "none",
+      }))
+    }
+
+    for (const [offset, item] of visibleItems.entries()) {
+      const index = windowStart + offset
+      const selected = index === selectedIndex
       const row = new BoxRenderable(renderer, {
         flexDirection: "row",
         justifyContent: "space-between",
@@ -1499,7 +1538,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ...(selected ? { backgroundColor: theme.primary } : {}),
       })
       row.add(new TextRenderable(renderer, {
-        content: item.label,
+        content: item.kind === "group" ? `${item.label} >` : item.label,
         fg: selected ? theme.background : theme.text,
         attributes: selected ? TextAttributes.BOLD : TextAttributes.NONE,
         wrapMode: "none",
@@ -1510,6 +1549,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         wrapMode: "none",
       }))
       panel.add(row)
+    }
+
+    const hiddenBelow = items.length - (windowStart + visibleItems.length)
+    if (hiddenBelow > 0) {
+      panel.add(new TextRenderable(renderer, {
+        content: `  ${hiddenBelow} more below`,
+        fg: theme.textMuted,
+        wrapMode: "none",
+      }))
     }
 
     commandCenterBox.add(panel)
@@ -1596,6 +1644,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       detachedPlaceholder: SESSION_NEW_PLACEHOLDER,
     })
   }
+  const promptAreaBackground = () => (
+    isAttached()
+      ? (workflowScreenShowing() ? theme.backgroundElement : theme.backgroundPanel)
+      : theme.backgroundElement
+  )
   const restorePromptHistory = (sessionId: string | null) => {
     const nextEntries = sessionId
       ? sessionPromptHistoryEntries(untrack(preferencesState), sessionId)
@@ -1616,6 +1669,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       },
     }))
     await saveSessionPromptHistory(sessionId, entries)
+  }
+  const recordPromptAreaHistoryEntry = (sessionId: string | null, rawPrompt: string) => {
+    if (!sessionId) {
+      return
+    }
+    const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
+    setPromptHistoryEntries(nextPromptHistoryEntries)
+    setPromptHistoryIndex(null)
+    setPromptHistoryDraft(null)
+    void persistPromptHistory(sessionId, nextPromptHistoryEntries).catch((error) => {
+      appLogger?.warn("failed to persist prompt history", {
+        session_id: sessionId,
+        error: formatError(error),
+      })
+    })
   }
   const syncPromptTextSnapshot = () => {
     promptTextSnapshot = promptInput?.plainText ?? ""
@@ -4021,8 +4089,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint,
     attachToSession: (sessionId, clientId) => attachToSession(client, sessionId, clientId),
     getSessionState: (sessionId) => getSessionState(client, sessionId),
-    launchProviderRun: (sessionId, accountProfile, model, effort, targetAgentId) =>
-      launchProviderRun(client, sessionId, options.provider ?? "opencode", accountProfile, model, effort, targetAgentId),
+    launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
+      launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
     setProviderCatalogState,
     getProviderCatalog: () => getProviderCatalog(client, appLogger),
@@ -4107,6 +4175,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     invokeWorkflowEndpoint,
     listWorkflowRuns,
     cancelWorkflowRun,
+    resumeWorkflowRun,
   } = createWorkflowController({
     sendRequest: (request) => client.send<Record<string, unknown>>(request),
     isAttached,
@@ -4159,6 +4228,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyVariantSelection,
     getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
     startProviderLogin: (provider) => startProviderLogin(client, provider),
+    logoutProvider: (provider) => logoutProvider(client, provider),
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)
@@ -4270,6 +4340,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     invokeWorkflowEndpoint,
     listWorkflowRuns,
     cancelWorkflowRun,
+    resumeWorkflowRun,
     formatAgentLabel,
     refreshSplitPaneFocusRepaint,
     formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
@@ -4445,6 +4516,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const allowSlashCommandSubmission = !workflowScreenShowing() || isWorkflowCommandInput(rawPrompt)
+    const slashCommand = allowSlashCommandSubmission ? parseSlashCommand(rawPrompt) : null
+    if (slashCommand && isAttached()) {
+      recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
+    }
     const handledCommand = allowSlashCommandSubmission
       ? await executeSlashCommand(rawPrompt, {
       onExit: requestExit,
@@ -4562,17 +4637,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
           "info",
         )
-        const promptHistorySessionId = sessionState().id
-        const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
-        setPromptHistoryEntries(nextPromptHistoryEntries)
-        setPromptHistoryIndex(null)
-        setPromptHistoryDraft(null)
-        void persistPromptHistory(promptHistorySessionId, nextPromptHistoryEntries).catch((error) => {
-          appLogger?.warn("failed to persist prompt history", {
-            session_id: promptHistorySessionId,
-            error: formatError(error),
-          })
-        })
+        recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
         promptInput.clear()
         syncPromptTextSnapshot()
         clearPendingPromptAttachments()
@@ -4632,17 +4697,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           : "Prompt submitted.",
       )
       updateSessionChrome()
-      const promptHistorySessionId = sessionState().id
-      const nextPromptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries(), rawPrompt)
-      setPromptHistoryEntries(nextPromptHistoryEntries)
-      setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
-      void persistPromptHistory(promptHistorySessionId, nextPromptHistoryEntries).catch((error) => {
-        appLogger?.warn("failed to persist prompt history", {
-          session_id: promptHistorySessionId,
-          error: formatError(error),
-        })
-      })
+      recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
       promptInput.clear()
       syncPromptTextSnapshot()
       clearPendingPromptAttachments()
@@ -5455,6 +5510,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       responsePaneRows={responsePaneRows}
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
+      promptAreaBackground={promptAreaBackground()}
       promptKeyBindings={PROMPT_KEYBINDINGS}
       onRootMouseUp={retainPromptFocus}
       onResponseSurfaceMouseUp={(event) => {
@@ -5914,6 +5970,14 @@ async function startProviderLogin(
   return payload.login
 }
 
+async function logoutProvider(
+  client: LocalIpcClient,
+  provider: string,
+): Promise<ProviderLogoutResult> {
+  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider))
+  return expectVariant<ProviderLogoutResult>(response, "ProviderLoggedOut")
+}
+
 async function maybeResize(client: LocalIpcClient, sessionId: string): Promise<void> {
   if (!process.stdout.isTTY || !process.stdout.columns || !process.stdout.rows) {
     return
@@ -5964,7 +6028,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

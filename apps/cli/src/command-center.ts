@@ -1,62 +1,165 @@
-import { catalogModelOptions, type ProviderCatalog } from "./provider-catalog.js"
+import { catalogModelOptions, type BackendProviderId, type ProviderCatalog } from "./provider-catalog.js"
 
 export type CommandCenterItem = {
   id: string
   label: string
   description: string
-  kind: "command" | "provider" | "model" | "variant"
+  kind: "command" | "group" | "provider" | "model" | "variant"
   value: string
 }
 
 type CommandContext = {
   providerCatalog: ProviderCatalog
+  currentProvider: BackendProviderId
   currentModel: string
   currentVariant: string
 }
 
-const ROOT_COMMANDS: CommandCenterItem[] = [
-  { id: "session-new", label: "/session new", description: "Create and attach a new session", kind: "command", value: "/session new " },
-  { id: "session-attach", label: "/session attach", description: "Attach to an existing session", kind: "command", value: "/session attach " },
-  { id: "session-list", label: "/session list", description: "List available sessions", kind: "command", value: "/session list" },
-  { id: "session-delete", label: "/session delete", description: "Delete the current or referenced session", kind: "command", value: "/session delete " },
-  { id: "attach", label: "/attach", description: "Attach files or screenshots to the prompt", kind: "command", value: "/attach " },
-  { id: "exit", label: "/exit", description: "Leave the CLI", kind: "command", value: "/exit" },
-  { id: "waiting", label: "/waiting", description: "Go to the waiting room", kind: "command", value: "/waiting" },
-  { id: "stop", label: "/stop", description: "Stop the active provider turn", kind: "command", value: "/stop" },
-  { id: "provider", label: "/provider", description: "Change provider", kind: "command", value: "/provider " },
-  { id: "provider-status", label: "/provider status", description: "Show provider auth status", kind: "command", value: "/provider status " },
-  { id: "provider-login", label: "/provider login", description: "Start provider login", kind: "command", value: "/provider login " },
-  { id: "model", label: "/model", description: "Change model", kind: "command", value: "/model " },
-  { id: "variant", label: "/variant", description: "Change model variant", kind: "command", value: "/variant " },
-  { id: "view", label: "/view", description: "Change multi-agent response layout", kind: "command", value: "/view " },
-  { id: "agent-spawn", label: "/agent spawn", description: "Spawn a new agent in the session", kind: "command", value: "/agent spawn " },
-  { id: "agent-delete", label: "/agent delete", description: "Delete the focused or named agent", kind: "command", value: "/agent delete " },
-  { id: "agent-destroy", label: "/agent destroy", description: "Alias for /agent delete", kind: "command", value: "/agent destroy " },
-  { id: "agent-focus", label: "/agent focus", description: "Focus on a specific agent", kind: "command", value: "/agent focus " },
-  { id: "agent-list", label: "/agent list", description: "List all agents in the session", kind: "command", value: "/agent list" },
-  { id: "agent-cycle", label: "/agent cycle", description: "Cycle to next agent", kind: "command", value: "/agent cycle" },
-  { id: "workflow", label: "/workflow", description: "Open the workflow outline", kind: "command", value: "/workflow" },
-  { id: "workflow-list", label: "/workflow list", description: "List workflows in the workspace", kind: "command", value: "/workflow list" },
-  { id: "workflow-show", label: "/workflow show", description: "Show a workflow by id or alias", kind: "command", value: "/workflow show " },
-  { id: "workflow-new", label: "/workflow new", description: "Create a new workflow", kind: "command", value: "/workflow new " },
-  { id: "workflow-run", label: "/workflow run", description: "Invoke a workflow endpoint", kind: "command", value: "/workflow run " },
-  { id: "workflow-start", label: "/workflow start", description: "Alias for /workflow run", kind: "command", value: "/workflow start " },
-  { id: "workflow-max-turns", label: "/workflow max-turns", description: "Set max workflow turns across all agents", kind: "command", value: "/workflow max-turns " },
-  { id: "workflow-runs", label: "/workflow runs", description: "List workflow runs in the session", kind: "command", value: "/workflow runs " },
-  { id: "workflow-cancel", label: "/workflow cancel", description: "Cancel a workflow run", kind: "command", value: "/workflow cancel " },
-  { id: "workflow-alias", label: "/workflow <workflow-ref> <alias>", description: "Assign an alias to an existing workflow", kind: "command", value: "/workflow " },
-  { id: "workflow-edge-shorthand", label: "/workflow <workflow-ref> <from-ref> <to-ref>", description: "Add a directed edge between two workflow nodes (node ids or agent refs)", kind: "command", value: "/workflow " },
-  { id: "workflow-node-add", label: "/workflow node add", description: "Add a workflow node for an agent", kind: "command", value: "/workflow node add " },
-  { id: "workflow-node-remove", label: "/workflow node remove", description: "Remove a workflow node", kind: "command", value: "/workflow node remove " },
-  { id: "workflow-node-instructions-show", label: "/workflow node instructions show", description: "Show workflow node instructions in the I/O panel", kind: "command", value: "/workflow node instructions show " },
-  { id: "workflow-node-instructions-set", label: "/workflow node instructions set", description: "Set workflow node instructions (optional file)", kind: "command", value: "/workflow node instructions set " },
-  { id: "workflow-node-instructions-save", label: "/workflow node instructions save", description: "Save the current workflow node instructions draft", kind: "command", value: "/workflow node instructions save" },
-  { id: "workflow-node-instructions-close", label: "/workflow node instructions close", description: "Close the workflow node instructions panel", kind: "command", value: "/workflow node instructions close" },
-  { id: "workflow-edge-add", label: "/workflow edge add", description: "Add a directed edge between workflow nodes (node ids or agent refs)", kind: "command", value: "/workflow edge add " },
-  { id: "workflow-edge-remove", label: "/workflow edge remove", description: "Remove a workflow edge", kind: "command", value: "/workflow edge remove " },
-  { id: "workflow-endpoint-new", label: "/workflow endpoint new", description: "Create a workflow endpoint", kind: "command", value: "/workflow endpoint new " },
-  { id: "workflow-endpoint-alias", label: "/workflow endpoint alias", description: "Assign an alias to a workflow endpoint", kind: "command", value: "/workflow endpoint alias " },
-  { id: "workflow-endpoint-bind", label: "/workflow endpoint bind", description: "Bind an endpoint to a workflow node", kind: "command", value: "/workflow endpoint bind " },
+type CommandNode = {
+  id: string
+  label: string
+  description: string
+  value: string
+  children?: CommandNode[]
+}
+
+const COMMAND_TREE: CommandNode[] = [
+  {
+    id: "session",
+    label: "/session",
+    description: "Create, attach, list, or delete sessions",
+    value: "/session ",
+    children: [
+      { id: "session-new", label: "new", description: "Create and attach a new session", value: "/session new " },
+      { id: "session-attach", label: "attach", description: "Attach to an existing session", value: "/session attach " },
+      { id: "session-list", label: "list", description: "List available sessions", value: "/session list" },
+      { id: "session-delete", label: "delete", description: "Delete the current or referenced session", value: "/session delete " },
+    ],
+  },
+  {
+    id: "agent",
+    label: "/agent",
+    description: "Manage agents in the current session",
+    value: "/agent ",
+    children: [
+      { id: "agent-spawn", label: "spawn", description: "Spawn a new agent in the session", value: "/agent spawn " },
+      { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },
+      { id: "agent-destroy", label: "destroy", description: "Alias for /agent delete", value: "/agent destroy " },
+      { id: "agent-focus", label: "focus", description: "Focus on a specific agent", value: "/agent focus " },
+      { id: "agent-list", label: "list", description: "List all agents in the session", value: "/agent list" },
+      { id: "agent-cycle", label: "cycle", description: "Cycle to next agent", value: "/agent cycle" },
+    ],
+  },
+  {
+    id: "workflow",
+    label: "/workflow",
+    description: "Inspect, edit, and run workflows",
+    value: "/workflow ",
+    children: [
+      { id: "workflow-open", label: "open", description: "Open the workflow outline", value: "/workflow" },
+      { id: "workflow-list", label: "list", description: "List workflows in the workspace", value: "/workflow list" },
+      { id: "workflow-show", label: "show", description: "Show a workflow by id or alias", value: "/workflow show " },
+      { id: "workflow-new", label: "new", description: "Create a new workflow", value: "/workflow new " },
+      { id: "workflow-run", label: "run", description: "Invoke a workflow endpoint", value: "/workflow run " },
+      { id: "workflow-start", label: "start", description: "Alias for /workflow run", value: "/workflow start " },
+      { id: "workflow-max-turns", label: "max-turns", description: "Set max workflow turns across all agents", value: "/workflow max-turns " },
+      { id: "workflow-runs", label: "runs", description: "List workflow runs in the session", value: "/workflow runs " },
+      { id: "workflow-cancel", label: "cancel", description: "Cancel a workflow run", value: "/workflow cancel " },
+      { id: "workflow-resume", label: "resume", description: "Resume a stopped workflow run", value: "/workflow resume " },
+      { id: "workflow-alias", label: "alias", description: "Assign an alias to an existing workflow", value: "/workflow " },
+      {
+        id: "workflow-node",
+        label: "node",
+        description: "Manage workflow nodes",
+        value: "/workflow node ",
+        children: [
+          { id: "workflow-node-add", label: "add", description: "Add a workflow node for an agent", value: "/workflow node add " },
+          { id: "workflow-node-remove", label: "remove", description: "Remove a workflow node", value: "/workflow node remove " },
+          {
+            id: "workflow-node-instructions",
+            label: "instructions",
+            description: "Manage workflow node instructions",
+            value: "/workflow node instructions ",
+            children: [
+              { id: "workflow-node-instructions-show", label: "show", description: "Show workflow node instructions in the I/O panel", value: "/workflow node instructions show " },
+              { id: "workflow-node-instructions-set", label: "set", description: "Set workflow node instructions (optional file)", value: "/workflow node instructions set " },
+              { id: "workflow-node-instructions-save", label: "save", description: "Save the current workflow node instructions draft", value: "/workflow node instructions save" },
+              { id: "workflow-node-instructions-close", label: "close", description: "Close the workflow node instructions panel", value: "/workflow node instructions close" },
+            ],
+          },
+        ],
+      },
+      {
+        id: "workflow-edge",
+        label: "edge",
+        description: "Manage workflow edges",
+        value: "/workflow edge ",
+        children: [
+          { id: "workflow-edge-shorthand", label: "connect", description: "Add a directed edge between two workflow nodes", value: "/workflow " },
+          { id: "workflow-edge-add", label: "add", description: "Add a directed edge between workflow nodes", value: "/workflow edge add " },
+          { id: "workflow-edge-remove", label: "remove", description: "Remove a workflow edge", value: "/workflow edge remove " },
+        ],
+      },
+      {
+        id: "workflow-endpoint",
+        label: "endpoint",
+        description: "Manage workflow endpoints",
+        value: "/workflow endpoint ",
+        children: [
+          { id: "workflow-endpoint-new", label: "new", description: "Create a workflow endpoint", value: "/workflow endpoint new " },
+          { id: "workflow-endpoint-alias", label: "alias", description: "Assign an alias to a workflow endpoint", value: "/workflow endpoint alias " },
+          { id: "workflow-endpoint-bind", label: "bind", description: "Bind an endpoint to a workflow node", value: "/workflow endpoint bind " },
+        ],
+      },
+    ],
+  },
+  {
+    id: "provider",
+    label: "/provider",
+    description: "Change provider and manage auth",
+    value: "/provider ",
+    children: [
+      { id: "provider-select", label: "switch", description: "Choose the active provider", value: "/provider " },
+      { id: "provider-status", label: "status", description: "Show provider auth status", value: "/provider status " },
+      { id: "provider-login", label: "login", description: "Start provider login", value: "/provider login " },
+      { id: "provider-logout", label: "logout", description: "Log out a provider", value: "/provider logout " },
+      { id: "provider-reauth", label: "reauth", description: "Reauthenticate a provider", value: "/provider reauth " },
+    ],
+  },
+  {
+    id: "model",
+    label: "/model",
+    description: "Change the active model",
+    value: "/model ",
+  },
+  {
+    id: "variant",
+    label: "/variant",
+    description: "Change the active model variant",
+    value: "/variant ",
+  },
+  {
+    id: "view",
+    label: "/view",
+    description: "Change multi-agent response layout",
+    value: "/view ",
+    children: [
+      { id: "view-individual", label: "individual", description: "Show one focused agent transcript at a time", value: "/view individual" },
+      { id: "view-split", label: "split", description: "Split the response area across active session agents", value: "/view split" },
+    ],
+  },
+  {
+    id: "misc",
+    label: "/misc",
+    description: "Attachments, control, and app commands",
+    value: "/",
+    children: [
+      { id: "attach", label: "/attach", description: "Attach files or screenshots to the prompt", value: "/attach " },
+      { id: "stop", label: "/stop", description: "Stop the active provider turn", value: "/stop" },
+      { id: "waiting", label: "/waiting", description: "Go to the waiting room", value: "/waiting" },
+      { id: "exit", label: "/exit", description: "Leave the CLI", value: "/exit" },
+    ],
+  },
 ]
 
 export function buildCommandCenterItems(input: string, context: CommandContext): CommandCenterItem[] {
@@ -69,97 +172,202 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
     return []
   }
 
-  const [command, ...restParts] = normalized.split(/\s+/)
-  const query = restParts.join(" ").trim().toLowerCase()
-
-  if ((command === "/provider" || command === "/provider ") && normalized.startsWith("/provider ")) {
-    return filterCommandCenterItems([
-      {
-        id: "provider-opencode",
-        label: "OpenCode",
-        description: "Use the OpenCode backend",
-        kind: "provider",
-        value: "opencode",
-      },
-      {
-        id: "provider-codex",
-        label: "Codex",
-        description: "Use the Codex backend",
-        kind: "provider",
-        value: "codex",
-      },
-      {
-        id: "provider-status",
-        label: "status",
-        description: "Show auth status for the current or named provider",
-        kind: "command",
-        value: "/provider status ",
-      },
-      {
-        id: "provider-login",
-        label: "login",
-        description: "Start login for the current or named provider",
-        kind: "command",
-        value: "/provider login ",
-      },
-    ], query)
+  if (normalized === "/") {
+    return rootItems()
   }
 
-  if ((command === "/model" || command === "/model ") && normalized.startsWith("/model ")) {
-    return filterCommandCenterItems(
-      catalogModelOptions(context.providerCatalog).map((option) => ({
-        id: `model-${option.id}`,
-        label: `${option.providerName} ${option.label}`,
-        description: option.id === context.currentModel ? "current model" : option.id,
-        kind: "model",
-        value: option.id,
-      })),
-      query,
-    )
+  if (normalized.startsWith("/provider ")) {
+    return buildProviderItems(normalized, context)
   }
 
-  if ((command === "/variant" || command === "/variant ") && normalized.startsWith("/variant ")) {
-    const current = catalogModelOptions(context.providerCatalog).find((option) => option.id === context.currentModel)
-    const variants = current?.variants ?? []
-    return filterCommandCenterItems(
-      variants.map((variant) => ({
-        id: `variant-${variant}`,
-        label: variant,
-        description: `${current?.label ?? context.currentModel}${variant === context.currentVariant ? " • current" : ""}`,
-        kind: "variant",
-        value: variant,
-      })),
-      query,
-    )
+  if (normalized.startsWith("/model ")) {
+    return buildModelItems(normalized, context)
   }
 
-  if ((command === "/view" || command === "/view ") && normalized.startsWith("/view ")) {
-    return filterCommandCenterItems(
-      [
-        {
-          id: "view-individual",
-          label: "individual",
-          description: "Show one focused agent transcript at a time",
-          kind: "command",
-          value: "/view individual",
-        },
-        {
-          id: "view-split",
-          label: "split",
-          description: "Split the response area across active session agents",
-          kind: "command",
-          value: "/view split",
-        },
-      ],
-      query,
-    )
+  if (normalized.startsWith("/variant ")) {
+    return buildVariantItems(normalized, context)
   }
 
-  if (ROOT_COMMANDS.some((item) => item.kind === "command" && item.value.endsWith(" ") && normalized === item.value)) {
+  if (normalized.startsWith("/view ")) {
+    return buildViewItems(normalized)
+  }
+
+  const scoped = buildScopedCommandItems(normalized)
+  if (scoped) {
+    return scoped
+  }
+
+  return filterCommandCenterItems(rootItems(), normalized.slice(1).toLowerCase())
+}
+
+export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
+  if (item.kind !== "command" || !item.value.endsWith(" ")) {
+    return false
+  }
+  return currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()
+}
+
+function rootItems() {
+  const rootNodes = COMMAND_TREE
+    .filter((node) => node.id !== "misc")
+    .map((node) => ({
+      id: node.id,
+      label: node.label,
+      description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
+      kind: "group" as const,
+      value: node.value,
+    }))
+  const miscNodes = COMMAND_TREE.find((node) => node.id === "misc")?.children?.map(mapNodeToItem) ?? []
+  return [...rootNodes, ...miscNodes]
+}
+
+function buildProviderItems(input: string, context: CommandContext) {
+  const query = input.slice("/provider ".length).trim().toLowerCase()
+  return filterCommandCenterItems([
+    {
+      id: "provider-opencode",
+      label: "OpenCode",
+      description: "Use the OpenCode backend",
+      kind: "provider",
+      value: "opencode",
+    },
+    {
+      id: "provider-codex",
+      label: "Codex",
+      description: "Use the Codex backend",
+      kind: "provider",
+      value: "codex",
+    },
+    {
+      id: "provider-status",
+      label: "status",
+      description: "Show auth status for the current or named provider",
+      kind: "command",
+      value: "/provider status ",
+    },
+    {
+      id: "provider-login",
+      label: "login",
+      description: "Start login for the current or named provider",
+      kind: "command",
+      value: "/provider login ",
+    },
+    {
+      id: "provider-logout",
+      label: "logout",
+      description: "Log out the current or named provider",
+      kind: "command",
+      value: "/provider logout ",
+    },
+    {
+      id: "provider-reauth",
+      label: "reauth",
+      description: "Log out and start a fresh login for the current or named provider",
+      kind: "command",
+      value: "/provider reauth ",
+    },
+  ], query)
+}
+
+function buildModelItems(input: string, context: CommandContext) {
+  const query = input.slice("/model ".length).trim().toLowerCase()
+  return filterCommandCenterItems(
+    catalogModelOptions(context.providerCatalog, context.currentProvider).map((option) => ({
+      id: `model-${option.id}`,
+      label: `${option.providerName} ${option.label}`,
+      description: option.id === context.currentModel ? "current model" : option.id,
+      kind: "model" as const,
+      value: option.id,
+    })),
+    query,
+  )
+}
+
+function buildVariantItems(input: string, context: CommandContext) {
+  const query = input.slice("/variant ".length).trim().toLowerCase()
+  const current = catalogModelOptions(context.providerCatalog, context.currentProvider).find((option) => option.id === context.currentModel)
+  const variants = current?.variants ?? []
+  return filterCommandCenterItems(
+    variants.map((variant) => ({
+      id: `variant-${variant}`,
+      label: variant,
+      description: `${current?.label ?? context.currentModel}${variant === context.currentVariant ? " • current" : ""}`,
+      kind: "variant" as const,
+      value: variant,
+    })),
+    query,
+  )
+}
+
+function buildViewItems(input: string) {
+  const query = input.slice("/view ".length).trim().toLowerCase()
+  return filterCommandCenterItems([
+    {
+      id: "view-individual",
+      label: "individual",
+      description: "Show one focused agent transcript at a time",
+      kind: "command",
+      value: "/view individual",
+    },
+    {
+      id: "view-split",
+      label: "split",
+      description: "Split the response area across active session agents",
+      kind: "command",
+      value: "/view split",
+    },
+  ], query)
+}
+
+function buildScopedCommandItems(input: string) {
+  const nodes = collectCommandNodes(COMMAND_TREE)
+  const exactCommand = nodes.find((node) => !node.children?.length && input === node.value)
+  if (exactCommand && input.endsWith(" ")) {
     return []
   }
 
-  return filterCommandCenterItems(ROOT_COMMANDS, normalized.slice(1).toLowerCase())
+  const scope = findDeepestScope(input, COMMAND_TREE)
+  if (!scope) {
+    return null
+  }
+
+  const query = input.slice(scope.node.value.length).trim().toLowerCase()
+  if (scope.node.children?.length) {
+    return filterCommandCenterItems(scope.node.children.map(mapNodeToItem), query)
+  }
+  return null
+}
+
+function findDeepestScope(input: string, nodes: CommandNode[]): { node: CommandNode } | null {
+  let match: CommandNode | null = null
+  for (const node of nodes) {
+    if (input === node.value.trim() || input === node.value || input.startsWith(node.value)) {
+      if (!match || node.value.length > match.value.length) {
+        match = node
+      }
+    }
+    if (node.children?.length) {
+      const childMatch = findDeepestScope(input, node.children)
+      if (childMatch && (!match || childMatch.node.value.length > match.value.length)) {
+        match = childMatch.node
+      }
+    }
+  }
+  return match ? { node: match } : null
+}
+
+function collectCommandNodes(nodes: CommandNode[]): CommandNode[] {
+  return nodes.flatMap((node) => [node, ...collectCommandNodes(node.children ?? [])])
+}
+
+function mapNodeToItem(node: CommandNode): CommandCenterItem {
+  return {
+    id: node.id,
+    label: node.label,
+    description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
+    kind: node.children?.length ? "group" : "command",
+    value: node.value,
+  }
 }
 
 function filterCommandCenterItems(items: CommandCenterItem[], query: string) {
@@ -171,7 +379,7 @@ function filterCommandCenterItems(items: CommandCenterItem[], query: string) {
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.item.label.localeCompare(right.item.label))
     .map((entry) => entry.item)
-    .slice(0, 10)
+    .slice(0, 20)
 }
 
 function scoreCommandCenterItem(item: CommandCenterItem, query: string) {

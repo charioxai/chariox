@@ -26,6 +26,12 @@ export type WorkflowOutlineNodeItem = {
   outgoingEdges: WorkflowOutlineEdgeItem[]
   incomingEdges: WorkflowOutlineEdgeItem[]
   entryEndpoints: WorkflowOutlineEndpointItem[]
+  failureCount: number
+  recentFailures: Array<{
+    kind: string
+    message: string
+    timestampMs: number
+  }>
 }
 
 export type WorkflowOutline = {
@@ -33,10 +39,10 @@ export type WorkflowOutline = {
   workflowAlias: string | null
   workflowRunId: string | null
   workflowRunStatus: string | null
+  workflowFailureCount: number
   edgeCount: number
   endpointCount: number
   nodeCount: number
   agentLabels: string[]
   nodes: WorkflowOutlineNodeItem[]
 }
-

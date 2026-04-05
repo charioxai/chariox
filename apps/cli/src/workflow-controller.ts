@@ -21,6 +21,7 @@ import {
   listWorkflowRunsRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
+  resumeWorkflowRunRequest,
   resolveWorkflowRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
@@ -288,6 +289,18 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload
   }
 
+  const resumeWorkflowRun = async (workflowRunRef: string) => {
+    const response = await deps.sendRequest(resumeWorkflowRunRequest(deps.sessionState().id, workflowRunRef))
+    const payload = expectVariant<{ workflow_run: WorkflowRun; session: RuntimeSession }>(
+      response,
+      "WorkflowRunResumed",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   return {
     workflowScreenActive,
     selectedWorkflow,
@@ -313,6 +326,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     listWorkflowRuns,
     getWorkflowRun,
     cancelWorkflowRun,
+    resumeWorkflowRun,
   }
 }
 

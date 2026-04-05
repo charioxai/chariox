@@ -419,38 +419,42 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        let workflow_run = session.workflow_run_mut(&workflow_run_id).ok_or_else(|| {
-            DaemonError::WorkflowRunNotFound {
-                session_id: session_id.to_string(),
-                workflow_run_id: workflow_run_id.clone(),
-            }
-        })?;
-        if matches!(
-            workflow_run.status(),
-            WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
-        ) {
-            return Err(DaemonError::InvalidWorkflowRunState {
-                workflow_run_id: workflow_run_id.clone(),
-                status: workflow_run.status(),
-                operation: "cancel workflow run",
-            });
-        }
-        workflow_run.set_status(WorkflowRunStatus::Stopped);
-        workflow_run.clear_active_node_run();
-        for node_run in workflow_run.node_runs_mut() {
-            if !matches!(
-                node_run.status(),
-                WorkflowNodeRunStatus::Completed
-                    | WorkflowNodeRunStatus::Failed
-                    | WorkflowNodeRunStatus::Stopped
+        let cancelled = {
+            let workflow_run = session.workflow_run_mut(&workflow_run_id).ok_or_else(|| {
+                DaemonError::WorkflowRunNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_run_id: workflow_run_id.clone(),
+                }
+            })?;
+            if matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
             ) {
-                node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                if let Some(envelope) = node_run.turn_envelope_mut() {
-                    envelope.mark_cancelled();
+                return Err(DaemonError::InvalidWorkflowRunState {
+                    workflow_run_id: workflow_run_id.clone(),
+                    status: workflow_run.status(),
+                    operation: "cancel workflow run",
+                });
+            }
+            workflow_run.set_status(WorkflowRunStatus::Stopped);
+            workflow_run.clear_active_node_run();
+            for node_run in workflow_run.node_runs_mut() {
+                if !matches!(
+                    node_run.status(),
+                    WorkflowNodeRunStatus::Completed
+                        | WorkflowNodeRunStatus::Failed
+                        | WorkflowNodeRunStatus::Stopped
+                ) {
+                    node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                    if let Some(envelope) = node_run.turn_envelope_mut() {
+                        envelope.mark_cancelled();
+                    }
                 }
             }
-        }
-        Ok(workflow_run.clone())
+            workflow_run.clone()
+        };
+        session.remove_queued_prompts_by_workflow_run(&workflow_run_id);
+        Ok(cancelled)
     }
 
     pub fn start_workflow_node_run(

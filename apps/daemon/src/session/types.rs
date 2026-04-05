@@ -1548,6 +1548,15 @@ impl RuntimeSession {
         removed
     }
 
+    pub fn remove_queued_prompts_by_workflow_run(&mut self, workflow_run_id: &str) -> usize {
+        let original_len = self.queued_prompts.len();
+        self.queued_prompts
+            .retain(|prompt| prompt.workflow_run_id() != Some(workflow_run_id));
+        let removed = original_len - self.queued_prompts.len();
+        self.refresh_scheduler_state();
+        removed
+    }
+
     pub fn pop_next_queued_prompt(&mut self) -> Option<PromptQueueItem> {
         let next = self.queued_prompts.pop_front();
         self.refresh_scheduler_state();
