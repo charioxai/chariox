@@ -145,6 +145,7 @@ pub enum WorkflowFailureKind {
     MissingAck,
     MissingStructuredOutput,
     OutputValidationFailed,
+    RunStopped,
     ProviderFailure,
     TransportFailure,
     TurnStalled,

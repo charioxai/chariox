@@ -554,7 +554,7 @@ pub fn on_workflow_prompt_cancelled(
         session_id,
         workflow_run_id,
         &WorkflowFailureEvent::new(
-            WorkflowFailureKind::ProviderFailure,
+            WorkflowFailureKind::RunStopped,
             workflow_node_run_id,
             Vec::new(),
             "workflow node run was stopped before validated completion",
@@ -1081,6 +1081,7 @@ fn write_workflow_control_mailbox_entry(
             WorkflowFailureKind::MissingAck => "missing_ack",
             WorkflowFailureKind::MissingStructuredOutput => "missing_structured_output",
             WorkflowFailureKind::OutputValidationFailed => "output_validation_failed",
+            WorkflowFailureKind::RunStopped => "run_stopped",
             WorkflowFailureKind::ProviderFailure => "provider_failure",
             WorkflowFailureKind::TransportFailure => "transport_failure",
             WorkflowFailureKind::TurnStalled => "turn_stalled",

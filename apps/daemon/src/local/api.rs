@@ -2773,6 +2773,16 @@ mod tests {
             .expect("session should resolve")
             .active_prompt()
             .is_none());
+        let stopped_run = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should resolve after cancellation");
+        assert!(stopped_run.failure_events().iter().any(|event| {
+            matches!(event.kind(), crate::session::WorkflowFailureKind::RunStopped)
+                && event
+                    .message()
+                    .contains("workflow node run was stopped before validated completion")
+        }));
 
         let resumed = match app
             .handle_local_request(LocalDaemonRequest::ResumeWorkflowRun(
