@@ -24,7 +24,6 @@ pub(super) struct OpenCodeEventDrainResult {
     pub chunks: Vec<OpenCodeOutputChunk>,
     pub completions: Vec<OpenCodeAssistantCompletion>,
     pub prompt_completed: bool,
-    pub provider_idle: bool,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,
@@ -121,7 +120,6 @@ pub(super) fn drain_opencode_events(
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut prompt_completed = false;
-    let mut provider_idle = false;
     let mut saw_completion_candidate = false;
     let mut notices = Vec::new();
     let mut resolved_model = None;
@@ -153,6 +151,7 @@ pub(super) fn drain_opencode_events(
                 if info.session_id == state.session_id
                     && info.role == "assistant"
                     && info.time.completed.is_some()
+                    && !info.is_tool_call_only_completion()
                     && state.last_completed_assistant_message_id.as_deref()
                         != Some(info.id.as_str())
                 {
@@ -346,9 +345,6 @@ pub(super) fn drain_opencode_events(
             }
             Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
                 if session_id == state.session_id {
-                    if kind == "idle" {
-                        provider_idle = true;
-                    }
                     if state.last_status_kind.as_deref() != Some(kind.as_str()) {
                         state.last_status_kind = Some(kind.clone());
                         chunks.push(OpenCodeOutputChunk {
@@ -398,13 +394,11 @@ pub(super) fn drain_opencode_events(
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
-                    if snapshot.status == "idle" {
-                        provider_idle = true;
-                    }
                     if snapshot.messages.iter().any(|message| {
                         let is_new_completed = message.info.session_id == state.session_id
                             && message.info.role == "assistant"
                             && message.info.time.completed.is_some()
+                            && !message.info.is_tool_call_only_completion()
                             && state.last_completed_assistant_message_id.as_deref()
                                 != Some(message.info.id.as_str());
                         if is_new_completed {
@@ -445,7 +439,6 @@ pub(super) fn drain_opencode_events(
         chunks,
         completions,
         prompt_completed,
-        provider_idle,
         notices,
         resolved_model,
         resolved_model_source,
@@ -886,6 +879,34 @@ mod tests {
     }
 
     #[test]
+    fn idle_status_is_not_treated_as_prompt_completion() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let result =
+            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+
+        assert!(!result.prompt_completed);
+        assert!(result.completions.is_empty());
+        assert!(result
+            .chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderStatus));
+    }
+
+    #[test]
     fn running_tools_block_prompt_completion_until_they_finish_and_the_stream_goes_quiet() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
@@ -1038,6 +1059,40 @@ mod tests {
         let fifth = drain_opencode_events(&mut state, "provider-run-1")
             .expect("fifth drain should succeed");
         assert!(fifth.prompt_completed);
+    }
+
+    #[test]
+    fn tool_call_only_message_completion_does_not_complete_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-tool-calls",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "tool-calls",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+
+        let first = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("first drain should succeed");
+        assert!(first.completions.is_empty());
+        assert!(!first.prompt_completed);
+
+        state.pending_prompt_completion_quiet_since = Some(elapsed_quiet_since());
+        let second = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("second drain should succeed");
+        assert!(!second.prompt_completed);
     }
 
     fn elapsed_quiet_since() -> Instant {

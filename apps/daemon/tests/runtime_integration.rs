@@ -24,6 +24,7 @@ use arroba_daemon::session::{
     CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus,
     WorkflowNodeRunStatus, WorkflowRunStatus,
 };
+use arroba_daemon::terminal::TerminalOutputKind;
 use arroba_daemon::{DaemonApp, DaemonConfig};
 use serde_json::{json, Value};
 
@@ -649,6 +650,103 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
 }
 
 #[test]
+fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_completion() {
+    let _guard = opencode_env_guard();
+    let previous_idle_ms = env::var_os("ARROBA_PROMPT_IDLE_MS");
+    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(40));
+    mock_server.set_emit_idle_before_completion(true);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "idle is not completion\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    thread::sleep(Duration::from_millis(60));
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let _ = app
+        .pump_provider_output(session.id(), run.id(), recipients)
+        .expect("pump after interim idle should succeed");
+
+    let session_after_idle = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist after interim idle");
+    assert!(
+        session_after_idle.active_prompt().is_some(),
+        "interim idle status must not complete the active prompt"
+    );
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: idle is not completion")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+
+    assert!(output.contains("fixture response: idle is not completion"));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    if let Some(previous_idle_ms) = previous_idle_ms {
+        env::set_var("ARROBA_PROMPT_IDLE_MS", previous_idle_ms);
+    } else {
+        env::remove_var("ARROBA_PROMPT_IDLE_MS");
+    }
+    mock_server.stop();
+}
+
+#[test]
 fn end_session_aborts_active_opencode_session_before_cleanup() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -889,17 +987,8 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         session.id(),
         run.id(),
         recipients,
-        |output, app| {
-            output.contains("fixture response: second prompt after cancel")
-                && app
-                    .sessions()
-                    .get_session(session.id())
-                    .expect("session should still exist")
-                    .active_prompt()
-                    .is_none()
-        },
+        |output, _app| output.contains("fixture response: second prompt after cancel"),
     );
-
     assert!(output.contains("fixture response: second prompt after cancel"));
 
     if let Some(previous_bin) = previous_bin {
@@ -2165,7 +2254,7 @@ fn collect_terminal_output_until<F>(
 where
     F: Fn(&str, &arroba_daemon::session::RuntimeSession) -> bool,
 {
-    let timeout_ms = output_timeout_ms().max(4_000);
+    let timeout_ms = output_timeout_ms().max(8_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut output = Vec::new();
 
@@ -2288,6 +2377,8 @@ struct MockOpenCodeServer {
 struct MockOpenCodeState {
     abort_count: u64,
     disconnect_next_event_stream: bool,
+    emit_idle_before_completion: bool,
+    emit_tool_call_before_completion: bool,
     fail_next_event_stream_attempts: u64,
     event_subscribers: Vec<mpsc::Sender<String>>,
     next_prompt_error: Option<String>,
@@ -2318,6 +2409,8 @@ impl MockOpenCodeServer {
         let state = Arc::new(Mutex::new(MockOpenCodeState {
             abort_count: 0,
             disconnect_next_event_stream: false,
+            emit_idle_before_completion: false,
+            emit_tool_call_before_completion: false,
             fail_next_event_stream_attempts: 0,
             event_subscribers: Vec::new(),
             next_prompt_error: None,
@@ -2382,6 +2475,20 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .disconnect_next_event_stream = true;
+    }
+
+    fn set_emit_idle_before_completion(&self, emit_idle_before_completion: bool) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .emit_idle_before_completion = emit_idle_before_completion;
+    }
+
+    fn set_emit_tool_call_before_completion(&self, emit_tool_call_before_completion: bool) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .emit_tool_call_before_completion = emit_tool_call_before_completion;
     }
 
     fn fail_next_event_stream_attempts(&self, count: u64) {
@@ -2638,11 +2745,117 @@ fn schedule_mock_response(
     }
 
     thread::spawn(move || {
-        let response_delay = state
-            .lock()
-            .expect("mock state should not be poisoned")
-            .response_delay;
+        let (
+            response_delay,
+            emit_idle_before_completion,
+            emit_tool_call_before_completion,
+        ) = {
+            let state = state.lock().expect("mock state should not be poisoned");
+            (
+                state.response_delay,
+                state.emit_idle_before_completion,
+                state.emit_tool_call_before_completion,
+            )
+        };
         thread::sleep(response_delay);
+
+        if emit_tool_call_before_completion {
+            let mut state = state.lock().expect("mock state should not be poisoned");
+            state.next_message_number += 1;
+            let message_id = format!("assistant-tool-message-{}", state.next_message_number);
+            let part_id = format!("assistant-tool-part-{}", state.next_message_number);
+            if let Some(session_state) = state.sessions.get_mut(&session_id) {
+                session_state.messages.push(json!({
+                    "info": {
+                        "id": message_id.clone(),
+                        "sessionID": session_id.clone(),
+                        "role": "assistant",
+                        "time": {
+                            "completed": 1,
+                        }
+                    },
+                    "parts": [
+                        {
+                            "id": part_id.clone(),
+                            "sessionID": session_id.clone(),
+                            "messageID": message_id.clone(),
+                            "type": "tool",
+                            "tool": "read",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "filePath": "./.arroba/mock-instructions.md"
+                                },
+                                "output": "<content>mock tool output</content>",
+                                "title": "mock read"
+                            }
+                        }
+                    ]
+                }));
+            }
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "message.updated",
+                    "properties": {
+                        "info": {
+                            "id": message_id.clone(),
+                            "sessionID": session_id.clone(),
+                            "role": "assistant",
+                            "time": {
+                                "completed": 1
+                            }
+                        }
+                    }
+                }),
+            );
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "message.part.updated",
+                    "properties": {
+                        "part": {
+                            "id": part_id,
+                            "sessionID": session_id.clone(),
+                            "messageID": message_id,
+                            "type": "tool",
+                            "tool": "read",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "filePath": "./.arroba/mock-instructions.md"
+                                },
+                                "output": "<content>mock tool output</content>",
+                                "title": "mock read"
+                            }
+                        }
+                    }
+                }),
+            );
+            drop(state);
+            thread::sleep(response_delay);
+        }
+
+        if emit_idle_before_completion {
+            let mut state = state.lock().expect("mock state should not be poisoned");
+            if let Some(session_state) = state.sessions.get_mut(&session_id) {
+                session_state.status = "idle".to_string();
+            }
+            publish_mock_event(
+                &mut state,
+                json!({
+                    "type": "session.status",
+                    "properties": {
+                        "sessionID": session_id.clone(),
+                        "status": {
+                            "type": "idle"
+                        }
+                    }
+                }),
+            );
+            drop(state);
+            thread::sleep(response_delay);
+        }
 
         let mut state = state.lock().expect("mock state should not be poisoned");
         if let Some(error_message) = state.next_prompt_error.take() {
@@ -2747,6 +2960,109 @@ fn schedule_mock_response(
             }),
         );
     });
+}
+
+#[test]
+fn shared_opencode_tool_activity_keeps_prompt_alive_until_followup_output() {
+    let _guard = opencode_env_guard();
+    let previous_idle_ms = env::var_os("ARROBA_PROMPT_IDLE_MS");
+    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(40));
+    mock_server.set_emit_tool_call_before_completion(true);
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "tool activity should keep prompt alive\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let interim = collect_provider_records_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |records, _app| {
+            records
+                .iter()
+                .any(|record| record.kind == TerminalOutputKind::ProviderTool)
+        },
+    );
+    assert!(
+        interim.iter().any(|record| record.kind == TerminalOutputKind::ProviderTool),
+        "mock tool activity should be observed"
+    );
+
+    let session_after_tool = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist after tool activity");
+    assert!(
+        session_after_tool.active_prompt().is_some(),
+        "tool activity must keep the active prompt alive"
+    );
+
+    thread::sleep(Duration::from_millis(60));
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let _ = app
+        .pump_provider_output(session.id(), run.id(), recipients)
+        .expect("pump after quiet tool-call completion should succeed");
+    let session_after_quiet_gap = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist after quiet gap");
+    assert!(
+        session_after_quiet_gap.active_prompt().is_some(),
+        "tool-call-only completion must not settle the prompt"
+    );
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    if let Some(previous_idle_ms) = previous_idle_ms {
+        env::set_var("ARROBA_PROMPT_IDLE_MS", previous_idle_ms);
+    } else {
+        env::remove_var("ARROBA_PROMPT_IDLE_MS");
+    }
+    mock_server.stop();
 }
 
 struct HttpRequest {

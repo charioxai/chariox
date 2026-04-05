@@ -738,7 +738,10 @@ impl DaemonApp {
         if poll_result.chunks.iter().any(|chunk| {
             matches!(
                 chunk.kind,
-                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+                TerminalOutputKind::ProviderOutput
+                    | TerminalOutputKind::ProviderReasoning
+                    | TerminalOutputKind::ProviderTool
+                    | TerminalOutputKind::ProviderStatus
             )
         }) {
             crate::transport::flow_control::note_prompt_output(self, session_id);
@@ -753,7 +756,6 @@ impl DaemonApp {
             );
         }
         let prompt_completed = poll_result.prompt_completed;
-        let provider_idle = poll_result.provider_idle;
         let records = poll_result
             .chunks
             .into_iter()
@@ -783,12 +785,6 @@ impl DaemonApp {
             }
         } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
-        } else if provider_idle && active_prompt_status.is_some() {
-            let _ = crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
-        } else if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External
-            && active_prompt_status.is_some()
-        {
-            let _ = crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         }
         Ok(records)
     }

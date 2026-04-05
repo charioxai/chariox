@@ -83,6 +83,8 @@ pub struct OpenCodeMessageInfo {
     #[serde(rename = "sessionID")]
     pub session_id: String,
     pub role: String,
+    #[serde(default)]
+    pub finish: Option<String>,
     #[serde(rename = "providerID", default)]
     pub provider_id: Option<String>,
     #[serde(rename = "modelID", default)]
@@ -98,6 +100,10 @@ pub struct OpenCodeMessageInfo {
 }
 
 impl OpenCodeMessageInfo {
+    pub fn is_tool_call_only_completion(&self) -> bool {
+        self.finish.as_deref() == Some("tool-calls")
+    }
+
     pub fn resolved_model(&self) -> Option<String> {
         if let (Some(provider_id), Some(model_id)) =
             (self.provider_id.as_deref(), self.model_id.as_deref())

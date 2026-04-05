@@ -178,8 +178,18 @@ pub fn dispatch_authenticated_runtime_tool_call(
             operation: "dispatch_authenticated_runtime_tool_call",
             message: "provider run is not bound to an agent".to_string(),
         })?;
-    let (workflow_run_ref, workflow_node_run_id) =
-        resolve_authenticated_workflow_turn(app, provider_run.session_id(), agent_id)?;
+    let requested_delivery_token = match tool_name {
+        ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
+            .ok()
+            .map(|args| args.delivery_token),
+        _ => None,
+    };
+    let (workflow_run_ref, workflow_node_run_id) = resolve_authenticated_workflow_turn(
+        app,
+        provider_run.session_id(),
+        agent_id,
+        requested_delivery_token.as_deref(),
+    )?;
     let allowed_output_schema_refs = allowed_output_schema_refs_for_active_workflow_turn(
         app,
         provider_run.session_id(),
@@ -207,8 +217,35 @@ fn resolve_authenticated_workflow_turn(
     app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
+    delivery_token: Option<&str>,
 ) -> Result<(String, String), DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    let running_turns = session
+        .workflow_runs()
+        .iter()
+        .flat_map(|workflow_run| {
+            workflow_run.node_runs().iter().filter_map(|node_run| {
+                let envelope = node_run.turn_envelope()?;
+                if node_run.status() != WorkflowNodeRunStatus::Running
+                    || !matches!(
+                        envelope.state(),
+                        WorkflowTurnRuntimeState::Prepared
+                            | WorkflowTurnRuntimeState::Dispatched
+                            | WorkflowTurnRuntimeState::Acknowledged
+                    )
+                {
+                    return None;
+                }
+                Some((
+                    workflow_run.id().to_string(),
+                    node_run.id().to_string(),
+                    node_run.agent_id().to_string(),
+                    envelope.delivery_token().to_string(),
+                ))
+            })
+        })
+        .collect::<Vec<_>>();
+
     if let Some(prompt) = session.active_prompt() {
         if prompt.target_agent_id() == agent_id {
             if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
@@ -226,37 +263,61 @@ fn resolve_authenticated_workflow_turn(
         }
     }
 
-    session
-        .workflow_runs()
+    if let Some(requested_delivery_token) = delivery_token {
+        let mut matching_by_delivery_token = running_turns
+            .iter()
+            .filter(|(_, _, _, candidate_delivery_token)| {
+                candidate_delivery_token == requested_delivery_token
+            })
+            .map(|(workflow_run_id, workflow_node_run_id, _, _)| {
+                (workflow_run_id.clone(), workflow_node_run_id.clone())
+            })
+            .collect::<Vec<_>>();
+        if matching_by_delivery_token.len() == 1 {
+            return Ok(matching_by_delivery_token.remove(0));
+        }
+    }
+
+    let mut candidates = running_turns
         .iter()
-        .filter(|workflow_run| workflow_run.active_node_run_id().is_some())
-        .find_map(|workflow_run| {
-            let active_node_run_id = workflow_run.active_node_run_id()?;
-            let node_run = workflow_run
-                .node_runs()
-                .iter()
-                .find(|candidate| candidate.id() == active_node_run_id)?;
-            let envelope = node_run.turn_envelope()?;
-            if node_run.agent_id() != agent_id
-                || node_run.status() != WorkflowNodeRunStatus::Running
-                || !matches!(
-                    envelope.state(),
-                    WorkflowTurnRuntimeState::Prepared
-                        | WorkflowTurnRuntimeState::Dispatched
-                        | WorkflowTurnRuntimeState::Acknowledged
-                )
-            {
-                return None;
+        .filter(|(_, _, candidate_agent_id, _)| candidate_agent_id == agent_id)
+        .map(|(workflow_run_id, workflow_node_run_id, _, candidate_delivery_token)| {
+            (
+                workflow_run_id.clone(),
+                workflow_node_run_id.clone(),
+                candidate_delivery_token.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(requested_delivery_token) = delivery_token {
+        candidates.retain(|(_, _, candidate_delivery_token)| {
+            candidate_delivery_token == requested_delivery_token
+        });
+    }
+
+    match candidates.len() {
+        1 => {
+            let (workflow_run_id, workflow_node_run_id, _) =
+                candidates.into_iter().next().expect("candidate should exist");
+            Ok((workflow_run_id, workflow_node_run_id))
+        }
+        0 => {
+            if running_turns.len() == 1 {
+                let (workflow_run_id, workflow_node_run_id, _, _) =
+                    running_turns.into_iter().next().expect("candidate should exist");
+                return Ok((workflow_run_id, workflow_node_run_id));
             }
-            Some((
-                workflow_run.id().to_string(),
-                node_run.id().to_string(),
-            ))
-        })
-        .ok_or_else(|| DaemonError::LocalTransport {
+            Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: "no active workflow turn for authenticated provider run".to_string(),
+            })
+        }
+        _ => Err(DaemonError::LocalTransport {
             operation: "dispatch_authenticated_runtime_tool_call",
-            message: "no active workflow turn for authenticated provider run".to_string(),
-        })
+            message: "multiple workflow turns matched the authenticated provider run".to_string(),
+        }),
+    }
 }
 
 fn allowed_output_schema_refs_for_active_workflow_turn(
@@ -643,7 +704,10 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         };
-        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+        let node_run = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist");
         let delivery_token = node_run
             .turn_envelope()
             .expect("turn envelope should be prepared")
@@ -670,4 +734,5 @@ mod tests {
 
         assert_eq!(result.payload["state"], "acknowledged");
     }
+
 }
