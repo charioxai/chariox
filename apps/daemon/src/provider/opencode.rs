@@ -30,7 +30,7 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     })
 }
 
-const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG";
+const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 
 pub fn plan_opencode_launch(
     request: Option<&LaunchProviderRequest>,
@@ -293,7 +293,7 @@ mod tests {
 
         let config = launch
             .pty_env
-            .get("OPENCODE_CONFIG")
+            .get("OPENCODE_CONFIG_CONTENT")
             .expect("opencode config env should be set");
         assert!(config.contains("\"mcp\""));
         assert!(config.contains("http://127.0.0.1:43120/mcp"));
