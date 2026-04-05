@@ -611,6 +611,9 @@ Behavior rules:
 - provider-facing extension files or config are generated projections, not the canonical source of truth
 - MCP servers are daemon-managed runtime components and SHOULD be exposed only to the top-level provider runs they are bound to
 - provider-native subagents are not separate extension-binding targets in v1
+- workflow runtime tools such as `ack_workflow_turn` and `validate_workflow_output` SHOULD be exposed through an Arroba-managed MCP surface rather than direct daemon/kernel APIs
+- for managed provider runs, MCP attachment SHOULD be automated by Arroba at launch time rather than delegated to end-user provider setup
+- day-1 implementation MAY statically advertise the workflow runtime tools and enforce turn/schema scope at call time; dynamic per-turn tool advertisement is a later hardening step
 
 ## 6. Error Model
 

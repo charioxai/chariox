@@ -5,6 +5,7 @@ use crate::session::{
 };
 
 pub(crate) mod flow_control;
+pub(crate) mod runtime_tools;
 
 pub struct TransportService;
 

@@ -273,6 +273,12 @@ Outcomes:
 - user/admin docs for setup, security expectations, and limitations
 - release process and upgrade guidance
 - completion of the v1 workflow rollout, with circular topology delivered earlier and hierarchical topology completed later in v1
+- MCP runtime-tool hardening before release:
+  - one daemon-owned Arroba MCP server
+  - automatic MCP attachment for managed provider runs
+  - dynamic per-turn tool scoping and stronger per-run isolation
+  - reconnect/health monitoring for MCP-bound provider runs
+  - removal of transitional prompt-only ACK/tool guidance once MCP execution is proven
 
 Exit criteria:
 

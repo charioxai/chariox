@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
@@ -94,6 +92,11 @@ pub struct GetProviderAuthStatusRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartProviderLoginRequest {
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogoutProviderRequest {
     pub provider: String,
 }
 
@@ -378,6 +381,7 @@ pub enum LocalDaemonRequest {
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
+    LogoutProvider(LogoutProviderRequest),
     GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -455,6 +459,9 @@ pub enum LocalDaemonResponse {
     },
     ProviderLoginStarted {
         login: ProviderLoginStart,
+    },
+    ProviderLoggedOut {
+        provider: String,
     },
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
@@ -696,6 +703,9 @@ impl DaemonApp {
             }
             LocalDaemonRequest::StartProviderLogin(request) => {
                 self.handle_start_provider_login_request(request)
+            }
+            LocalDaemonRequest::LogoutProvider(request) => {
+                self.handle_logout_provider_request(request)
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(
@@ -1098,33 +1108,54 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::ValidateWorkflowOutput(request) => {
-                let result = validate_workflow_output_schema(
-                    &request.output_schema_ref,
-                    &request.output_json,
-                );
-                match result {
-                    Ok(()) => Ok(LocalDaemonResponse::WorkflowOutputValidated {
-                        valid: true,
-                        warning: None,
-                    }),
-                    Err(message) => Ok(LocalDaemonResponse::WorkflowOutputValidated {
-                        valid: false,
-                        warning: Some(message),
-                    }),
-                }
+                let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
+                    self,
+                    crate::transport::runtime_tools::RuntimeToolCall {
+                        tool_name: crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL
+                            .to_string(),
+                        arguments: serde_json::json!({
+                            "output_schema_ref": request.output_schema_ref,
+                            "output_json": request.output_json,
+                        }),
+                        context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
+                            session_id: request.session_id.clone(),
+                            workflow_run_ref: String::new(),
+                            workflow_node_run_id: String::new(),
+                            delivery_token: None,
+                            allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
+                        },
+                    },
+                )?;
+                Ok(LocalDaemonResponse::WorkflowOutputValidated {
+                    valid: result.payload["valid"].as_bool().unwrap_or(false),
+                    warning: result.payload["warning"]
+                        .as_str()
+                        .map(str::to_string)
+                        .filter(|value| !value.is_empty()),
+                })
             }
             LocalDaemonRequest::AckWorkflowTurn(request) => {
-                let workflow_run_id = self
+                crate::transport::runtime_tools::dispatch_runtime_tool_call(
+                    self,
+                    crate::transport::runtime_tools::RuntimeToolCall {
+                        tool_name: crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+                            .to_string(),
+                        arguments: serde_json::json!({
+                            "delivery_token": request.delivery_token,
+                        }),
+                        context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
+                            session_id: request.session_id.clone(),
+                            workflow_run_ref: request.workflow_run_ref.clone(),
+                            workflow_node_run_id: request.workflow_node_run_id.clone(),
+                            delivery_token: Some(request.delivery_token.clone()),
+                            allowed_output_schema_refs: Vec::new(),
+                        },
+                    },
+                )?;
+                let workflow_run = self
                     .sessions()
                     .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
-                    .id()
-                    .to_string();
-                let workflow_run = self.sessions_mut().ack_workflow_turn(
-                    &request.session_id,
-                    &workflow_run_id,
-                    &request.workflow_node_run_id,
-                    &request.delivery_token,
-                )?;
+                    .clone();
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
                     workflow_run,
@@ -1133,28 +1164,6 @@ impl DaemonApp {
             }
         }
     }
-}
-
-fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
-    let schema_source = std::fs::read_to_string(schema_ref)
-        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
-    let schema_value = serde_json::from_str::<Value>(&schema_source)
-        .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))?;
-    let output_value = serde_json::from_str::<Value>(output_json)
-        .map_err(|error| format!("output is not valid JSON: {error}"))?;
-    let compiled = JSONSchema::options()
-        .with_draft(jsonschema::Draft::Draft7)
-        .compile(&schema_value)
-        .map_err(|error| format!("schema ref `{schema_ref}` failed to compile: {error}"))?;
-    if let Err(errors) = compiled.validate(&output_value) {
-        let message = errors
-            .into_iter()
-            .next()
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "schema validation failed".to_string());
-        return Err(message);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

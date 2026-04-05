@@ -924,6 +924,9 @@ Required rules:
 - MCP servers are daemon-managed runtime components and MAY be launched or terminated independently of provider CLIs
 - only the MCPs bound to a given top-level provider run should be exposed to that run
 - extension installation metadata, compatibility state, and bindings should be inspectable through daemon-owned APIs
+- workflow runtime tools are part of the Arroba runtime contract and SHOULD be projected to providers through Arroba-managed MCP bindings rather than provider-specific direct daemon access
+- for managed provider runs, Arroba SHOULD attach its daemon-owned MCP runtime automatically during launch
+- day-1 implementation MAY use statically advertised runtime tools with runtime-side scope validation; release hardening SHOULD add dynamic per-turn scoping, stronger per-run isolation, and MCP health/reconnect handling
 
 ## 9. Capability Catalog
 

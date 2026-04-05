@@ -86,3 +86,23 @@ Planned:
 
 - introduce resource lock interface and worktree scoping
 - wire lock checks into workflow-driven file writes
+
+### Phase 6. MCP Runtime Tools
+
+Goal:
+
+- expose workflow runtime tools through one daemon-owned Arroba MCP surface
+- automate MCP attachment for managed provider runs
+- keep tool semantics provider-agnostic while leaving adapter-owned projection details per provider
+
+Status: **In Progress**
+
+In progress:
+
+- shared runtime-tool dispatch is moving out of local daemon API handlers so MCP and local APIs can reuse the same transport-owned service
+
+Planned:
+
+- daemon-owned Arroba MCP server for runtime tools
+- automated managed-run MCP attachment for supported providers
+- later hardening pass for dynamic per-turn tool scoping, per-run isolation, and MCP connection health/reconnect handling
