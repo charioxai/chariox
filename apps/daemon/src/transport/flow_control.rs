@@ -9,6 +9,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, session_id: &str) {
         session_id.to_string(),
         ActivePromptState {
             last_output_at: None,
+            saw_response_content: false,
         },
     );
 }
@@ -19,6 +20,13 @@ pub(crate) fn note_prompt_output(app: &mut DaemonApp, session_id: &str) {
     }
 }
 
+pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, session_id: &str) {
+    if let Some(state) = app.prompt_activity.get_mut(session_id) {
+        state.last_output_at = Some(Instant::now());
+        state.saw_response_content = true;
+    }
+}
+
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, session_id: &str) {
     app.prompt_activity.remove(session_id);
 }
@@ -26,9 +34,13 @@ pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, session_id: &str) {
 pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, session_id: &str) {
     app.prompt_activity
         .entry(session_id.to_string())
-        .and_modify(|state| state.last_output_at = Some(Instant::now()))
+        .and_modify(|state| {
+            state.last_output_at = Some(Instant::now());
+            state.saw_response_content = true;
+        })
         .or_insert(ActivePromptState {
             last_output_at: Some(Instant::now()),
+            saw_response_content: true,
         });
 }
 
@@ -39,8 +51,13 @@ pub(crate) fn maybe_complete_active_prompt(
     let should_complete = app
         .prompt_activity
         .get(session_id)
-        .and_then(|state| state.last_output_at)
-        .map(|last_output_at| last_output_at.elapsed() >= app.prompt_idle_timeout)
+        .map(|state| {
+            state.saw_response_content
+                && state
+                    .last_output_at
+                    .map(|last_output_at| last_output_at.elapsed() >= app.prompt_idle_timeout)
+                    .unwrap_or(false)
+        })
         .unwrap_or(false);
 
     if !should_complete {

@@ -2605,6 +2605,13 @@ mod tests {
         assert!(active_prompt
             .prompt()
             .contains("output.message is not valid JSON"));
+        assert!(active_prompt
+            .prompt()
+            .contains("Treat the control mailbox as authoritative runtime feedback"));
+        assert!(active_prompt.prompt().contains("Outgoing edge contracts:"));
+        assert!(active_prompt
+            .prompt()
+            .contains(schema_path.to_string_lossy().as_ref()));
         assert!(!active_prompt
             .prompt()
             .contains("Control mailbox (daemon-managed):"));

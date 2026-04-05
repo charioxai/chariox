@@ -11,7 +11,7 @@ use crate::provider::LaunchProviderRequest;
 use crate::session::{
     PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
     WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowMessage,
-    WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
+    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
 };
 use crate::transport::TransportService;
 
@@ -318,13 +318,33 @@ pub fn on_workflow_prompt_completed(
         workflow_run,
         dispatches,
         validation_warnings,
-    } = app.sessions_mut().complete_workflow_node_run(
+    } = match app.sessions_mut().complete_workflow_node_run(
         session_id,
         workflow_run_id,
         workflow_node_run_id,
         completion_snapshot,
         max_turns,
-    )?;
+    ) {
+        Ok(update) => update,
+        Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
+            edge_id,
+            message,
+            ..
+        }) => {
+            app.sessions_mut()
+                .stop_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)?;
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
+                ),
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     if !validation_warnings.is_empty() {
         write_workflow_control_mailbox(
             app,
@@ -439,6 +459,7 @@ fn prepare_workflow_turn_prompt(
         session_id,
         workflow_run_id,
         workflow_node_run_id,
+        node_id,
         endpoint_prompt,
         instruction_ref,
         mailbox_content,
@@ -452,6 +473,7 @@ fn build_workflow_turn_prompt(
     session_id: &str,
     workflow_run_id: &str,
     _workflow_node_run_id: &str,
+    node_id: &str,
     endpoint_prompt: &str,
     instruction_ref: Option<String>,
     mailbox_content: Option<String>,
@@ -464,7 +486,11 @@ fn build_workflow_turn_prompt(
         .unwrap_or_default();
     let control_line = mailbox_content
         .as_deref()
-        .map(|content| format!("Control mailbox:\n{content}\n\n"))
+        .map(|content| {
+            format!(
+                "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output.\n\n"
+            )
+        })
         .unwrap_or_default();
     let workflow_prompt = app
         .sessions()
@@ -483,23 +509,77 @@ fn build_workflow_turn_prompt(
             handoff_payloads_json.as_deref().unwrap_or("[]")
         )
     };
+    let edge_contract_block =
+        workflow_outgoing_edge_contracts_block(app, session_id, workflow_run_id, node_id);
     let entry_line = if endpoint_prompt.trim().is_empty() {
         String::new()
     } else {
         format!("Endpoint prompt:\n{endpoint_prompt}\n\n")
     };
     let ack_line = format!(
-        "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output.\n\n"
+        "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output. Do not describe the acknowledgment in your final answer.\n\n"
     );
     format!(
-        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}\n",
+        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}{}\n",
         entry_line,
         workflow_prompt,
         ack_line,
         payload_block,
+        edge_contract_block,
         reference_line,
         control_line,
         workflow_output_contract_instructions()
+    )
+}
+
+fn workflow_outgoing_edge_contracts_block(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    node_id: &str,
+) -> String {
+    let Some(workflow_run) = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok()
+    else {
+        return String::new();
+    };
+    let Some(workflow) = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+        .ok()
+    else {
+        return String::new();
+    };
+
+    let lines = workflow
+        .edges()
+        .iter()
+        .filter(|edge| edge.from_node_id() == node_id)
+        .map(|edge| {
+            let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
+            if let Some(schema_ref) = edge.output_schema_ref() {
+                line.push_str(&format!(", output_schema_ref: {schema_ref}"));
+            }
+            if let Some(validation_policy) = edge.validation_policy() {
+                let validation_policy = match validation_policy {
+                    WorkflowOutputValidationPolicy::Warn => "warn",
+                    WorkflowOutputValidationPolicy::Halt => "halt",
+                };
+                line.push_str(&format!(", validation_policy: {validation_policy}"));
+            }
+            line
+        })
+        .collect::<Vec<String>>();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "Outgoing edge contracts:\n{}\nAll schema refs needed for this turn are listed above. Do not search the workspace for workflow metadata unless the workflow-level prompt explicitly asks you to.\n\n",
+        lines.join("\n")
     )
 }
 
@@ -1054,7 +1134,7 @@ fn workflow_completion_summary(source: &str) -> String {
 }
 
 fn workflow_output_contract_instructions() -> &'static str {
-    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nThe summary is for humans and audit. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a handoff payload includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing. Pass the same delivery_token that was provided for `ack_workflow_turn`, and validate your proposed output.message JSON against that schema ref."
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. If a handoff payload or outgoing edge contract includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing. Pass the same delivery_token that was provided for `ack_workflow_turn`, and validate your proposed output.message JSON against that schema ref."
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

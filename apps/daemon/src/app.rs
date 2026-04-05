@@ -55,6 +55,7 @@ pub struct DaemonApp {
 #[derive(Debug, Clone)]
 pub(crate) struct ActivePromptState {
     pub(crate) last_output_at: Option<Instant>,
+    pub(crate) saw_response_content: bool,
 }
 
 impl DaemonApp {
@@ -582,7 +583,7 @@ impl DaemonApp {
             }
         };
         if !chunks.is_empty() {
-            crate::transport::flow_control::note_prompt_output(self, session_id);
+            crate::transport::flow_control::note_prompt_response_content(self, session_id);
         }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if !exited {
@@ -735,7 +736,13 @@ impl DaemonApp {
                 notice.to_string(),
             );
         }
-        if poll_result.chunks.iter().any(|chunk| {
+        let saw_response_content = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+            )
+        });
+        let saw_runtime_activity = poll_result.chunks.iter().any(|chunk| {
             matches!(
                 chunk.kind,
                 TerminalOutputKind::ProviderOutput
@@ -743,7 +750,10 @@ impl DaemonApp {
                     | TerminalOutputKind::ProviderTool
                     | TerminalOutputKind::ProviderStatus
             )
-        }) {
+        });
+        if saw_response_content {
+            crate::transport::flow_control::note_prompt_response_content(self, session_id);
+        } else if saw_runtime_activity {
             crate::transport::flow_control::note_prompt_output(self, session_id);
         }
         for completion in &poll_result.completions {
@@ -785,6 +795,10 @@ impl DaemonApp {
             }
         } else if prompt_completed && active_prompt_status.is_some() {
             let _ = self.complete_active_prompt(session_id)?;
+        } else if !prompt_completed
+            && provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External
+        {
+            crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
         }
         Ok(records)
     }

@@ -1,16 +1,24 @@
+use std::collections::BTreeMap;
+use std::thread::sleep;
 use std::time::Duration;
+use std::time::Instant;
+
+use serde::Serialize;
+use serde_json::{json, Value};
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 use crate::terminal::TerminalOutputKind;
 
-use super::{CodexClient, CodexNotification, CodexRunSelection, CodexSocket, RuntimeProviderRun};
+use super::{
+    codex_client::codex_endpoint_is_healthy, CodexClient, CodexNotification, CodexRunSelection,
+    CodexSocket, ProviderResumeState, RuntimeProviderRun,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {
     pub chunks: Vec<CodexOutputChunk>,
     pub prompt_completed: bool,
-    pub provider_idle: bool,
     pub notices: Vec<String>,
 }
 
@@ -21,6 +29,37 @@ pub struct CodexOutputChunk {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct CodexToolTranscriptState {
+    item: Value,
+    streamed_output: String,
+    progress_messages: Vec<String>,
+    last_emitted: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CodexToolTranscriptUpdate {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
+}
+
 pub struct CodexRuntimeState {
     endpoint: String,
     thread_id: String,
@@ -28,6 +67,7 @@ pub struct CodexRuntimeState {
     next_request_id: u64,
     buffered_notifications: Vec<CodexNotification>,
     active_turn_id: Option<String>,
+    tool_items: BTreeMap<String, CodexToolTranscriptState>,
 }
 
 impl std::fmt::Debug for CodexRuntimeState {
@@ -38,6 +78,7 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
             .field("active_turn_id", &self.active_turn_id)
+            .field("tool_items", &self.tool_items)
             .finish()
     }
 }
@@ -52,9 +93,15 @@ impl CodexRuntimeState {
     }
 }
 
+pub struct CodexRuntimeBinding {
+    pub state: CodexRuntimeState,
+    pub selection: CodexRunSelection,
+    pub resume_state: ProviderResumeState,
+}
+
 pub fn initialize_codex_runtime(
     run: &RuntimeProviderRun,
-) -> Result<(CodexRuntimeState, CodexRunSelection), DaemonError> {
+) -> Result<CodexRuntimeBinding, DaemonError> {
     let endpoint = run
         .structured_endpoint()
         .ok_or_else(|| DaemonError::ProviderProtocol {
@@ -63,6 +110,19 @@ pub fn initialize_codex_runtime(
             message: "codex run did not expose a structured endpoint".to_string(),
         })?
         .to_string();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !codex_endpoint_is_healthy(&endpoint) {
+        if Instant::now() >= deadline {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "codex_endpoint_unhealthy",
+                message: format!(
+                    "timed out waiting for Codex app-server to become healthy at `{endpoint}`"
+                ),
+            });
+        }
+        sleep(Duration::from_millis(100));
+    }
     let client = CodexClient::new(run.id(), &endpoint)?;
     let mut socket = client.connect_initialized()?;
     let mut next_request_id = 1;
@@ -70,27 +130,53 @@ pub fn initialize_codex_runtime(
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
-    let thread = client.thread_start(
-        &mut socket,
-        &mut next_request_id,
-        cwd.as_deref(),
-        model.as_deref(),
-    )?;
-    let selection = CodexRunSelection {
-        model: Some(format!("codex/{}", thread.model)),
-        variant: thread.reasoning_effort,
+    let (thread_id, selection) = match run.resume_state().codex_thread_id().map(str::to_string) {
+        Some(thread_id) => {
+            crate::logging::info_with_fields(
+                "daemon.provider.codex",
+                "reusing codex thread",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "thread_id": thread_id,
+                }),
+            );
+            (
+                thread_id,
+                CodexRunSelection {
+                    model: normalize_resumed_codex_model(run.model()),
+                    variant: normalize_variant(run.variant()),
+                },
+            )
+        }
+        None => {
+            let thread = client.thread_start(
+                &mut socket,
+                &mut next_request_id,
+                cwd.as_deref(),
+                model.as_deref(),
+            )?;
+            (
+                thread.thread.id,
+                CodexRunSelection {
+                    model: Some(format!("codex/{}", thread.model)),
+                    variant: thread.reasoning_effort,
+                },
+            )
+        }
     };
-    Ok((
-        CodexRuntimeState {
+    Ok(CodexRuntimeBinding {
+        state: CodexRuntimeState {
             endpoint,
-            thread_id: thread.thread.id,
+            thread_id: thread_id.clone(),
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
+            tool_items: BTreeMap::new(),
         },
         selection,
-    ))
+        resume_state: ProviderResumeState::from_codex_thread_id(thread_id),
+    })
 }
 
 pub fn submit_codex_prompt(
@@ -139,16 +225,15 @@ pub fn drain_codex_events(
     let mut chunks = Vec::new();
     let mut notices = Vec::new();
     let mut prompt_completed = false;
-    let mut provider_idle = false;
 
-    while let Some(notification) = state.buffered_notifications.pop() {
+    for notification in std::mem::take(&mut state.buffered_notifications) {
         apply_notification(
             notification,
             &mut state.active_turn_id,
+            &mut state.tool_items,
             &mut chunks,
             &mut notices,
             &mut prompt_completed,
-            &mut provider_idle,
         );
     }
 
@@ -161,17 +246,16 @@ pub fn drain_codex_events(
         apply_notification(
             notification,
             &mut state.active_turn_id,
+            &mut state.tool_items,
             &mut chunks,
             &mut notices,
             &mut prompt_completed,
-            &mut provider_idle,
         );
     }
 
     Ok(CodexPollResult {
         chunks,
         prompt_completed,
-        provider_idle,
         notices,
     })
 }
@@ -179,21 +263,69 @@ pub fn drain_codex_events(
 fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
-    provider_idle: &mut bool,
 ) {
     match notification {
-        CodexNotification::AgentMessageDelta { delta, .. } => {
+        CodexNotification::AgentMessageDelta { item_id, delta } => {
             if delta.is_empty() {
                 return;
             }
             chunks.push(CodexOutputChunk {
                 kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("codex-agent-message".to_string()),
+                merge_key: Some(normalize_merge_key(&item_id, "codex-agent-message")),
                 bytes: delta.into_bytes(),
             });
+        }
+        CodexNotification::ReasoningTextDelta { item_id, delta }
+        | CodexNotification::ReasoningSummaryTextDelta { item_id, delta } => {
+            if delta.is_empty() {
+                return;
+            }
+            chunks.push(CodexOutputChunk {
+                kind: TerminalOutputKind::ProviderReasoning,
+                merge_key: Some(normalize_merge_key(&item_id, "codex-reasoning")),
+                bytes: delta.into_bytes(),
+            });
+        }
+        CodexNotification::ReasoningSummaryPartAdded {
+            item_id,
+            summary_index,
+        } => {
+            if summary_index == 0 {
+                return;
+            }
+            chunks.push(CodexOutputChunk {
+                kind: TerminalOutputKind::ProviderReasoning,
+                merge_key: Some(normalize_merge_key(&item_id, "codex-reasoning")),
+                bytes: b"\n\n".to_vec(),
+            });
+        }
+        CodexNotification::ItemStarted { item } | CodexNotification::ItemCompleted { item } => {
+            if let Some(chunk) = sync_tool_item(tool_items, &item) {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::CommandExecutionOutputDelta { item_id, delta } => {
+            if let Some(chunk) =
+                append_tool_output_delta(tool_items, &item_id, "commandExecution", &delta)
+            {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::FileChangeOutputDelta { item_id, delta } => {
+            if let Some(chunk) =
+                append_tool_output_delta(tool_items, &item_id, "fileChange", &delta)
+            {
+                chunks.push(chunk);
+            }
+        }
+        CodexNotification::McpToolCallProgress { item_id, message } => {
+            if let Some(chunk) = append_tool_progress(tool_items, &item_id, &message) {
+                chunks.push(chunk);
+            }
         }
         CodexNotification::TurnStarted { turn_id } => {
             if !turn_id.is_empty() {
@@ -209,7 +341,6 @@ fn apply_notification(
                 *active_turn_id = None;
             }
             *prompt_completed = true;
-            *provider_idle = true;
             if let Some(message) = error_message {
                 notices.push(message);
             } else if status == "failed" {
@@ -219,14 +350,332 @@ fn apply_notification(
         CodexNotification::Error { message } => {
             notices.push(message);
         }
-        _ => {}
     }
 }
 
-fn codex_input(prompt: &str, attachments: &[PromptAttachment]) -> Vec<serde_json::Value> {
+fn sync_tool_item(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item: &Value,
+) -> Option<CodexOutputChunk> {
+    if !is_codex_tool_item(item) {
+        return None;
+    }
+    let item_id = item.get("id").and_then(Value::as_str)?.to_string();
+    let entry = tool_items
+        .entry(item_id.clone())
+        .or_insert_with(|| CodexToolTranscriptState {
+            item: item.clone(),
+            streamed_output: String::new(),
+            progress_messages: Vec::new(),
+            last_emitted: None,
+        });
+    entry.item = item.clone();
+    render_tool_chunk_if_changed(&item_id, entry)
+}
+
+fn append_tool_output_delta(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+    item_type: &str,
+    delta: &str,
+) -> Option<CodexOutputChunk> {
+    if delta.is_empty() {
+        return None;
+    }
+    let entry = tool_items
+        .entry(item_id.to_string())
+        .or_insert_with(|| CodexToolTranscriptState {
+            item: placeholder_tool_item(item_id, item_type),
+            streamed_output: String::new(),
+            progress_messages: Vec::new(),
+            last_emitted: None,
+        });
+    entry.streamed_output.push_str(delta);
+    render_tool_chunk_if_changed(item_id, entry)
+}
+
+fn append_tool_progress(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+    message: &str,
+) -> Option<CodexOutputChunk> {
+    if message.trim().is_empty() {
+        return None;
+    }
+    let entry = tool_items
+        .entry(item_id.to_string())
+        .or_insert_with(|| CodexToolTranscriptState {
+            item: placeholder_tool_item(item_id, "mcpToolCall"),
+            streamed_output: String::new(),
+            progress_messages: Vec::new(),
+            last_emitted: None,
+        });
+    entry.progress_messages.push(message.trim().to_string());
+    render_tool_chunk_if_changed(item_id, entry)
+}
+
+fn render_tool_chunk_if_changed(
+    item_id: &str,
+    state: &mut CodexToolTranscriptState,
+) -> Option<CodexOutputChunk> {
+    let rendered = render_codex_tool_transcript_update(state)?;
+    if state.last_emitted.as_deref() == Some(rendered.as_str()) {
+        return None;
+    }
+    state.last_emitted = Some(rendered.clone());
+    Some(CodexOutputChunk {
+        kind: TerminalOutputKind::ProviderTool,
+        merge_key: Some(item_id.to_string()),
+        bytes: rendered.into_bytes(),
+    })
+}
+
+fn render_codex_tool_transcript_update(state: &CodexToolTranscriptState) -> Option<String> {
+    let item = &state.item;
+    let id = item.get("id").and_then(Value::as_str)?.to_string();
+    let item_type = item.get("type").and_then(Value::as_str)?;
+    let status = normalize_codex_tool_status(
+        item.get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("updated"),
+    );
+
+    let update = match item_type {
+        "commandExecution" => CodexToolTranscriptUpdate {
+            id,
+            tool: Some("bash".to_string()),
+            status: Some(status),
+            title: None,
+            description: item
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(|cwd| format!("cwd {cwd}")),
+            text: None,
+            input: Some(json!({
+                "command": item.get("command").and_then(Value::as_str).unwrap_or_default(),
+                "cwd": item.get("cwd").and_then(Value::as_str).unwrap_or_default(),
+            })),
+            output: prefer_output(
+                item.get("aggregatedOutput").and_then(Value::as_str),
+                &state.streamed_output,
+            ),
+            error: command_execution_error(item),
+            raw: command_execution_raw(item),
+        },
+        "fileChange" => CodexToolTranscriptUpdate {
+            id,
+            tool: Some("apply_patch".to_string()),
+            status: Some(status),
+            title: item
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(|changes| format!("{} file changes", changes.len()))
+                .filter(|title| !title.starts_with('0')),
+            description: None,
+            text: None,
+            input: None,
+            output: prefer_output(None, &state.streamed_output),
+            error: None,
+            raw: item
+                .get("changes")
+                .filter(|value| !is_empty_json_value(value))
+                .map(render_json_value),
+        },
+        "mcpToolCall" => CodexToolTranscriptUpdate {
+            id,
+            tool: item
+                .get("tool")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string)
+                .or_else(|| Some("mcp".to_string())),
+            status: Some(status),
+            title: item
+                .get("server")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string),
+            description: None,
+            text: (!state.progress_messages.is_empty()).then(|| state.progress_messages.join("\n")),
+            input: item
+                .get("arguments")
+                .filter(|value| !is_empty_json_value(value))
+                .cloned(),
+            output: item
+                .get("result")
+                .filter(|value| !is_empty_json_value(value))
+                .map(render_json_value),
+            error: item
+                .get("error")
+                .and_then(|value| {
+                    value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .or_else(|| value.as_str())
+                })
+                .and_then(non_empty)
+                .map(str::to_string),
+            raw: None,
+        },
+        "dynamicToolCall" => CodexToolTranscriptUpdate {
+            id,
+            tool: item
+                .get("tool")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string)
+                .or_else(|| Some("tool".to_string())),
+            status: Some(status),
+            title: None,
+            description: None,
+            text: None,
+            input: item
+                .get("arguments")
+                .filter(|value| !is_empty_json_value(value))
+                .cloned(),
+            output: item
+                .get("contentItems")
+                .filter(|value| !is_empty_json_value(value))
+                .map(render_json_value),
+            error: item
+                .get("success")
+                .and_then(Value::as_bool)
+                .filter(|success| !success)
+                .map(|_| "Dynamic tool call failed".to_string()),
+            raw: None,
+        },
+        "collabAgentToolCall" => CodexToolTranscriptUpdate {
+            id,
+            tool: item
+                .get("tool")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(str::to_string)
+                .or_else(|| Some("collab".to_string())),
+            status: Some(status),
+            title: None,
+            description: None,
+            text: None,
+            input: Some(json!({
+                "prompt": item.get("prompt").cloned().unwrap_or(Value::Null),
+                "receiverThreadIds": item.get("receiverThreadIds").cloned().unwrap_or(Value::Null),
+                "model": item.get("model").cloned().unwrap_or(Value::Null),
+                "reasoningEffort": item.get("reasoningEffort").cloned().unwrap_or(Value::Null),
+            })),
+            output: item
+                .get("agentsStates")
+                .filter(|value| !is_empty_json_value(value))
+                .map(render_json_value),
+            error: None,
+            raw: None,
+        },
+        _ => return None,
+    };
+
+    serde_json::to_string(&update).ok()
+}
+
+fn placeholder_tool_item(item_id: &str, item_type: &str) -> Value {
+    json!({
+        "id": item_id,
+        "type": item_type,
+        "status": "inProgress",
+    })
+}
+
+fn is_codex_tool_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some(
+            "commandExecution"
+                | "fileChange"
+                | "mcpToolCall"
+                | "dynamicToolCall"
+                | "collabAgentToolCall"
+        )
+    )
+}
+
+fn normalize_merge_key(item_id: &str, fallback: &str) -> String {
+    non_empty(item_id).unwrap_or(fallback).to_string()
+}
+
+fn normalize_codex_tool_status(status: &str) -> String {
+    match status {
+        "inProgress" => "running".to_string(),
+        "completed" => "completed".to_string(),
+        "failed" => "error".to_string(),
+        "declined" => "declined".to_string(),
+        other => non_empty(other).unwrap_or("updated").to_string(),
+    }
+}
+
+fn command_execution_error(item: &Value) -> Option<String> {
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if status != "failed" && status != "declined" {
+        return None;
+    }
+    item.get("aggregatedOutput")
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+        .map(str::to_string)
+        .or_else(|| Some(format!("Command {status}")))
+}
+
+fn command_execution_raw(item: &Value) -> Option<String> {
+    let exit_code = item.get("exitCode").and_then(Value::as_i64);
+    let duration = item.get("durationMs").and_then(Value::as_i64);
+    let process_id = item
+        .get("processId")
+        .and_then(Value::as_str)
+        .and_then(non_empty);
+    let mut lines = Vec::new();
+    if let Some(exit_code) = exit_code {
+        lines.push(format!("exit_code: {exit_code}"));
+    }
+    if let Some(duration) = duration {
+        lines.push(format!("duration_ms: {duration}"));
+    }
+    if let Some(process_id) = process_id {
+        lines.push(format!("process_id: {process_id}"));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn prefer_output(primary: Option<&str>, streamed_output: &str) -> Option<String> {
+    primary
+        .and_then(non_empty)
+        .map(str::to_string)
+        .or_else(|| non_empty(streamed_output).map(str::to_string))
+}
+
+fn render_json_value(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn is_empty_json_value(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::Object(items) => items.is_empty(),
+        Value::String(text) => text.trim().is_empty(),
+        _ => false,
+    }
+}
+
+fn codex_input(prompt: &str, attachments: &[PromptAttachment]) -> Vec<Value> {
     let mut input = Vec::new();
     if !prompt.trim().is_empty() {
-        input.push(serde_json::json!({
+        input.push(json!({
             "type": "text",
             "text": prompt,
         }));
@@ -236,12 +685,12 @@ fn codex_input(prompt: &str, attachments: &[PromptAttachment]) -> Vec<serde_json
     for attachment in attachments {
         if attachment.mime().starts_with("image/") {
             if attachment.url().starts_with('/') {
-                input.push(serde_json::json!({
+                input.push(json!({
                     "type": "localImage",
                     "path": attachment.url(),
                 }));
             } else {
-                input.push(serde_json::json!({
+                input.push(json!({
                     "type": "image",
                     "url": attachment.url(),
                 }));
@@ -260,7 +709,7 @@ fn codex_input(prompt: &str, attachments: &[PromptAttachment]) -> Vec<serde_json
     }
 
     if !attachment_notes.is_empty() {
-        input.push(serde_json::json!({
+        input.push(json!({
             "type": "text",
             "text": attachment_notes.join("\n"),
         }));
@@ -277,9 +726,254 @@ fn normalize_codex_model(model: &str) -> Option<String> {
     Some(model.strip_prefix("codex/").unwrap_or(model).to_string())
 }
 
+fn normalize_resumed_codex_model(model: &str) -> Option<String> {
+    let model = model.trim();
+    if model.is_empty() || model == "default" {
+        return None;
+    }
+    Some(if model.starts_with("codex/") {
+        model.to_string()
+    } else {
+        format!("codex/{model}")
+    })
+}
+
 fn normalize_variant(variant: Option<&str>) -> Option<String> {
     variant
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "default")
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::{json, Value};
+
+    use crate::terminal::TerminalOutputKind;
+
+    use super::{
+        apply_notification, render_codex_tool_transcript_update, CodexNotification,
+        CodexOutputChunk, CodexToolTranscriptState,
+    };
+
+    #[test]
+    fn reasoning_and_agent_deltas_preserve_item_merge_keys() {
+        let mut active_turn_id = None;
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+
+        apply_notification(
+            CodexNotification::ReasoningTextDelta {
+                item_id: "reason-1".to_string(),
+                delta: "thinking".to_string(),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        apply_notification(
+            CodexNotification::AgentMessageDelta {
+                item_id: "msg-1".to_string(),
+                delta: "answer".to_string(),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| (
+                    chunk.kind.clone(),
+                    chunk.merge_key.clone().unwrap_or_default(),
+                    String::from_utf8_lossy(&chunk.bytes).into_owned()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    TerminalOutputKind::ProviderReasoning,
+                    "reason-1".to_string(),
+                    "thinking".to_string()
+                ),
+                (
+                    TerminalOutputKind::ProviderOutput,
+                    "msg-1".to_string(),
+                    "answer".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn command_execution_updates_are_rendered_cumulatively() {
+        let mut active_turn_id = None;
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+
+        apply_notification(
+            CodexNotification::ItemStarted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "ls -la",
+                    "cwd": "/tmp",
+                    "status": "inProgress",
+                    "commandActions": [],
+                    "aggregatedOutput": null,
+                    "exitCode": null,
+                    "durationMs": null,
+                    "processId": "pty-1",
+                }),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        apply_notification(
+            CodexNotification::CommandExecutionOutputDelta {
+                item_id: "cmd-1".to_string(),
+                delta: "alpha\n".to_string(),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        apply_notification(
+            CodexNotification::CommandExecutionOutputDelta {
+                item_id: "cmd-1".to_string(),
+                delta: "beta\n".to_string(),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "ls -la",
+                    "cwd": "/tmp",
+                    "status": "completed",
+                    "commandActions": [],
+                    "aggregatedOutput": "alpha\nbeta\n",
+                    "exitCode": 0,
+                    "durationMs": 42,
+                    "processId": "pty-1",
+                }),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+
+        let tool_chunks = chunks
+            .into_iter()
+            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+            .collect::<Vec<CodexOutputChunk>>();
+        assert_eq!(tool_chunks.len(), 4);
+
+        let second = parse_tool_chunk(&tool_chunks[1]);
+        assert_eq!(second["tool"], "bash");
+        assert_eq!(second["status"], "running");
+        assert_eq!(second["output"], "alpha");
+
+        let third = parse_tool_chunk(&tool_chunks[2]);
+        assert_eq!(third["output"], "alpha\nbeta");
+
+        let fourth = parse_tool_chunk(&tool_chunks[3]);
+        assert_eq!(fourth["status"], "completed");
+        assert_eq!(fourth["output"], "alpha\nbeta");
+    }
+
+    #[test]
+    fn mcp_tool_progress_is_projected_into_tool_text() {
+        let rendered = render_codex_tool_transcript_update(&CodexToolTranscriptState {
+            item: json!({
+                "type": "mcpToolCall",
+                "id": "tool-1",
+                "server": "arroba-runtime",
+                "tool": "validate_workflow_output",
+                "status": "inProgress",
+                "arguments": { "value": 1 },
+                "result": null,
+                "error": null,
+                "durationMs": null
+            }),
+            streamed_output: String::new(),
+            progress_messages: vec!["checking schema".to_string()],
+            last_emitted: None,
+        })
+        .expect("payload should render");
+
+        let parsed = serde_json::from_str::<Value>(&rendered).expect("payload should deserialize");
+        assert_eq!(parsed["tool"], "validate_workflow_output");
+        assert_eq!(parsed["title"], "arroba-runtime");
+        assert_eq!(parsed["text"], "checking schema");
+    }
+
+    #[test]
+    fn only_turn_completed_marks_the_prompt_as_complete() {
+        let mut active_turn_id = Some("turn-1".to_string());
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+
+        apply_notification(
+            CodexNotification::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "ls",
+                    "status": "completed",
+                }),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        assert!(!prompt_completed);
+        assert_eq!(active_turn_id.as_deref(), Some("turn-1"));
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut notices,
+            &mut prompt_completed,
+        );
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+    }
+
+    fn parse_tool_chunk(chunk: &CodexOutputChunk) -> Value {
+        serde_json::from_slice(&chunk.bytes).expect("tool chunk should be JSON")
+    }
 }
