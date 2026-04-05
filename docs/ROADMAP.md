@@ -167,6 +167,12 @@ Status:
   - slow-consumer/backpressure validation is done
   - missed-event replay/catch-up validation after reconnect still needs a deeper streaming-focused live drill
   - long-idle heartbeat/liveness validation is still pending
+- workflow runtime/state coverage inside the current M4 slice now also includes:
+  - daemon-owned workflow MCP tools for managed runs
+  - stop/resume for workflow runs with preserved turn envelopes
+  - structured workflow failure events and mailbox routing
+  - CLI workflow inspection of failure/audit state
+  - live mixed-provider workflow drills across Codex and OpenCode
 - recent OpenCode multi-agent stabilization now covers:
   - queued prompts preserving their target agent run even while another agent is actively working
   - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
@@ -195,8 +201,6 @@ Still pending in M4:
 - broader agent interactions for harnessing on top of the current focused-agent runtime
 - same-kernel remote terminal connectivity on top of the hardened kernel-CLI WebSocket transport
 - workflow runnable validation and preflight diagnostics (missing endpoints/nodes/agents, invalid graphs)
-- daemon-managed workflow instruction artifacts per node (system prompt + role guidance)
-- per-edge workflow output schema registry plus agent-facing validation tooling
 - broader automated interaction coverage:
   - deterministic kernel/CLI transcript-flow integration tests
   - PTY-driven terminal smoke tests for visible CLI behavior
@@ -207,6 +211,14 @@ Still pending in M4:
   - file/workspace claim tracking
   - mergeability/integration validation
 - multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
+
+The following workflow-runtime items are no longer pending in M4:
+
+- daemon-managed workflow instruction artifacts per node
+- per-edge workflow output schema registry plus runtime validation tooling
+- managed-run MCP tool exposure for workflow ACK and validation
+- workflow stop/resume with preserved turn-envelope context
+- structured workflow failure/audit state surfaced through runtime and CLI
 
 Exit criteria:
 

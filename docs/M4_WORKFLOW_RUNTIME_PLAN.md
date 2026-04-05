@@ -201,7 +201,10 @@ Status:
 
 - CLI command wiring is landed for `/workflow run`, `/workflow runs`, and `/workflow cancel`
 - the workflow canvas now shows the selected workflow's display run id/status plus per-node status derived from that run
-- richer run browsing, run selection, and historical inspection are still pending
+- `/workflow resume` is now landed
+- the workflow inspector now shows selected-node runtime state, failure events, turn-envelope state, mailbox snapshot, and handoff snapshot
+- live stop/resume drills now cover both single-provider and mixed-provider workflow runs
+- richer historical inspection and dedicated audit-pane UX are still pending
 
 ### Phase 6. Time-based schedules
 

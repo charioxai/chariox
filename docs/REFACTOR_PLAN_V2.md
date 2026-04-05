@@ -95,21 +95,31 @@ Goal:
 - automate MCP attachment for managed provider runs
 - keep tool semantics provider-agnostic while leaving adapter-owned projection details per provider
 
-Status: **In Progress**
+Status: **Partially Complete**
 
-In progress:
+Shipped:
 
-- shared runtime-tool dispatch is moving out of local daemon API handlers so MCP and local APIs can reuse the same transport-owned service
-
-Planned:
-
+- shared transport-owned runtime-tool dispatch reused by local APIs and MCP
 - daemon-owned Arroba MCP server for runtime tools
-- automated managed-run MCP attachment for supported providers
-- later hardening pass for dynamic per-turn tool scoping, per-run isolation, and MCP connection health/reconnect handling
-
-Next runtime-resilience scope:
-
+- automated managed-run MCP attachment for supported Codex and OpenCode runs
+- live-managed MCP path verified for:
+  - `ack_workflow_turn`
+  - `validate_workflow_output`
+  - OpenCode workflow turns
+  - Codex workflow turns
+  - mixed-provider workflow runs
 - structured workflow failure events on workflow runs
 - default `notify` failure policy with mailbox routing to source and affected sink nodes
 - structured audit retrieval through workflow runtime surfaces
 - simplified resume for stopped active node runs using preserved turn envelopes
+- CLI workflow inspector now surfaces runtime failure/audit state for the selected run/node
+- live stop/resume drills now cover:
+  - single-provider workflow runs
+  - mixed-provider workflow runs
+
+Still ahead before this phase can be considered release-ready:
+
+- dynamic per-turn tool scoping
+- stronger per-run MCP isolation/auth hardening
+- MCP connection health/reconnect handling
+- failure taxonomy refinement so user/runtime stops are not reported as provider failures
