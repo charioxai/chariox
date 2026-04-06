@@ -31,7 +31,7 @@ export function formatTranscriptPreview(transcriptEntries: TranscriptEntry[]) {
 
 function previewLineForTranscriptEntry(entry: TranscriptEntry) {
   const text = entry.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
-  if (!text || entry.role === "turn_toggle" || entry.role === "turn_summary") {
+  if (!text || entry.role === "turn_toggle") {
     return null
   }
   const label = entry.role === "user"

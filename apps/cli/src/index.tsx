@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, SyntaxStyle, TextAttributes, TextRenderable, addDefaultParsers, parseKeypress, type KeyBinding, type Renderable, type TextareaRenderable } from "@opentui/core"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
-import { createStore, produce, reconcile } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 
 import type {
   AgentInstance,
@@ -59,7 +59,7 @@ import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntr
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
-import { computeCollapsedHistoryScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { computeAnchoredScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
@@ -175,6 +175,11 @@ import {
 } from "./session-state.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
+import {
+  applyTranscriptDisplayState,
+  findVisibleTurnToggle,
+  setTranscriptBlobCollapsed,
+} from "./transcript-display.js"
 import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
@@ -331,243 +336,6 @@ type PendingPromptAttachment = {
   filename: string
   kind: PromptAttachmentKind
   token: string
-}
-
-function collapseHistoricalTurns(entries: TranscriptEntry[], keepLatestExpanded = true) {
-  const normalizedEntries = normalizeTranscriptTurnIds(entries)
-  const latestTurnId = keepLatestExpanded ? computeCurrentTurnId(normalizedEntries) : null
-  if (keepLatestExpanded && !latestTurnId) {
-    return normalizedEntries
-  }
-
-  let nextId = normalizedEntries.reduce((max, entry) => Math.max(max, entry.id), 0)
-  const result: TranscriptEntry[] = normalizedEntries
-    .filter((entry) => entry.role !== "turn_summary" && entry.role !== "turn_toggle")
-    .map((entry) => {
-      const next: TranscriptEntry = { ...entry }
-      if (latestTurnId !== null && entry.turnId === latestTurnId) {
-        next.hidden = false
-      }
-      return next
-    })
-  const turnIds = [...new Set(result.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
-
-  for (const turnId of turnIds) {
-    if (latestTurnId !== null && turnId === latestTurnId) {
-      for (const entry of result) {
-        if (entry.turnId === turnId) {
-          entry.hidden = false
-        }
-      }
-      continue
-    }
-    const promptIndex = result.findIndex((entry) => entry.turnId === turnId && entry.role === "user")
-    const anchorIndex = promptIndex >= 0
-      ? promptIndex
-      : result.findIndex((entry) => entry.turnId === turnId)
-    if (anchorIndex === -1) {
-      continue
-    }
-    const turnEntries = result.filter((entry) => entry.turnId === turnId && entry.role !== "user")
-    if (turnEntries.length === 0) {
-      continue
-    }
-    const collapsedText = collapsedTurnText(turnEntries)
-    for (const entry of turnEntries) {
-      entry.hidden = true
-    }
-    const inserts: TranscriptEntry[] = []
-    if (collapsedText) {
-      inserts.push({
-        id: ++nextId,
-        role: "turn_summary",
-        text: collapsedText,
-        turnId,
-      })
-    }
-    inserts.push({
-      id: ++nextId,
-      role: "turn_toggle",
-      text: "click to expand turn",
-      turnId,
-      toggleMode: "expand",
-    })
-    result.splice(anchorIndex + 1, 0, ...inserts)
-  }
-
-  return result
-}
-
-function expandLatestTurnForLiveUpdateInPlace(entries: TranscriptEntry[]) {
-  const latestTurnId = computeCurrentTurnId(entries)
-  if (!latestTurnId) {
-    return false
-  }
-
-  let changed = false
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (!entry || entry.turnId !== latestTurnId) {
-      continue
-    }
-    if (entry.role === "turn_toggle" || entry.role === "turn_summary") {
-      entries.splice(index, 1)
-      changed = true
-      continue
-    }
-    if (entry.hidden) {
-      entry.hidden = false
-      changed = true
-    }
-  }
-
-  return changed
-}
-
-function collapseTurnEntries(entries: TranscriptEntry[], turnId: number | null | undefined) {
-  if (!turnId) {
-    return { entries, nextId: entries.reduce((max, entry) => Math.max(max, entry.id), 0), changed: false }
-  }
-
-  const nextEntries = entries.map((entry) => ({ ...entry }))
-  let nextId = nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0)
-  const promptIndex = nextEntries.findIndex((entry) => entry?.turnId === turnId && entry.role === "user")
-  if (promptIndex === -1) {
-    return { entries: nextEntries, nextId, changed: false }
-  }
-
-  for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
-    const entry = nextEntries[index]
-    if (entry?.turnId === turnId && (entry.role === "turn_toggle" || entry.role === "turn_summary")) {
-      nextEntries.splice(index, 1)
-    }
-  }
-
-  const turnEntries = nextEntries.filter(
-    (entry) => entry?.turnId === turnId && entry.role !== "turn_toggle" && entry.role !== "turn_summary",
-  )
-  const collapsibleEntries = turnEntries.filter((entry) => entry.role !== "user")
-  const collapsedText = collapsedTurnText(collapsibleEntries)
-  if (collapsibleEntries.length === 0 || !collapsedText) {
-    return { entries: nextEntries, nextId, changed: false }
-  }
-
-  for (const entry of collapsibleEntries) {
-    entry.hidden = true
-  }
-  nextEntries.splice(
-    promptIndex + 1,
-    0,
-    {
-      id: ++nextId,
-      role: "turn_summary",
-      text: collapsedText,
-      turnId,
-    },
-    {
-      id: ++nextId,
-      role: "turn_toggle",
-      text: "click to expand turn",
-      turnId,
-      toggleMode: "expand",
-    },
-  )
-
-  return { entries: nextEntries, nextId, changed: true }
-}
-
-function expandTurnEntries(entries: TranscriptEntry[], turnId: number | null | undefined) {
-  if (!turnId) {
-    return { entries, nextId: entries.reduce((max, entry) => Math.max(max, entry.id), 0), changed: false }
-  }
-
-  const nextEntries = entries.map((entry) => ({ ...entry }))
-  let nextId = nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0)
-  let changed = false
-
-  for (const entry of nextEntries) {
-    if (!entry || entry.turnId !== turnId) {
-      continue
-    }
-    if (entry.role === "turn_toggle" || entry.role === "turn_summary") {
-      changed = true
-      continue
-    }
-    if (entry.role !== "user" && entry.hidden) {
-      entry.hidden = false
-      changed = true
-    }
-  }
-  for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
-    const entry = nextEntries[index]
-    if (entry?.turnId === turnId && (entry.role === "turn_toggle" || entry.role === "turn_summary")) {
-      nextEntries.splice(index, 1)
-    }
-  }
-  const insertIndex = nextEntries.reduce((lastIndex, entry, index) => {
-    if (!entry || entry.turnId !== turnId) {
-      return lastIndex
-    }
-    return index
-  }, -1)
-  if (changed && insertIndex >= 0) {
-    nextEntries.splice(insertIndex + 1, 0, {
-      id: ++nextId,
-      role: "turn_toggle",
-      text: "click to collapse turn",
-      turnId,
-      toggleMode: "collapse",
-    })
-  }
-
-  return { entries: nextEntries, nextId, changed }
-}
-
-function findVisibleTurnToggle(
-  entries: TranscriptEntry[],
-  turnId: number | null | undefined,
-  toggleEntryId?: number,
-) {
-  if (!turnId) {
-    return undefined
-  }
-  return entries.find((entry) => {
-    if (!entry || entry.turnId !== turnId || entry.role !== "turn_toggle" || entry.hidden) {
-      return false
-    }
-    return toggleEntryId === undefined || entry.id === toggleEntryId
-  })
-}
-
-function normalizeTranscriptTurnIds(entries: TranscriptEntry[]) {
-  let activeTurnId: number | undefined
-  let nextTurnId = 1
-
-  return entries.map((entry) => {
-    const next: TranscriptEntry = { ...entry }
-    if (entry.role === "user") {
-      activeTurnId = entry.turnId ?? nextTurnId
-      next.turnId = activeTurnId
-      nextTurnId = Math.max(nextTurnId, activeTurnId + 1)
-      return next
-    }
-    if (activeTurnId !== undefined) {
-      next.turnId = activeTurnId
-    }
-    return next
-  })
-}
-
-function collapsedTurnText(entries: TranscriptEntry[]) {
-  const visibleEntries = entries.filter((entry) => isUserFacingTurnEntry(entry.role))
-  if (visibleEntries.length > 0) {
-    return visibleEntries.map((entry) => entry.text).join("")
-  }
-  return ""
-}
-
-function isUserFacingTurnEntry(role: TranscriptEntry["role"]) {
-  return role === "assistant" || role === "error" || role === "notice"
 }
 
 type FooterFlash = {
@@ -2354,62 +2122,22 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     await attachPromptFiles(files)
   }
 
-  const collapseTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
-    if (!turnId) {
-      return
-    }
-    const agentId = visibleTranscriptAgentId()
-    const scrollbox = transcriptScrollbox
-    const previousScrollTop = scrollbox?.scrollTop ?? 0
-    const previousViewportHeight = scrollbox?.height ?? 0
-    const previousVisibleTurnHeight = measureVisibleTurnHeight(turnId)
-    const { entries: nextEntries, nextId, changed } = collapseTurnEntries(entries.filter(Boolean), turnId)
-    setEntries(reconcile(nextEntries))
-    setEntryCounter(nextId)
-    if (changed) {
-      setExpandedTurnState(agentId, turnId, false)
-      persistVisibleTranscriptEntries(nextEntries)
-    }
-    // Always rebuild transcript even if nothing collapsed (to ensure UI consistency)
-    rebuildTranscript()
-    if (scrollbox && changed) {
-      restoreTurnScrollPosition(
-        scrollbox,
-        turnId,
-        previousScrollTop,
-        previousViewportHeight,
-        previousVisibleTurnHeight,
-      )
-    }
+  const expandedTurnIdsForAgent = (agentId: string | null | undefined) => agentId ? (expandedTurnIdsByAgent()[agentId] ?? []) : []
+
+  const applyVisibleTranscriptState = (
+    nextEntries: TranscriptEntry[],
+    agentId: string | null | undefined = visibleTranscriptAgentId(),
+  ) => {
+    const preparedEntries = applyTranscriptDisplayState(nextEntries, expandedTurnIdsForAgent(agentId))
+    setEntries(reconcile(preparedEntries))
+    setEntryCounter(preparedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+    return preparedEntries
   }
 
-  const expandTurn = (turnId: number | null | undefined) => {
-    if (!turnId) {
-      return
-    }
-    const agentId = visibleTranscriptAgentId()
-    const scrollbox = transcriptScrollbox
-    const previousScrollTop = scrollbox?.scrollTop ?? 0
-    const previousViewportHeight = scrollbox?.height ?? 0
-    const previousVisibleTurnHeight = measureVisibleTurnHeight(turnId)
-    const { entries: nextEntries, nextId, changed } = expandTurnEntries(entries.filter(Boolean), turnId)
-    setEntries(reconcile(nextEntries))
-    if (!changed) {
-      return
-    }
-    setExpandedTurnState(agentId, turnId, true)
-    setEntryCounter(nextId)
-    persistVisibleTranscriptEntries(nextEntries)
-    rebuildTranscript()
-    if (scrollbox) {
-      restoreTurnScrollPosition(
-        scrollbox,
-        turnId,
-        previousScrollTop,
-        previousViewportHeight,
-        previousVisibleTurnHeight,
-      )
-    }
+  const findTurnAnchorEntryId = (turnId: number) => {
+    return entries.find((entry) => entry.turnId === turnId && entry.role === "user")?.id
+      ?? entries.find((entry) => entry.turnId === turnId && entry.role !== "turn_toggle")?.id
+      ?? null
   }
 
   const toggleTurn = (turnId: number | null | undefined, toggleEntryId?: number) => {
@@ -2420,12 +2148,30 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (toggleEntryId !== undefined && !toggleEntry) {
       return
     }
-    if (toggleEntry?.toggleMode === "expand") {
-      expandTurn(turnId)
-      retainPromptFocus()
-      return
-    }
-    collapseTurn(turnId, toggleEntryId)
+    const agentId = visibleTranscriptAgentId()
+    const expanding = toggleEntry?.toggleMode === "expand"
+    const anchor = captureTranscriptScrollAnchor(transcriptScrollbox, transcriptRenderables, findTurnAnchorEntryId(turnId))
+    setExpandedTurnState(agentId, turnId, expanding)
+    const nextEntries = applyTranscriptDisplayState(entries.filter(Boolean), expanding
+      ? [...expandedTurnIdsForAgent(agentId), turnId]
+      : expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId))
+    setEntries(reconcile(nextEntries))
+    setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+    persistVisibleTranscriptEntries(nextEntries)
+    rebuildTranscript()
+    restoreTranscriptScrollAnchor(anchor, transcriptRenderables)
+    retainPromptFocus()
+  }
+
+  const toggleBlob = (entryId: number, collapsed: boolean) => {
+    const agentId = visibleTranscriptAgentId()
+    const anchor = captureTranscriptScrollAnchor(transcriptScrollbox, transcriptRenderables, entryId)
+    const nextEntries = setTranscriptBlobCollapsed(entries.filter(Boolean), entryId, expandedTurnIdsForAgent(agentId), collapsed)
+    setEntries(reconcile(nextEntries))
+    setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+    persistVisibleTranscriptEntries(nextEntries)
+    rebuildTranscript()
+    restoreTranscriptScrollAnchor(anchor, transcriptRenderables)
     retainPromptFocus()
   }
 
@@ -2435,9 +2181,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (nextEntry.turnId === undefined && currentTurnId !== null) {
       nextEntry.turnId = currentTurnId
     }
-    setEntryCounter(nextId)
-    setEntries(entries.length, nextEntry)
-    mountTranscriptEntry(nextEntry)
+    const nextEntries = applyVisibleTranscriptState([...entries.filter(Boolean), nextEntry])
+    persistVisibleTranscriptEntries(nextEntries)
+    rebuildTranscript()
     enforceTranscriptRetention()
   }
 
@@ -2687,75 +2433,62 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     cancelPendingTurnCompletion()
     setWorking(true)
     setSubmitting(false)
-    let mergedEntryId: number | undefined
-    let mergedText: string | undefined
-    let nextEntry: TranscriptEntry | undefined
-    const nextId = entryCounter() + 1
-    setEntries(
-      produce((draft) => {
-        expandLatestTurnForLiveUpdateInPlace(draft)
-        if (mergeKey) {
-          let existing: TranscriptEntry | undefined
-          for (let index = draft.length - 1; index >= 0; index -= 1) {
-            const candidate = draft[index]
-            if (candidate?.role === role && candidate.mergeKey === mergeKey) {
-              existing = candidate
-              break
-            }
+    const nextEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
+    let merged = false
+
+    if (mergeKey) {
+      for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
+        const candidate = nextEntries[index]
+        if (candidate?.role !== role || candidate.mergeKey !== mergeKey) {
+          continue
+        }
+        if (role === "assistant" || role === "reasoning") {
+          candidate.text += normalized
+          if (normalizedSource !== undefined) {
+            candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
           }
-          if (existing) {
-            if (role === "assistant" || role === "reasoning") {
-              existing.text += normalized
-              if (normalizedSource !== undefined) {
-                existing.sourceText = `${existing.sourceText ?? ""}${normalizedSource}`
-              }
-            } else {
-              existing.text = normalized
-              if (normalizedSource !== undefined) existing.sourceText = normalizedSource
-            }
-            mergedEntryId = existing.id
-            mergedText = existing.text
-            return
+        } else {
+          candidate.text = normalized
+          if (normalizedSource !== undefined) {
+            candidate.sourceText = normalizedSource
           }
         }
-        const last = draft.at(-1)
-        if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
-          last.text += normalized
-          mergedEntryId = last.id
-          mergedText = last.text
-          return
-        }
-        nextEntry = {
-          id: nextId,
-          role,
-          text: normalized,
-        }
-        if (currentTurnId !== null) {
-          nextEntry.turnId = currentTurnId
-        }
-        if (mergeKey) {
-          nextEntry.mergeKey = mergeKey
-        }
-        if (normalizedSource !== undefined) {
-          nextEntry.sourceText = normalizedSource
-        }
-        draft.push(nextEntry)
-      }),
-    )
-    if (mergedEntryId !== undefined && mergedText !== undefined) {
-      logVisibleTranscriptOutput(role, mergedText, true, mergeKey)
-      updateTranscriptEntry(mergedEntryId, mergedText, normalizedSource)
-      enforceTranscriptRetention()
-      maybeScheduleConfirmedTurnCompletion()
-      return
+        merged = true
+        break
+      }
     }
-    if (!nextEntry) {
-      maybeScheduleConfirmedTurnCompletion()
-      return
+
+    if (!merged) {
+      const last = [...nextEntries].reverse().find((entry) => entry.role !== "turn_toggle")
+      if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
+        last.text += normalized
+        merged = true
+      }
     }
-    setEntryCounter(nextId)
-    mountTranscriptEntry(nextEntry)
-    logVisibleTranscriptOutput(role, nextEntry.text, false, mergeKey)
+
+    if (!merged) {
+      const nextEntry: TranscriptEntry = {
+        id: entryCounter() + 1,
+        role,
+        text: normalized,
+      }
+      if (currentTurnId !== null) {
+        nextEntry.turnId = currentTurnId
+      }
+      if (mergeKey) {
+        nextEntry.mergeKey = mergeKey
+      }
+      if (normalizedSource !== undefined) {
+        nextEntry.sourceText = normalizedSource
+      }
+      nextEntries.push(nextEntry)
+    }
+
+    const preparedEntries = applyVisibleTranscriptState(nextEntries)
+    persistVisibleTranscriptEntries(preparedEntries)
+    rebuildTranscript()
+    const loggedEntry = [...preparedEntries].reverse().find((entry) => entry.role === role && (mergeKey ? entry.mergeKey === mergeKey : true))
+    logVisibleTranscriptOutput(role, loggedEntry?.text ?? normalized, merged, mergeKey)
     enforceTranscriptRetention()
     maybeScheduleConfirmedTurnCompletion()
   }
@@ -3457,18 +3190,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const applyExpandedTurns = (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => {
-    if (expandedTurnIds.length === 0) {
-      return entries
-    }
-
-    let nextEntries = entries.map((entry) => ({ ...entry }))
-    let changed = false
-    for (const turnId of expandedTurnIds) {
-      const expanded = expandTurnEntries(nextEntries, turnId)
-      nextEntries = expanded.entries
-      changed ||= expanded.changed
-    }
-    return changed ? nextEntries : entries
+    return applyTranscriptDisplayState(entries, expandedTurnIds)
   }
 
   const persistVisibleTranscriptEntries = (nextEntries: TranscriptEntry[]) => {
@@ -3489,7 +3211,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const setAgentTranscriptEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
-    const sanitizedEntries = nextEntries.filter(Boolean)
+    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(agentId))
     setAgentPaneEntries((current) => ({
       ...current,
       [agentId]: sanitizedEntries,
@@ -3538,11 +3260,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const expandLatestPaneTurnForLiveUpdate = (items: TranscriptEntry[]) => {
-    const nextItems = items.map((entry) => ({ ...entry }))
-    return expandLatestTurnForLiveUpdateInPlace(nextItems) ? nextItems : items
-  }
-
   const hasTrailingUserPrompt = (agentId: string, text: string) => {
     const lastEntry = currentAgentPaneEntries(agentId).at(-1)
     return lastEntry?.role === "user" && trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
@@ -3558,15 +3275,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const expanding = toggleEntry?.toggleMode === "expand"
-    const { entries: nextEntries, changed } = expanding
-      ? expandTurnEntries(currentEntries, turnId)
-      : collapseTurnEntries(currentEntries, turnId)
-
-    if (!changed) {
-      return
-    }
+    const scrollbox = agentTranscriptScrollboxes.get(agentId)
+    const anchor = captureTranscriptScrollAnchor(
+      scrollbox,
+      auxiliaryAgentPaneRenderables(agentId),
+      currentEntries.find((entry) => entry.turnId === turnId && entry.role === "user")?.id
+        ?? currentEntries.find((entry) => entry.turnId === turnId && entry.role !== "turn_toggle")?.id
+        ?? null,
+    )
     setExpandedTurnState(agentId, turnId, expanding)
-    setAgentTranscriptEntries(agentId, nextEntries)
+    setAgentTranscriptEntries(
+      agentId,
+      applyTranscriptDisplayState(currentEntries, expanding
+        ? [...expandedTurnIdsForAgent(agentId), turnId]
+        : expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)),
+    )
+    restoreTranscriptScrollAnchor(anchor, auxiliaryAgentPaneRenderables(agentId))
+    retainPromptFocus()
+  }
+
+  const toggleAuxiliaryPaneBlob = (agentId: string, entryId: number, collapsed: boolean) => {
+    const currentEntries = currentAgentPaneEntries(agentId)
+    const anchor = captureTranscriptScrollAnchor(
+      agentTranscriptScrollboxes.get(agentId),
+      auxiliaryAgentPaneRenderables(agentId),
+      entryId,
+    )
+    setAgentTranscriptEntries(
+      agentId,
+      setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed),
+    )
+    restoreTranscriptScrollAnchor(anchor, auxiliaryAgentPaneRenderables(agentId))
     retainPromptFocus()
   }
 
@@ -3608,6 +3347,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         entry,
         transcriptSyntax,
         (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
+        (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
         surfaceTone,
       )
       renderables.set(entry.id, renderable)
@@ -3672,7 +3412,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const appendTranscriptEntryToAgentPane = (agentId: string, entry: Omit<TranscriptEntry, "id">) => {
-    const currentEntries = expandLatestPaneTurnForLiveUpdate(currentAgentPaneEntries(agentId))
+    const currentEntries = currentAgentPaneEntries(agentId).map((item) => ({ ...item }))
     const nextEntry: TranscriptEntry = {
       id: currentEntries.reduce((max, current) => Math.max(max, current.id), 0) + 1,
       ...entry,
@@ -3709,7 +3449,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
 
-    const currentEntries = expandLatestPaneTurnForLiveUpdate(currentAgentPaneEntries(agentId))
+    const currentEntries = currentAgentPaneEntries(agentId).map((entry) => ({ ...entry }))
     const nextEntries = currentEntries.map((entry) => ({ ...entry }))
     if (mergeKey) {
       for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
@@ -3740,7 +3480,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
 
-    const last = nextEntries.at(-1)
+    const last = [...nextEntries].reverse().find((entry) => entry.role !== "turn_toggle")
     if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
       last.text += normalized
       setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
@@ -3872,6 +3612,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       entry,
       transcriptSyntax,
       toggleTurn,
+      toggleBlob,
       primaryTranscriptSurfaceTone(),
     )
     transcriptRenderables.set(entry.id, renderable)
@@ -3900,52 +3641,69 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     requestTranscriptRender()
   }
 
-  const measureVisibleTurnHeight = (turnId: number | null | undefined) => {
-    if (!turnId) {
-      return 0
+  const captureTranscriptScrollAnchor = (
+    scrollbox: ScrollBoxRenderable | undefined,
+    renderables: Map<number, TranscriptEntryRenderable>,
+    entryId: number | null | undefined,
+  ) => {
+    if (!scrollbox || !entryId) {
+      return null
     }
-    return visibleTranscriptEntries()
-      .filter((entry) => entry.turnId === turnId && !entry.historyDeferred)
-      .reduce((total, entry) => total + (transcriptRenderables.get(entry.id)?.wrapper.height ?? 0), 0)
+    const renderable = renderables.get(entryId)
+    if (!renderable) {
+      return null
+    }
+    return {
+      scrollbox,
+      entryId,
+      offset: Math.max(0, renderable.wrapper.y - scrollbox.scrollTop),
+    }
   }
 
-  const restoreTurnScrollPosition = (
-    scrollbox: ScrollBoxRenderable,
-    turnId: number,
-    previousScrollTop: number,
-    previousViewportHeight: number,
-    previousVisibleTurnHeight: number,
+  const restoreTranscriptScrollAnchor = (
+    anchor: { scrollbox: ScrollBoxRenderable; entryId: number; offset: number } | null,
+    renderables: Map<number, TranscriptEntryRenderable>,
   ) => {
+    if (!anchor) {
+      return
+    }
     const restoreToken = ++pendingHistoryScrollRestore
-    const restoreScroll = (remainingAttempts: number, lastHeight = -1, stableFrames = 0) => {
-      if (!transcriptScrollbox || transcriptScrollbox !== scrollbox || restoreToken !== pendingHistoryScrollRestore) {
+    const restoreScroll = (remainingAttempts: number, lastY = Number.NaN, stableFrames = 0) => {
+      if (restoreToken !== pendingHistoryScrollRestore) {
         pendingHistoryScrollRestore = 0
         return
       }
-
-      const nextVisibleTurnHeight = measureVisibleTurnHeight(turnId)
-      const nextScrollTop = computeCollapsedHistoryScrollTop(
-        previousScrollTop,
-        previousVisibleTurnHeight,
-        nextVisibleTurnHeight,
-        previousViewportHeight,
+      const renderable = renderables.get(anchor.entryId)
+      const nextY = renderable?.wrapper.y
+      if (nextY === undefined) {
+        pendingHistoryScrollRestore = 0
+        return
+      }
+      const nextScrollTop = computeAnchoredScrollTop(
+        anchor.offset,
+        nextY,
+        anchor.scrollbox.scrollHeight,
+        anchor.scrollbox.height,
       )
-
-      scrollbox.scrollTo({ x: scrollbox.scrollLeft, y: nextScrollTop })
-      scrollbox.requestRender()
-      lastTranscriptScrollTop = scrollbox.scrollTop
-
-      const closeEnough = Math.abs(scrollbox.scrollTop - nextScrollTop) <= 1
-      const nextStableFrames = nextVisibleTurnHeight === lastHeight ? stableFrames + 1 : 0
+      if (nextScrollTop === null) {
+        pendingHistoryScrollRestore = 0
+        return
+      }
+      anchor.scrollbox.scrollTo({ x: anchor.scrollbox.scrollLeft, y: nextScrollTop })
+      anchor.scrollbox.requestRender()
+      if (anchor.scrollbox === transcriptScrollbox) {
+        lastTranscriptScrollTop = anchor.scrollbox.scrollTop
+      }
+      const closeEnough = Math.abs(anchor.scrollbox.scrollTop - nextScrollTop) <= 1
+      const nextStableFrames = nextY === lastY ? stableFrames + 1 : 0
       if ((closeEnough && nextStableFrames >= 1) || remainingAttempts <= 1) {
         pendingHistoryScrollRestore = 0
         return
       }
-
-      startTimeout(() => restoreScroll(remainingAttempts - 1, nextVisibleTurnHeight, nextStableFrames), 16)
+      startTimeout(() => restoreScroll(remainingAttempts - 1, nextY, nextStableFrames), 16)
     }
 
-    scrollbox.requestRender()
+    anchor.scrollbox.requestRender()
     startTimeout(() => restoreScroll(4), 0)
   }
 
@@ -4065,7 +3823,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousScrollTop = scrollbox?.scrollTop ?? 0
     const previousScrollHeight = scrollbox?.scrollHeight ?? 0
     const previousViewportHeight = scrollbox?.height ?? 0
-    const sanitizedEntries = nextEntries.filter(Boolean)
+    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(transcriptAgentId))
     tools.clear()
     currentTurnId = computeCurrentTurnId(sanitizedEntries)
     nextTurnId = computeNextTurnId(sanitizedEntries)
@@ -4160,7 +3918,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const previousScrollHeight = transcriptScrollbox?.scrollHeight ?? 0
     const previousScrollTop = transcriptScrollbox?.scrollTop ?? 0
     const previousViewportHeight = transcriptScrollbox?.height ?? 0
-    const nextCombinedEntries = stitchPrependedHistory(sanitizedEntries, currentEntries)
+    const nextCombinedEntries = applyTranscriptDisplayState(
+      stitchPrependedHistory(sanitizedEntries, currentEntries),
+      expandedTurnIdsForAgent(visibleTranscriptAgentId()),
+    )
     currentTurnId = computeCurrentTurnId(nextCombinedEntries)
     nextTurnId = computeNextTurnId(nextCombinedEntries)
     setEntries(reconcile(nextCombinedEntries))

@@ -25,7 +25,7 @@ export function selectCurrentAgentPaneEntries<TEntry extends object>(options: {
 }
 
 function countRenderablePaneEntries<TEntry extends { role: string }>(entries: readonly TEntry[]) {
-  return entries.filter((entry) => entry.role !== "turn_summary" && entry.role !== "turn_toggle").length
+  return entries.filter((entry) => entry.role !== "turn_toggle").length
 }
 
 function totalPaneTextLength<TEntry extends { text: string }>(entries: readonly TEntry[]) {

@@ -163,7 +163,7 @@ export type SessionHistoryEntry = {
 
 export type TranscriptEntry = {
   id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_summary" | "turn_toggle"
+  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
   text: string
   sourceText?: string
   mergeKey?: string
@@ -171,6 +171,10 @@ export type TranscriptEntry = {
   turnId?: number
   hidden?: boolean
   toggleMode?: "expand" | "collapse"
+  blobCollapsible?: boolean
+  blobCollapsed?: boolean
+  blobTitle?: string
+  blobSummary?: string
   historyDeferred?: boolean
   historyEntryIndex?: number
   historyFragmentStart?: number

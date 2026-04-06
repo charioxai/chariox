@@ -38,102 +38,73 @@ export function buildTranscriptEntryRenderable(
   entry: TranscriptEntry,
   transcriptSyntax: SyntaxStyle,
   onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
+  onToggleBlob: (entryId: number, collapsed: boolean) => void,
   surfaceTone: TranscriptSurfaceTone = "default",
 ) {
-  const patch = readTranscriptApplyPatch(entry)
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 1,
     flexDirection: "column",
   })
-  const bodyColor = transcriptBodyColor(entry, surfaceTone)
-  const body = new BoxRenderable(renderer, {
-    paddingLeft: 1,
-    paddingRight: 0,
-    paddingTop: 1,
-    paddingBottom: 1,
-    ...(bodyColor ? { backgroundColor: bodyColor } : {}),
-  })
   let update: (nextEntry: TranscriptEntry) => void
 
-  if (patch) {
-    buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax, surfaceTone)
-    update = (nextEntry) => {
-      for (const child of body.getChildren()) {
-        body.remove(child.id)
-        child.destroyRecursively()
-      }
-      const nextPatch = readTranscriptApplyPatch(nextEntry)
-      if (nextPatch) {
-        buildApplyPatchTranscriptContent(renderer, body, nextPatch, transcriptSyntax, surfaceTone)
-        return
-      }
-      const markdown = new MarkdownRenderable(renderer, {
-        content: normalizeMarkdownFenceInfoStrings(nextEntry.text),
-        syntaxStyle: transcriptSyntax,
-        conceal: true,
-        concealCode: false,
-        streaming: true,
-      })
-      body.add(markdown)
-      markdown.requestRender()
+  const render = (nextEntry: TranscriptEntry) => {
+    for (const child of wrapper.getChildren()) {
+      wrapper.remove(child.id)
+      child.destroyRecursively()
     }
-  } else if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
-    const markdown = new MarkdownRenderable(renderer, {
-      content: normalizeMarkdownFenceInfoStrings(entry.text),
-      syntaxStyle: transcriptSyntax,
-      conceal: true,
-      concealCode: false,
-      streaming: true,
-    })
-    body.add(markdown)
-    update = (nextEntry) => {
-      markdown.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
-      markdown.streaming = true
-      markdown.requestRender()
-    }
-  } else {
-    const text = new TextRenderable(renderer, {
-      fg: transcriptTextColor(entry),
-      wrapMode: "word",
-    })
-    if (entry.role === "turn_toggle") {
-      text.onMouseUp = (event) => {
-        if (event.button !== MouseButton.LEFT) {
-          return
-        }
-        event.stopPropagation()
-        startTimeout(() => {
-          onToggleTurn(entry.turnId, entry.id)
-        }, 0)
-      }
-    }
-    applyTranscriptTextContent(text, entry)
-    body.add(text)
-    update = (nextEntry) => {
-      applyTranscriptTextContent(text, nextEntry)
-    }
-  }
 
-  if (transcriptUsesAccentBorder(entry)) {
-    const border = new BoxRenderable(renderer, {
-      border: ["left"],
-      customBorderChars: SplitBorder.customBorderChars,
-      borderColor: transcriptAccent(entry),
+    const bodyColor = transcriptBodyColor(nextEntry, surfaceTone)
+    const body = new BoxRenderable(renderer, {
+      paddingLeft: 1,
+      paddingRight: 0,
+      paddingTop: 1,
+      paddingBottom: 1,
+      flexDirection: "column",
+      ...(bodyColor ? { backgroundColor: bodyColor } : {}),
     })
-    border.add(body)
-    wrapper.add(border)
-  } else {
+
+    if (shouldRenderCollapsedTranscriptBlob(nextEntry)) {
+      buildCollapsedTranscriptBlob(renderer, body, nextEntry, onToggleBlob)
+    } else if (nextEntry.role === "turn_toggle") {
+      buildTurnToggleContent(renderer, body, nextEntry, onToggleTurn)
+    } else {
+      buildExpandedTranscriptContent(renderer, body, nextEntry, transcriptSyntax, surfaceTone)
+      if (nextEntry.blobCollapsible) {
+        body.add(buildBlobToggleLabel(renderer, "click to collapse", () => onToggleBlob(nextEntry.id, true)))
+      }
+    }
+
+    if (transcriptUsesAccentBorder(nextEntry)) {
+      const border = new BoxRenderable(renderer, {
+        border: ["left"],
+        customBorderChars: SplitBorder.customBorderChars,
+        borderColor: transcriptAccent(nextEntry),
+      })
+      border.add(body)
+      wrapper.add(border)
+      return
+    }
+
     wrapper.add(body)
   }
+
+  render(entry)
+  update = render
 
   return { entry, wrapper, update }
 }
 
 export function transcriptRenderMode(entry: TranscriptEntry) {
+  if (shouldRenderCollapsedTranscriptBlob(entry)) {
+    return "blob-collapsed"
+  }
+  if (entry.role === "turn_toggle") {
+    return "turn-toggle"
+  }
   if (readTranscriptApplyPatch(entry)) {
     return "patch"
   }
-  if (shouldRenderTranscriptAsMarkdown(entry.role === "turn_summary" ? "assistant" : entry.role, entry.text)) {
+  if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
     return "markdown"
   }
   return "text"
@@ -168,6 +139,103 @@ export function transcriptSurfacePalette(surfaceTone: TranscriptSurfaceTone) {
 export function renderPromptTranscript(prompt: string) {
   const text = prompt.trimEnd()
   return text ? `${text}\n` : ""
+}
+
+function shouldRenderCollapsedTranscriptBlob(entry: TranscriptEntry) {
+  return entry.blobCollapsible === true && entry.blobCollapsed !== false
+}
+
+function buildExpandedTranscriptContent(
+  renderer: RenderContext,
+  body: BoxRenderable,
+  entry: TranscriptEntry,
+  transcriptSyntax: SyntaxStyle,
+  surfaceTone: TranscriptSurfaceTone,
+) {
+  const patch = readTranscriptApplyPatch(entry)
+  if (patch) {
+    buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax, surfaceTone)
+    return
+  }
+
+  if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
+    const markdown = new MarkdownRenderable(renderer, {
+      content: normalizeMarkdownFenceInfoStrings(entry.text),
+      syntaxStyle: transcriptSyntax,
+      conceal: true,
+      concealCode: false,
+      streaming: true,
+    })
+    body.add(markdown)
+    markdown.requestRender()
+    return
+  }
+
+  const text = new TextRenderable(renderer, {
+    fg: transcriptTextColor(entry),
+    wrapMode: "word",
+  })
+  applyTranscriptTextContent(text, entry)
+  body.add(text)
+}
+
+function buildTurnToggleContent(
+  renderer: RenderContext,
+  body: BoxRenderable,
+  entry: TranscriptEntry,
+  onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
+) {
+  const text = new TextRenderable(renderer, {
+    fg: transcriptTextColor(entry),
+    wrapMode: "word",
+  })
+  text.onMouseUp = (event) => {
+    if (event.button !== MouseButton.LEFT) {
+      return
+    }
+    event.stopPropagation()
+    startTimeout(() => {
+      onToggleTurn(entry.turnId, entry.id)
+    }, 0)
+  }
+  applyTranscriptTextContent(text, entry)
+  body.add(text)
+}
+
+function buildCollapsedTranscriptBlob(
+  renderer: RenderContext,
+  body: BoxRenderable,
+  entry: TranscriptEntry,
+  onToggleBlob: (entryId: number, collapsed: boolean) => void,
+) {
+  body.gap = 1
+  body.add(
+    new TextRenderable(renderer, {
+      content: [entry.blobTitle, entry.blobSummary].filter(Boolean).join("  "),
+      fg: transcriptTextColor(entry),
+      wrapMode: "word",
+      attributes: TextAttributes.BOLD,
+    }),
+  )
+  body.add(buildBlobToggleLabel(renderer, "click to expand", () => onToggleBlob(entry.id, false)))
+}
+
+function buildBlobToggleLabel(renderer: RenderContext, content: string, onClick: () => void) {
+  const text = new TextRenderable(renderer, {
+    content,
+    fg: theme.textMuted,
+    wrapMode: "word",
+  })
+  text.onMouseUp = (event) => {
+    if (event.button !== MouseButton.LEFT) {
+      return
+    }
+    event.stopPropagation()
+    startTimeout(() => {
+      onClick()
+    }, 0)
+  }
+  return text
 }
 
 function readTranscriptApplyPatch(entry: TranscriptEntry) {
@@ -388,9 +456,6 @@ function transcriptAccent(entry: TranscriptEntry) {
         ? theme.warning
         : theme.textMuted
   }
-  if (entry.role === "turn_summary") {
-    return theme.borderSubtle
-  }
   if (entry.role === "turn_toggle") {
     return theme.info
   }
@@ -407,9 +472,6 @@ function transcriptBodyColor(entry: TranscriptEntry, surfaceTone: TranscriptSurf
     return null
   }
   if (entry.role === "error") {
-    return palette.panel
-  }
-  if (entry.role === "turn_summary") {
     return palette.panel
   }
   return entry.role === "assistant" || entry.role === "reasoning"
@@ -439,9 +501,6 @@ function transcriptTextColor(entry: TranscriptEntry) {
       : entry.emphasis === "warning"
         ? theme.warning
         : theme.textMuted
-  }
-  if (entry.role === "turn_summary") {
-    return theme.text
   }
   if (entry.role === "turn_toggle") {
     return theme.info
