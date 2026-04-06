@@ -51,13 +51,15 @@ test("waiting room cycles model and effort from provider catalog", () => {
 
 test("waiting room renders indented sections and scrolls existing sessions", () => {
   const catalog = fallbackProviderCatalog()
+  const baseCreatedAt = Date.UTC(2026, 3, 6, 10, 0)
   const sessions = Array.from({ length: MAX_VISIBLE_WAITING_ROOM_SESSIONS + 3 }, (_, index) => ({
     id: `session-${index + 1}`,
     alias: index === 0 ? "alpha" : null,
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",
     status: index % 2 === 0 ? "Active" : "Parked",
-    created_at_ms: index,
+    created_at_ms: baseCreatedAt + index * 60_000,
+    last_used_at_ms: baseCreatedAt + index * 60_000 + 3_600_000,
     attachment_ids: [],
   }))
 
@@ -67,7 +69,15 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.indent, 1)
   assert.equal(firstWindow[3]?.title, "Variant")
-  assert.equal(firstWindow[5]?.title, "alpha")
+  assert.deepEqual(
+    firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
+    ["Status", "Last used", "Created at"],
+  )
+  assert.equal(firstWindow[6]?.title, "alpha")
+  assert.deepEqual(
+    firstWindow[6]?.columns?.map((cell) => cell.trim()),
+    ["Active", "2026-04-06 11:00 UTC", "2026-04-06 10:00 UTC"],
+  )
   assert.equal(firstWindow.filter((row) => row.id.startsWith("session:")).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
   assert.equal(firstWindow.some((row) => row.scrollbar === "#"), true)
 
@@ -77,7 +87,7 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
 
   const scrolledWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(scrolledWindow.find((row) => row.focused)?.title, "session-11")
-  assert.equal(scrolledWindow[5]?.title, "session-2")
+  assert.equal(scrolledWindow[6]?.title, "session-2")
 })
 
 test("arrobaArtFrame resolves to the clean logo after the intro completes", () => {

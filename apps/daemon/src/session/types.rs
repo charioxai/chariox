@@ -1268,6 +1268,7 @@ pub struct RuntimeSession {
     host_machine_id: String,
     host_daemon_id: String,
     created_at_ms: u64,
+    last_used_at_ms: Option<u64>,
     execution_mode: SessionExecutionMode,
     status: SessionStatus,
     active_provider_run_id: Option<String>,
@@ -1295,6 +1296,7 @@ impl RuntimeSession {
     ) -> Self {
         let id = id.into();
         let worktree_id = worktree_id.into();
+        let now = unix_epoch_ms();
 
         Self {
             id: id.clone(),
@@ -1303,7 +1305,8 @@ impl RuntimeSession {
             worktree_id: worktree_id.clone(),
             host_machine_id: host_machine_id.into(),
             host_daemon_id: host_daemon_id.into(),
-            created_at_ms: unix_epoch_ms(),
+            created_at_ms: now,
+            last_used_at_ms: Some(now),
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             active_provider_run_id: None,
@@ -1346,6 +1349,9 @@ impl RuntimeSession {
     }
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
+    }
+    pub fn last_used_at_ms(&self) -> Option<u64> {
+        self.last_used_at_ms
     }
     pub fn status(&self) -> SessionStatus {
         self.status
@@ -1414,6 +1420,10 @@ impl RuntimeSession {
 
     pub fn set_focused_agent(&mut self, agent_id: Option<String>) {
         self.focused_agent_id = agent_id;
+    }
+
+    pub fn touch(&mut self) {
+        self.last_used_at_ms = Some(unix_epoch_ms());
     }
 
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {

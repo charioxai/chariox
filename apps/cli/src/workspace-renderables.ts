@@ -179,11 +179,11 @@ export function buildNoSessionRenderable(
   for (const row of rows) {
     const prefix = row.focused ? ">" : " "
     const indent = "  ".repeat(row.indent)
-    const value = row.value ? ` ${row.value}` : ""
+    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
     const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
     menu.add(
       new TextRenderable(renderer, {
-        content: `${prefix} ${indent}${row.title.padEnd(22 - indent.length, " ")}${value}${scrollbar}`,
+        content: `${prefix} ${indent}${row.title.padEnd(24 - indent.length, " ")}${value}${scrollbar}`,
         fg: row.focused ? theme.primary : row.selectable ? theme.text : theme.textMuted,
         attributes: row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
         wrapMode: "none",

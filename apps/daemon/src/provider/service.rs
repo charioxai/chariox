@@ -309,8 +309,12 @@ impl ProviderProcessService {
         let Some(state) = self.opencode_runs.get(provider_run_id) else {
             return Ok(());
         };
+        let current_run = self.get_run(provider_run_id)?;
         let selection = sync_opencode_run_selection(provider_run_id, state)?;
-        self.apply_opencode_run_selection(provider_run_id, selection)
+        self.apply_opencode_run_selection(
+            provider_run_id,
+            Self::merge_opencode_run_selection(&current_run, selection),
+        )
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
@@ -545,6 +549,18 @@ impl ProviderProcessService {
         Ok(())
     }
 
+    fn merge_opencode_run_selection(
+        run: &RuntimeProviderRun,
+        selection: OpenCodeRunSelection,
+    ) -> OpenCodeRunSelection {
+        OpenCodeRunSelection {
+            model: selection.model.or_else(|| Some(run.model().to_string())),
+            variant: selection
+                .variant
+                .or_else(|| run.variant().map(str::to_string)),
+        }
+    }
+
     fn drain_opencode_events(
         &mut self,
         provider_run_id: &str,
@@ -614,7 +630,10 @@ impl Default for ProviderProcessService {
 #[cfg(test)]
 mod tests {
     use crate::config::DaemonConfig;
-    use crate::provider::ProviderResumeState;
+    use crate::provider::opencode_binding::OpenCodeRunSelection;
+    use crate::provider::{
+        AgentEndpointMode, ProviderLaunchResult, ProviderResumeState, RuntimeProviderRun,
+    };
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
     use super::{LaunchProviderRequest, ProviderProcessService, ProviderRunState};
@@ -748,5 +767,38 @@ mod tests {
             .expect("provider run should launch");
 
         assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn merge_opencode_run_selection_keeps_the_existing_run_when_sync_has_no_metadata() {
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        );
+        let run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "opencode:endpoint".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://127.0.0.1:43112".to_string()),
+            },
+        );
+
+        let merged = ProviderProcessService::merge_opencode_run_selection(
+            &run,
+            OpenCodeRunSelection::default(),
+        );
+
+        assert_eq!(merged.model.as_deref(), Some("anthropic/claude-sonnet-4"));
+        assert_eq!(merged.variant.as_deref(), None);
     }
 }

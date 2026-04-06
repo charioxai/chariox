@@ -428,7 +428,9 @@ impl SessionService {
             })?;
             if matches!(
                 workflow_run.status(),
-                WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+                WorkflowRunStatus::Completed
+                    | WorkflowRunStatus::Failed
+                    | WorkflowRunStatus::Stopped
             ) {
                 return Err(DaemonError::InvalidWorkflowRunState {
                     workflow_run_id: workflow_run_id.clone(),
@@ -684,12 +686,12 @@ impl SessionService {
         workflow_run_id: &str,
         event: WorkflowFailureEvent,
     ) -> Result<WorkflowRun, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
             DaemonError::WorkflowRunNotFound {
                 session_id: session_id.to_string(),
@@ -709,12 +711,12 @@ impl SessionService {
             .resolve_workflow_run_ref(session_id, workflow_run_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         let workflow_run = session.workflow_run_mut(&workflow_run_id).ok_or_else(|| {
             DaemonError::WorkflowRunNotFound {
                 session_id: session_id.to_string(),
@@ -1412,6 +1414,8 @@ impl SessionService {
             });
         }
 
+        session.touch();
+
         Ok(session.clone())
     }
 
@@ -1444,6 +1448,7 @@ impl SessionService {
         }
 
         session.add_attachment(attachment_id);
+        session.touch();
         Ok(session.clone())
     }
 
@@ -1463,6 +1468,8 @@ impl SessionService {
 
         let removed_queued_prompt_count =
             session.remove_queued_prompts_by_attachment(attachment_id);
+
+        session.touch();
 
         Ok((
             session.clone(),
@@ -1491,6 +1498,7 @@ impl SessionService {
         };
 
         let _ = session.transition_to(target_status);
+        session.touch();
         Ok(session.clone())
     }
 
@@ -1507,6 +1515,7 @@ impl SessionService {
                 })?;
 
         session.set_focused_agent(agent_id);
+        session.touch();
         Ok(session.clone())
     }
 
@@ -1834,6 +1843,7 @@ impl SessionService {
             });
         }
 
+        session.touch();
         Ok(session)
     }
 

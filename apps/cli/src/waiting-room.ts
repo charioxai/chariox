@@ -33,6 +33,7 @@ export type WaitingRoomRow = {
   id: string
   title: string
   value: string
+  columns?: string[]
   indent: number
   focused: boolean
   selectable: boolean
@@ -175,6 +176,19 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
   const visibleSessions = waitingRoomSessions(sessions)
   const sessionWindow = waitingRoomSessionWindow(state, visibleSessions)
   const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
+  const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
+  const statusWidth = Math.max(
+    "Status".length,
+    ...windowSessions.map((session) => formatSessionStatus(session.status).length),
+  )
+  const lastUsedWidth = Math.max(
+    "Last used".length,
+    ...windowSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
+  )
+  const createdAtWidth = Math.max(
+    "Created at".length,
+    ...windowSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
+  )
   const rows: WaitingRoomRow[] = [
     {
       id: "new",
@@ -236,13 +250,32 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
     return rows
   }
 
-  const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
+  rows.push({
+    id: "session-header",
+    title: "Session",
+    value: "",
+    columns: [
+      formatWaitingRoomColumnHeader("Status", statusWidth),
+      formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
+      formatWaitingRoomColumnHeader("Created at", createdAtWidth),
+    ],
+    indent: 1,
+    focused: false,
+    selectable: false,
+    scrollbar: "",
+  })
+
   for (const [offset, session] of windowSessions.entries()) {
     const sessionIndex = sessionWindow.start + offset
     rows.push({
       id: `session:${session.id}`,
       title: session.alias ?? session.id,
-      value: session.status.toLowerCase(),
+      value: formatSessionStatus(session.status),
+      columns: [
+        formatWaitingRoomColumn(formatSessionStatus(session.status), statusWidth),
+        formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
+        formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
+      ],
       indent: 1,
       focused: state.focus === "session" && state.sessionIndex === sessionIndex,
       selectable: true,
@@ -321,6 +354,32 @@ function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, st
 
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function formatSessionStatus(value: string) {
+  return formatTitleCase(value.toLowerCase())
+}
+
+function formatSessionTimestamp(value: number | null) {
+  if (value === null) {
+    return "—"
+  }
+
+  const date = new Date(value)
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+  const day = String(date.getUTCDate()).padStart(2, "0")
+  const hours = String(date.getUTCHours()).padStart(2, "0")
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0")
+  return `${year}-${month}-${day} ${hours}:${minutes} UTC`
+}
+
+function formatWaitingRoomColumnHeader(label: string, width: number) {
+  return label.padEnd(width, " ")
+}
+
+function formatWaitingRoomColumn(value: string, width: number) {
+  return value.padEnd(width, " ")
 }
 
 function normalizeBackendProvider(value: string): BackendProviderId {

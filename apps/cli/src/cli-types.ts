@@ -10,6 +10,7 @@ export type RuntimeSession = {
   workspace_id: string
   worktree_id: string
   created_at_ms: number
+  last_used_at_ms?: number | null
   status: string
   active_provider_run_id: string | null
   attachment_ids: string[]

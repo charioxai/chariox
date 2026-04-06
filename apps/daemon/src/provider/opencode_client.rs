@@ -475,17 +475,11 @@ impl OpenCodeClient {
     pub fn snapshot(&self, session_id: &str) -> Result<OpenCodeSessionSnapshot, DaemonError> {
         let status_map: BTreeMap<String, OpenCodeSessionStatus> =
             self.send_json_request("GET", "/session/status", None)?;
+        // OpenCode removes idle sessions from SessionStatus.list(), so omission means idle.
         let status = status_map
             .get(session_id)
             .map(|status| status.kind.clone())
-            .ok_or_else(|| {
-                self.protocol_error(
-                    "session_status",
-                    format!(
-                        "OpenCode did not report session `{session_id}` in the session status response"
-                    ),
-                )
-            })?;
+            .unwrap_or_else(|| "idle".to_string());
 
         let messages = self.messages(session_id)?;
 
@@ -959,9 +953,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient,
-        OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
-        OpenCodeSelectedModel,
+        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient, OpenCodeConfig,
+        OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo, OpenCodeSelectedModel,
     };
 
     #[test]
@@ -1175,5 +1168,52 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn snapshot_treats_missing_status_entry_as_idle() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("client should connect");
+                let mut request = [0_u8; 2048];
+                let size = stream.read(&mut request).expect("request should read");
+                let request_text = String::from_utf8_lossy(&request[..size]).into_owned();
+                let path = request_text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let body = match path {
+                    "/session/status" => "{}".to_string(),
+                    "/session/session-1/message" => "[]".to_string(),
+                    other => panic!("unexpected path: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("server should write response");
+                stream.flush().expect("server should flush response");
+            }
+        });
+
+        let client =
+            OpenCodeClient::new("provider-run-1", format!("http://127.0.0.1:{port}")).unwrap();
+        let snapshot = client
+            .snapshot("session-1")
+            .expect("missing status entry should default to idle");
+        assert_eq!(snapshot.status, "idle");
+        assert!(snapshot.messages.is_empty());
+
+        let _ = server.join();
     }
 }

@@ -699,12 +699,9 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
 }
 
 #[test]
-fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_completion() {
+fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
     let _guard = opencode_env_guard();
-    let previous_idle_ms = env::var_os("ARROBA_PROMPT_IDLE_MS");
-    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(100));
-    mock_server.set_emit_idle_before_completion(true);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
@@ -738,59 +735,39 @@ fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_compl
         &mut app,
         session.id(),
         attachment.id(),
-        "idle is not completion\n",
+        "completes without a settle window\n",
         Vec::new(),
     )
     .expect("prompt should start");
 
     thread::sleep(Duration::from_millis(120));
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let _ = app
+    let output = app
         .pump_provider_output(session.id(), run.id(), recipients)
-        .expect("pump after interim idle should succeed");
+        .expect("pump after OpenCode idle should succeed");
 
-    let session_after_idle = app
+    let session_after_pump = app
         .sessions()
         .get_session(session.id())
-        .expect("session should still exist after interim idle");
+        .expect("session should still exist after completion");
     assert!(
-        session_after_idle.active_prompt().is_some(),
-        "interim idle status must not complete the active prompt"
+        session_after_pump.active_prompt().is_none(),
+        "OpenCode idle should complete the active prompt immediately"
     );
-
-    thread::sleep(Duration::from_millis(10));
-    let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let _ = app
-        .pump_provider_output(session.id(), run.id(), recipients)
-        .expect("pump during the quiet window should still require explicit completion");
-
-    let session_after_quiet_poll = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist before message completion");
     assert!(
-        session_after_quiet_poll.active_prompt().is_some(),
-        "external structured runs must not settle from quiet polling before completion"
+        output
+            .iter()
+            .any(|record| matches!(record.kind, TerminalOutputKind::ProviderOutput)),
+        "the completion pump should include the assistant output"
     );
-
-    let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let output = collect_provider_output_until(
-        &mut app,
-        session.id(),
-        run.id(),
-        recipients,
-        |output, app| {
-            output.contains("fixture response: idle is not completion")
-                && app
-                    .sessions()
-                    .get_session(session.id())
-                    .expect("session should still exist")
-                    .active_prompt()
-                    .is_none()
-        },
-    );
-
-    assert!(output.contains("fixture response: idle is not completion"));
+    let terminal_text = app
+        .terminal()
+        .output_records()
+        .iter()
+        .filter(|record| record.session_id == session.id())
+        .filter_map(|record| String::from_utf8(record.bytes.clone()).ok())
+        .collect::<String>();
+    assert!(terminal_text.contains("fixture response: completes without a settle window"));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -801,11 +778,6 @@ fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_compl
         env::set_var("ARROBA_OPENCODE_PORT", previous_port);
     } else {
         env::remove_var("ARROBA_OPENCODE_PORT");
-    }
-    if let Some(previous_idle_ms) = previous_idle_ms {
-        env::set_var("ARROBA_PROMPT_IDLE_MS", previous_idle_ms);
-    } else {
-        env::remove_var("ARROBA_PROMPT_IDLE_MS");
     }
     mock_server.stop();
 }
@@ -2541,13 +2513,6 @@ impl MockOpenCodeServer {
             .disconnect_next_event_stream = true;
     }
 
-    fn set_emit_idle_before_completion(&self, emit_idle_before_completion: bool) {
-        self.state
-            .lock()
-            .expect("mock state should not be poisoned")
-            .emit_idle_before_completion = emit_idle_before_completion;
-    }
-
     fn set_emit_tool_call_before_completion(&self, emit_tool_call_before_completion: bool) {
         self.state
             .lock()
@@ -3027,11 +2992,9 @@ fn schedule_mock_response(
 }
 
 #[test]
-fn shared_opencode_tool_activity_keeps_prompt_alive_until_followup_output() {
+fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_followup_output() {
     let _guard = opencode_env_guard();
-    let previous_idle_ms = env::var_os("ARROBA_PROMPT_IDLE_MS");
-    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
-    let mock_server = MockOpenCodeServer::start(Duration::from_millis(40));
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(150));
     mock_server.set_emit_tool_call_before_completion(true);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
@@ -3097,19 +3060,36 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_followup_output() {
         "tool activity must keep the active prompt alive"
     );
 
-    thread::sleep(Duration::from_millis(60));
     let recipients = app.attachments().list_session_attachment_ids(session.id());
     let _ = app
         .pump_provider_output(session.id(), run.id(), recipients)
-        .expect("pump after quiet tool-call completion should succeed");
-    let session_after_quiet_gap = app
+        .expect("pump before followup output should succeed");
+    let session_after_tool_only_completion = app
         .sessions()
         .get_session(session.id())
-        .expect("session should still exist after quiet gap");
+        .expect("session should still exist after tool-only completion");
     assert!(
-        session_after_quiet_gap.active_prompt().is_some(),
-        "tool-call-only completion must not settle the prompt"
+        session_after_tool_only_completion.active_prompt().is_some(),
+        "tool-call-only completion must not settle the prompt before OpenCode reports idle"
     );
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let output = collect_provider_output_until(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+        |output, app| {
+            output.contains("fixture response: tool activity should keep prompt alive")
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
+        },
+    );
+    assert!(output.contains("fixture response: tool activity should keep prompt alive"));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -3120,11 +3100,6 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_followup_output() {
         env::set_var("ARROBA_OPENCODE_PORT", previous_port);
     } else {
         env::remove_var("ARROBA_OPENCODE_PORT");
-    }
-    if let Some(previous_idle_ms) = previous_idle_ms {
-        env::set_var("ARROBA_PROMPT_IDLE_MS", previous_idle_ms);
-    } else {
-        env::remove_var("ARROBA_PROMPT_IDLE_MS");
     }
     mock_server.stop();
 }
