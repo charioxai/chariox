@@ -733,7 +733,7 @@ fn build_workflow_turn_prompt(
     app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
-    _workflow_node_run_id: &str,
+    workflow_node_run_id: &str,
     node_id: &str,
     endpoint_prompt: &str,
     instruction_ref: Option<String>,
@@ -777,23 +777,85 @@ fn build_workflow_turn_prompt(
     } else {
         format!("Endpoint prompt:\n{endpoint_prompt}\n\n")
     };
-    let ack_line = format!(
-        "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output. Do not describe the acknowledgment in your final answer.\n\n"
+    let system_prompt = render_workflow_system_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        delivery_token,
+        &payload_block,
+        &edge_contract_block,
+        &reference_line,
+        &control_line,
     );
-    let console_line =
-        "A shared workflow console is available through the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear`. Use those tools only if your node instruction file requires shared console output or inspection.\n\n";
     format!(
-        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}{}{}\n",
+        "{}Workflow-level prompt:\n{}\n\n{}\n",
         entry_line,
         workflow_prompt,
-        ack_line,
-        console_line,
-        payload_block,
-        edge_contract_block,
-        reference_line,
-        control_line,
-        workflow_output_contract_instructions()
+        system_prompt
     )
+}
+
+fn render_workflow_system_prompt(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    delivery_token: &str,
+    payload_block: &str,
+    edge_contract_block: &str,
+    reference_line: &str,
+    control_line: &str,
+) -> String {
+    let template = load_workflow_system_prompt_template(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    );
+    template
+        .replace("{{DELIVERY_TOKEN}}", delivery_token)
+        .replace("{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}", payload_block)
+        .replace("{{OUTGOING_EDGE_CONTRACTS_BLOCK}}", edge_contract_block)
+        .replace("{{NODE_INSTRUCTION_REFERENCE_BLOCK}}", reference_line)
+        .replace("{{CONTROL_MAILBOX_BLOCK}}", control_line)
+}
+
+fn load_workflow_system_prompt_template(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> String {
+    let Some(path) =
+        workflow_system_prompt_template_path(app, session_id, workflow_run_id, workflow_node_run_id)
+    else {
+        return default_workflow_system_prompt_template().to_string();
+    };
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, default_workflow_system_prompt_template());
+    }
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| default_workflow_system_prompt_template().to_string())
+}
+
+fn workflow_system_prompt_template_path(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<std::path::PathBuf> {
+    workflow_runtime_artifact_root(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        "system-prompts",
+    )
+    .map(|root| root.join("workflow-turn.md"))
 }
 
 fn workflow_outgoing_edge_contracts_block(
@@ -1376,6 +1438,21 @@ mod tests {
         assert!(expected_file.exists(), "instruction file should be written");
         let contents = fs::read_to_string(&expected_file).expect("instruction file should read");
         assert!(contents.contains("Read me from a workspace-local hidden file."));
+        let expected_prompt_template = workdir
+            .join(".arroba")
+            .join("workflow-runtime")
+            .join(session.id())
+            .join(workflow_run.id())
+            .join("system-prompts")
+            .join("workflow-turn.md");
+        assert!(
+            expected_prompt_template.exists(),
+            "workflow system prompt template should be materialized"
+        );
+        let prompt_template_contents =
+            fs::read_to_string(&expected_prompt_template).expect("template should read");
+        assert!(prompt_template_contents.contains("ack_workflow_turn"));
+        assert!(prompt.contains("If the node instruction reference is present"));
         let _ = fs::remove_dir_all(PathBuf::from(workdir));
     }
 
@@ -1443,8 +1520,8 @@ fn workflow_completion_summary(source: &str) -> String {
     format!("{truncated}...")
 }
 
-fn workflow_output_contract_instructions() -> &'static str {
-    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. If a handoff payload or outgoing edge contract includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing. Pass the same delivery_token that was provided for `ack_workflow_turn`, and validate your proposed output.message JSON against that schema ref.\n\nValidation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
+fn default_workflow_system_prompt_template() -> &'static str {
+    "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output. Do not describe the acknowledgment in your final answer.\n\nA shared workflow console is available through the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear`. Use those tools only if your node instruction file requires shared console output or inspection.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{NODE_INSTRUCTION_REFERENCE_BLOCK}}If the node instruction reference is present and you do not remember the instructions exactly, read that markdown file before finalizing the turn.\n\n{{CONTROL_MAILBOX_BLOCK}}At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. If a handoff payload or outgoing edge contract includes output_schema_ref, call the Arroba runtime MCP tool `validate_workflow_output` before finalizing. Pass the same delivery_token that was provided for `ack_workflow_turn`, and validate your proposed output.message JSON against that schema ref.\n\nValidation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {
