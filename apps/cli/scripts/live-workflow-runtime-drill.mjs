@@ -66,7 +66,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workflow-runtime-drill.mjs [options]',
     '',
     'Options:',
-    '  --scenario simple-chain|validated-increment-chain',
+    '  --scenario simple-chain|validated-increment-chain|console-increment-chain',
     `  --kernel ${DEFAULT_KERNEL}`,
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
@@ -167,10 +167,49 @@ function buildValidatedIncrementScenario(providers, model, schemaPath) {
   }
 }
 
+function buildConsoleIncrementScenario(providers, model) {
+  return {
+    id: 'console-increment-chain',
+    alias: 'console-chain',
+    providers,
+    model,
+    nodePrompt(index) {
+      if (index === 0) {
+        return [
+          'Use the workflow console MCP tools for this task.',
+          'Call `workflow_console_write` exactly once.',
+          'Write exactly `1842\\n` to the workflow console.',
+          'Each number must be on its own line. Include the trailing newline in the write payload.',
+          'Do not call `validate_workflow_output` for this task unless the runtime explicitly requires it.',
+          'After the write succeeds, emit the normal workflow output block.',
+        ].join('\n\n')
+      }
+      return [
+        'Use the workflow console MCP tools for this task.',
+        'Call `workflow_console_read` to read the current workflow console contents.',
+        'Take the last non-empty line from the console.',
+        'Interpret that last non-empty line as a base-10 integer.',
+        'Add 1 to that integer.',
+        'Call `workflow_console_write` exactly once to append the incremented integer followed by a newline.',
+        'Each number must be on its own line. Include the trailing newline in the write payload.',
+        'Do not write any extra prose to the console.',
+        'Do not call `validate_workflow_output` for this task unless the runtime explicitly requires it.',
+        'After the write succeeds, emit the normal workflow output block.',
+      ].join('\n\n')
+    },
+    edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
+      return addWorkflowEdgeRequest(sessionId, workflowId, fromNodeId, toNodeId)
+    },
+  }
+}
+
 function createScenario(options, schemaPath) {
   if (options.scenario === 'simple-chain') return buildSimpleChainScenario(options.providers, options.model)
   if (options.scenario === 'validated-increment-chain') {
     return buildValidatedIncrementScenario(options.providers, options.model, schemaPath)
+  }
+  if (options.scenario === 'console-increment-chain') {
+    return buildConsoleIncrementScenario(options.providers, options.model)
   }
   throw new Error(`unsupported scenario: ${options.scenario}`)
 }
@@ -266,6 +305,7 @@ async function main() {
           workflowId: workflow.id,
           workflowRunId: workflowRun.id,
           status: run.status,
+          consoleEntries: run.console?.entries || [],
           nodeRuns: run.node_runs.map((nodeRun) => ({
             id: nodeRun.id,
             status: nodeRun.status,
@@ -288,6 +328,7 @@ async function main() {
       workflowId: workflow.id,
       workflowRunId: workflowRun.id,
       status: run?.status,
+      consoleEntries: run?.console?.entries || [],
       nodeRuns: run?.node_runs?.map((nodeRun) => ({
         id: nodeRun.id,
         status: nodeRun.status,
