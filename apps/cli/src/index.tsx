@@ -166,6 +166,7 @@ import {
 import {
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
+  derivePromptLifecycleTransition,
   buildDetachedSessionState,
   deriveSessionTransitionState,
   sessionHasPromptWork,
@@ -749,6 +750,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [workspaceScreenMode, setWorkspaceScreenMode] = createSignal<WorkspaceScreenMode>("agents")
   const [selectedWorkflowId, setSelectedWorkflowId] = createSignal<string | null>(initialSession.workflows?.[0]?.id ?? null)
   const [selectedWorkflowNodeId, setSelectedWorkflowNodeId] = createSignal<string | null>(null)
+  const [workflowInspectorMode, setWorkflowInspectorMode] = createSignal<"runtime" | "terminal">("runtime")
   type WorkflowNodeInstructionsEditor = {
     workflowId: string
     nodeId: string
@@ -1053,9 +1055,29 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       hint: "Use /workflow runs, /workflow cancel, and /workflow resume to manage the current run.",
     }
   }
+  const workflowTerminalInspector = () => {
+    const workflow = sessionState().workflows?.find((entry) => entry.id === selectedWorkflowId()) ?? null
+    if (!workflow) {
+      return null
+    }
+    const workflowLabel = workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
+    const consoleState = (sessionState().workflow_consoles ?? []).find((entry) => entry.workflow_id === workflow.id) ?? null
+    const body = (consoleState?.entries ?? []).map((entry) => entry.text ?? "").join("")
+    return {
+      title: "Workflow Terminal",
+      meta: [
+        `Workflow: ${workflowLabel}`,
+        `Entries: ${consoleState?.entries?.length ?? 0}`,
+      ],
+      body: body.length > 0 ? body : "No workflow terminal output yet.",
+      hint: "Use /workflow terminal [workflow-ref] to keep this console visible while the workflow runs.",
+    }
+  }
   const workflowInspector = () => workflowNodeInstructionsEditor()
     ? workflowNodeInstructionsInspector()
-    : workflowRuntimeInspector()
+    : workflowInspectorMode() === "terminal"
+      ? workflowTerminalInspector()
+      : workflowRuntimeInspector()
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
       return false
@@ -2516,6 +2538,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applySessionState = (nextSession: RuntimeSession) => {
     const previousFocusedAgentId = focusedAgentId()
     const previousLayout = multiAgentResponseLayout()
+    const promptLifecycle = derivePromptLifecycleTransition(sessionState(), nextSession)
     const transition = deriveSessionTransitionState({
       currentSession: sessionState(),
       nextSession,
@@ -2539,6 +2562,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setProviderActivityLabel(transition.nextFocusedActivityLabel)
     setActiveStatusLabel(transition.nextFocusedActivityLabel)
+    if (promptLifecycle.activePromptChanged) {
+      setSubmitting(false)
+      stopRequestInFlight = false
+    }
+    if (promptLifecycle.cancelledPromptSettled) {
+      activeToolLabels.clear()
+      setAgentActivityLabels({})
+      setStreamingAgentId(nextSession.active_prompt?.target_agent_id ?? null)
+      setProviderActivityLabel(null)
+      setActiveStatusLabel(null)
+      if (statusLine() === "Cancellation requested.") {
+        setStatusLine(DEFAULT_CONNECTED_STATUS)
+      }
+      if (!nextSession.active_prompt) {
+        turnCompletionConfirmed = true
+        cancelPendingTurnCompletion()
+        setWorking(false)
+      }
+    }
     if (!nextSession.active_prompt) {
       setSubmitting(false)
       stopRequestInFlight = false
@@ -2859,6 +2901,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const providerRun = providerRunState()
     const fallbackModel = providerRun?.model ?? null
+    const activeRun = providerRun
+      ? {
+          agentInstanceId: providerRun.agent_instance_id,
+          model: providerRun.model,
+        }
+      : null
     const visibleAgents = responseVisibleAgents()
     const renderFooter = (
       agent: AgentInstance | null | undefined,
@@ -2875,7 +2923,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderStatusBadgeTexts(badgeTexts, badge.label, badge.tone)
       setTextRenderable(
         footerText,
-        formatSplitPaneFooter(agent ?? null, providerCatalogState(), fallbackModel),
+        formatSplitPaneFooter(agent ?? null, providerCatalogState(), activeRun, fallbackModel),
         focused ? theme.text : theme.textMuted,
         focused ? TextAttributes.BOLD : TextAttributes.NONE,
       )
@@ -3954,6 +4002,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const getWorkflowNodeInstructionsDraft = () => workflowNodeInstructionsEditor()?.draft ?? ""
 
+  const openWorkflowTerminalPanel = (workflowId: string) => {
+    if (workflowNodeInstructionsEditor()) {
+      setWorkflowNodeInstructionsEditor(null)
+      workflowNodeInstructionsInput = undefined
+    }
+    setWorkflowInspectorMode("terminal")
+    setSelectedWorkflowId(workflowId)
+    if (!workflowScreenShowing()) {
+      setWorkspaceScreenMode("workflow")
+    }
+    rebuildTranscript()
+  }
+
   const replaceTranscriptEntries = (
     nextEntries: TranscriptEntry[],
     transcriptAgentId: string | null = visibleTranscriptAgentId(),
@@ -4171,6 +4232,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearAgentPaneRuntime,
     clearDirectoryTree: () => setDirectoryTreeState(null),
     clearTranscript: () => replaceTranscriptEntries([]),
+    refreshResponseLayout: applyResponseLayout,
     resetWorkspaceScreen: () => setWorkspaceScreenMode("agents"),
     resetStopRequestInFlight: () => {
       stopRequestInFlight = false
@@ -4379,6 +4441,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     closeWorkflowNodeInstructionsEditor,
     getWorkflowNodeInstructionsDraft,
     getWorkflowNodeInstructionsContext,
+    openWorkflowTerminalPanel,
     saveUiPreferences: async (prefs) => {
       await saveUiPreferences(prefs)
       setPreferencesState((current) => mergeUiPreferences(current, prefs))
@@ -6258,7 +6321,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

@@ -29,6 +29,11 @@ export type SessionTransitionState = {
   nextAgentSignature: string
 }
 
+export type PromptLifecycleTransition = {
+  activePromptChanged: boolean
+  cancelledPromptSettled: boolean
+}
+
 export type DetachedCliTransitionState = {
   centerMode: "transcript"
   createdSession: false
@@ -79,6 +84,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
     max_agents: 6,
     agents: [],
     workflows: [],
+    workflow_consoles: [],
     config_state: {
       version: 0,
       values: {},
@@ -143,6 +149,20 @@ export function deriveSessionTransitionState(
     ),
     previousAgentSignature,
     nextAgentSignature,
+  }
+}
+
+export function derivePromptLifecycleTransition(
+  currentSession: RuntimeSession,
+  nextSession: RuntimeSession,
+): PromptLifecycleTransition {
+  const previousPromptId = currentSession.active_prompt?.id ?? null
+  const nextPromptId = nextSession.active_prompt?.id ?? null
+  return {
+    activePromptChanged: previousPromptId !== nextPromptId,
+    cancelledPromptSettled:
+      currentSession.active_prompt?.status === "cancelling"
+      && previousPromptId !== nextPromptId,
   }
 }
 

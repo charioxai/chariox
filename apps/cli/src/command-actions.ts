@@ -204,6 +204,7 @@ type CommandActionDeps = {
   closeWorkflowNodeInstructionsEditor?: () => void
   getWorkflowNodeInstructionsDraft?: () => string
   getWorkflowNodeInstructionsContext?: () => { workflowId: string; nodeId: string } | null
+  openWorkflowTerminalPanel?: (workflowId: string) => void
   formatAgentLabel: (agent: AgentInstance | null | undefined) => string
   refreshSplitPaneFocusRepaint: () => void
   formatSessionList: (sessions: SessionListEntry[], currentSessionId?: string) => string
@@ -827,6 +828,21 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "terminal") {
+      const workflowRef = args[1] ?? deps.sessionState().workflows?.[0]?.id ?? null
+      if (!workflowRef) {
+        deps.flashFooter("usage: /workflow terminal [workflow-ref]", "error")
+        return
+      }
+      const payload = await deps.resolveWorkflow(workflowRef)
+      deps.upsertWorkflowDefinition(payload.workflow)
+      deps.selectWorkflowCanvas(payload.workflow.id)
+      deps.showWorkflowScreen()
+      deps.openWorkflowTerminalPanel?.(payload.workflow.id)
+      deps.flashFooter(`opened workflow terminal for ${payload.workflow.id}`, "info")
+      return
+    }
+
     if (subcommand === "node") {
       const action = args[1]
       const workflowRef = args[2]
@@ -1104,7 +1120,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow terminal [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

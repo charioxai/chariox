@@ -22,6 +22,7 @@ export type RuntimeSession = {
   config_state: SessionConfigState
   workflows?: WorkflowDefinition[]
   workflow_runs?: WorkflowRun[]
+  workflow_consoles?: WorkflowConsole[]
 }
 
 export type SessionConfigState = {
@@ -265,6 +266,18 @@ export type WorkflowRun = {
   created_at_ms: number
   started_at_ms: number | null
   completed_at_ms: number | null
+}
+
+export type WorkflowConsoleEntry = {
+  timestamp_ms: number
+  source_node_run_id?: string | null
+  source_agent_id?: string | null
+  text: string
+}
+
+export type WorkflowConsole = {
+  workflow_id: string
+  entries?: WorkflowConsoleEntry[]
 }
 
 export type ReadDirectoryTreeResult = {

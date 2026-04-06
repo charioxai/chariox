@@ -12,7 +12,7 @@ use super::{
     WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
-    WorkflowTurnRuntimeState,
+    WorkflowTurnRuntimeState, WorkflowConsole, WorkflowConsoleEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -700,6 +700,70 @@ impl SessionService {
         })?;
         workflow_run.add_failure_event(event);
         Ok(workflow_run.clone())
+    }
+
+    pub fn read_workflow_console(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        let session = self.get_session(session_id)?;
+        if session.workflow(workflow_id).is_none() {
+            return Err(DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+            });
+        }
+        Ok(session
+            .workflow_console(workflow_id)
+            .cloned()
+            .unwrap_or_else(|| WorkflowConsole::new(workflow_id)))
+    }
+
+    pub fn append_workflow_console_entry(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        source_node_run_id: Option<String>,
+        source_agent_id: Option<String>,
+        text: impl Into<String>,
+    ) -> Result<WorkflowConsoleEntry, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        if session.workflow(workflow_id).is_none() {
+            return Err(DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+            });
+        }
+        let entry = WorkflowConsoleEntry::new(source_node_run_id, source_agent_id, text);
+        Ok(session.ensure_workflow_console(workflow_id).add_entry(entry))
+    }
+
+    pub fn clear_workflow_console(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        if session.workflow(workflow_id).is_none() {
+            return Err(DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+            });
+        }
+        let console = session.ensure_workflow_console(workflow_id);
+        console.clear();
+        Ok(console.clone())
     }
 
     pub fn resume_workflow_run(
@@ -2575,6 +2639,57 @@ mod tests {
             .cancel_workflow_run(session.id(), workflow_run.id())
             .expect_err("terminal workflow run should reject a second cancellation");
         assert!(matches!(error, DaemonError::InvalidWorkflowRunState { .. }));
+    }
+
+    #[test]
+    fn workflow_console_supports_append_read_and_clear() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+
+        let initial = service
+            .read_workflow_console(session.id(), workflow.id())
+            .expect("console should read");
+        assert_eq!(initial.workflow_id(), workflow.id());
+        assert!(initial.entries().is_empty());
+
+        let first = service
+            .append_workflow_console_entry(
+                session.id(),
+                workflow.id(),
+                Some("node-run-1".to_string()),
+                Some("agent-1".to_string()),
+                "hello\n",
+            )
+            .expect("console append should succeed");
+        assert_eq!(first.text(), "hello\n");
+
+        let second = service
+            .append_workflow_console_entry(
+                session.id(),
+                workflow.id(),
+                Some("node-run-2".to_string()),
+                Some("agent-2".to_string()),
+                "world\n",
+            )
+            .expect("console append should succeed");
+        assert_eq!(second.text(), "world\n");
+
+        let populated = service
+            .read_workflow_console(session.id(), workflow.id())
+            .expect("console should read");
+        assert_eq!(populated.entries().len(), 2);
+        assert_eq!(populated.entries()[0].text(), "hello\n");
+        assert_eq!(populated.entries()[1].text(), "world\n");
+
+        let cleared = service
+            .clear_workflow_console(session.id(), workflow.id())
+            .expect("console clear should succeed");
+        assert!(cleared.entries().is_empty());
     }
 
     #[test]

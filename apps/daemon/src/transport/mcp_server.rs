@@ -368,6 +368,15 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "validate_workflow_output"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "workflow_console_read"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "workflow_console_write"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "workflow_console_clear"));
     }
 
     #[tokio::test]

@@ -236,6 +236,80 @@ impl WorkflowFailureEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowConsoleEntry {
+    timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_node_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_agent_id: Option<String>,
+    text: String,
+}
+
+impl WorkflowConsoleEntry {
+    pub fn new(
+        source_node_run_id: Option<String>,
+        source_agent_id: Option<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            timestamp_ms: unix_epoch_ms(),
+            source_node_run_id,
+            source_agent_id,
+            text: text.into(),
+        }
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        self.timestamp_ms
+    }
+
+    pub fn source_node_run_id(&self) -> Option<&str> {
+        self.source_node_run_id.as_deref()
+    }
+
+    pub fn source_agent_id(&self) -> Option<&str> {
+        self.source_agent_id.as_deref()
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowConsole {
+    workflow_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    entries: Vec<WorkflowConsoleEntry>,
+}
+
+impl WorkflowConsole {
+    pub fn new(workflow_id: impl Into<String>) -> Self {
+        Self {
+            workflow_id: workflow_id.into(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+
+    pub fn entries(&self) -> &[WorkflowConsoleEntry] {
+        &self.entries
+    }
+
+    pub fn add_entry(&mut self, entry: WorkflowConsoleEntry) -> WorkflowConsoleEntry {
+        self.entries.push(entry.clone());
+        entry
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
@@ -1283,6 +1357,8 @@ pub struct RuntimeSession {
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_consoles: Vec<WorkflowConsole>,
 }
 
 impl RuntimeSession {
@@ -1326,6 +1402,7 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
+            workflow_consoles: Vec::new(),
         }
     }
 
@@ -1402,6 +1479,10 @@ impl RuntimeSession {
         &self.workflow_runs
     }
 
+    pub fn workflow_consoles(&self) -> &[WorkflowConsole] {
+        &self.workflow_consoles
+    }
+
     pub fn has_attachment(&self, attachment_id: &str) -> bool {
         self.attachment_ids.contains(attachment_id)
     }
@@ -1458,6 +1539,32 @@ impl RuntimeSession {
         self.workflow_runs
             .iter_mut()
             .find(|workflow_run| workflow_run.id() == workflow_run_id)
+    }
+
+    pub fn workflow_console(&self, workflow_id: &str) -> Option<&WorkflowConsole> {
+        self.workflow_consoles
+            .iter()
+            .find(|console| console.workflow_id() == workflow_id)
+    }
+
+    pub fn workflow_console_mut(&mut self, workflow_id: &str) -> Option<&mut WorkflowConsole> {
+        self.workflow_consoles
+            .iter_mut()
+            .find(|console| console.workflow_id() == workflow_id)
+    }
+
+    pub fn ensure_workflow_console(&mut self, workflow_id: impl Into<String>) -> &mut WorkflowConsole {
+        let workflow_id = workflow_id.into();
+        if let Some(index) = self
+            .workflow_consoles
+            .iter()
+            .position(|console| console.workflow_id() == workflow_id)
+        {
+            return &mut self.workflow_consoles[index];
+        }
+        self.workflow_consoles.push(WorkflowConsole::new(workflow_id));
+        let index = self.workflow_consoles.len() - 1;
+        &mut self.workflow_consoles[index]
     }
 
     pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {

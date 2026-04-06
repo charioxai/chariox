@@ -14,7 +14,7 @@ pub use types::{
     PromptDetachEffect, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
     WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,

@@ -74,6 +74,7 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "workflow-runs", label: "runs", description: "List workflow runs in the session", value: "/workflow runs " },
       { id: "workflow-cancel", label: "cancel", description: "Cancel a workflow run", value: "/workflow cancel " },
       { id: "workflow-resume", label: "resume", description: "Resume a stopped workflow run", value: "/workflow resume " },
+      { id: "workflow-terminal", label: "terminal", description: "Show the shared workflow console in the I/O panel", value: "/workflow terminal " },
       { id: "workflow-alias", label: "alias", description: "Assign an alias to an existing workflow", value: "/workflow " },
       {
         id: "workflow-node",

@@ -433,6 +433,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let cancelledWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
+  let openedWorkflowTerminalId: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const workflowRuns: WorkflowRun[] = []
@@ -679,6 +680,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
         workflow_run,
         session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
       }
+    },
+    openWorkflowTerminalPanel: (workflowId) => {
+      openedWorkflowTerminalId = workflowId
     },
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
@@ -964,6 +968,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(resumedWorkflowRunRef, "run-1")
   assert.equal(flashedMessage, "resumed workflow run run-1 [running]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow terminal workflow-1",
+    args: ["terminal", "workflow-1"],
+  })
+  assert.equal(openedWorkflowTerminalId, "workflow-1")
+  assert.equal(flashedMessage, "opened workflow terminal for workflow-1")
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow workflow-1 shipit", args: ["workflow-1", "shipit"] })
   assert.equal(flashedMessage, "workflow workflow-1 aliased as shipit")

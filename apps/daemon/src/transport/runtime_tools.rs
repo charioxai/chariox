@@ -8,6 +8,9 @@ use crate::session::{WorkflowNodeRunStatus, WorkflowTurnRuntimeState};
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
+pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
+pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
+pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 
 fn canonical_runtime_tool_name(tool_name: &str) -> &str {
     tool_name.strip_prefix("arroba_").unwrap_or(tool_name)
@@ -56,6 +59,11 @@ pub struct ValidateWorkflowOutputArgs {
     pub delivery_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowConsoleWriteArgs {
+    pub text: String,
+}
+
 #[allow(dead_code)]
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
@@ -82,6 +90,36 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "output_json": {"type": "string"},
                     "delivery_token": {"type": "string"}
                 },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: WORKFLOW_CONSOLE_READ_TOOL.to_string(),
+            description: "Read the shared workflow console for the current workflow.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: WORKFLOW_CONSOLE_WRITE_TOOL.to_string(),
+            description: "Append human-facing text to the shared workflow console for the current workflow.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: WORKFLOW_CONSOLE_CLEAR_TOOL.to_string(),
+            description: "Clear the shared workflow console for the current workflow.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
                 "additionalProperties": false
             }),
         },
@@ -159,6 +197,73 @@ pub fn dispatch_runtime_tool_call(
                 }),
             }
         }
+        WORKFLOW_CONSOLE_READ_TOOL => {
+            let workflow_run = app
+                .sessions()
+                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            let console = crate::scheduler::runtime::read_workflow_console(
+                app,
+                &call.context.session_id,
+                workflow_run.workflow_id(),
+            )?;
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "workflow_id": console.workflow_id(),
+                    "entries": console.entries().iter().map(|entry| serde_json::json!({
+                        "timestamp_ms": entry.timestamp_ms(),
+                        "source_node_run_id": entry.source_node_run_id(),
+                        "source_agent_id": entry.source_agent_id(),
+                        "text": entry.text(),
+                    })).collect::<Vec<_>>(),
+                }),
+            })
+        }
+        WORKFLOW_CONSOLE_WRITE_TOOL => {
+            let args =
+                serde_json::from_value::<WorkflowConsoleWriteArgs>(call.arguments).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_workflow_console_write",
+                        message: format!("invalid tool arguments: {error}"),
+                    }
+                })?;
+            let workflow_run = app
+                .sessions()
+                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            let entry = crate::scheduler::runtime::write_workflow_console(
+                app,
+                &call.context.session_id,
+                workflow_run.workflow_id(),
+                &call.context.workflow_node_run_id,
+                &args.text,
+            )?;
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "timestamp_ms": entry.timestamp_ms(),
+                    "source_node_run_id": entry.source_node_run_id(),
+                    "source_agent_id": entry.source_agent_id(),
+                    "text": entry.text(),
+                }),
+            })
+        }
+        WORKFLOW_CONSOLE_CLEAR_TOOL => {
+            let workflow_run = app
+                .sessions()
+                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            crate::scheduler::runtime::clear_workflow_console(
+                app,
+                &call.context.session_id,
+                workflow_run.workflow_id(),
+            )?;
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "cleared": true,
+                    "workflow_id": workflow_run.workflow_id(),
+                }),
+            })
+        }
         other => Err(DaemonError::LocalTransport {
             operation: "dispatch_runtime_tool_call",
             message: format!("unsupported runtime tool `{other}`"),
@@ -194,6 +299,9 @@ pub fn dispatch_authenticated_runtime_tool_call(
             serde_json::from_value::<ValidateWorkflowOutputArgs>(arguments.clone())
                 .ok()
                 .and_then(|args| args.delivery_token)
+        }
+        WORKFLOW_CONSOLE_READ_TOOL | WORKFLOW_CONSOLE_WRITE_TOOL | WORKFLOW_CONSOLE_CLEAR_TOOL => {
+            None
         }
         _ => None,
     };
@@ -423,15 +531,19 @@ mod tests {
     use super::{
         dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
         workflow_runtime_tool_specs, RuntimeToolCall, WorkflowRuntimeToolContext,
-        ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL,
+        ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL, WORKFLOW_CONSOLE_CLEAR_TOOL,
+        WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
     };
 
     #[test]
     fn workflow_runtime_tool_specs_expose_ack_and_validation() {
         let specs = workflow_runtime_tool_specs();
-        assert_eq!(specs.len(), 2);
+        assert_eq!(specs.len(), 5);
         assert_eq!(specs[0].name, ACK_WORKFLOW_TURN_TOOL);
         assert_eq!(specs[1].name, VALIDATE_WORKFLOW_OUTPUT_TOOL);
+        assert_eq!(specs[2].name, WORKFLOW_CONSOLE_READ_TOOL);
+        assert_eq!(specs[3].name, WORKFLOW_CONSOLE_WRITE_TOOL);
+        assert_eq!(specs[4].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
     }
 
     #[test]

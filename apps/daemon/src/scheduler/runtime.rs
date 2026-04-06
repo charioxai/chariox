@@ -11,10 +11,10 @@ use crate::history::SessionHistoryEntryKind;
 use crate::provider::{ControlOperation, LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
     PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
-    WorkflowCompletionUpdate, WorkflowDefinition, WorkflowDispatch, WorkflowFailureEvent,
-    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowMessage,
-    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun,
-    WorkflowRunStatus,
+    WorkflowCompletionUpdate, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
+    WorkflowDispatch, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
+    WorkflowFailurePolicyMode, WorkflowMessage, WorkflowNodeRunStatus, WorkflowOutputPayload,
+    WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
 };
 use crate::transport::TransportService;
 
@@ -569,6 +569,54 @@ pub fn on_workflow_prompt_cancelled(
     Ok(())
 }
 
+pub fn read_workflow_console(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+) -> Result<WorkflowConsole, DaemonError> {
+    app.sessions().read_workflow_console(session_id, workflow_id)
+}
+
+pub fn write_workflow_console(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+    workflow_node_run_id: &str,
+    text: &str,
+) -> Result<WorkflowConsoleEntry, DaemonError> {
+    let source_agent_id = app
+        .sessions()
+        .get_session(session_id)
+        .ok()
+        .and_then(|session| {
+            session
+                .workflow_runs()
+                .iter()
+                .find(|run| run.workflow_id() == workflow_id)
+                .and_then(|run| {
+                    run.node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == workflow_node_run_id)
+                        .map(|node_run| node_run.agent_id().to_string())
+                })
+        });
+    app.sessions_mut().append_workflow_console_entry(
+        session_id,
+        workflow_id,
+        Some(workflow_node_run_id.to_string()),
+        source_agent_id,
+        text,
+    )
+}
+
+pub fn clear_workflow_console(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+) -> Result<WorkflowConsole, DaemonError> {
+    app.sessions_mut().clear_workflow_console(session_id, workflow_id)
+}
+
 fn workflow_failure_policy() -> WorkflowFailurePolicy {
     WorkflowFailurePolicy::default()
 }
@@ -732,11 +780,14 @@ fn build_workflow_turn_prompt(
     let ack_line = format!(
         "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output. Do not describe the acknowledgment in your final answer.\n\n"
     );
+    let console_line =
+        "A shared workflow console is available through the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear`. Use those tools only if this workflow-level prompt explicitly requires shared console output or inspection.\n\n";
     format!(
-        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}{}\n",
+        "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}{}{}\n",
         entry_line,
         workflow_prompt,
         ack_line,
+        console_line,
         payload_block,
         edge_contract_block,
         reference_line,
