@@ -239,6 +239,8 @@ async function main() {
   const client = new LocalIpcClient(options.kernel)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
+  const consoleEntriesFor = (state, workflowId) =>
+    ((state.workflow_consoles || []).find((entry) => entry.workflow_id === workflowId)?.entries) || []
   const logStep = (name, details = null) => {
     const prefix = `[drill] ${name}`
     if (details == null) console.log(prefix)
@@ -305,7 +307,7 @@ async function main() {
           workflowId: workflow.id,
           workflowRunId: workflowRun.id,
           status: run.status,
-          consoleEntries: run.console?.entries || [],
+          consoleEntries: consoleEntriesFor(state, workflow.id),
           nodeRuns: run.node_runs.map((nodeRun) => ({
             id: nodeRun.id,
             status: nodeRun.status,
@@ -328,7 +330,7 @@ async function main() {
       workflowId: workflow.id,
       workflowRunId: workflowRun.id,
       status: run?.status,
-      consoleEntries: run?.console?.entries || [],
+      consoleEntries: consoleEntriesFor(state, workflow.id),
       nodeRuns: run?.node_runs?.map((nodeRun) => ({
         id: nodeRun.id,
         status: nodeRun.status,
