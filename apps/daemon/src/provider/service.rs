@@ -269,6 +269,20 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    pub fn get_runs_by_runtime_mcp_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<RuntimeProviderRun> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.runtime_mcp_auth_token() == Some(auth_token)
+                    && run.state() != ProviderRunState::Ended
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn terminate_session_runs(
         &mut self,
         sessions: &mut SessionService,

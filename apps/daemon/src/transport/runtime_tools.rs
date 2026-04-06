@@ -306,14 +306,20 @@ pub fn dispatch_authenticated_runtime_tool_call(
     arguments: Value,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let canonical_tool_name = canonical_runtime_tool_name(tool_name).to_string();
-    let provider_run = app
+    let provider_runs = app
         .providers()
-        .get_run_by_runtime_mcp_auth_token(auth_token)
-        .ok_or_else(|| DaemonError::LocalTransport {
+        .get_runs_by_runtime_mcp_auth_token(auth_token);
+    if provider_runs.is_empty() {
+        return Err(DaemonError::LocalTransport {
             operation: "dispatch_authenticated_runtime_tool_call",
             message: "invalid runtime MCP auth token".to_string(),
-        })?;
-    let agent_id = provider_run.agent_instance_id();
+        });
+    }
+    let session_id = provider_runs[0].session_id().to_string();
+    let candidate_agent_ids = provider_runs
+        .iter()
+        .filter_map(|run| run.agent_instance_id().map(str::to_string))
+        .collect::<Vec<_>>();
     let requested_delivery_token = match canonical_tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
             .ok()
@@ -330,13 +336,13 @@ pub fn dispatch_authenticated_runtime_tool_call(
     };
     let (workflow_run_ref, workflow_node_run_id) = resolve_authenticated_workflow_turn(
         app,
-        provider_run.session_id(),
-        agent_id,
+        &session_id,
+        &candidate_agent_ids,
         requested_delivery_token.as_deref(),
     )?;
     let allowed_output_schema_refs = allowed_output_schema_refs_for_active_workflow_turn(
         app,
-        provider_run.session_id(),
+        &session_id,
         &workflow_run_ref,
         &workflow_node_run_id,
     )?;
@@ -347,7 +353,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
             tool_name: canonical_tool_name,
             arguments,
             context: WorkflowRuntimeToolContext {
-                session_id: provider_run.session_id().to_string(),
+                session_id,
                 workflow_run_ref,
                 workflow_node_run_id,
                 delivery_token: None,
@@ -360,10 +366,16 @@ pub fn dispatch_authenticated_runtime_tool_call(
 fn resolve_authenticated_workflow_turn(
     app: &DaemonApp,
     session_id: &str,
-    agent_id: Option<&str>,
+    candidate_agent_ids: &[String],
     delivery_token: Option<&str>,
 ) -> Result<(String, String), DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    let agent_matches = |node_run: &crate::session::WorkflowNodeRun| {
+        candidate_agent_ids.is_empty()
+            || candidate_agent_ids
+                .iter()
+                .any(|agent_id| node_run.agent_id() == agent_id)
+    };
     if let Some(prompt) = session.active_prompt() {
         if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
@@ -379,6 +391,7 @@ fn resolve_authenticated_workflow_turn(
                             .iter()
                             .find(|node_run| node_run.id() == workflow_node_run_id)
                     })
+                    .filter(|node_run| agent_matches(node_run))
                     .and_then(|node_run| node_run.turn_envelope())
                     .is_some_and(|envelope| envelope.delivery_token() == requested_delivery_token);
                 if matches_active_token {
@@ -388,7 +401,20 @@ fn resolve_authenticated_workflow_turn(
                     ));
                 }
             } else {
-                return Ok((workflow_run_ref.to_string(), workflow_node_run_id.to_string()));
+                let matches_active_agent = session
+                    .workflow_runs()
+                    .iter()
+                    .find(|workflow_run| workflow_run.id() == workflow_run_ref)
+                    .and_then(|workflow_run| {
+                        workflow_run
+                            .node_runs()
+                            .iter()
+                            .find(|node_run| node_run.id() == workflow_node_run_id)
+                    })
+                    .is_some_and(agent_matches);
+                if matches_active_agent {
+                    return Ok((workflow_run_ref.to_string(), workflow_node_run_id.to_string()));
+                }
             }
         }
     }
@@ -402,7 +428,7 @@ fn resolve_authenticated_workflow_turn(
                     if envelope.delivery_token() != requested_delivery_token {
                         return None;
                     }
-                    if agent_id.is_some_and(|agent_id| node_run.agent_id() != agent_id) {
+                    if !agent_matches(node_run) {
                         return None;
                     }
                     Some((workflow_run.id().to_string(), node_run.id().to_string()))
@@ -458,7 +484,10 @@ fn resolve_authenticated_workflow_turn(
     let mut candidates = running_turns
         .iter()
         .filter(|(_, _, candidate_agent_id, _)| {
-            agent_id.is_some_and(|agent_id| candidate_agent_id == agent_id)
+            candidate_agent_ids.is_empty()
+                || candidate_agent_ids
+                    .iter()
+                    .any(|agent_id| candidate_agent_id == agent_id)
         })
         .map(|(workflow_run_id, workflow_node_run_id, _, candidate_delivery_token)| {
             (
@@ -567,6 +596,7 @@ mod tests {
 
     use super::{
         dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
+        resolve_authenticated_workflow_turn,
         workflow_runtime_tool_specs, RuntimeToolCall, WorkflowRuntimeToolContext,
         ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL, WORKFLOW_CONSOLE_CLEAR_TOOL,
         WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
@@ -916,6 +946,133 @@ mod tests {
         .expect("authenticated ack runtime tool should succeed");
 
         assert_eq!(result.payload["state"], "acknowledged");
+    }
+
+    #[test]
+    fn authenticated_turn_resolution_handles_shared_auth_candidates() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-auth-shared", "worktree-auth-shared"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-auth-shared",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+
+        let active_agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-active".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-auth-shared".to_string()),
+            }))
+            .expect("active agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let inactive_agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-inactive".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-auth-shared".to_string()),
+            }))
+            .expect("inactive agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-auth-shared".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: active_agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id,
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should be added");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id,
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist");
+        let delivery_token = node_run
+            .turn_envelope()
+            .expect("turn envelope should be prepared")
+            .delivery_token()
+            .to_string();
+        app.sessions_mut()
+            .complete_active_prompt_only(session.id())
+            .expect("active prompt should be clearable");
+
+        let (resolved_workflow_run_id, resolved_node_run_id) = resolve_authenticated_workflow_turn(
+            &app,
+            session.id(),
+            &[inactive_agent_id, active_agent_id],
+            Some(&delivery_token),
+        )
+        .expect("shared auth candidates should still resolve exact delivery token");
+
+        assert_eq!(resolved_workflow_run_id, workflow_run.id());
+        assert_eq!(resolved_node_run_id, node_run.id());
     }
 
 }
