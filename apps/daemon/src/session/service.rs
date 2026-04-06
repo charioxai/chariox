@@ -13,7 +13,8 @@ use super::{
     WorkflowRuntimeToolCallEvent,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
-    WorkflowTurnRuntimeState, WorkflowConsole, WorkflowConsoleEntry,
+    WorkflowTurnRuntimeState, WorkflowConsole, WorkflowConsoleEntry, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,15 @@ pub struct WorkflowOutputValidationWarning {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowWatchdogTickPlan {
+    pub watchdog_id: String,
+    pub session_id: String,
+    pub workflow_id: String,
+    pub endpoint_id: String,
+    pub invocation_prompt: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
@@ -48,6 +58,7 @@ pub struct SessionService {
     next_workflow_run_number: u64,
     next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
+    next_workflow_watchdog_number: u64,
 }
 
 impl SessionService {
@@ -64,6 +75,7 @@ impl SessionService {
             next_workflow_run_number: 0,
             next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
+            next_workflow_watchdog_number: 0,
         }
     }
 
@@ -1410,6 +1422,303 @@ impl SessionService {
         Ok(endpoint.clone())
     }
 
+    pub fn create_workflow_watchdog(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        interval_seconds: u64,
+        invocation_prompt: String,
+        policy: WorkflowWatchdogPolicy,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let endpoint_id = self
+            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
+            .id()
+            .to_string();
+        let watchdog = WorkflowWatchdogDefinition::new(
+            self.next_workflow_watchdog_id(),
+            workflow_id,
+            endpoint_id,
+            interval_seconds,
+            invocation_prompt,
+            policy,
+        );
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.add_workflow_watchdog(watchdog))
+    }
+
+    pub fn list_workflow_watchdogs(
+        &self,
+        session_id: &str,
+        workflow_ref: Option<&str>,
+    ) -> Result<Vec<WorkflowWatchdogDefinition>, DaemonError> {
+        let workflow_id = workflow_ref
+            .map(|reference| self.resolve_workflow_ref(session_id, reference))
+            .transpose()?
+            .map(|workflow| workflow.id().to_string());
+        let session = self.get_session(session_id)?;
+        Ok(session
+            .workflow_watchdogs()
+            .iter()
+            .filter(|watchdog| workflow_id.as_deref().is_none_or(|id| watchdog.workflow_id() == id))
+            .cloned()
+            .collect())
+    }
+
+    pub fn resolve_workflow_watchdog_ref(
+        &self,
+        session_id: &str,
+        watchdog_ref: &str,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let normalized_ref = watchdog_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        if let Some(watchdog) = session
+            .workflow_watchdogs()
+            .iter()
+            .find(|watchdog| watchdog.id() == normalized_ref)
+        {
+            return Ok(watchdog.clone());
+        }
+        let matches = session
+            .workflow_watchdogs()
+            .iter()
+            .filter(|watchdog| watchdog.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            return Ok(matches[0].clone());
+        }
+        Err(DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: String::new(),
+            reference: watchdog_ref.to_string(),
+            message: "workflow watchdog was not found",
+        })
+    }
+
+    pub fn set_workflow_watchdog_enabled(
+        &mut self,
+        session_id: &str,
+        watchdog_ref: &str,
+        enabled: bool,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let watchdog_id = self
+            .resolve_workflow_watchdog_ref(session_id, watchdog_ref)?
+            .id()
+            .to_string();
+        let now = unix_epoch_ms();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session
+            .workflow_watchdog_mut(&watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.clone(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_enabled(enabled);
+        watchdog.set_last_error(None);
+        watchdog.set_last_status(Some(if enabled {
+            "enabled".to_string()
+        } else {
+            "disabled".to_string()
+        }));
+        if enabled {
+            watchdog.set_next_run_at_ms(now.saturating_add(watchdog.interval_seconds() * 1000));
+        }
+        Ok(watchdog.clone())
+    }
+
+    pub fn remove_workflow_watchdog(
+        &mut self,
+        session_id: &str,
+        watchdog_ref: &str,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let watchdog_id = self
+            .resolve_workflow_watchdog_ref(session_id, watchdog_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        session
+            .remove_workflow_watchdog(&watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.clone(),
+                message: "workflow watchdog was not found",
+            })
+    }
+
+    pub fn collect_due_workflow_watchdog_invocations(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<Vec<WorkflowWatchdogTickPlan>, DaemonError> {
+        let mut plans = Vec::new();
+        let session_ids = self.store.non_ended_sessions().map(|s| s.id().to_string()).collect::<Vec<_>>();
+        for session_id in session_ids {
+            let session = match self.store.get_mut(&session_id) {
+                Some(session) => session,
+                None => continue,
+            };
+            let active_endpoint_runs = session
+                .workflow_runs()
+                .iter()
+                .filter(|run| {
+                    !matches!(
+                        run.status(),
+                        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+                    )
+                })
+                .map(|run| (run.endpoint_id().to_string(), run.id().to_string(), run.status()))
+                .collect::<Vec<_>>();
+            let completed_statuses = session
+                .workflow_runs()
+                .iter()
+                .map(|run| (run.id().to_string(), run.status()))
+                .collect::<BTreeMap<_, _>>();
+            for watchdog in session.workflow_watchdogs_mut().iter_mut() {
+                if let Some(run_status) = watchdog
+                    .last_workflow_run_id()
+                    .and_then(|run_id| completed_statuses.get(run_id).copied())
+                {
+                    if matches!(
+                        run_status,
+                        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+                    ) {
+                        watchdog.set_last_status(Some(
+                            match run_status {
+                                WorkflowRunStatus::Completed => "last_run_completed",
+                                WorkflowRunStatus::Failed => "last_run_failed",
+                                WorkflowRunStatus::Stopped => "last_run_stopped",
+                                _ => "last_run_finished",
+                            }
+                            .to_string(),
+                        ));
+                    }
+                }
+                if !watchdog.enabled() {
+                    continue;
+                }
+                let endpoint_active = active_endpoint_runs
+                    .iter()
+                    .any(|(endpoint_id, _, _)| endpoint_id == watchdog.endpoint_id());
+                let should_run_pending = watchdog.pending_run() && !endpoint_active;
+                let due_now = now_ms >= watchdog.next_run_at_ms();
+                if should_run_pending {
+                    watchdog.set_pending_run(false);
+                    watchdog.set_last_status(Some("invoking_pending".to_string()));
+                    plans.push(WorkflowWatchdogTickPlan {
+                        watchdog_id: watchdog.id().to_string(),
+                        session_id: session_id.clone(),
+                        workflow_id: watchdog.workflow_id().to_string(),
+                        endpoint_id: watchdog.endpoint_id().to_string(),
+                        invocation_prompt: watchdog.invocation_prompt().to_string(),
+                    });
+                    continue;
+                }
+                if !due_now {
+                    continue;
+                }
+                let next_run = now_ms.saturating_add(watchdog.interval_seconds() * 1000);
+                if endpoint_active {
+                    match watchdog.policy() {
+                        WorkflowWatchdogPolicy::Skip => {
+                            watchdog.set_last_status(Some("skipped_running".to_string()));
+                            watchdog.set_next_run_at_ms(next_run);
+                        }
+                        WorkflowWatchdogPolicy::Queue => {
+                            watchdog.set_pending_run(true);
+                            watchdog.set_last_status(Some("queued_running".to_string()));
+                            watchdog.set_next_run_at_ms(next_run);
+                        }
+                    }
+                    continue;
+                }
+                watchdog.set_last_status(Some("invoking".to_string()));
+                watchdog.set_next_run_at_ms(next_run);
+                plans.push(WorkflowWatchdogTickPlan {
+                    watchdog_id: watchdog.id().to_string(),
+                    session_id: session_id.clone(),
+                    workflow_id: watchdog.workflow_id().to_string(),
+                    endpoint_id: watchdog.endpoint_id().to_string(),
+                    invocation_prompt: watchdog.invocation_prompt().to_string(),
+                });
+            }
+        }
+        Ok(plans)
+    }
+
+    pub fn mark_workflow_watchdog_invoked(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session
+            .workflow_watchdog_mut(watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_last_run_at_ms(Some(unix_epoch_ms()));
+        watchdog.set_last_status(Some("started".to_string()));
+        watchdog.set_last_error(None);
+        watchdog.set_last_workflow_run_id(Some(workflow_run_id.to_string()));
+        Ok(watchdog.clone())
+    }
+
+    pub fn mark_workflow_watchdog_failed(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+        error: impl Into<String>,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session
+            .workflow_watchdog_mut(watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_last_status(Some("invoke_failed".to_string()));
+        watchdog.set_last_error(Some(error.into()));
+        Ok(watchdog.clone())
+    }
+
     pub fn resolve_session_ref(
         &self,
         session_ref: &str,
@@ -2301,6 +2610,14 @@ impl SessionService {
             unix_epoch_ms() ^ self.next_workflow_message_number.rotate_left(15)
         )
     }
+
+    fn next_workflow_watchdog_id(&mut self) -> String {
+        self.next_workflow_watchdog_number = self.next_workflow_watchdog_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_watchdog_number.rotate_left(1)
+        )
+    }
 }
 
 fn describe_session_match(session: &RuntimeSession) -> String {
@@ -2319,8 +2636,9 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::error::DaemonError;
     use crate::session::{
-        CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
-        WorkflowHandoffPayload, WorkflowNodeRunStatus, WorkflowRunStatus, WorktreeIsolationMode,
+        unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
+        WorkflowHandoffPayload, WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowWatchdogPolicy,
+        WorktreeIsolationMode,
     };
 
     fn test_config() -> DaemonConfig {
@@ -2721,6 +3039,104 @@ mod tests {
             .clear_workflow_console(session.id(), workflow.id())
             .expect("console clear should succeed");
         assert!(cleared.entries().is_empty());
+    }
+
+    #[test]
+    fn workflow_watchdog_skip_policy_skips_when_endpoint_run_is_active() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
+        let workflow = service
+            .create_workflow(session.id(), Some("watchdog".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("node should be added");
+        let endpoint = service
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .expect("endpoint should be created");
+        let watchdog = service
+            .create_workflow_watchdog(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                1,
+                "run".to_string(),
+                WorkflowWatchdogPolicy::Skip,
+            )
+            .expect("watchdog should be created");
+        let run = service
+            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), Some("manual".to_string()))
+            .expect("workflow should invoke");
+        let plans = service
+            .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
+            .expect("watchdog collection should succeed");
+        assert!(plans.is_empty());
+        let watchdog = service
+            .resolve_workflow_watchdog_ref(session.id(), watchdog.id())
+            .expect("watchdog should resolve");
+        assert_eq!(watchdog.last_status(), Some("skipped_running"));
+        assert!(!watchdog.pending_run());
+        assert_eq!(run.status(), WorkflowRunStatus::Created);
+    }
+
+    #[test]
+    fn workflow_watchdog_queue_policy_queues_one_pending_run() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
+        let workflow = service
+            .create_workflow(session.id(), Some("watchdog".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("node should be added");
+        let endpoint = service
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .expect("endpoint should be created");
+        let watchdog = service
+            .create_workflow_watchdog(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                1,
+                "run".to_string(),
+                WorkflowWatchdogPolicy::Queue,
+            )
+            .expect("watchdog should be created");
+        let run = service
+            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), Some("manual".to_string()))
+            .expect("workflow should invoke");
+        let queued = service
+            .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
+            .expect("watchdog collection should succeed");
+        assert!(queued.is_empty());
+        let watchdog = service
+            .resolve_workflow_watchdog_ref(session.id(), watchdog.id())
+            .expect("watchdog should resolve");
+        assert_eq!(watchdog.last_status(), Some("queued_running"));
+        assert!(watchdog.pending_run());
+
+        let session_mut = service.store.get_mut(session.id()).expect("session should exist");
+        let active_run = session_mut
+            .workflow_run_mut(run.id())
+            .expect("workflow run should exist");
+        active_run.set_status(WorkflowRunStatus::Completed);
+
+        let plans = service
+            .collect_due_workflow_watchdog_invocations(unix_epoch_ms())
+            .expect("watchdog collection should succeed");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].endpoint_id, endpoint.id());
+        let watchdog = service
+            .resolve_workflow_watchdog_ref(session.id(), watchdog.id())
+            .expect("watchdog should resolve");
+        assert!(!watchdog.pending_run());
+        assert_eq!(watchdog.last_status(), Some("invoking_pending"));
     }
 
     #[test]

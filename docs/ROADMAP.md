@@ -173,7 +173,8 @@ Status:
   - structured workflow failure events and mailbox routing
   - CLI workflow inspection of failure/audit state
   - live mixed-provider workflow drills across Codex and OpenCode
-  - workflow-scoped shared console design queued for implementation
+  - workflow-scoped shared console
+  - endpoint-scoped watchdog scheduling with interval triggers
 - recent OpenCode multi-agent stabilization now covers:
   - queued prompts preserving their target agent run even while another agent is actively working
   - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
@@ -232,6 +233,9 @@ Additional M4 workflow-runtime item now planned:
   - clearer timeout attribution between transport, handler, and provider wait states
   - a cleaner dedicated live-drill harness with isolated daemon/provider lifecycle
   - daemon health snapshot surfaces for active requests, prompts, provider runs, and scheduler state
+- watchdog follow-up:
+  - cron syntax support on top of the shipped interval scheduler
+  - architecture naming cleanup: reconsider whether `scheduler` should be renamed to `runtime` now that endpoint watchdogs sit beside, not inside, workflow dispatch
 
 Exit criteria:
 

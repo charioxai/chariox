@@ -75,6 +75,19 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "workflow-cancel", label: "cancel", description: "Cancel a workflow run", value: "/workflow cancel " },
       { id: "workflow-resume", label: "resume", description: "Resume a stopped workflow run", value: "/workflow resume " },
       { id: "workflow-terminal", label: "terminal", description: "Show the shared workflow console in the I/O panel", value: "/workflow terminal " },
+      {
+        id: "workflow-watchdog",
+        label: "watchdog",
+        description: "Manage scheduled endpoint triggers",
+        value: "/workflow watchdog ",
+        children: [
+          { id: "workflow-watchdog-add", label: "add", description: "Create a scheduled endpoint trigger", value: "/workflow watchdog add " },
+          { id: "workflow-watchdog-list", label: "list", description: "List workflow watchdogs", value: "/workflow watchdog list " },
+          { id: "workflow-watchdog-enable", label: "enable", description: "Enable a watchdog", value: "/workflow watchdog enable " },
+          { id: "workflow-watchdog-disable", label: "disable", description: "Disable a watchdog", value: "/workflow watchdog disable " },
+          { id: "workflow-watchdog-remove", label: "remove", description: "Remove a watchdog", value: "/workflow watchdog remove " },
+        ],
+      },
       { id: "workflow-alias", label: "alias", description: "Assign an alias to an existing workflow", value: "/workflow " },
       {
         id: "workflow-node",

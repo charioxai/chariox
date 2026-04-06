@@ -49,6 +49,118 @@ impl WorkflowEndpointDefinition {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowWatchdogPolicy {
+    Skip,
+    Queue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowWatchdogDefinition {
+    id: String,
+    workflow_id: String,
+    endpoint_id: String,
+    enabled: bool,
+    interval_seconds: u64,
+    invocation_prompt: String,
+    policy: WorkflowWatchdogPolicy,
+    next_run_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_run_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_workflow_run_id: Option<String>,
+    #[serde(default)]
+    pending_run: bool,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl WorkflowWatchdogDefinition {
+    pub fn new(
+        id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        interval_seconds: u64,
+        invocation_prompt: impl Into<String>,
+        policy: WorkflowWatchdogPolicy,
+    ) -> Self {
+        let now = unix_epoch_ms();
+        Self {
+            id: id.into(),
+            workflow_id: workflow_id.into(),
+            endpoint_id: endpoint_id.into(),
+            enabled: true,
+            interval_seconds,
+            invocation_prompt: invocation_prompt.into(),
+            policy,
+            next_run_at_ms: now.saturating_add(interval_seconds.saturating_mul(1000)),
+            last_run_at_ms: None,
+            last_status: None,
+            last_error: None,
+            last_workflow_run_id: None,
+            pending_run: false,
+            created_at_ms: now,
+            updated_at_ms: now,
+        }
+    }
+
+    pub fn id(&self) -> &str { &self.id }
+    pub fn workflow_id(&self) -> &str { &self.workflow_id }
+    pub fn endpoint_id(&self) -> &str { &self.endpoint_id }
+    pub fn enabled(&self) -> bool { self.enabled }
+    pub fn interval_seconds(&self) -> u64 { self.interval_seconds }
+    pub fn invocation_prompt(&self) -> &str { &self.invocation_prompt }
+    pub fn policy(&self) -> WorkflowWatchdogPolicy { self.policy }
+    pub fn next_run_at_ms(&self) -> u64 { self.next_run_at_ms }
+    pub fn last_run_at_ms(&self) -> Option<u64> { self.last_run_at_ms }
+    pub fn last_status(&self) -> Option<&str> { self.last_status.as_deref() }
+    pub fn last_error(&self) -> Option<&str> { self.last_error.as_deref() }
+    pub fn last_workflow_run_id(&self) -> Option<&str> { self.last_workflow_run_id.as_deref() }
+    pub fn pending_run(&self) -> bool { self.pending_run }
+    pub fn created_at_ms(&self) -> u64 { self.created_at_ms }
+    pub fn updated_at_ms(&self) -> u64 { self.updated_at_ms }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_next_run_at_ms(&mut self, value: u64) {
+        self.next_run_at_ms = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_last_run_at_ms(&mut self, value: Option<u64>) {
+        self.last_run_at_ms = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_last_status(&mut self, value: Option<String>) {
+        self.last_status = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_last_error(&mut self, value: Option<String>) {
+        self.last_error = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_last_workflow_run_id(&mut self, value: Option<String>) {
+        self.last_workflow_run_id = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_pending_run(&mut self, value: bool) {
+        self.pending_run = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowNodeDefinition {
     id: String,
@@ -1422,6 +1534,8 @@ pub struct RuntimeSession {
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_consoles: Vec<WorkflowConsole>,
 }
 
@@ -1466,6 +1580,7 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
+            workflow_watchdogs: Vec::new(),
             workflow_consoles: Vec::new(),
         }
     }
@@ -1543,6 +1658,14 @@ impl RuntimeSession {
         &self.workflow_runs
     }
 
+    pub fn workflow_watchdogs(&self) -> &[WorkflowWatchdogDefinition] {
+        &self.workflow_watchdogs
+    }
+
+    pub fn workflow_watchdogs_mut(&mut self) -> &mut [WorkflowWatchdogDefinition] {
+        &mut self.workflow_watchdogs
+    }
+
     pub fn workflow_consoles(&self) -> &[WorkflowConsole] {
         &self.workflow_consoles
     }
@@ -1603,6 +1726,40 @@ impl RuntimeSession {
         self.workflow_runs
             .iter_mut()
             .find(|workflow_run| workflow_run.id() == workflow_run_id)
+    }
+
+    pub fn add_workflow_watchdog(
+        &mut self,
+        watchdog: WorkflowWatchdogDefinition,
+    ) -> WorkflowWatchdogDefinition {
+        self.workflow_watchdogs.push(watchdog.clone());
+        watchdog
+    }
+
+    pub fn workflow_watchdog(&self, watchdog_id: &str) -> Option<&WorkflowWatchdogDefinition> {
+        self.workflow_watchdogs
+            .iter()
+            .find(|watchdog| watchdog.id() == watchdog_id)
+    }
+
+    pub fn workflow_watchdog_mut(
+        &mut self,
+        watchdog_id: &str,
+    ) -> Option<&mut WorkflowWatchdogDefinition> {
+        self.workflow_watchdogs
+            .iter_mut()
+            .find(|watchdog| watchdog.id() == watchdog_id)
+    }
+
+    pub fn remove_workflow_watchdog(
+        &mut self,
+        watchdog_id: &str,
+    ) -> Option<WorkflowWatchdogDefinition> {
+        let index = self
+            .workflow_watchdogs
+            .iter()
+            .position(|watchdog| watchdog.id() == watchdog_id)?;
+        Some(self.workflow_watchdogs.remove(index))
     }
 
     pub fn workflow_node_run_mut(&mut self, workflow_node_run_id: &str) -> Option<&mut WorkflowNodeRun> {

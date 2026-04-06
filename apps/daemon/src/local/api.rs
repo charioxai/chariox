@@ -19,6 +19,7 @@ use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowRun,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -379,6 +380,35 @@ pub struct ResumeWorkflowRunRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowWatchdogRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    pub interval_seconds: u64,
+    pub invocation_prompt: String,
+    pub policy: WorkflowWatchdogPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowWatchdogsRequest {
+    pub session_id: String,
+    pub workflow_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowWatchdogEnabledRequest {
+    pub session_id: String,
+    pub watchdog_ref: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowWatchdogRequest {
+    pub session_id: String,
+    pub watchdog_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -432,6 +462,10 @@ pub enum LocalDaemonRequest {
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
     ResumeWorkflowRun(ResumeWorkflowRunRequest),
+    CreateWorkflowWatchdog(CreateWorkflowWatchdogRequest),
+    ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest),
+    SetWorkflowWatchdogEnabled(SetWorkflowWatchdogEnabledRequest),
+    RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
     ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
     AckWorkflowTurn(AckWorkflowTurnRequest),
 }
@@ -621,6 +655,23 @@ pub enum LocalDaemonResponse {
     },
     WorkflowRunResumed {
         workflow_run: WorkflowRun,
+        session: RuntimeSession,
+    },
+    WorkflowWatchdogCreated {
+        watchdog: WorkflowWatchdogDefinition,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowWatchdogsListed {
+        watchdogs: Vec<WorkflowWatchdogDefinition>,
+    },
+    WorkflowWatchdogUpdated {
+        watchdog: WorkflowWatchdogDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowWatchdogRemoved {
+        watchdog: WorkflowWatchdogDefinition,
         session: RuntimeSession,
     },
     WorkflowOutputValidated {
@@ -1157,6 +1208,54 @@ impl DaemonApp {
                     workflow_run,
                     session,
                 })
+            }
+            LocalDaemonRequest::CreateWorkflowWatchdog(request) => {
+                let watchdog = self.sessions_mut().create_workflow_watchdog(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    request.interval_seconds,
+                    request.invocation_prompt,
+                    request.policy,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let endpoint = self.sessions().resolve_workflow_endpoint_ref(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowWatchdogCreated {
+                    watchdog,
+                    workflow,
+                    endpoint,
+                    session,
+                })
+            }
+            LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+                Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
+                    watchdogs: self
+                        .sessions()
+                        .list_workflow_watchdogs(&request.session_id, request.workflow_ref.as_deref())?,
+                })
+            }
+            LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => {
+                let watchdog = self.sessions_mut().set_workflow_watchdog_enabled(
+                    &request.session_id,
+                    &request.watchdog_ref,
+                    request.enabled,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
+            }
+            LocalDaemonRequest::RemoveWorkflowWatchdog(request) => {
+                let watchdog = self
+                    .sessions_mut()
+                    .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
             }
             LocalDaemonRequest::ValidateWorkflowOutput(request) => {
                 let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(

@@ -43,6 +43,7 @@ impl TransportService {
 
     pub fn pump_active_prompts(app: &mut DaemonApp) {
         app.pump_active_prompt_outputs();
+        app.pump_workflow_watchdogs();
     }
 
     pub fn dispatch_workflow_prompt(

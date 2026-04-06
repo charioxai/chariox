@@ -22,6 +22,7 @@ export type RuntimeSession = {
   config_state: SessionConfigState
   workflows?: WorkflowDefinition[]
   workflow_runs?: WorkflowRun[]
+  workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
 }
 
@@ -194,6 +195,24 @@ export type WorkflowEndpointDefinition = {
   id: string
   alias: string | null
   entry_node_id: string
+}
+
+export type WorkflowWatchdogDefinition = {
+  id: string
+  workflow_id: string
+  endpoint_id: string
+  enabled: boolean
+  interval_seconds: number
+  invocation_prompt: string
+  policy: "skip" | "queue"
+  next_run_at_ms: number
+  last_run_at_ms?: number | null
+  last_status?: string | null
+  last_error?: string | null
+  last_workflow_run_id?: string | null
+  pending_run?: boolean
+  created_at_ms: number
+  updated_at_ms: number
 }
 
 export type WorkflowNodeDefinition = {

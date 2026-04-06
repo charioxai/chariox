@@ -84,6 +84,8 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
     max_agents: 6,
     agents: [],
     workflows: [],
+    workflow_runs: [],
+    workflow_watchdogs: [],
     workflow_consoles: [],
     config_state: {
       version: 0,

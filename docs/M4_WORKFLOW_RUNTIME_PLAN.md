@@ -208,12 +208,12 @@ Status:
 
 ### Phase 6. Time-based schedules
 
-Only after phases 1 through 5 are stable should we add recurring schedules.
+Only after phases 1 through 5 are stable should we add full cron syntax.
 
 That later slice can introduce:
 
 - schedule metadata storage
-- `/workflow schedule ...` commands
+- richer `/workflow watchdog ...` commands
 - cron validation
 - enable/disable controls
 - daemon-online-only execution semantics
@@ -225,11 +225,11 @@ That later slice can introduce:
 3. Ship endpoint-triggered manual runs with a narrow DAG-first scheduler.
 4. Add richer run inspection beyond the current selected-workflow header/node status view.
 5. Enrich the completion contract with real node outputs, artifacts, and explicit stop/fail semantics.
-6. Add recurring schedules only after manual runs are proven in live drills.
+6. Add cron syntax only after interval watchdogs are proven in live drills.
 
 ## Non-Goals For The First Slice
 
-- cron or recurring schedules
+- cron syntax or calendar-aware recurring schedules
 - arbitrary cyclic graph execution
 - retries, backoff, or recovery orchestration
 - external API publishing of workflow endpoints

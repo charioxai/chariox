@@ -772,7 +772,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const selectedNodeFailures = selectedNodeRun
       ? failureEvents.filter((entry) => entry.source_node_run_id === selectedNodeRun.id)
       : []
+    const workflowWatchdogs = (sessionState().workflow_watchdogs ?? [])
+      .filter((entry) => entry.workflow_id === workflow.id)
+      .sort((left, right) => left.next_run_at_ms - right.next_run_at_ms)
     const lines: string[] = []
+    lines.push(`Watchdogs: ${workflowWatchdogs.length}`)
+    if (workflowWatchdogs.length > 0) {
+      lines.push("")
+      lines.push("Watchdogs")
+      for (const watchdog of workflowWatchdogs.slice(0, 8)) {
+        lines.push(`- ${watchdog.id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)}`)
+        lines.push(`  next: ${new Date(watchdog.next_run_at_ms).toISOString()}`)
+        if (watchdog.last_status) {
+          lines.push(`  last: ${watchdog.last_status}`)
+        }
+        if (watchdog.pending_run) {
+          lines.push("  pending: true")
+        }
+      }
+    }
+    lines.push("")
     lines.push(`Failure events: ${failureEvents.length}`)
     if (selectedNodeRun) {
       lines.push("")
@@ -4177,6 +4196,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowEdge,
     updateWorkflowNodeInstructions,
     invokeWorkflowEndpoint,
+    createWorkflowWatchdog,
+    listWorkflowWatchdogs,
+    setWorkflowWatchdogEnabled,
+    removeWorkflowWatchdog,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,
@@ -4343,6 +4366,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     addWorkflowEdge,
     removeWorkflowEdge,
     invokeWorkflowEndpoint,
+    createWorkflowWatchdog,
+    listWorkflowWatchdogs,
+    setWorkflowWatchdogEnabled,
+    removeWorkflowWatchdog,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,
@@ -6135,7 +6162,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

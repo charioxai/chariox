@@ -228,6 +228,58 @@ export function invokeWorkflowEndpointRequest(
   }
 }
 
+export function createWorkflowWatchdogRequest(
+  sessionId: string,
+  workflowRef: string,
+  endpointRef: string,
+  intervalSeconds: number,
+  invocationPrompt: string,
+  policy: "skip" | "queue",
+) {
+  return {
+    CreateWorkflowWatchdog: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      endpoint_ref: endpointRef,
+      interval_seconds: intervalSeconds,
+      invocation_prompt: invocationPrompt,
+      policy,
+    },
+  }
+}
+
+export function listWorkflowWatchdogsRequest(sessionId: string, workflowRef?: string | null) {
+  return {
+    ListWorkflowWatchdogs: {
+      session_id: sessionId,
+      workflow_ref: workflowRef ?? null,
+    },
+  }
+}
+
+export function setWorkflowWatchdogEnabledRequest(
+  sessionId: string,
+  watchdogRef: string,
+  enabled: boolean,
+) {
+  return {
+    SetWorkflowWatchdogEnabled: {
+      session_id: sessionId,
+      watchdog_ref: watchdogRef,
+      enabled,
+    },
+  }
+}
+
+export function removeWorkflowWatchdogRequest(sessionId: string, watchdogRef: string) {
+  return {
+    RemoveWorkflowWatchdog: {
+      session_id: sessionId,
+      watchdog_ref: watchdogRef,
+    },
+  }
+}
+
 export function listWorkflowRunsRequest(sessionId: string, workflowRef?: string | null) {
   return {
     ListWorkflowRuns: {

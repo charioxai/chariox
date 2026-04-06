@@ -5,6 +5,7 @@ import type {
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
   WorkflowRun,
+  WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import {
   addWorkflowEdgeRequest,
@@ -14,15 +15,19 @@ import {
   bindWorkflowEndpointRequest,
   createWorkflowEndpointRequest,
   createWorkflowRequest,
+  createWorkflowWatchdogRequest,
   cancelWorkflowRunRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
+  listWorkflowWatchdogsRequest,
   listWorkflowsRequest,
   listWorkflowRunsRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
+  removeWorkflowWatchdogRequest,
   resumeWorkflowRunRequest,
   resolveWorkflowRequest,
+  setWorkflowWatchdogEnabledRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import { toggleWorkspaceScreenMode, type WorkspaceScreenMode } from "./workspace-screen.js"
@@ -266,6 +271,64 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload
   }
 
+  const createWorkflowWatchdog = async (
+    workflowRef: string,
+    endpointRef: string,
+    intervalSeconds: number,
+    invocationPrompt: string,
+    policy: "skip" | "queue",
+  ) => {
+    const response = await deps.sendRequest(
+      createWorkflowWatchdogRequest(
+        deps.sessionState().id,
+        workflowRef,
+        endpointRef,
+        intervalSeconds,
+        invocationPrompt,
+        policy,
+      ),
+    )
+    const payload = expectVariant<{
+      watchdog: WorkflowWatchdogDefinition
+      workflow: WorkflowDefinition
+      endpoint: WorkflowEndpointDefinition
+      session: RuntimeSession
+    }>(response, "WorkflowWatchdogCreated")
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const listWorkflowWatchdogs = async (workflowRef?: string | null) => {
+    const response = await deps.sendRequest(listWorkflowWatchdogsRequest(deps.sessionState().id, workflowRef))
+    return expectVariant<{ watchdogs: WorkflowWatchdogDefinition[] }>(response, "WorkflowWatchdogsListed")
+  }
+
+  const setWorkflowWatchdogEnabled = async (watchdogRef: string, enabled: boolean) => {
+    const response = await deps.sendRequest(setWorkflowWatchdogEnabledRequest(deps.sessionState().id, watchdogRef, enabled))
+    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowWatchdogUpdated",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const removeWorkflowWatchdog = async (watchdogRef: string) => {
+    const response = await deps.sendRequest(removeWorkflowWatchdogRequest(deps.sessionState().id, watchdogRef))
+    const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowWatchdogRemoved",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   const listWorkflowRuns = async (workflowRef?: string | null) => {
     const response = await deps.sendRequest(listWorkflowRunsRequest(deps.sessionState().id, workflowRef))
     const payload = expectVariant<{ workflow_runs: WorkflowRun[] }>(response, "WorkflowRunsListed")
@@ -323,6 +386,10 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     addWorkflowEdge,
     removeWorkflowEdge,
     invokeWorkflowEndpoint,
+    createWorkflowWatchdog,
+    listWorkflowWatchdogs,
+    setWorkflowWatchdogEnabled,
+    removeWorkflowWatchdog,
     listWorkflowRuns,
     getWorkflowRun,
     cancelWorkflowRun,

@@ -11,6 +11,7 @@ import type {
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
   WorkflowRun,
+  WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -88,6 +89,13 @@ type WorkflowRunCancelPayload = {
 
 type WorkflowRunResumePayload = {
   workflow_run: WorkflowRun
+  session: RuntimeSession
+}
+
+type WorkflowWatchdogPayload = {
+  watchdog: WorkflowWatchdogDefinition
+  workflow?: WorkflowDefinition
+  endpoint?: WorkflowEndpointDefinition
   session: RuntimeSession
 }
 
@@ -192,6 +200,16 @@ type CommandActionDeps = {
     endpointRef: string,
     prompt?: string | null,
   ) => Promise<WorkflowRunInvokePayload>
+  createWorkflowWatchdog?: (
+    workflowRef: string,
+    endpointRef: string,
+    intervalSeconds: number,
+    invocationPrompt: string,
+    policy: "skip" | "queue",
+  ) => Promise<WorkflowWatchdogPayload>
+  listWorkflowWatchdogs?: (workflowRef?: string | null) => Promise<{ watchdogs: WorkflowWatchdogDefinition[] }>
+  setWorkflowWatchdogEnabled?: (watchdogRef: string, enabled: boolean) => Promise<WorkflowWatchdogPayload>
+  removeWorkflowWatchdog?: (watchdogRef: string) => Promise<WorkflowWatchdogPayload>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
@@ -211,6 +229,16 @@ type CommandActionDeps = {
 }
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
+  const parseWatchdogIntervalSeconds = (value: string | undefined): number | null => {
+    if (!value) return null
+    const match = value.trim().toLowerCase().match(/^(\d+)(s|m|h|d)$/)
+    if (!match) return null
+    const amount = Number(match[1])
+    const unit = match[2]
+    if (!Number.isFinite(amount) || amount <= 0) return null
+    const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
+    return amount * multiplier
+  }
   const hasDuplicateWorkflowEdge = (
     workflow: WorkflowDefinition,
     fromNodeId: string,
@@ -1081,6 +1109,104 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       deps.flashFooter(
         "usage: /workflow endpoint new <workflow-ref> <entry-node-id> [alias] | alias <workflow-ref> <endpoint-ref> <alias> | bind <workflow-ref> <endpoint-ref> <entry-node-id>",
+        "error",
+      )
+      return
+    }
+
+    if (subcommand === "watchdog") {
+      const action = args[1]
+      if (action === "add") {
+        if (!deps.createWorkflowWatchdog) {
+          deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
+          return
+        }
+        const workflowRef = args[2]
+        const endpointRef = args[3]
+        const everyLiteral = args[4]
+        const intervalLiteral = args[5]
+        const hasPolicyArg = args[6] === "skip" || args[6] === "queue"
+        const policy = (hasPolicyArg ? args[6] : "skip") as "skip" | "queue"
+        const prompt = args
+          .slice(hasPolicyArg ? 7 : 6)
+          .join(" ")
+          .trim() || "Run the workflow exactly as instructed."
+        if (!workflowRef || !endpointRef || everyLiteral !== "every") {
+          deps.flashFooter(
+            "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt]",
+            "error",
+          )
+          return
+        }
+        const intervalSeconds = parseWatchdogIntervalSeconds(intervalLiteral)
+        if (!intervalSeconds) {
+          deps.flashFooter("watchdog interval must be like 30s, 5m, 1h, or 1d", "error")
+          return
+        }
+        const payload = await deps.createWorkflowWatchdog(
+          workflowRef,
+          endpointRef,
+          intervalSeconds,
+          prompt,
+          policy,
+        )
+        deps.applySessionState(payload.session)
+        deps.selectWorkflowCanvas(payload.workflow?.id ?? workflowRef)
+        deps.flashFooter(`created workflow watchdog ${payload.watchdog.id}`, "info")
+        return
+      }
+      if (action === "list") {
+        if (!deps.listWorkflowWatchdogs) {
+          deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
+          return
+        }
+        const workflowRef = args[2] ?? null
+        const payload = await deps.listWorkflowWatchdogs(workflowRef)
+        if (payload.watchdogs.length === 0) {
+          deps.flashFooter("no workflow watchdogs configured", "info")
+          return
+        }
+        deps.appendNotice(payload.watchdogs.map((watchdog) =>
+          `${watchdog.id} workflow=${watchdog.workflow_id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)} next=${new Date(watchdog.next_run_at_ms).toISOString()}${watchdog.pending_run ? " pending=true" : ""}`
+        ).join("\n"))
+        deps.flashFooter(`listed ${payload.watchdogs.length} workflow watchdog(s)`, "info")
+        return
+      }
+      if (action === "enable" || action === "disable") {
+        if (!deps.setWorkflowWatchdogEnabled) {
+          deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
+          return
+        }
+        const watchdogRef = args[2]
+        if (!watchdogRef) {
+          deps.flashFooter(`usage: /workflow watchdog ${action} <watchdog-ref>`, "error")
+          return
+        }
+        const payload = await deps.setWorkflowWatchdogEnabled(watchdogRef, action === "enable")
+        deps.applySessionState(payload.session)
+        deps.flashFooter(
+          `${action === "enable" ? "enabled" : "disabled"} workflow watchdog ${payload.watchdog.id}`,
+          "info",
+        )
+        return
+      }
+      if (action === "remove") {
+        if (!deps.removeWorkflowWatchdog) {
+          deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
+          return
+        }
+        const watchdogRef = args[2]
+        if (!watchdogRef) {
+          deps.flashFooter("usage: /workflow watchdog remove <watchdog-ref>", "error")
+          return
+        }
+        const payload = await deps.removeWorkflowWatchdog(watchdogRef)
+        deps.applySessionState(payload.session)
+        deps.flashFooter(`removed workflow watchdog ${payload.watchdog.id}`, "info")
+        return
+      }
+      deps.flashFooter(
+        "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
         "error",
       )
       return
