@@ -781,7 +781,7 @@ fn build_workflow_turn_prompt(
         "Before producing substantive output, call the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"{delivery_token}\"}}\n\nThis acknowledgment is for runtime delivery tracking and is separate from the final validated workflow output. Do not describe the acknowledgment in your final answer.\n\n"
     );
     let console_line =
-        "A shared workflow console is available through the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear`. Use those tools only if this workflow-level prompt explicitly requires shared console output or inspection.\n\n";
+        "A shared workflow console is available through the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear`. Use those tools only if your node instruction file requires shared console output or inspection.\n\n";
     format!(
         "{}Workflow-level prompt:\n{}\n\n{}{}{}{}{}{}{}\n",
         entry_line,
