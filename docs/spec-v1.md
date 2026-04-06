@@ -305,6 +305,25 @@ Extension visibility policies MAY include:
 - `agent_private`
 - `session_shared`
 
+### 6.6 Workflow Console
+
+Arroba SHOULD provide one kernel-owned append-only console per workflow definition.
+
+Initial v1 rules:
+
+- the console is scoped to the workflow, not the workspace
+- it is separate from provider traces, mailbox content, handoff payloads, and audit events
+- nodes MAY read, write, and clear the workflow console through Arroba-managed MCP tools
+- the kernel/CLI MUST NOT rewrite or curate the visible console stream; it renders appended output as-is
+- the console is transient runtime state in v1 and does not require persistence across daemon restarts
+- workflow-level prompts MAY mention the console, but nodes should use it only when the workflow-level prompt explicitly says so
+
+Ownership split:
+
+- transport owns MCP exposure and authenticated tool dispatch
+- scheduler/runtime owns workflow-scoped console semantics and state
+- CLI renders the selected workflow console in the right-side workflow panel
+
 ## 7. Node and Agent Endpoint Model
 
 Arroba should distinguish between the kernel's internal runtime model and provider-specific integration details.

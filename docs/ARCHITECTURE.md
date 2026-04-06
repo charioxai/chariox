@@ -452,6 +452,30 @@ Current implementation note:
 - the current CLI footer/chrome reflects that state, but transcript routing and provider execution are still effectively single-agent
 - the next implementation step is to make focused-agent changes affect both prompt routing and visible per-agent panes/history
 
+## Workflow Console
+
+Kernel components now include a workflow-scoped shared console service.
+
+Responsibilities:
+
+- one append-only console per workflow definition
+- shared human-facing output stream separate from provider traces
+- readable/writable/clearable by workflow nodes through Arroba MCP tools
+- rendered by the CLI in the workflow right-side panel via `/workflow terminal`
+
+Ownership split:
+
+- transport exposes MCP tools and authenticates/scopes calls
+- scheduler/runtime owns workflow-console state and semantics
+- CLI renders the live console stream without rewriting content
+
+Boundary:
+
+- the workflow console is not mailbox state
+- the workflow console is not handoff state
+- the workflow console is not audit state
+- it is a shared presentation/output surface for one workflow
+
 ### 4.2.3 Persistent Session and Deletion Ownership
 
 Arroba session lifetime should be explicit and daemon-owned.

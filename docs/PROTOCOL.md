@@ -614,6 +614,22 @@ Behavior rules:
 - workflow runtime tools such as `ack_workflow_turn` and `validate_workflow_output` SHOULD be exposed through an Arroba-managed MCP surface rather than direct daemon/kernel APIs
 - for managed provider runs, MCP attachment SHOULD be automated by Arroba at launch time rather than delegated to end-user provider setup
 - day-1 implementation MAY statically advertise the workflow runtime tools and enforce turn/schema scope at call time; dynamic per-turn tool advertisement is a later hardening step
+- workflow-console MCP tools SHOULD use the same split:
+  - transport owns the MCP surface, authentication, and provider-run scoping
+  - scheduler/runtime owns workflow-scoped console semantics and state
+
+Workflow console tool family:
+
+- `workflow_console_read`
+- `workflow_console_write`
+- `workflow_console_clear`
+
+Behavior rules:
+
+- one append-only console exists per workflow definition
+- nodes MAY read, write, and clear only the console for their workflow
+- console content is rendered as-is for the workflow terminal view and is not kernel-curated
+- console content is not a control channel and does not replace mailbox, handoff, or audit state
 
 ## 6. Error Model
 

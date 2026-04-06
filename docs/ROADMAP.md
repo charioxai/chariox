@@ -173,6 +173,7 @@ Status:
   - structured workflow failure events and mailbox routing
   - CLI workflow inspection of failure/audit state
   - live mixed-provider workflow drills across Codex and OpenCode
+  - workflow-scoped shared console design queued for implementation
 - recent OpenCode multi-agent stabilization now covers:
   - queued prompts preserving their target agent run even while another agent is actively working
   - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
@@ -219,6 +220,13 @@ The following workflow-runtime items are no longer pending in M4:
 - managed-run MCP tool exposure for workflow ACK and validation
 - workflow stop/resume with preserved turn-envelope context
 - structured workflow failure/audit state surfaced through runtime and CLI
+
+Additional M4 workflow-runtime item now planned:
+
+- kernel-owned workflow console service:
+  - one append-only console per workflow definition
+  - MCP `read` / `write` / `clear` for workflow nodes
+  - CLI `/workflow terminal` surface in the right-side panel
 
 Exit criteria:
 
