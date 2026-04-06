@@ -1025,6 +1025,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           lines.push("Handoff snapshot")
           lines.push(selectedNodeRun.turn_envelope.handoff_payloads_json)
         }
+        const runtimeToolCalls = selectedNodeRun.turn_envelope.runtime_tool_calls ?? []
+        if (runtimeToolCalls.length > 0) {
+          lines.push("")
+          lines.push("Runtime tool calls")
+          for (const call of runtimeToolCalls.slice(-10)) {
+            lines.push(`- ${call.tool_name} @ ${new Date(call.timestamp_ms).toISOString()} ok=${String(call.ok)}`)
+            lines.push(`  args: ${call.arguments_json}`)
+            if (call.result_json) {
+              lines.push(`  result: ${call.result_json}`)
+            }
+          }
+        }
       }
     }
     if (selectedNodeFailures.length > 0) {
@@ -1325,13 +1337,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     reconcileWaitingRoom(waitingRoomState())
   }
   const applyModelSelection = async (modelId: string) => {
+    const currentSelection = currentProviderSelection()
     const decision = deriveWaitingRoomModelSelectionDecision({
       modelId,
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
-      currentProvider: (options.provider ?? "opencode") as BackendProviderId,
-      configuredEffort: options.effort,
+      currentProvider: currentSelection.provider === "codex" ? "codex" : "opencode",
+      configuredEffort: currentSelection.effort,
     })
     if (decision.kind === "error") {
       flashFooter(decision.message, "error")
@@ -1357,10 +1370,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter(`model set to ${decision.selectedModelId}`, "info")
   }
   const applyVariantSelection = async (variant: string) => {
+    const currentSelection = currentProviderSelection()
     const decision = deriveWaitingRoomVariantSelectionDecision({
       variant,
-      currentModelId: currentModelId(),
-      currentProviderId: (options.provider ?? "opencode") as BackendProviderId,
+      currentModelId: currentSelection.model,
+      currentProviderId: currentSelection.provider === "codex" ? "codex" : "opencode",
       state: waitingRoomState(),
       sessions: availableSessions(),
       catalog: providerCatalogState(),
@@ -1414,6 +1428,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       modelId: options.model,
       effort: options.effort,
     })
+    const activeRun = providerRunState()
+    const shouldSwitchActiveRun =
+      isAttached()
+      && Boolean(attachmentState())
+      && (!activeRun || activeRun.provider !== providerId)
+    if (shouldSwitchActiveRun) {
+      try {
+        const run = await launchProviderRun(
+          client,
+          sessionState().id,
+          providerId,
+          options.accountProfile,
+          options.model,
+          options.effort,
+          focusedAgentId(),
+        )
+        setProviderRunState(run)
+        applySessionState(await getSessionState(client, sessionState().id))
+        await maybeResize(client, sessionState().id)
+      } catch (error) {
+        appLogger?.warn("provider switch launch failed", {
+          provider: providerId,
+          error: formatError(error),
+        })
+        flashFooter(formatError(error), "error")
+        return
+      }
+    }
     if (providerId === "codex") {
       try {
         const status = await getProviderAuthStatus(client, providerId)
@@ -4284,6 +4326,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(client, providerRunId, appLogger),
     setProviderCatalogState,
     getProviderCatalog: () => getProviderCatalog(client, appLogger),
+    syncCliProviderSelection: ({ provider, model, effort }) => {
+      options.provider = provider
+      options.model = model
+      options.effort = effort
+      reconcileWaitingRoom({
+        ...waitingRoomState(),
+        providerId: provider === "codex" ? "codex" : "opencode",
+        modelId: model,
+        effort,
+      })
+    },
     hydrateAttachedSessionBinding: (sessionId, attachmentId, session) =>
       finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
     setAvailableSessions,

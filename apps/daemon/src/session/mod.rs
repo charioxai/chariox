@@ -15,6 +15,7 @@ pub use types::{
     RuntimeWorktreeAssignment, SchedulerState, SessionConfigState, SessionExecutionMode,
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
     WorkflowConsole, WorkflowConsoleEntry, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowRuntimeToolCallEvent,
     WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,

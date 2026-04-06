@@ -458,6 +458,53 @@ pub enum WorkflowTurnRuntimeState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRuntimeToolCallEvent {
+    tool_name: String,
+    arguments_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result_json: Option<String>,
+    ok: bool,
+    timestamp_ms: u64,
+}
+
+impl WorkflowRuntimeToolCallEvent {
+    pub fn new(
+        tool_name: impl Into<String>,
+        arguments_json: impl Into<String>,
+        result_json: Option<String>,
+        ok: bool,
+    ) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            arguments_json: arguments_json.into(),
+            result_json,
+            ok,
+            timestamp_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    pub fn arguments_json(&self) -> &str {
+        &self.arguments_json
+    }
+
+    pub fn result_json(&self) -> Option<&str> {
+        self.result_json.as_deref()
+    }
+
+    pub fn ok(&self) -> bool {
+        self.ok
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        self.timestamp_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowTurnEnvelope {
     delivery_token: String,
     state: WorkflowTurnRuntimeState,
@@ -467,6 +514,8 @@ pub struct WorkflowTurnEnvelope {
     mailbox_content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff_payloads_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    runtime_tool_calls: Vec<WorkflowRuntimeToolCallEvent>,
     prepared_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dispatched_at_ms: Option<u64>,
@@ -489,6 +538,7 @@ impl WorkflowTurnEnvelope {
             rendered_prompt: Some(rendered_prompt),
             mailbox_content,
             handoff_payloads_json,
+            runtime_tool_calls: Vec::new(),
             prepared_at_ms: unix_epoch_ms(),
             dispatched_at_ms: None,
             acknowledged_at_ms: None,
@@ -514,6 +564,14 @@ impl WorkflowTurnEnvelope {
 
     pub fn handoff_payloads_json(&self) -> Option<&str> {
         self.handoff_payloads_json.as_deref()
+    }
+
+    pub fn runtime_tool_calls(&self) -> &[WorkflowRuntimeToolCallEvent] {
+        &self.runtime_tool_calls
+    }
+
+    pub fn add_runtime_tool_call(&mut self, event: WorkflowRuntimeToolCallEvent) {
+        self.runtime_tool_calls.push(event);
     }
 
     pub fn mark_dispatched(&mut self) {
@@ -982,6 +1040,12 @@ impl WorkflowRun {
 
     pub fn node_runs_mut(&mut self) -> &mut [WorkflowNodeRun] {
         &mut self.node_runs
+    }
+
+    pub fn node_run_mut(&mut self, workflow_node_run_id: &str) -> Option<&mut WorkflowNodeRun> {
+        self.node_runs
+            .iter_mut()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
     }
 
     pub fn messages(&self) -> &[WorkflowMessage] {
@@ -1539,6 +1603,12 @@ impl RuntimeSession {
         self.workflow_runs
             .iter_mut()
             .find(|workflow_run| workflow_run.id() == workflow_run_id)
+    }
+
+    pub fn workflow_node_run_mut(&mut self, workflow_node_run_id: &str) -> Option<&mut WorkflowNodeRun> {
+        self.workflow_runs
+            .iter_mut()
+            .find_map(|workflow_run| workflow_run.node_run_mut(workflow_node_run_id))
     }
 
     pub fn workflow_console(&self, workflow_id: &str) -> Option<&WorkflowConsole> {

@@ -10,6 +10,7 @@ use super::{
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
+    WorkflowRuntimeToolCallEvent,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
     WorkflowTurnRuntimeState, WorkflowConsole, WorkflowConsoleEntry,
@@ -678,6 +679,36 @@ impl SessionService {
             message.consumed_by_node_run_id() != Some(workflow_node_run_id)
         });
         Ok(workflow_run.clone())
+    }
+
+    pub fn record_workflow_runtime_tool_call(
+        &mut self,
+        session_id: &str,
+        workflow_node_run_id: &str,
+        event: WorkflowRuntimeToolCallEvent,
+    ) -> Result<WorkflowNodeRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let node_run = session
+            .workflow_node_run_mut(workflow_node_run_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "record_workflow_runtime_tool_call",
+                message: format!(
+                    "workflow node run `{workflow_node_run_id}` not found in session `{session_id}`"
+                ),
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::LocalTransport {
+            operation: "record_workflow_runtime_tool_call",
+            message: format!(
+                "workflow node run `{workflow_node_run_id}` has no active turn envelope"
+            ),
+        })?;
+        envelope.add_runtime_tool_call(event);
+        Ok(node_run.clone())
     }
 
     pub fn record_workflow_failure_event(

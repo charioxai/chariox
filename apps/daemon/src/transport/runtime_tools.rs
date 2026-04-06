@@ -4,7 +4,9 @@ use serde_json::Value;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{WorkflowNodeRunStatus, WorkflowTurnRuntimeState};
+use crate::session::{
+    WorkflowNodeRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnRuntimeState,
+};
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
@@ -130,7 +132,10 @@ pub fn dispatch_runtime_tool_call(
     app: &mut DaemonApp,
     call: RuntimeToolCall,
 ) -> Result<RuntimeToolResult, DaemonError> {
-    match canonical_runtime_tool_name(call.tool_name.as_str()) {
+    let canonical_tool_name = canonical_runtime_tool_name(call.tool_name.as_str()).to_string();
+    let arguments_json = serde_json::to_string(&call.arguments)
+        .unwrap_or_else(|_| String::from("<unserializable runtime tool arguments>"));
+    let result = match canonical_tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => {
             let args =
                 serde_json::from_value::<AckWorkflowTurnArgs>(call.arguments).map_err(|error| {
@@ -268,7 +273,30 @@ pub fn dispatch_runtime_tool_call(
             operation: "dispatch_runtime_tool_call",
             message: format!("unsupported runtime tool `{other}`"),
         }),
-    }
+    };
+
+    let result_json = match &result {
+        Ok(result) => Some(
+            serde_json::to_string(&result.payload)
+                .unwrap_or_else(|_| String::from("<unserializable runtime tool result>")),
+        ),
+        Err(error) => Some(
+            serde_json::json!({"error": error.to_string()}).to_string(),
+        ),
+    };
+    let ok = result.as_ref().map(|entry| entry.ok).unwrap_or(false);
+    let _ = app.sessions_mut().record_workflow_runtime_tool_call(
+        &call.context.session_id,
+        &call.context.workflow_node_run_id,
+        WorkflowRuntimeToolCallEvent::new(
+            canonical_tool_name,
+            arguments_json,
+            result_json,
+            ok,
+        ),
+    );
+
+    result
 }
 
 pub fn dispatch_authenticated_runtime_tool_call(

@@ -234,6 +234,13 @@ export type WorkflowNodeRun = {
     rendered_prompt?: string | null
     mailbox_content?: string | null
     handoff_payloads_json?: string | null
+    runtime_tool_calls?: {
+      tool_name: string
+      arguments_json: string
+      result_json?: string | null
+      ok: boolean
+      timestamp_ms: number
+    }[]
     prepared_at_ms: number
     dispatched_at_ms?: number | null
     acknowledged_at_ms?: number | null
