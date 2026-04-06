@@ -848,14 +848,14 @@ fn workflow_system_prompt_template_path(
     workflow_run_id: &str,
     workflow_node_run_id: &str,
 ) -> Option<std::path::PathBuf> {
-    workflow_runtime_artifact_root(
-        app,
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-        "system-prompts",
+    let base_directory =
+        workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
+    Some(
+        base_directory
+            .join(".arroba")
+            .join("system-prompts")
+            .join("workflow-turn.md"),
     )
-    .map(|root| root.join("workflow-turn.md"))
 }
 
 fn workflow_outgoing_edge_contracts_block(
@@ -991,6 +991,24 @@ fn workflow_runtime_artifact_root(
     workflow_node_run_id: &str,
     category: &str,
 ) -> Option<std::path::PathBuf> {
+    let base_directory =
+        workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
+    Some(
+        base_directory
+            .join(".arroba")
+            .join("workflow-runtime")
+            .join(session_id)
+            .join(workflow_run_id)
+            .join(category),
+    )
+}
+
+fn workflow_runtime_base_directory(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<std::path::PathBuf> {
     let session = app.sessions().get_session(session_id).ok()?;
     let workflow_run = session.workflow_run(workflow_run_id)?;
     let node_run = workflow_run
@@ -1009,14 +1027,7 @@ fn workflow_runtime_artifact_root(
                 std::env::current_dir().ok().map(|cwd| cwd.join(worktree))
             }
         })?;
-    Some(
-        base_directory
-            .join(".arroba")
-            .join("workflow-runtime")
-            .join(session_id)
-            .join(workflow_run_id)
-            .join(category),
-    )
+    Some(base_directory)
 }
 
 fn build_workflow_completion_snapshot(
@@ -1440,9 +1451,6 @@ mod tests {
         assert!(contents.contains("Read me from a workspace-local hidden file."));
         let expected_prompt_template = workdir
             .join(".arroba")
-            .join("workflow-runtime")
-            .join(session.id())
-            .join(workflow_run.id())
             .join("system-prompts")
             .join("workflow-turn.md");
         assert!(
