@@ -60,9 +60,13 @@ impl DaemonApp {
             }));
         }
         if request.runtime_mcp_binding.is_none() {
+            let shared_auth_token = self
+                .providers
+                .get_session_run_for_provider(&request.session_id, &request.provider)
+                .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string));
             request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
                 self.config.runtime_mcp_url(),
-                generate_runtime_mcp_auth_token(),
+                shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
             ));
         }
         let previous_active_run_id = self

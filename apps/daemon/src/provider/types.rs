@@ -472,6 +472,14 @@ impl RuntimeProviderRun {
         self.resume_state = resume_state;
     }
 
+    pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {
+        self.runtime_mcp_auth_token = auth_token;
+    }
+
+    pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {
+        self.control_capabilities = capabilities;
+    }
+
     pub fn mark_running(&mut self) {
         self.state = ProviderRunState::Running;
     }
@@ -487,7 +495,7 @@ impl RuntimeProviderRun {
 
 fn default_control_capabilities(
     adapter_key: &str,
-    endpoint_mode: AgentEndpointMode,
+    _endpoint_mode: AgentEndpointMode,
     has_runtime_mcp_binding: bool,
 ) -> Vec<ControlCapability> {
     let mut capabilities = Vec::new();
@@ -512,7 +520,7 @@ fn default_control_capabilities(
             ControlOperation::ValidateWorkflowOutput,
             ControlCapabilityMode::AdapterEmulated,
         ));
-    } else if endpoint_mode == AgentEndpointMode::Managed && has_runtime_mcp_binding {
+    } else if has_runtime_mcp_binding {
         capabilities.push(ControlCapability::new(
             ControlOperation::AckWorkflowTurn,
             ControlCapabilityMode::Mcp,

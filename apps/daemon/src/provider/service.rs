@@ -238,6 +238,27 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    pub fn get_session_run_for_provider(
+        &self,
+        session_id: &str,
+        provider: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.session_id() == session_id
+                    && run.provider() == provider
+                    && run.state() != ProviderRunState::Ended
+            })
+            .max_by_key(|run| match run.state() {
+                ProviderRunState::Running => 3,
+                ProviderRunState::Parked => 2,
+                ProviderRunState::Starting => 1,
+                ProviderRunState::Ended => 0,
+            })
+            .cloned()
+    }
+
     pub fn get_run_by_runtime_mcp_auth_token(
         &self,
         auth_token: &str,

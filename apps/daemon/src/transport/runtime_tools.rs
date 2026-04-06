@@ -285,12 +285,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
             operation: "dispatch_authenticated_runtime_tool_call",
             message: "invalid runtime MCP auth token".to_string(),
         })?;
-    let agent_id = provider_run
-        .agent_instance_id()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "dispatch_authenticated_runtime_tool_call",
-            message: "provider run is not bound to an agent".to_string(),
-        })?;
+    let agent_id = provider_run.agent_instance_id();
     let requested_delivery_token = match canonical_tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
             .ok()
@@ -337,10 +332,38 @@ pub fn dispatch_authenticated_runtime_tool_call(
 fn resolve_authenticated_workflow_turn(
     app: &DaemonApp,
     session_id: &str,
-    agent_id: &str,
+    agent_id: Option<&str>,
     delivery_token: Option<&str>,
 ) -> Result<(String, String), DaemonError> {
     let session = app.sessions().get_session(session_id)?;
+    if let Some(prompt) = session.active_prompt() {
+        if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        {
+            if let Some(requested_delivery_token) = delivery_token {
+                let matches_active_token = session
+                    .workflow_runs()
+                    .iter()
+                    .find(|workflow_run| workflow_run.id() == workflow_run_ref)
+                    .and_then(|workflow_run| {
+                        workflow_run
+                            .node_runs()
+                            .iter()
+                            .find(|node_run| node_run.id() == workflow_node_run_id)
+                    })
+                    .and_then(|node_run| node_run.turn_envelope())
+                    .is_some_and(|envelope| envelope.delivery_token() == requested_delivery_token);
+                if matches_active_token {
+                    return Ok((
+                        workflow_run_ref.to_string(),
+                        workflow_node_run_id.to_string(),
+                    ));
+                }
+            } else {
+                return Ok((workflow_run_ref.to_string(), workflow_node_run_id.to_string()));
+            }
+        }
+    }
     if let Some(requested_delivery_token) = delivery_token {
         let mut exact_matches = session
             .workflow_runs()
@@ -348,9 +371,10 @@ fn resolve_authenticated_workflow_turn(
             .flat_map(|workflow_run| {
                 workflow_run.node_runs().iter().filter_map(|node_run| {
                     let envelope = node_run.turn_envelope()?;
-                    if envelope.delivery_token() != requested_delivery_token
-                        || node_run.agent_id() != agent_id
-                    {
+                    if envelope.delivery_token() != requested_delivery_token {
+                        return None;
+                    }
+                    if agent_id.is_some_and(|agent_id| node_run.agent_id() != agent_id) {
                         return None;
                     }
                     Some((workflow_run.id().to_string(), node_run.id().to_string()))
@@ -388,23 +412,6 @@ fn resolve_authenticated_workflow_turn(
         })
         .collect::<Vec<_>>();
 
-    if let Some(prompt) = session.active_prompt() {
-        if prompt.target_agent_id() == agent_id {
-            if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
-                (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-            {
-                return Ok((
-                    workflow_run_ref.to_string(),
-                    workflow_node_run_id.to_string(),
-                ));
-            }
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch_authenticated_runtime_tool_call",
-                message: "workflow node run context is missing for the active prompt".to_string(),
-            });
-        }
-    }
-
     if let Some(requested_delivery_token) = delivery_token {
         let mut matching_by_delivery_token = running_turns
             .iter()
@@ -422,7 +429,9 @@ fn resolve_authenticated_workflow_turn(
 
     let mut candidates = running_turns
         .iter()
-        .filter(|(_, _, candidate_agent_id, _)| candidate_agent_id == agent_id)
+        .filter(|(_, _, candidate_agent_id, _)| {
+            agent_id.is_some_and(|agent_id| candidate_agent_id == agent_id)
+        })
         .map(|(workflow_run_id, workflow_node_run_id, _, candidate_delivery_token)| {
             (
                 workflow_run_id.clone(),
