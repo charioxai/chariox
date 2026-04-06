@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 
 import WebSocket from "ws"
 
-const IPC_TIMEOUT_MS = 30_000
+const IPC_TIMEOUT_MS = 120_000
 
 type IpcEnvelope<TResponse> = {
   response: TResponse | null

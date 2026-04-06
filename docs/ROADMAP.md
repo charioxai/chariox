@@ -227,6 +227,11 @@ Additional M4 workflow-runtime item now planned:
   - one append-only console per workflow definition
   - MCP `read` / `write` / `clear` for workflow nodes
   - CLI `/workflow terminal` surface in the right-side panel
+- kernel/CLI drill reliability and timeout diagnostics:
+  - request-level local IPC tracing with request ids and duration logging
+  - clearer timeout attribution between transport, handler, and provider wait states
+  - a cleaner dedicated live-drill harness with isolated daemon/provider lifecycle
+  - daemon health snapshot surfaces for active requests, prompts, provider runs, and scheduler state
 
 Exit criteria:
 
