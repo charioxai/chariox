@@ -113,6 +113,20 @@ impl DaemonApp {
             .active_provider_run_id()
             .map(str::to_string);
         let (_session, completed) = self.sessions.complete_active_prompt_only(session_id)?;
+        if !flow_control::prompt_completion_recorded(self, session_id) {
+            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+            let completion_provider_run_id = provider_run_id
+                .as_deref()
+                .unwrap_or("provider-run-completed");
+            self.record_assistant_message_completion(
+                session_id,
+                completion_provider_run_id,
+                recipient_attachment_ids,
+                &format!("prompt-complete:{}", completed.id()),
+                crate::session::unix_epoch_ms(),
+            );
+            flow_control::mark_prompt_completion_recorded(self, session_id);
+        }
         crate::scheduler::runtime::on_workflow_prompt_completed(
             self,
             session_id,

@@ -46,7 +46,7 @@ type KernelEventControllerDeps = {
   updateSessionChrome: () => void
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
-  clearAgentCompletionState: (agentId: string | null | undefined) => void
+  markAssistantMessageCompleted: (agentId: string | null | undefined) => void
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
@@ -228,7 +228,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     agent_id?: string | null
   }) => {
     deps.recordDaemonActivity("assistant_message_completed")
-    deps.clearAgentCompletionState(event.agent_id ?? null)
+    deps.markAssistantMessageCompleted(event.agent_id ?? null)
   }
 
   return {

@@ -174,14 +174,12 @@ test("deriveVisibleActivityLabel prefers active tool activity over provider acti
   )
 })
 
-test("deriveFocusedStatusBadge handles unattached, disconnected, and streaming focused agents", () => {
+test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: false,
-      daemonDisconnected: false,
-      focusedAgent: null,
-      focusedAgentActivityLabel: null,
-      streamingAgentId: null,
+      sessionStatusMode: "idle",
+      activeStatusLabel: null,
     }),
     { label: "", tone: "idle" },
   )
@@ -189,10 +187,8 @@ test("deriveFocusedStatusBadge handles unattached, disconnected, and streaming f
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      daemonDisconnected: true,
-      focusedAgent: agent("agent-a", { state: "Working", is_processing: true }),
-      focusedAgentActivityLabel: "reading",
-      streamingAgentId: "agent-a",
+      sessionStatusMode: "disconnected",
+      activeStatusLabel: "reading",
     }),
     { label: "DISCONNECTED", tone: "disconnected" },
   )
@@ -200,12 +196,28 @@ test("deriveFocusedStatusBadge handles unattached, disconnected, and streaming f
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      daemonDisconnected: false,
-      focusedAgent: agent("agent-a", { state: "Idle", is_processing: false }),
-      focusedAgentActivityLabel: null,
-      streamingAgentId: "agent-a",
+      sessionStatusMode: "working",
+      activeStatusLabel: null,
     }),
-    { label: "WORKING", tone: "working" },
+    { label: "THINKING", tone: "working" },
+  )
+
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      sessionStatusMode: "idle",
+      activeStatusLabel: "reading",
+    }),
+    { label: "IDLE", tone: "idle" },
+  )
+
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      sessionStatusMode: "working",
+      activeStatusLabel: "reading",
+    }),
+    { label: "READING", tone: "working" },
   )
 })
 
@@ -213,6 +225,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   return {
     focus: "new",
     sessionIndex: 0,
+    providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "high",
     introStep: 0,

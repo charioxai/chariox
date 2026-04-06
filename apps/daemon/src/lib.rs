@@ -29,7 +29,7 @@ mod tests {
 
     use super::agent::CreateAgentRequest;
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
-    use super::provider::LaunchProviderRequest;
+    use super::provider::{LaunchProviderRequest, ProviderResumeState};
     use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use super::{DaemonApp, DaemonConfig, DaemonError};
 
@@ -117,6 +117,111 @@ mod tests {
             .expect("session should still exist");
 
         assert_eq!(session.active_provider_run_id(), Some(run.id()));
+    }
+
+    #[test]
+    fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider run should launch");
+
+        let _detached = app
+            .detach(attachment.id())
+            .expect("last attachment should detach cleanly");
+
+        let parked_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist after detach");
+        let parked_run = app
+            .providers()
+            .get_run(run.id())
+            .expect("provider run should still exist after detach");
+
+        assert_eq!(parked_session.active_provider_run_id(), None);
+        assert_eq!(
+            parked_run.state(),
+            super::provider::ProviderRunState::Parked
+        );
+
+        let reattached = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-b",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("reattach should resume the parked provider run");
+
+        let resumed_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist after reattach");
+        let resumed_run = app
+            .providers()
+            .get_run(run.id())
+            .expect("provider run should still exist after reattach");
+
+        assert_eq!(reattached.session_id(), session.id());
+        assert_eq!(resumed_session.active_provider_run_id(), Some(run.id()));
+        assert_eq!(
+            resumed_run.state(),
+            super::provider::ProviderRunState::Running
+        );
+    }
+
+    #[test]
+    fn launching_a_provider_run_persists_resume_state_back_to_the_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id())
+                .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1")),
+            )
+            .expect("provider run should launch");
+
+        let stored_agent = app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should still exist");
+
+        assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+        assert_eq!(
+            stored_agent.provider_resume_state().codex_thread_id(),
+            Some("thread-1")
+        );
     }
 
     #[test]

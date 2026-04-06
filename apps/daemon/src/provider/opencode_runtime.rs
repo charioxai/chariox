@@ -353,6 +353,25 @@ pub(super) fn drain_opencode_events(
                             bytes: format_session_status(&kind).into_bytes(),
                         });
                     }
+                    if kind == "idle" {
+                        let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                        if let Ok(messages) = client.messages(&state.session_id) {
+                            if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
+                                resolved_usage_tokens_total = Some(total_tokens);
+                            }
+                            record_snapshot_message_metadata(state, &messages);
+                            let snapshot_chunks = render_snapshot_output_chunks(state, &messages);
+                            chunks.extend(snapshot_chunks.chunks);
+                            let status_completions =
+                                collect_new_completed_assistant_messages(state, &messages);
+                            if !status_completions.is_empty() {
+                                completions.extend(status_completions);
+                                state.pending_prompt_completion = true;
+                                state.pending_prompt_completion_quiet_since = None;
+                                saw_completion_candidate = true;
+                            }
+                        }
+                    }
                 }
             }
             Err(TryRecvError::Empty) => break,
@@ -394,23 +413,10 @@ pub(super) fn drain_opencode_events(
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
-                    if snapshot.messages.iter().any(|message| {
-                        let is_new_completed = message.info.session_id == state.session_id
-                            && message.info.role == "assistant"
-                            && message.info.time.completed.is_some()
-                            && !message.info.is_tool_call_only_completion()
-                            && state.last_completed_assistant_message_id.as_deref()
-                                != Some(message.info.id.as_str());
-                        if is_new_completed {
-                            state.last_completed_assistant_message_id =
-                                Some(message.info.id.clone());
-                            completions.push(OpenCodeAssistantCompletion {
-                                message_id: message.info.id.clone(),
-                                completed_at_ms: message.info.time.completed.unwrap_or_default(),
-                            });
-                        }
-                        is_new_completed
-                    }) {
+                    let snapshot_completions =
+                        collect_new_completed_assistant_messages(state, &snapshot.messages);
+                    if !snapshot_completions.is_empty() {
+                        completions.extend(snapshot_completions);
                         state.pending_prompt_completion = true;
                         state.pending_prompt_completion_quiet_since = None;
                         saw_completion_candidate = true;
@@ -477,6 +483,30 @@ fn record_snapshot_message_metadata(
             state.part_kinds.insert(part.id.clone(), part.kind.clone());
         }
     }
+}
+
+fn collect_new_completed_assistant_messages(
+    state: &mut OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+) -> Vec<OpenCodeAssistantCompletion> {
+    let mut completions = Vec::new();
+    for message in messages {
+        let is_new_completed = message.info.session_id == state.session_id
+            && message.info.role == "assistant"
+            && message.info.time.completed.is_some()
+            && !message.info.is_tool_call_only_completion()
+            && state.last_completed_assistant_message_id.as_deref()
+                != Some(message.info.id.as_str());
+        if !is_new_completed {
+            continue;
+        }
+        state.last_completed_assistant_message_id = Some(message.info.id.clone());
+        completions.push(OpenCodeAssistantCompletion {
+            message_id: message.info.id.clone(),
+            completed_at_ms: message.info.time.completed.unwrap_or_default(),
+        });
+    }
+    completions
 }
 
 fn latest_assistant_usage_tokens(messages: &[OpenCodeMessage]) -> Option<u64> {

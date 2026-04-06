@@ -13,6 +13,7 @@ import type { WaitingRoomState } from "./waiting-room.js"
 
 test("deriveWaitingRoomStateUpdate normalizes state and reports preference persistence", () => {
   const currentState = waitingRoomState({
+    providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "medium",
   })
@@ -21,15 +22,18 @@ test("deriveWaitingRoomStateUpdate normalizes state and reports preference persi
     currentState,
     nextState: waitingRoomState({
       sessionIndex: 7,
+      providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "invalid",
     }),
     sessions: [session("session-1"), session("session-2")],
     catalog: catalog(),
+    currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
 
   assert.equal(update.normalizedState.sessionIndex, 1)
+  assert.equal(update.nextProvider, "opencode")
   assert.equal(update.normalizedState.effort, "low")
   assert.equal(update.nextModel, "openai/gpt-5.4")
   assert.equal(update.nextEffort, "low")
@@ -40,28 +44,33 @@ test("deriveWaitingRoomActivationDecision returns create and join decisions from
   const sessions = [session("session-1")]
   const createDecision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({
-      focus: "new",
+      focus: "model",
+      providerId: "opencode",
       modelId: "anthropic/claude-sonnet-4",
       effort: "medium",
     }),
     sessions,
     catalog: catalog(),
+    currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
   const joinDecision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({
-      focus: "join",
+      focus: "session",
+      providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "high",
     }),
     sessions,
     catalog: catalog(),
+    currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
 
   assert.deepEqual(createDecision, {
     action: "create",
     launch: {
+      provider: "opencode",
       model: "anthropic/claude-sonnet-4",
       effort: "medium",
     },
@@ -70,6 +79,7 @@ test("deriveWaitingRoomActivationDecision returns create and join decisions from
     action: "join",
     session: sessions[0],
     launch: {
+      provider: "opencode",
       model: "openai/gpt-5.4",
       effort: "high",
     },
@@ -79,10 +89,11 @@ test("deriveWaitingRoomActivationDecision returns create and join decisions from
 test("deriveWaitingRoomActivationDecision reports an error when join has no sessions", () => {
   const decision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({
-      focus: "join",
+      focus: "session",
     }),
     sessions: [],
     catalog: catalog(),
+    currentProvider: "opencode",
     currentModel: "openai/gpt-5.4",
   })
 
@@ -96,11 +107,13 @@ test("deriveWaitingRoomModelSelectionDecision validates the selected model and n
   const decision = deriveWaitingRoomModelSelectionDecision({
     modelId: "anthropic/claude-sonnet-4",
     state: waitingRoomState({
+      providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "high",
     }),
     sessions: [session("session-1")],
     catalog: catalog(),
+    currentProvider: "opencode",
     configuredEffort: "high",
   })
 
@@ -113,6 +126,7 @@ test("deriveWaitingRoomModelSelectionDecision validates the selected model and n
   assert.equal(decision.nextState.modelId, "anthropic/claude-sonnet-4")
   assert.equal(decision.nextState.effort, "medium")
   assert.deepEqual(decision.launch, {
+    provider: "opencode",
     model: "anthropic/claude-sonnet-4",
     effort: "medium",
   })
@@ -122,7 +136,9 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
   const invalidDecision = deriveWaitingRoomVariantSelectionDecision({
     variant: "high",
     currentModelId: "anthropic/claude-sonnet-4",
+    currentProviderId: "opencode",
     state: waitingRoomState({
+      providerId: "opencode",
       modelId: "anthropic/claude-sonnet-4",
       effort: "medium",
     }),
@@ -132,7 +148,9 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
   const validDecision = deriveWaitingRoomVariantSelectionDecision({
     variant: "low",
     currentModelId: "openai/gpt-5.4",
+    currentProviderId: "opencode",
     state: waitingRoomState({
+      providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "high",
     }),
@@ -152,6 +170,7 @@ test("deriveWaitingRoomVariantSelectionDecision validates variants against the a
   assert.equal(validDecision.selectedVariant, "low")
   assert.equal(validDecision.nextState.effort, "low")
   assert.deepEqual(validDecision.launch, {
+    provider: "opencode",
     model: "openai/gpt-5.4",
     effort: "low",
   })
@@ -161,6 +180,7 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
   return {
     focus: "new",
     sessionIndex: 0,
+    providerId: "opencode",
     modelId: "openai/gpt-5.4",
     effort: "high",
     introStep: 0,
@@ -184,6 +204,21 @@ function session(id: string): SessionListEntry {
 function catalog(): ProviderCatalog {
   return {
     all: [
+      {
+        id: "codex",
+        name: "Codex",
+        models: {
+          "gpt-5.4": {
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+            status: "active",
+            variants: {
+              medium: {},
+              high: {},
+            },
+          },
+        },
+      },
       {
         id: "openai",
         name: "OpenAI",
@@ -215,9 +250,10 @@ function catalog(): ProviderCatalog {
       },
     ],
     default: {
+      codex: "gpt-5.4",
       openai: "gpt-5.4",
       anthropic: "claude-sonnet-4",
     },
-    connected: ["openai", "anthropic"],
+    connected: ["codex", "openai", "anthropic"],
   }
 }

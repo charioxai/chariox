@@ -243,6 +243,7 @@ impl CodexClient {
             "approvalPolicy": "never",
             "personality": "pragmatic",
             "sandboxPolicy": { "type": "dangerFullAccess" },
+            "summary": "detailed",
         });
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
@@ -726,5 +727,73 @@ fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProviderCatalog
         }],
         default,
         connected: vec!["codex".to_string()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{parse_notification, CodexNotification, JsonRpcMessage};
+
+    #[test]
+    fn parse_notification_recognizes_reasoning_and_tool_events() {
+        let reasoning = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/reasoning/textDelta".to_string()),
+            params: Some(json!({
+                "itemId": "reason-1",
+                "delta": "thinking"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            reasoning,
+            Some(CodexNotification::ReasoningTextDelta {
+                item_id: "reason-1".to_string(),
+                delta: "thinking".to_string(),
+            })
+        );
+
+        let item_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/started".to_string()),
+            params: Some(json!({
+                "item": {
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "status": "inProgress",
+                    "commandActions": []
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert!(matches!(
+            item_started,
+            Some(CodexNotification::ItemStarted { item })
+                if item.get("id").and_then(serde_json::Value::as_str) == Some("cmd-1")
+        ));
+
+        let progress = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/mcpToolCall/progress".to_string()),
+            params: Some(json!({
+                "itemId": "mcp-1",
+                "message": "running"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            progress,
+            Some(CodexNotification::McpToolCallProgress {
+                item_id: "mcp-1".to_string(),
+                message: "running".to_string(),
+            })
+        );
     }
 }

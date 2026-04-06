@@ -117,13 +117,18 @@ export async function bootstrapSession(
   const attachedSession = await deps.getSessionState(client, session.id)
   let providerRun: RuntimeProviderRun | null = null
   if (!attachedSession.active_provider_run_id) {
+    const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, {
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    }, createdSession)
     providerRun = await deps.launchProviderRun(
       client,
       session.id,
-      options.provider ?? "opencode",
+      resolvedLaunch.provider,
       options.accountProfile,
-      options.model,
-      options.effort,
+      resolvedLaunch.model,
+      resolvedLaunch.effort,
       attachedSession.focused_agent_id,
     )
   } else {
@@ -153,5 +158,28 @@ export async function bootstrapSession(
     providerCommandCatalogs,
     options,
     preferences,
+  }
+}
+
+function resolveStoredAgentLaunch(
+  session: RuntimeSession,
+  fallback: { provider: string; model: string; effort: string },
+  createdSession: boolean,
+) {
+  if (createdSession) {
+    return fallback
+  }
+
+  const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? session.agents[0]
+  if (!focusedAgent) {
+    return fallback
+  }
+
+  return {
+    provider: focusedAgent.provider && focusedAgent.provider !== "default"
+      ? focusedAgent.provider
+      : fallback.provider,
+    model: focusedAgent.model?.trim() || fallback.model,
+    effort: focusedAgent.effort?.trim() || fallback.effort,
   }
 }

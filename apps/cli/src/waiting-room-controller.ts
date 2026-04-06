@@ -1,6 +1,7 @@
 import {
   catalogModelOptions,
   selectConfiguredVariant,
+  type BackendProviderId,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -11,12 +12,14 @@ import {
 } from "./waiting-room.js"
 
 export type WaitingRoomLaunchConfig = {
+  provider: BackendProviderId
   model: string
   effort: string
 }
 
 export type WaitingRoomStateUpdate = {
   normalizedState: WaitingRoomState
+  nextProvider: BackendProviderId
   nextModel: string
   nextEffort: string
   shouldPersistProviderPreferences: boolean
@@ -51,6 +54,7 @@ export function deriveWaitingRoomStateUpdate(options: {
   nextState: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  currentProvider: BackendProviderId
   currentModel: string
 }): WaitingRoomStateUpdate {
   const normalizedState = normalizeWaitingRoomState(
@@ -62,12 +66,15 @@ export function deriveWaitingRoomStateUpdate(options: {
 
   return {
     normalizedState,
+    nextProvider: normalizedState.providerId,
     nextModel,
     nextEffort: normalizedState.effort,
     shouldPersistProviderPreferences:
       normalizedState.modelId.length > 0
       && (
-        options.currentState.modelId !== normalizedState.modelId
+        options.currentState.providerId !== normalizedState.providerId
+        || options.currentProvider !== normalizedState.providerId
+        || options.currentState.modelId !== normalizedState.modelId
         || options.currentState.effort !== normalizedState.effort
       ),
   }
@@ -77,31 +84,29 @@ export function deriveWaitingRoomActivationDecision(options: {
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  currentProvider: BackendProviderId
   currentModel: string
 }): WaitingRoomActivationDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog)
   const launch = {
+    provider: choice.providerId ?? options.currentProvider,
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
   }
 
-  if (options.state.focus === "new") {
+  if (options.state.focus !== "session") {
     return { action: "create", launch }
   }
 
-  if (options.state.focus === "join") {
-    if (!choice.session) {
-      return { action: "error", message: "no session available to join" }
-    }
-
-    return {
-      action: "join",
-      session: choice.session,
-      launch,
-    }
+  if (!choice.session) {
+    return { action: "error", message: "no session available to join" }
   }
 
-  return { action: "none" }
+  return {
+    action: "join",
+    session: choice.session,
+    launch,
+  }
 }
 
 export function deriveWaitingRoomModelSelectionDecision(options: {
@@ -109,9 +114,10 @@ export function deriveWaitingRoomModelSelectionDecision(options: {
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  currentProvider: BackendProviderId
   configuredEffort: string
 }): WaitingRoomModelSelectionDecision {
-  const selected = catalogModelOptions(options.catalog).find(
+  const selected = catalogModelOptions(options.catalog, options.currentProvider).find(
     (option) => option.id === options.modelId,
   )
   if (!selected) {
@@ -135,6 +141,7 @@ export function deriveWaitingRoomModelSelectionDecision(options: {
       options.catalog,
     ),
     launch: {
+      provider: options.currentProvider,
       model: selected.id,
       effort,
     },
@@ -144,11 +151,12 @@ export function deriveWaitingRoomModelSelectionDecision(options: {
 export function deriveWaitingRoomVariantSelectionDecision(options: {
   variant: string
   currentModelId: string
+  currentProviderId: BackendProviderId
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
 }): WaitingRoomVariantSelectionDecision {
-  const selected = catalogModelOptions(options.catalog).find(
+  const selected = catalogModelOptions(options.catalog, options.currentProviderId).find(
     (option) => option.id === options.currentModelId,
   )
   if (!selected || !selected.variants.includes(options.variant)) {
@@ -171,6 +179,7 @@ export function deriveWaitingRoomVariantSelectionDecision(options: {
       options.catalog,
     ),
     launch: {
+      provider: options.currentProviderId,
       model: selected.id,
       effort: options.variant,
     },

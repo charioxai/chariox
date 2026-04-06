@@ -30,6 +30,8 @@ export type CatalogModelOption = {
   variants: string[]
 }
 
+export type BackendProviderId = "opencode" | "codex"
+
 export function fallbackProviderCatalog() {
   return {
     all: [
@@ -75,10 +77,13 @@ export function fallbackProviderCatalog() {
   } satisfies ProviderCatalog
 }
 
-export function catalogModelOptions(catalog: ProviderCatalog) {
+export function catalogModelOptions(catalog: ProviderCatalog, backendProviderId?: BackendProviderId) {
   const connectedProviderIds = new Set(catalog.connected)
   return catalog.all
-    .filter((provider) => connectedProviderIds.has(provider.id))
+    .filter((provider) => (
+      connectedProviderIds.has(provider.id)
+      && providerBelongsToBackend(provider.id, backendProviderId)
+    ))
     .flatMap((provider) =>
       Object.values(provider.models)
         .filter((model) => model.status !== "deprecated")
@@ -98,8 +103,12 @@ export function catalogModelOptions(catalog: ProviderCatalog) {
     })
 }
 
-export function selectConfiguredModel(catalog: ProviderCatalog, configured?: string | null) {
-  const options = catalogModelOptions(catalog)
+export function selectConfiguredModel(
+  catalog: ProviderCatalog,
+  configured?: string | null,
+  backendProviderId?: BackendProviderId,
+) {
+  const options = catalogModelOptions(catalog, backendProviderId)
   if (options.length === 0) {
     return null
   }
@@ -108,6 +117,9 @@ export function selectConfiguredModel(catalog: ProviderCatalog, configured?: str
     return exact
   }
   for (const provider of catalog.all) {
+    if (!providerBelongsToBackend(provider.id, backendProviderId)) {
+      continue
+    }
     const modelId = catalog.default[provider.id]
     if (!modelId) {
       continue
@@ -128,4 +140,17 @@ export function selectConfiguredVariant(option: CatalogModelOption | null, confi
     return configured
   }
   return option.variants.includes("high") ? "high" : option.variants[0]!
+}
+
+function providerBelongsToBackend(
+  providerId: string,
+  backendProviderId?: BackendProviderId,
+) {
+  if (!backendProviderId) {
+    return true
+  }
+  if (backendProviderId === "codex") {
+    return providerId === "codex"
+  }
+  return providerId !== "codex"
 }

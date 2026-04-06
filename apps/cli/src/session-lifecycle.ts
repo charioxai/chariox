@@ -14,7 +14,7 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room.js"
 
 type ProviderCatalog = Record<string, unknown>
-type LaunchSelection = { model: string; effort: string }
+type LaunchSelection = { provider: string; model: string; effort: string }
 
 type SessionLifecycleDeps = {
   cliOptions: CliOptions
@@ -187,7 +187,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   const attachBinding = async (
     session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
-    launch: LaunchSelection = { model: deps.cliOptions.model, effort: deps.cliOptions.effort },
+    launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
   ) => {
     const currentAttachment = deps.attachmentState()
     if (currentAttachment?.session_id === session.id) {
@@ -201,20 +201,22 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
     const attachedSession = await deps.getSessionState(session.id)
     if (!attachedSession.active_provider_run_id) {
-      deps.cliOptions.model = launch.model
-      deps.cliOptions.effort = launch.effort
+      const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, launch, createdSession)
+      deps.cliOptions.provider = resolvedLaunch.provider
+      deps.cliOptions.model = resolvedLaunch.model
+      deps.cliOptions.effort = resolvedLaunch.effort
       const run = await deps.launchProviderRun(
         session.id,
-        deps.cliOptions.provider ?? "opencode",
+        resolvedLaunch.provider,
         deps.cliOptions.accountProfile,
-        launch.model,
-        launch.effort,
+        resolvedLaunch.model,
+        resolvedLaunch.effort,
         attachedSession.focused_agent_id,
       )
       deps.logAttachedProviderRun?.("launched", run, {
         session_id: session.id,
-        requested_model: launch.model,
-        requested_variant: launch.effort,
+        requested_model: resolvedLaunch.model,
+        requested_variant: resolvedLaunch.effort,
       })
       deps.setProviderRunState(run)
     } else {
@@ -282,5 +284,28 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     transitionToNoSession,
     detachCurrentAttachment,
     attachBinding,
+  }
+}
+
+function resolveStoredAgentLaunch(
+  session: RuntimeSession,
+  fallback: LaunchSelection,
+  createdSession: boolean,
+): LaunchSelection {
+  if (createdSession) {
+    return fallback
+  }
+
+  const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? session.agents[0]
+  if (!focusedAgent) {
+    return fallback
+  }
+
+  return {
+    provider: focusedAgent.provider && focusedAgent.provider !== "default"
+      ? focusedAgent.provider
+      : fallback.provider,
+    model: focusedAgent.model?.trim() || fallback.model,
+    effort: focusedAgent.effort?.trim() || fallback.effort,
   }
 }

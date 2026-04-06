@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 
-use super::{OpenCodeClient, RuntimeProviderRun};
+use super::{OpenCodeClient, ProviderResumeState, RuntimeProviderRun};
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
 
 const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -18,6 +18,7 @@ pub(super) struct OpenCodeRunSelection {
 pub(super) struct OpenCodeRuntimeBinding {
     pub state: OpenCodeRuntimeState,
     pub selection: OpenCodeRunSelection,
+    pub resume_state: ProviderResumeState,
 }
 
 pub(super) fn initialize_opencode_runtime(
@@ -52,15 +53,51 @@ pub(super) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
-    let session_id = client.create_session()?;
-    crate::logging::info_with_fields(
-        "daemon.provider.opencode",
-        "created opencode session",
-        serde_json::json!({
-            "provider_run_id": run.id(),
-            "provider_session_id": session_id.clone(),
-        }),
-    );
+    let session_id = match run.resume_state().opencode_session_id().map(str::to_string) {
+        Some(session_id) if client.snapshot(&session_id).is_ok() => {
+            crate::logging::info_with_fields(
+                "daemon.provider.opencode",
+                "reusing opencode session",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "provider_session_id": session_id.clone(),
+                }),
+            );
+            session_id
+        }
+        Some(previous_session_id) => {
+            crate::logging::warn_with_fields(
+                "daemon.provider.opencode",
+                "opencode session resume failed; creating a new session",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "provider_session_id": previous_session_id,
+                }),
+            );
+            let session_id = client.create_session()?;
+            crate::logging::info_with_fields(
+                "daemon.provider.opencode",
+                "created opencode session",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "provider_session_id": session_id.clone(),
+                }),
+            );
+            session_id
+        }
+        None => {
+            let session_id = client.create_session()?;
+            crate::logging::info_with_fields(
+                "daemon.provider.opencode",
+                "created opencode session",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "provider_session_id": session_id.clone(),
+                }),
+            );
+            session_id
+        }
+    };
     let event_subscription = client.subscribe_events_with_retry(
         OPENCODE_EVENT_SUBSCRIBE_TIMEOUT,
         OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL,
@@ -74,8 +111,9 @@ pub(super) fn initialize_opencode_runtime(
     );
 
     Ok(OpenCodeRuntimeBinding {
-        state: OpenCodeRuntimeState::new(base_url, session_id, event_subscription),
+        state: OpenCodeRuntimeState::new(base_url, session_id.clone(), event_subscription),
         selection,
+        resume_state: ProviderResumeState::from_opencode_session_id(session_id),
     })
 }
 

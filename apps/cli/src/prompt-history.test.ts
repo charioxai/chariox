@@ -18,6 +18,13 @@ test("pushPromptHistoryEntry appends normalized prompts and skips consecutive du
   )
 })
 
+test("pushPromptHistoryEntry keeps slash commands in prompt-area history", () => {
+  assert.deepEqual(
+    pushPromptHistoryEntry(["fix the failing test"], "/session list\n"),
+    ["fix the failing test", "/session list"],
+  )
+})
+
 test("pushPromptHistoryEntry keeps the full session prompt history", () => {
   let entries: string[] = []
   for (let index = 1; index <= 150; index += 1) {

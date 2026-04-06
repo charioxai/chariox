@@ -67,7 +67,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       calls.push(`notice:${message}:${tone ?? "default"}`)
     },
     connectedStatusLine: "Connected to the Arroba kernel.",
-    clearAgentCompletionState: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
+    markAssistantMessageCompleted: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
   }
 

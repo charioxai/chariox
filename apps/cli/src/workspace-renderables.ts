@@ -177,11 +177,15 @@ export function buildNoSessionRenderable(
     paddingLeft: 1,
   })
   for (const row of rows) {
+    const prefix = row.focused ? ">" : " "
+    const indent = "  ".repeat(row.indent)
+    const value = row.value ? ` ${row.value}` : ""
+    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
     menu.add(
       new TextRenderable(renderer, {
-        content: `${state.focus === row.id ? ">" : " "} ${row.title.padEnd(22, " ")} ${row.value}`,
-        fg: state.focus === row.id ? theme.primary : theme.text,
-        attributes: state.focus === row.id ? TextAttributes.BOLD : TextAttributes.NONE,
+        content: `${prefix} ${indent}${row.title.padEnd(22 - indent.length, " ")}${value}${scrollbar}`,
+        fg: row.focused ? theme.primary : row.selectable ? theme.text : theme.textMuted,
+        attributes: row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
         wrapMode: "none",
       }),
     )
@@ -196,7 +200,7 @@ export function buildNoSessionRenderable(
   )
   wrapper.add(
     new TextRenderable(renderer, {
-      content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move, ← → to cycle, Enter to confirm.`,
+      content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move through new-session options and saved sessions, ← → to adjust new-session choices, Enter to create or join.`,
       fg: theme.textMuted,
       wrapMode: "word",
     }),

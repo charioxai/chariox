@@ -10,6 +10,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, session_id: &str) {
         ActivePromptState {
             last_output_at: None,
             saw_response_content: false,
+            completion_recorded: false,
         },
     );
 }
@@ -41,7 +42,21 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, session_id: 
         .or_insert(ActivePromptState {
             last_output_at: Some(Instant::now()),
             saw_response_content: true,
+            completion_recorded: false,
         });
+}
+
+pub(crate) fn mark_prompt_completion_recorded(app: &mut DaemonApp, session_id: &str) {
+    if let Some(state) = app.prompt_activity.get_mut(session_id) {
+        state.completion_recorded = true;
+    }
+}
+
+pub(crate) fn prompt_completion_recorded(app: &DaemonApp, session_id: &str) -> bool {
+    app.prompt_activity
+        .get(session_id)
+        .map(|state| state.completion_recorded)
+        .unwrap_or(false)
 }
 
 pub(crate) fn maybe_complete_active_prompt(

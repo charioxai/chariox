@@ -44,6 +44,7 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {
   const catalog = fallbackProviderCatalog()
+  const launched: Array<{ provider: string; model: string; effort: string }> = []
   const session = {
     id: "session-1",
     workspace_id: "/workspace",
@@ -61,8 +62,9 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
       agent_ref: "agent-a",
       session_id: "session-1",
       alias: null,
-      provider: "openai",
-      model: "gpt-5.4",
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
       worktree_id: null,
       state: "Idle" as const,
       is_processing: false,
@@ -105,17 +107,18 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
         calls.push("session")
         return session
       },
-      launchProviderRun: async () => {
+      launchProviderRun: async (_client, _sessionId, provider, _accountProfile, model, effort) => {
         calls.push("launch")
+        launched.push({ provider, model, effort })
         return {
           id: "run-1",
           session_id: "session-1",
           agent_instance_id: "agent-a",
-          adapter_key: "opencode",
-          provider: "opencode",
+          adapter_key: provider,
+          provider,
           account_profile: "default",
-          model: "gpt-5.4",
-          variant: "high",
+          model,
+          variant: effort,
           usage_tokens_total: null,
           state: "Running",
         }
@@ -143,6 +146,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   )
 
   assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "history:agent-a"])
+  assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
   assert.deepEqual(bootstrap.binding?.historyEntries, [{ id: 1, role: "user", text: "hi" }])

@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::DaemonError;
+use crate::session::unix_epoch_ms;
 use crate::session::PromptAttachment;
 use crate::terminal::TerminalOutputKind;
 
@@ -18,6 +19,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {
     pub chunks: Vec<CodexOutputChunk>,
+    pub completions: Vec<CodexAssistantCompletion>,
     pub prompt_completed: bool,
     pub notices: Vec<String>,
 }
@@ -27,6 +29,12 @@ pub struct CodexOutputChunk {
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAssistantCompletion {
+    pub message_id: String,
+    pub completed_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +231,7 @@ pub fn drain_codex_events(
 ) -> Result<CodexPollResult, DaemonError> {
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
     let mut chunks = Vec::new();
+    let mut completions = Vec::new();
     let mut notices = Vec::new();
     let mut prompt_completed = false;
 
@@ -232,6 +241,7 @@ pub fn drain_codex_events(
             &mut state.active_turn_id,
             &mut state.tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -248,6 +258,7 @@ pub fn drain_codex_events(
             &mut state.active_turn_id,
             &mut state.tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -255,6 +266,7 @@ pub fn drain_codex_events(
 
     Ok(CodexPollResult {
         chunks,
+        completions,
         prompt_completed,
         notices,
     })
@@ -265,6 +277,7 @@ fn apply_notification(
     active_turn_id: &mut Option<String>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
+    completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
 ) {
@@ -337,6 +350,12 @@ fn apply_notification(
             status,
             error_message,
         } => {
+            if !turn_id.is_empty() {
+                completions.push(CodexAssistantCompletion {
+                    message_id: format!("codex-turn:{turn_id}"),
+                    completed_at_ms: unix_epoch_ms(),
+                });
+            }
             if !turn_id.is_empty() {
                 *active_turn_id = None;
             }
@@ -763,6 +782,7 @@ mod tests {
         let mut active_turn_id = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
+        let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
 
@@ -774,6 +794,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -785,6 +806,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -818,6 +840,7 @@ mod tests {
         let mut active_turn_id = None;
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
+        let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
 
@@ -839,6 +862,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -850,6 +874,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -861,6 +886,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -882,6 +908,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -936,6 +963,7 @@ mod tests {
         let mut active_turn_id = Some("turn-1".to_string());
         let mut tool_items = BTreeMap::new();
         let mut chunks = Vec::new();
+        let mut completions = Vec::new();
         let mut notices = Vec::new();
         let mut prompt_completed = false;
 
@@ -951,6 +979,7 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
@@ -966,11 +995,14 @@ mod tests {
             &mut active_turn_id,
             &mut tool_items,
             &mut chunks,
+            &mut completions,
             &mut notices,
             &mut prompt_completed,
         );
         assert!(prompt_completed);
         assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].message_id, "codex-turn:turn-1");
     }
 
     fn parse_tool_chunk(chunk: &CodexOutputChunk) -> Value {

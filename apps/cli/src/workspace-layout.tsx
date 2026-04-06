@@ -1,4 +1,4 @@
-import type { KeyBinding } from "@opentui/core"
+import type { KeyBinding, RGBA } from "@opentui/core"
 import { For } from "solid-js"
 
 import { PromptBorderChars, SplitBorder, theme } from "./theme.js"
@@ -14,6 +14,7 @@ type WorkspaceLayoutProps = {
   promptPlaceholder: string
   promptInputMaxHeight: number
   promptKeyBindings: KeyBinding[]
+  promptAreaBackground: RGBA
   onRootMouseUp: () => void
   onResponseSurfaceMouseUp: (event: any) => void
   onResponseLayoutBoxRef: RefHandler
@@ -210,7 +211,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           paddingRight={2}
           paddingTop={1}
           paddingBottom={1}
-          backgroundColor={theme.backgroundElement}
+          backgroundColor={props.promptAreaBackground}
           flexDirection="column"
           gap={1}
         >

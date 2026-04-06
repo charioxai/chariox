@@ -119,13 +119,6 @@ export function deriveSessionTransitionState(
     options.currentStreamingAgentId,
   )
   const nextStreamingAgentId = resolvedStreamingAgentId
-    ?? (
-      options.currentWorking
-      && options.currentStreamingAgentId
-      && options.nextSession.agents.some((agent) => agent.id === options.currentStreamingAgentId)
-        ? options.currentStreamingAgentId
-        : null
-    )
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
     nextAgentActivityLabels[agent.id] =

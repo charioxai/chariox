@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::provider::ProviderResumeState;
 use crate::session::{SessionService, SessionStatus};
 
 use super::{
@@ -297,6 +298,7 @@ impl AgentService {
         provider: &str,
         model: Option<String>,
         effort: Option<String>,
+        resume_state: ProviderResumeState,
     ) -> Result<AgentInstance, DaemonError> {
         let agent = self
             .store
@@ -307,6 +309,7 @@ impl AgentService {
         agent.set_provider(provider.to_string());
         agent.set_model(model);
         agent.set_effort(effort);
+        agent.set_provider_resume_state(resume_state);
         Ok(agent.clone())
     }
 

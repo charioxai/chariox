@@ -326,9 +326,13 @@ Codex login is available through the CLI:
 /provider codex
 /provider status
 /provider login
+/provider logout
+/provider reauth
 ```
 
 `/provider login` returns the provider-native device-login URL and code.
+`/provider logout` clears the stored Codex login on the host machine.
+`/provider reauth` clears the stored login, then starts a fresh device-login flow.
 
 ### 12.4 Bun / CLI Launcher
 

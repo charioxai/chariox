@@ -271,9 +271,11 @@ impl ProviderProcessService {
 
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         if run.adapter_key() == "codex" {
-            let (state, selection) = initialize_codex_runtime(run)?;
-            self.codex_runs.insert(run.id().to_string(), state);
-            self.apply_codex_run_selection(run.id(), selection)?;
+            let binding = initialize_codex_runtime(run)?;
+            self.codex_runs.insert(run.id().to_string(), binding.state);
+            self.get_run_mut(run.id())?
+                .set_resume_state(binding.resume_state.clone());
+            self.apply_codex_run_selection(run.id(), binding.selection)?;
             return Ok(());
         }
         if run.adapter_key() != "opencode" {
@@ -283,6 +285,8 @@ impl ProviderProcessService {
         let binding = initialize_opencode_runtime(run)?;
         self.opencode_runs
             .insert(run.id().to_string(), binding.state);
+        self.get_run_mut(run.id())?
+            .set_resume_state(binding.resume_state.clone());
         self.apply_opencode_run_selection(run.id(), binding.selection)?;
         self.sync_run_selection(run.id())?;
         Ok(())
@@ -402,9 +406,15 @@ impl ProviderProcessService {
                         bytes: chunk.bytes,
                     })
                     .collect(),
-                completions: Vec::new(),
+                completions: poll
+                    .completions
+                    .into_iter()
+                    .map(|completion| ProviderAssistantCompletion {
+                        message_id: completion.message_id,
+                        completed_at_ms: completion.completed_at_ms,
+                    })
+                    .collect(),
                 prompt_completed: poll.prompt_completed,
-                provider_idle: poll.provider_idle,
                 notices: poll.notices,
             }));
         }
@@ -433,7 +443,6 @@ impl ProviderProcessService {
                 })
                 .collect(),
             prompt_completed: drain.prompt_completed,
-            provider_idle: drain.provider_idle,
             notices: drain.notices,
         }))
     }
@@ -605,6 +614,7 @@ impl Default for ProviderProcessService {
 #[cfg(test)]
 mod tests {
     use crate::config::DaemonConfig;
+    use crate::provider::ProviderResumeState;
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
     use super::{LaunchProviderRequest, ProviderProcessService, ProviderRunState};
@@ -719,5 +729,24 @@ mod tests {
         assert_eq!(first.state(), ProviderRunState::Ended);
         assert_eq!(second.state(), ProviderRunState::Running);
         assert_eq!(session.active_provider_run_id(), Some(second.id()));
+    }
+
+    #[test]
+    fn launch_run_preserves_resume_state_from_the_request() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+
+        let run = providers
+            .launch_run(
+                &mut sessions,
+                launch_request(session.id(), "sonnet")
+                    .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1")),
+            )
+            .expect("provider run should launch");
+
+        assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
     }
 }

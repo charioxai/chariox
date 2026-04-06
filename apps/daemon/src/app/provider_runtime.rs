@@ -21,6 +21,16 @@ impl DaemonApp {
                 .focused_agent_id()
                 .map(str::to_string);
         }
+        if request.resume_state.is_none() {
+            if let Some(agent_id) = request.agent_id.as_deref() {
+                if let Ok(agent) = self.agents.get_agent(agent_id) {
+                    let resume_state = agent.provider_resume_state().clone();
+                    if !resume_state.is_empty() {
+                        request = request.with_resume_state(resume_state);
+                    }
+                }
+            }
+        }
         crate::logging::info_with_fields(
             "daemon.app",
             "launching provider run",
@@ -163,15 +173,17 @@ impl DaemonApp {
                 "session_id": run.session_id(),
             }),
         );
+        let run = self.providers.get_run(run.id())?;
         if let Some(agent_id) = run.agent_instance_id() {
             let _ = self.agents.set_agent_runtime_profile(
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
+                run.resume_state().clone(),
             )?;
         }
-        self.providers.get_run(run.id())
+        Ok(run)
     }
 
     pub(crate) fn sync_active_provider_run_for_agent(

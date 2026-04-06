@@ -89,7 +89,7 @@ test("cli exit detaches instead of ending the session", () => {
   assert.equal(shouldEndSessionOnCliExit(false, 1), false)
 })
 
-test("session polling does not clear working state until provider reports idle", () => {
+test("session polling does not clear working state until explicit prompt work ends", () => {
   assert.equal(reconcileWorkingStateFromSession(true, false), true)
   assert.equal(reconcileWorkingStateFromSession(true, true), true)
   assert.equal(reconcileWorkingStateFromSession(false, true), true)

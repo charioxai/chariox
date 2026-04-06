@@ -292,7 +292,7 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
 ]
 
 const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
-  { keys: "Arrow keys", description: "Move between sessions, models, and effort levels." },
+  { keys: "Arrow keys", description: "Move through new-session options and existing sessions." },
   { keys: "Enter", description: "Create or attach to the selected session." },
 ]
 
@@ -824,6 +824,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTerminalRecords: TerminalOutputRecord[] = []
   let pendingTurnCompletion: ReturnType<typeof startTimeout> | undefined
+  let turnCompletionConfirmed = false
   // Connection resilience tracking
   let lastDaemonActivityAt = Date.now()
   let lastTurnActivityAt = Date.now()
@@ -1091,10 +1092,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const focusedStatusBadge = () => deriveFocusedStatusBadge({
     attached: isAttached(),
-    daemonDisconnected: daemonDisconnected(),
-    focusedAgent: focusedAgent(),
-    focusedAgentActivityLabel: agentActivityLabel(focusedAgent()?.id),
-    streamingAgentId: streamingAgentId(),
+    sessionStatusMode: sessionStatusMode(),
+    activeStatusLabel: activeStatusLabel(),
   })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
@@ -1682,6 +1681,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     now: Date.now(),
     quietWindowMs: TURN_COMPLETION_QUIET_MS,
   })
+  const maybeScheduleConfirmedTurnCompletion = () => {
+    if (!turnCompletionConfirmed || activePrompt()) {
+      return
+    }
+    scheduleTurnCompletion()
+  }
   const finalizeTurnCompletion = () => {
     cancelPendingTurnCompletion()
     const delayMs = turnCompletionDelayMs()
@@ -1704,6 +1709,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       setWorking(false)
     })
+    turnCompletionConfirmed = false
     updateSessionChrome()
   }
   const scheduleTurnCompletion = () => {
@@ -2384,6 +2390,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     recordTurnActivity("prompt_submit")
+    turnCompletionConfirmed = false
     const targetAgentId = agentId ?? focusedAgentId()
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
       const paneEntries = agentPaneEntries()[targetAgentId] ?? []
@@ -2523,9 +2530,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setMultiAgentResponseLayout(transition.nextLayout)
     setWorking(transition.nextWorking)
     if (transition.nextHasPromptWork) {
+      turnCompletionConfirmed = false
       cancelPendingTurnCompletion()
-    } else {
+    } else if (turnCompletionConfirmed) {
       scheduleTurnCompletion()
+    } else {
+      cancelPendingTurnCompletion()
     }
     setProviderActivityLabel(transition.nextFocusedActivityLabel)
     setActiveStatusLabel(transition.nextFocusedActivityLabel)
@@ -2548,37 +2558,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (active) {
       cancelPendingTurnCompletion()
       setWorking(true)
-    } else {
+    } else if (turnCompletionConfirmed) {
       scheduleTurnCompletion()
     }
     updateSessionChrome()
   }
 
-  const clearAgentCompletionState = (agentId: string | null | undefined) => {
-    if (!agentId) {
-      return
-    }
-    batch(() => {
-      setAgentActivityLabels((current) => ({
-        ...current,
-        [agentId]: null,
-      }))
-      if (streamingAgentId() === agentId) {
-        setStreamingAgentId(null)
-      }
-      if (focusedAgentId() === agentId) {
-        setProviderActivityLabel(null)
-        setActiveStatusLabel(null)
-      }
-      setSessionState((current) => ({
-        ...current,
-        agents: current.agents.map((agent) => (
-          agent.id === agentId
-            ? { ...agent, is_processing: false, state: agent.state === "Error" ? "Error" : "Idle" }
-            : agent
-        )),
-      }))
-    })
+  const markAssistantMessageCompleted = (_agentId: string | null | undefined) => {
+    turnCompletionConfirmed = true
+    maybeScheduleConfirmedTurnCompletion()
     updateSessionChrome()
   }
 
@@ -2674,15 +2662,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       logVisibleTranscriptOutput(role, mergedText, true, mergeKey)
       updateTranscriptEntry(mergedEntryId, mergedText, normalizedSource)
       enforceTranscriptRetention()
+      maybeScheduleConfirmedTurnCompletion()
       return
     }
     if (!nextEntry) {
+      maybeScheduleConfirmedTurnCompletion()
       return
     }
     setEntryCounter(nextId)
     mountTranscriptEntry(nextEntry)
     logVisibleTranscriptOutput(role, nextEntry.text, false, mergeKey)
     enforceTranscriptRetention()
+    maybeScheduleConfirmedTurnCompletion()
   }
 
   const appendToolUpdate = (chunk: string) => {
@@ -5114,9 +5105,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         if (event.eventType !== "release") {
           reconcileWaitingRoom(
             keyName === "up"
-              ? moveWaitingRoomFocus(next, -1)
+              ? moveWaitingRoomFocus(next, availableSessions(), -1)
               : keyName === "down"
-                ? moveWaitingRoomFocus(next, 1)
+                ? moveWaitingRoomFocus(next, availableSessions(), 1)
                 : cycleWaitingRoomValue(next, availableSessions(), providerCatalogState(), keyName === "left" ? -1 : 1),
           )
           return
@@ -5265,7 +5256,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome,
     appendNotice: (message, tone) => appendNotice(message, tone === "warning" ? "warning" : "muted"),
     connectedStatusLine: DEFAULT_CONNECTED_STATUS,
-    clearAgentCompletionState,
+    markAssistantMessageCompleted,
   })
 
   const applyKernelSessionSnapshot = async (

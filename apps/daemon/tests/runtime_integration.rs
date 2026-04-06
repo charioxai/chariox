@@ -213,6 +213,55 @@ fn detaching_attachment_removes_its_queued_prompts_before_advancement() {
 }
 
 #[test]
+fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_completion_record() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "fallback completion\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let completion =
+        arroba_daemon::transport::TransportService::complete_active_prompt(&mut app, session.id())
+            .expect("active prompt should complete");
+
+    let mut terminal = app.terminal().clone();
+    let records = terminal.drain_completion_records(session.id(), attachment.id());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider_run_id, run.id());
+    assert_eq!(
+        records[0].message_id,
+        format!("prompt-complete:{}", completion.completed.id())
+    );
+}
+
+#[test]
 fn workflow_runs_progress_without_terminal_pumps() {
     let _guard = opencode_env_guard();
     env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
@@ -654,7 +703,7 @@ fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_compl
     let _guard = opencode_env_guard();
     let previous_idle_ms = env::var_os("ARROBA_PROMPT_IDLE_MS");
     env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
-    let mock_server = MockOpenCodeServer::start(Duration::from_millis(40));
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(100));
     mock_server.set_emit_idle_before_completion(true);
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
@@ -694,7 +743,7 @@ fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_compl
     )
     .expect("prompt should start");
 
-    thread::sleep(Duration::from_millis(60));
+    thread::sleep(Duration::from_millis(120));
     let recipients = app.attachments().list_session_attachment_ids(session.id());
     let _ = app
         .pump_provider_output(session.id(), run.id(), recipients)
@@ -707,6 +756,21 @@ fn shared_opencode_idle_status_does_not_complete_the_prompt_before_message_compl
     assert!(
         session_after_idle.active_prompt().is_some(),
         "interim idle status must not complete the active prompt"
+    );
+
+    thread::sleep(Duration::from_millis(10));
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let _ = app
+        .pump_provider_output(session.id(), run.id(), recipients)
+        .expect("pump during the quiet window should still require explicit completion");
+
+    let session_after_quiet_poll = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist before message completion");
+    assert!(
+        session_after_quiet_poll.active_prompt().is_some(),
+        "external structured runs must not settle from quiet polling before completion"
     );
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());

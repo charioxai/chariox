@@ -364,9 +364,7 @@ mod tests {
         let tools = tools_value["result"]["tools"]
             .as_array()
             .expect("tools should be an array");
-        assert!(tools
-            .iter()
-            .any(|tool| tool["name"] == "ack_workflow_turn"));
+        assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "validate_workflow_output"));

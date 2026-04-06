@@ -7,7 +7,7 @@ import {
   type PromptMetaPart,
   type PromptUsageMeta,
 } from "./prompt-meta.js"
-import { chooseVisibleActivityLabel } from "./runtime.js"
+import { chooseVisibleActivityLabel, getSessionStatusLabel } from "./runtime.js"
 import type { StatusBadgeTone } from "./split-pane-footer.js"
 import { agentPaneStatusBadge, type SplitPaneFooterAgent } from "./split-pane-footer.js"
 import type { WaitingRoomState } from "./waiting-room.js"
@@ -28,7 +28,7 @@ type ProviderSelectionOptions = {
 
 export function deriveCurrentProviderSelection(options: ProviderSelectionOptions) {
   return {
-    provider: options.providerRun?.provider ?? options.defaultProvider ?? "opencode",
+    provider: options.providerRun?.provider ?? options.waitingRoomState.providerId ?? options.defaultProvider ?? "opencode",
     model: options.providerRun?.model ?? options.waitingRoomState.modelId ?? options.defaultModel,
     effort: options.providerRun?.variant ?? options.waitingRoomState.effort ?? options.defaultEffort,
   }
@@ -102,22 +102,22 @@ export function deriveVisibleActivityLabel(options: {
 
 export function deriveFocusedStatusBadge(options: {
   attached: boolean
-  daemonDisconnected: boolean
-  focusedAgent: SplitPaneFooterAgent | null
-  focusedAgentActivityLabel: string | null
-  streamingAgentId: string | null
+  sessionStatusMode: SessionStatusMode
+  activeStatusLabel: string | null
 }): FocusedStatusBadge {
   if (!options.attached) {
     return { label: "", tone: "idle" }
   }
-  if (options.daemonDisconnected) {
+  if (options.sessionStatusMode === "disconnected") {
     return { label: "DISCONNECTED", tone: "disconnected" }
   }
-  return agentPaneStatusBadge(
-    options.focusedAgent,
-    options.focusedAgentActivityLabel,
-    options.focusedAgent?.id === options.streamingAgentId,
-  )
+  if (options.sessionStatusMode === "idle") {
+    return { label: "IDLE", tone: "idle" }
+  }
+  return {
+    label: getSessionStatusLabel("working", options.activeStatusLabel),
+    tone: "working",
+  }
 }
 
 export function deriveAttachedFooterSummary(options: {

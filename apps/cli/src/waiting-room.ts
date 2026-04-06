@@ -3,11 +3,14 @@ import {
   catalogModelOptions,
   selectConfiguredModel,
   selectConfiguredVariant,
+  type BackendProviderId,
   type CatalogModelOption,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 
-export type WaitingRoomFocus = "new" | "join" | "model" | "effort"
+export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
+
+export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -19,23 +22,36 @@ export type WaitingRoomKeyState = {
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
+  providerId: BackendProviderId
   modelId: string
   effort: string
   introStep: number
   keyState: WaitingRoomKeyState
 }
 
+export type WaitingRoomRow = {
+  id: string
+  title: string
+  value: string
+  indent: number
+  focused: boolean
+  selectable: boolean
+  scrollbar: string
+}
+
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
+  providerId: BackendProviderId,
   model: string,
   effort: string,
 ): WaitingRoomState {
-  const selected = selectConfiguredModel(catalog, model)
+  const selected = selectConfiguredModel(catalog, model, providerId)
   return normalizeWaitingRoomState(
     {
       focus: "new",
       sessionIndex: 0,
+      providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
       introStep: 0,
@@ -51,19 +67,22 @@ export function normalizeWaitingRoomState(
   sessions: SessionListEntry[],
   catalog: ProviderCatalog,
 ) {
-  const options = catalogModelOptions(catalog)
-  const selected = options.find((option) => option.id === state.modelId) ?? options[0] ?? null
+  const visibleSessions = waitingRoomSessions(sessions)
+  const providerId = normalizeBackendProvider(state.providerId)
+  const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
   return {
     ...state,
-    sessionIndex: sessions.length === 0 ? 0 : modulo(state.sessionIndex, sessions.length),
+    focus: visibleSessions.length === 0 && state.focus === "session" ? "new" : state.focus,
+    providerId,
+    sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
   }
 }
 
 export function waitingRoomModel(state: WaitingRoomState, catalog: ProviderCatalog) {
-  return catalogModelOptions(catalog).find((option) => option.id === state.modelId) ?? null
+  return catalogModelOptions(catalog, state.providerId).find((option) => option.id === state.modelId) ?? null
 }
 
 export function waitingRoomEfforts(option: CatalogModelOption | null) {
@@ -73,11 +92,24 @@ export function waitingRoomEfforts(option: CatalogModelOption | null) {
   return option.variants
 }
 
-export function moveWaitingRoomFocus(state: WaitingRoomState, delta: number) {
-  const order: WaitingRoomFocus[] = ["new", "join", "model", "effort"]
+export function moveWaitingRoomFocus(state: WaitingRoomState, sessions: SessionListEntry[], delta: number) {
+  const order = waitingRoomFocusTargets(sessions)
+  const currentIndex = Math.max(
+    0,
+    order.findIndex((target) => (
+      target.focus === state.focus
+      && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
+    )),
+  )
+  const next = order[modulo(currentIndex + delta, order.length)] ?? order[0]
+  if (!next) {
+    return state
+  }
+
   return {
     ...state,
-    focus: order[modulo(order.indexOf(state.focus) + delta, order.length)]!,
+    focus: next.focus,
+    sessionIndex: next.focus === "session" ? next.sessionIndex : state.sessionIndex,
   }
 }
 
@@ -87,17 +119,8 @@ export function cycleWaitingRoomValue(
   catalog: ProviderCatalog,
   delta: number,
 ) {
-  if (state.focus === "join") {
-    if (sessions.length === 0) {
-      return state
-    }
-    return {
-      ...state,
-      sessionIndex: modulo(state.sessionIndex + delta, sessions.length),
-    }
-  }
   if (state.focus === "model") {
-    const options = catalogModelOptions(catalog)
+    const options = catalogModelOptions(catalog, state.providerId)
     if (options.length === 0) {
       return state
     }
@@ -107,6 +130,18 @@ export function cycleWaitingRoomValue(
       {
         ...state,
         modelId: next.id,
+      },
+      sessions,
+      catalog,
+    )
+  }
+  if (state.focus === "provider") {
+    const providers: BackendProviderId[] = ["opencode", "codex"]
+    const index = Math.max(0, providers.indexOf(state.providerId))
+    return normalizeWaitingRoomState(
+      {
+        ...state,
+        providerId: providers[modulo(index + delta, providers.length)]!,
       },
       sessions,
       catalog,
@@ -124,9 +159,11 @@ export function cycleWaitingRoomValue(
 }
 
 export function waitingRoomChoice(state: WaitingRoomState, sessions: SessionListEntry[], catalog: ProviderCatalog) {
+  const visibleSessions = waitingRoomSessions(sessions)
   const model = waitingRoomModel(state, catalog)
   return {
-    session: sessions[state.sessionIndex] ?? null,
+    session: visibleSessions[state.sessionIndex] ?? null,
+    providerId: state.providerId,
     model,
     effort: state.effort,
   }
@@ -134,28 +171,86 @@ export function waitingRoomChoice(state: WaitingRoomState, sessions: SessionList
 
 export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEntry[], catalog: ProviderCatalog) {
   const choice = waitingRoomChoice(state, sessions, catalog)
-  return [
+  const modelOptions = catalogModelOptions(catalog, state.providerId)
+  const visibleSessions = waitingRoomSessions(sessions)
+  const sessionWindow = waitingRoomSessionWindow(state, visibleSessions)
+  const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
+  const rows: WaitingRoomRow[] = [
     {
-      id: "new" as const,
+      id: "new",
       title: "Start New Session",
       value: "Press Enter",
+      indent: 0,
+      focused: state.focus === "new",
+      selectable: true,
+      scrollbar: "",
     },
     {
-      id: "join" as const,
-      title: "Join Existing Session",
-      value: choice.session ? `${choice.session.alias ?? choice.session.id} · ${choice.session.status.toLowerCase()}` : "No sessions available",
+      id: "provider",
+      title: "Provider",
+      value: formatBackendProviderLabel(choice.providerId),
+      indent: 1,
+      focused: state.focus === "provider",
+      selectable: true,
+      scrollbar: "",
     },
     {
-      id: "model" as const,
+      id: "model",
       title: "Model",
-      value: choice.model ? `${choice.model.providerName} ${choice.model.label}` : "No models available",
+      value: choice.model ? formatWaitingRoomModelLabel(choice.model, modelOptions) : "No models available",
+      indent: 1,
+      focused: state.focus === "model",
+      selectable: true,
+      scrollbar: "",
     },
     {
-      id: "effort" as const,
-      title: "Effort",
+      id: "effort",
+      title: "Variant",
       value: choice.effort ? formatTitleCase(choice.effort) : "Default",
+      indent: 1,
+      focused: state.focus === "effort",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "join-header",
+      title: "Join Existing Session",
+      value: "",
+      indent: 0,
+      focused: false,
+      selectable: true,
+      scrollbar: "",
     },
   ]
+
+  if (visibleSessions.length === 0) {
+    rows.push({
+      id: "no-sessions",
+      title: "No sessions available",
+      value: "",
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+    return rows
+  }
+
+  const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
+  for (const [offset, session] of windowSessions.entries()) {
+    const sessionIndex = sessionWindow.start + offset
+    rows.push({
+      id: `session:${session.id}`,
+      title: session.alias ?? session.id,
+      value: session.status.toLowerCase(),
+      indent: 1,
+      focused: state.focus === "session" && state.sessionIndex === sessionIndex,
+      selectable: true,
+      scrollbar: sessionScrollbar[offset] ?? "",
+    })
+  }
+
+  return rows
 }
 
 export function arrobaArtFrame(step: number) {
@@ -185,6 +280,61 @@ function modulo(value: number, size: number) {
   return ((value % size) + size) % size
 }
 
+function waitingRoomSessions(sessions: SessionListEntry[]) {
+  return sessions.filter((session) => session.status !== "Ended")
+}
+
+function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
+  const visibleSessions = waitingRoomSessions(sessions)
+  return [
+    { focus: "new" as const, sessionIndex: 0 },
+    { focus: "provider" as const, sessionIndex: 0 },
+    { focus: "model" as const, sessionIndex: 0 },
+    { focus: "effort" as const, sessionIndex: 0 },
+    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
+  ]
+}
+
+function waitingRoomSessionWindow(state: WaitingRoomState, sessions: SessionListEntry[]) {
+  const count = Math.min(MAX_VISIBLE_WAITING_ROOM_SESSIONS, sessions.length)
+  if (count === 0) {
+    return { start: 0, count: 0 }
+  }
+  const maxStart = Math.max(0, sessions.length - count)
+  const start = Math.min(Math.max(0, state.sessionIndex - count + 1), maxStart)
+  return { start, count }
+}
+
+function renderWaitingRoomScrollbar(visibleCount: number, totalCount: number, start: number) {
+  if (visibleCount === 0 || totalCount <= visibleCount) {
+    return []
+  }
+  const thumbSize = Math.max(1, Math.round((visibleCount * visibleCount) / totalCount))
+  const maxThumbOffset = Math.max(0, visibleCount - thumbSize)
+  const thumbOffset = totalCount === visibleCount
+    ? 0
+    : Math.round((start * maxThumbOffset) / Math.max(1, totalCount - visibleCount))
+  return Array.from({ length: visibleCount }, (_, index) => (
+    index >= thumbOffset && index < thumbOffset + thumbSize ? "#" : "|"
+  ))
+}
+
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function normalizeBackendProvider(value: string): BackendProviderId {
+  return value === "codex" ? "codex" : "opencode"
+}
+
+function formatBackendProviderLabel(providerId: BackendProviderId) {
+  return providerId === "codex" ? "Codex" : "OpenCode"
+}
+
+function formatWaitingRoomModelLabel(
+  model: CatalogModelOption,
+  options: CatalogModelOption[],
+) {
+  const providerCount = new Set(options.map((option) => option.providerId)).size
+  return providerCount <= 1 ? model.label : `${model.providerName} ${model.label}`
 }

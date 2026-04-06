@@ -11,6 +11,7 @@ import type { WaitingRoomState } from "./waiting-room.js"
 
 const cliOptions: CliOptions = {
   clientId: "cli-1",
+  provider: "opencode",
   model: "openai/gpt-5",
   accountProfile: "default",
   effort: "medium",
@@ -21,6 +22,7 @@ const cliOptions: CliOptions = {
 const waitingRoomState: WaitingRoomState = {
   focus: "new",
   sessionIndex: 0,
+  providerId: "opencode",
   modelId: "openai/gpt-5",
   effort: "medium",
   introStep: 0,
@@ -360,6 +362,212 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "setAvailableSessions",
     "scheduleShortViewportHistoryCheck",
   ])
+})
+
+test("attachBinding launches a provider run with provider and effort in the correct positions", async () => {
+  const launched: Array<{
+    sessionId: string
+    provider: string
+    accountProfile: string
+    model: string
+    effort: string
+    targetAgentId: string | null | undefined
+  }> = []
+  const attachedSession: RuntimeSession = {
+    id: "session-3",
+    alias: "feature",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: ["att-3"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-focus",
+    max_agents: 6,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-3", session_id: "session-3" }),
+    getSessionState: async () => attachedSession,
+    launchProviderRun: async (
+      sessionId: string,
+      provider: string,
+      accountProfile: string,
+      model: string,
+      effort: string,
+      targetAgentId?: string | null,
+    ) => {
+      launched.push({ sessionId, provider, accountProfile, model, effort, targetAgentId })
+      return {
+        id: "run-3",
+        session_id: sessionId,
+        agent_instance_id: targetAgentId ?? null,
+        adapter_key: provider,
+        provider,
+        account_profile: accountProfile,
+        model,
+        variant: effort,
+        usage_tokens_total: null,
+        state: "Running",
+      }
+    },
+    setProviderRunState: () => {},
+    setProviderCatalogState: () => {},
+    getProviderCatalog: async () => ({}),
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
+    setAttachmentState: () => {},
+    setCreatedSessionState: () => {},
+    setSessionState: () => {},
+    setCenterMode: () => {},
+    clearDirectoryTree: () => {},
+    resetWorkspaceScreen: () => {},
+    clearWorkflows: () => {},
+    clearActiveToolLabels: () => {},
+    setProviderActivityLabel: () => {},
+    setActiveStatusLabel: () => {},
+    setFatalError: () => {},
+    setDaemonDisconnected: () => {},
+    setSubmitting: () => {},
+    setWorking: () => {},
+    setStatusLine: () => {},
+    updateSessionChrome: () => {},
+    focusPromptInput: () => {},
+    setMultiAgentResponseLayout: () => {},
+    syncKernelEventSubscription: async () => {},
+    setAvailableSessions: () => {},
+    listSessions: async () => [],
+    scheduleShortViewportHistoryCheck: () => {},
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding(
+    { id: "session-3" },
+    true,
+    { provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" },
+  )
+
+  assert.deepEqual(launched, [
+    {
+      sessionId: "session-3",
+      provider: "codex",
+      accountProfile: "default",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+      targetAgentId: "agent-focus",
+    },
+  ])
+})
+
+test("attachBinding restores the focused agent runtime profile for existing sessions", async () => {
+  const launched: Array<{
+    provider: string
+    model: string
+    effort: string
+  }> = []
+  const attachedSession: RuntimeSession = {
+    id: "session-4",
+    alias: "parked",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 1,
+    status: "Parked",
+    active_provider_run_id: null,
+    attachment_ids: ["att-4"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-focus",
+    max_agents: 6,
+    agents: [{
+      id: "agent-focus",
+      agent_ref: "agent-focus",
+      session_id: "session-4",
+      alias: null,
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+      worktree_id: null,
+      state: "Idle",
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-4", session_id: "session-4" }),
+    getSessionState: async () => attachedSession,
+    launchProviderRun: async (
+      _sessionId: string,
+      provider: string,
+      _accountProfile: string,
+      model: string,
+      effort: string,
+    ) => {
+      launched.push({ provider, model, effort })
+      return {
+        id: "run-4",
+        session_id: "session-4",
+        agent_instance_id: "agent-focus",
+        adapter_key: provider,
+        provider,
+        account_profile: "default",
+        model,
+        variant: effort,
+        usage_tokens_total: null,
+        state: "Running",
+      }
+    },
+    setProviderRunState: () => {},
+    setProviderCatalogState: () => {},
+    getProviderCatalog: async () => ({}),
+    hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
+    setAttachmentState: () => {},
+    setCreatedSessionState: () => {},
+    setSessionState: () => {},
+    setCenterMode: () => {},
+    clearDirectoryTree: () => {},
+    resetWorkspaceScreen: () => {},
+    clearWorkflows: () => {},
+    clearActiveToolLabels: () => {},
+    setProviderActivityLabel: () => {},
+    setActiveStatusLabel: () => {},
+    setFatalError: () => {},
+    setDaemonDisconnected: () => {},
+    setSubmitting: () => {},
+    setWorking: () => {},
+    setStatusLine: () => {},
+    updateSessionChrome: () => {},
+    focusPromptInput: () => {},
+    setMultiAgentResponseLayout: () => {},
+    syncKernelEventSubscription: async () => {},
+    setAvailableSessions: () => {},
+    listSessions: async () => [],
+    scheduleShortViewportHistoryCheck: () => {},
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding(
+    { id: "session-4" },
+    false,
+    { provider: "opencode", model: "openai/gpt-5.4", effort: "high" },
+  )
+
+  assert.deepEqual(launched, [{
+    provider: "codex",
+    model: "codex/gpt-5.4-mini",
+    effort: "low",
+  }])
 })
 
 test("attachBinding keeps the CLI attached when post-attach refresh steps fail", async () => {

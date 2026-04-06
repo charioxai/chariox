@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::provider::ProviderResumeState;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     Idle,
@@ -37,6 +39,8 @@ pub struct AgentInstance {
     model: Option<String>,
     effort: Option<String>,
     worktree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
+    provider_resume_state: ProviderResumeState,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -67,6 +71,7 @@ impl AgentInstance {
             model,
             effort,
             worktree_id,
+            provider_resume_state: ProviderResumeState::default(),
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -105,6 +110,10 @@ impl AgentInstance {
 
     pub fn worktree_id(&self) -> Option<&str> {
         self.worktree_id.as_deref()
+    }
+
+    pub fn provider_resume_state(&self) -> &ProviderResumeState {
+        &self.provider_resume_state
     }
 
     pub fn state(&self) -> AgentState {
@@ -155,6 +164,10 @@ impl AgentInstance {
 
     pub fn set_effort(&mut self, effort: Option<String>) {
         self.effort = effort;
+    }
+
+    pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
+        self.provider_resume_state = resume_state;
     }
 }
 

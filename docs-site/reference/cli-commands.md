@@ -40,6 +40,10 @@ Additional provider commands:
   Show auth status for the current or named provider.
 - `/provider login [name]`
   Start provider-native login for the current or named provider. For Codex this returns a device-login URL and one-time code.
+- `/provider logout [name]`
+  Clear the current or named provider login. For Codex this runs the local `codex logout` flow on the host machine.
+- `/provider reauth [name]`
+  Log out the current or named provider, then start a fresh provider-native login flow.
 
 ### `/model <id>`
 

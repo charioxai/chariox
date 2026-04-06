@@ -99,7 +99,7 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
   assert.equal(transition.nextAgentSignature, "agent-a,agent-b")
 })
 
-test("deriveSessionTransitionState keeps the active stream pinned while working settles", () => {
+test("deriveSessionTransitionState clears stale streaming state once prompt work ends", () => {
   const currentSession = session({
     focused_agent_id: "agent-a",
     active_prompt: {
@@ -128,10 +128,10 @@ test("deriveSessionTransitionState keeps the active stream pinned while working 
     layoutPreference: "split",
   })
 
-  assert.equal(transition.nextStreamingAgentId, "agent-a")
-  assert.equal(transition.nextFocusedActivityLabel, "thinking")
+  assert.equal(transition.nextStreamingAgentId, null)
+  assert.equal(transition.nextFocusedActivityLabel, null)
   assert.deepEqual(transition.nextAgentActivityLabels, {
-    "agent-a": "thinking",
+    "agent-a": null,
     "agent-b": null,
   })
   assert.equal(transition.nextWorking, true)
@@ -141,6 +141,7 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
   const detached = deriveDetachedCliTransitionState({
     cliOptions: {
       clientId: "client-1",
+      provider: "opencode",
       model: "default",
       accountProfile: "default",
       effort: "high",
@@ -148,8 +149,9 @@ test("deriveDetachedCliTransitionState resets waiting room and clears session-bo
       worktree: "/workspace/tree",
     },
     waitingRoomState: {
-      focus: "join",
+      focus: "session",
       sessionIndex: 3,
+      providerId: "opencode",
       modelId: "openai/gpt-5.4",
       effort: "medium",
       introStep: 8,

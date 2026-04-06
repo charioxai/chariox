@@ -3,11 +3,11 @@ import path from "node:path"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
 export const ARROBA_ASCII_ART = [
-  "    _    ____  ____   ___  ____    _    ",
-  "   / \\  |  _ \\|  _ \\ / _ \\| __ ) / \\   ",
-  "  / _ \\ | |_) | |_) | | | |  _ \\ /  _ \\  ",
-  " / ___ \\|  _ <|  _ <| |_| | |_)  /  ___ \\ ",
-  "/_/   \\_\\_| \\_\\_| \\_\\___/|_/___/_/  \\_\\",
+  "    _    ____  ____   ___  ____     _    ",
+  "   / \\  |  _ \\|  _ \\ / _ \\| __ )   / \\   ",
+  "  / _ \\ | |_) | |_) | | | |  _ \\  / _ \\  ",
+  " / ___ \\|  _ <|  _ <| |_| | |_) |/ ___ \\ ",
+  "/_/   \\_\\_| \\_\\_| \\_\\\\___/|____/ /_/   \\_\\",
 ].join("\n")
 
 export const SESSION_NEW_HELP_TEXT = "Use the waiting room to start a new session or join an existing one."
