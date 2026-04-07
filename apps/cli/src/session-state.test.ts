@@ -6,6 +6,7 @@ import {
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
+  derivePromptLifecycleTransition,
   deriveSessionTransitionState,
   sessionHasPromptWork,
   sessionResponseLayout,
@@ -135,6 +136,50 @@ test("deriveSessionTransitionState clears stale streaming state once prompt work
     "agent-b": null,
   })
   assert.equal(transition.nextWorking, true)
+})
+
+test("derivePromptLifecycleTransition detects when a cancelling prompt settles", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "hello",
+        status: "cancelling",
+      },
+    }),
+    session(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+})
+
+test("derivePromptLifecycleTransition ignores normal prompt replacement", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "hello",
+        status: "running",
+      },
+    }),
+    session({
+      active_prompt: {
+        id: "prompt-2",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "next",
+        status: "running",
+      },
+    }),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
 })
 
 test("deriveDetachedCliTransitionState resets waiting room and clears session-bound state", () => {

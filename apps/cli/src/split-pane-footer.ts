@@ -15,6 +15,11 @@ export type SplitPaneFooterAgent = {
   is_processing: boolean
 }
 
+export type SplitPaneFooterActiveRun = {
+  agentInstanceId: string | null
+  model: string | null
+}
+
 export type SplitPaneFooterPaneState = {
   badge: {
     label: string
@@ -70,27 +75,38 @@ export function agentPaneStatusBadge(
 export function resolveAgentModelLabel(
   catalog: ProviderCatalog,
   agent: SplitPaneFooterAgent | null,
+  activeRun?: SplitPaneFooterActiveRun | null,
   fallbackModel?: string | null,
 ) {
   if (!agent) {
     return "No model"
   }
-  const effectiveModel = agent.model ?? fallbackModel ?? null
-  const provider = catalog.all.find((entry) => entry.id === agent.provider)
-  const model = effectiveModel ? provider?.models?.[effectiveModel] : null
-  return model?.name ?? effectiveModel ?? "Default model"
+
+  const effectiveModel = activeRun?.model && activeRun.agentInstanceId === agent.id
+    ? activeRun.model
+    : agent.model ?? fallbackModel ?? null
+  const normalizedModel = effectiveModel?.trim() ?? ""
+  if (!normalizedModel || normalizedModel === "default") {
+    return "Default model"
+  }
+
+  const parsed = splitProviderModelRef(normalizedModel)
+  const provider = catalog.all.find((entry) => entry.id === (parsed?.providerId ?? agent.provider))
+  const model = provider?.models?.[parsed?.modelId ?? normalizedModel]
+  return model?.name ?? normalizedModel
 }
 
 export function formatSplitPaneFooter(
   agent: SplitPaneFooterAgent | null,
   catalog: ProviderCatalog,
+  activeRun?: SplitPaneFooterActiveRun | null,
   fallbackModel?: string | null,
 ) {
   if (!agent) {
     return ""
   }
   const aliasLabel = agent.alias?.trim() || agent.agent_ref
-  const modelLabel = resolveAgentModelLabel(catalog, agent, fallbackModel)
+  const modelLabel = resolveAgentModelLabel(catalog, agent, activeRun, fallbackModel)
   return `${aliasLabel} • ${modelLabel}`
 }
 
@@ -105,6 +121,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
   streamingAgentId: string | null
   activityLabels: Record<string, string | null>
   catalog: ProviderCatalog
+  activeRun?: SplitPaneFooterActiveRun | null
   fallbackModel?: string | null
 }): SplitPaneFooterState<T> {
   const buildPaneState = (agent: T | null): SplitPaneFooterPaneState => {
@@ -119,7 +136,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     return {
       badge,
       focused,
-      info: formatSplitPaneFooter(agent, options.catalog, options.fallbackModel),
+      info: formatSplitPaneFooter(agent, options.catalog, options.activeRun, options.fallbackModel),
     }
   }
 
@@ -128,5 +145,17 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     secondary: buildPaneState(options.selection.secondary),
     tertiary: buildPaneState(options.selection.tertiary),
     selection: options.selection,
+  }
+}
+
+function splitProviderModelRef(modelRef: string) {
+  const parts = modelRef.split("/").filter(Boolean)
+  if (parts.length < 2) {
+    return null
+  }
+
+  return {
+    providerId: parts.at(-2)!,
+    modelId: parts.at(-1)!,
   }
 }

@@ -16,6 +16,12 @@ import type { WaitingRoomState } from "./waiting-room.js"
 type ProviderCatalog = Record<string, unknown>
 type LaunchSelection = { provider: string; model: string; effort: string }
 
+type ProviderSelectionState = {
+  provider: string
+  model: string
+  effort: string
+}
+
 type SessionLifecycleDeps = {
   cliOptions: CliOptions
   connectedStatus: string
@@ -37,6 +43,7 @@ type SessionLifecycleDeps = {
   clearAgentPaneRuntime: () => void
   clearDirectoryTree: () => void
   clearTranscript: () => void
+  refreshResponseLayout: () => void
   resetWorkspaceScreen: () => void
   resetStopRequestInFlight: () => void
   bumpHistoryLoadGeneration: () => void
@@ -83,6 +90,7 @@ type SessionLifecycleDeps = {
     providerRunId: string,
   ) => Promise<RuntimeProviderRun | null>
   setProviderCatalogState: (catalog: ProviderCatalog) => void
+  syncCliProviderSelection: (selection: ProviderSelectionState) => void
   getProviderCatalog: () => Promise<ProviderCatalog>
   hydrateAttachedSessionBinding: (
     sessionId: string,
@@ -151,6 +159,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setActiveStatusLabel(nextDetachedState.activeStatusLabel)
     deps.setCreatedSessionState(nextDetachedState.createdSession)
     deps.setSessionState(nextDetachedState.session)
+    deps.refreshResponseLayout()
     deps.bumpHistoryLoadGeneration()
     deps.clearTranscript()
     deps.setAgentPaneEntries(nextDetachedState.agentPaneEntries as Record<string, never[]>)
@@ -219,6 +228,11 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         requested_variant: resolvedLaunch.effort,
       })
       deps.setProviderRunState(run)
+      deps.syncCliProviderSelection({
+        provider: run.provider,
+        model: run.model,
+        effort: run.variant ?? resolvedLaunch.effort,
+      })
     } else {
       const run = await deps.tryGetProviderRun(attachedSession.active_provider_run_id)
       deps.logAttachedProviderRun?.("loaded", run, {
@@ -226,6 +240,13 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         requested_model: deps.cliOptions.model,
       })
       deps.setProviderRunState(run)
+      if (run) {
+        deps.syncCliProviderSelection({
+          provider: run.provider,
+          model: run.model,
+          effort: run.variant ?? deps.cliOptions.effort,
+        })
+      }
     }
 
     applyAttachedState(attachedSession, attachment, createdSession)

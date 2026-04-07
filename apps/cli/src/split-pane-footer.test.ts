@@ -7,6 +7,7 @@ import {
   buildSplitPaneFooterState,
   formatSplitPaneFooter,
   reflectedDistance,
+  type SplitPaneFooterActiveRun,
   type SplitPaneFooterAgent,
 } from "./split-pane-footer.js"
 
@@ -58,12 +59,29 @@ test("agentPaneStatusBadge reports error and streaming states", () => {
 
 test("formatSplitPaneFooter uses alias and catalog model name", () => {
   assert.equal(
-    formatSplitPaneFooter(primaryAgent, catalog, null),
+    formatSplitPaneFooter(primaryAgent, catalog, null, null),
     "Planner • GPT-5.4",
   )
   assert.equal(
-    formatSplitPaneFooter(secondaryAgent, catalog, "gpt-5.4"),
+    formatSplitPaneFooter(secondaryAgent, catalog, null, "gpt-5.4"),
     "agent-b • GPT-5.4",
+  )
+})
+
+test("formatSplitPaneFooter prefers the active run model for the matching agent", () => {
+  const activeRun: SplitPaneFooterActiveRun = {
+    agentInstanceId: "agent-a",
+    model: "openai/gpt-5.4",
+  }
+
+  assert.equal(
+    formatSplitPaneFooter(
+      { ...primaryAgent, provider: "opencode", model: "openai/gpt-5.3-codex-spark" },
+      catalog,
+      activeRun,
+      null,
+    ),
+    "Planner • GPT-5.4",
   )
 })
 
@@ -82,6 +100,7 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
       "agent-b": "patching",
     },
     catalog,
+    activeRun: null,
     fallbackModel: "gpt-5.4",
   })
 
@@ -106,6 +125,10 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
       "agent-b": "reading",
     },
     catalog,
+    activeRun: {
+      agentInstanceId: "agent-a",
+      model: "openai/gpt-5.4",
+    },
     fallbackModel: "gpt-5.4",
   })
 

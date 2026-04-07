@@ -1005,6 +1005,36 @@ mod tests {
         assert_eq!(completions[0].message_id, "codex-turn:turn-1");
     }
 
+    #[test]
+    fn interrupted_turn_is_treated_as_terminal_cancellation() {
+        let mut active_turn_id = Some("turn-2".to_string());
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: "turn-2".to_string(),
+                status: "interrupted".to_string(),
+                error_message: Some("Aborted".to_string()),
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+        );
+
+        assert!(prompt_completed);
+        assert_eq!(active_turn_id, None);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].message_id, "codex-turn:turn-2");
+        assert_eq!(notices, vec!["Aborted".to_string()]);
+    }
+
     fn parse_tool_chunk(chunk: &CodexOutputChunk) -> Value {
         serde_json::from_slice(&chunk.bytes).expect("tool chunk should be JSON")
     }
