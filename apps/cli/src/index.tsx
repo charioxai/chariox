@@ -6063,6 +6063,7 @@ async function catchUpAttachedSession(
 
   try {
     await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+    await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
   } catch (error) {
     logger?.warn("attached session catch-up failed", {
       session_id: sessionId,
