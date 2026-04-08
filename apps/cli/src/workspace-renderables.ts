@@ -154,10 +154,28 @@ export function buildNoSessionRenderable(
     flexGrow: 1,
     flexDirection: "column",
     justifyContent: "center",
-    alignItems: "stretch",
+    alignItems: "center",
     gap: 1,
   })
   const rows = waitingRoomRows(state, sessions, catalog)
+  const noSessionText = "No session attached. Dial in and choose your next run."
+  const sessionWarning = theme.warning
+  const menuRows = rows.map((row) => {
+    const prefix = row.focused ? ">" : " "
+    const indent = "  ".repeat(row.indent)
+    const titleWidth = Math.max(24, row.titleWidth ?? 24)
+    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
+    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
+    const titleWidthSpace = Math.max(0, titleWidth - row.indent)
+    return `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`
+  })
+  const baseMenuWidth = Math.max(
+    menuRows.reduce((width, row) => Math.max(width, row.length), 0),
+    waitingRoomMenuMinWidth(sessions),
+  )
+  const menuAlignOffset = Math.max(0, Math.floor((baseMenuWidth - noSessionText.length) / 2))
+  const menuOffsetSpaces = " ".repeat(menuAlignOffset)
+  const anchoredMenuWidth = Math.max(baseMenuWidth + menuAlignOffset, noSessionText.length + menuAlignOffset)
 
   const intro = new BoxRenderable(renderer, {
     width: "100%",
@@ -175,34 +193,24 @@ export function buildNoSessionRenderable(
   wrapper.add(intro)
 
   const content = new BoxRenderable(renderer, {
-    width: "100%",
+    width: anchoredMenuWidth,
     flexDirection: "column",
     alignItems: "flex-start",
     gap: 1,
   })
   content.add(
     new TextRenderable(renderer, {
-      content: "No session attached. Dial in and choose your next run.",
-      fg: theme.warning,
-      wrapMode: "word",
+      content: `${menuOffsetSpaces}${noSessionText}`,
+      fg: sessionWarning,
+      wrapMode: "none",
     })
   )
-  const renderedRows = rows.map((row) => {
-    const prefix = row.focused ? ">" : " "
-    const indent = "  ".repeat(row.indent)
-    const titleWidth = Math.max(24, row.titleWidth ?? 24)
-    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
-    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
-    const titleWidthSpace = Math.max(0, titleWidth - row.indent)
-    const trailingPadding = " ".repeat(waitingRoomMenuTrailingPadding())
-    return {
-      row,
-      content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}${trailingPadding}`,
-    }
-  })
-  const menuWidth = Math.max(
+  const renderedRows = rows.map((row, index) => ({
+    row,
+    content: `${menuOffsetSpaces}${menuRows[index]}${" ".repeat(waitingRoomMenuTrailingPadding())}`,
+  }))
+  const finalMenuWidth = Math.max(
     renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
-    waitingRoomMenuMinWidth(sessions),
   )
 
   const menu = new BoxRenderable(renderer, {
@@ -212,7 +220,7 @@ export function buildNoSessionRenderable(
     borderColor: theme.secondary,
     customBorderChars: SplitBorder.customBorderChars,
     paddingLeft: 1,
-    width: menuWidth,
+    width: finalMenuWidth,
   })
   for (const entry of renderedRows) {
     menu.add(
