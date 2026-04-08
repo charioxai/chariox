@@ -219,6 +219,7 @@ Still pending in M4:
   - tracked provider-native session ids per provider run
   - CLI `/provider processes` inspection
   - safe teardown of idle/orphaned managed provider processes without breaking attached sessions
+  - blocker-aware safe-teardown reporting in the CLI
   - late-stage daemon identity and manager semantics:
     - persisted daemon runtime record under `.arroba/runtime/daemon`
     - single-active-daemon lock per workspace/worktree
@@ -230,6 +231,7 @@ Still pending in M4:
   - explicit `null` for unbounded schedules
 - live-drill operational cleanup:
   - every reusable drill harness should own and stop the daemon it starts
+  - reusable drill harnesses should end the sessions they create on exit
 - kernel/daemon naming cleanup:
   - evaluate renaming `scheduler` to `runtime` or equivalent so ownership boundaries read correctly
 

@@ -1,5 +1,7 @@
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import os from 'node:os'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -23,6 +25,7 @@ const {
   launchProviderRunRequest,
   spawnAgentRequest,
   updateWorkflowNodeInstructionsRequest,
+  endSessionRequest,
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
@@ -53,6 +56,7 @@ function parseArgs(argv) {
     pollLimit: 90,
     pollIntervalMs: 1000,
     dryRun: false,
+    spawnDaemon: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -66,6 +70,7 @@ function parseArgs(argv) {
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++index])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++index])
     else if (arg === '--dry-run') options.dryRun = true
+    else if (arg === '--spawn-daemon') options.spawnDaemon = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -90,7 +95,24 @@ function printHelp() {
     '  --poll-limit 90',
     '  --poll-interval-ms 1000',
     '  --dry-run',
+    '  --spawn-daemon',
   ].join('\n'))
+}
+
+function deriveSpawnedKernelUrl() {
+  const kernelPort = 45000 + Math.floor(Math.random() * 1000)
+  const mcpPort = kernelPort + 1000
+  const socketPath = path.join(os.tmpdir(), `arroba-watchdog-drill-${process.pid}-${Date.now()}.sock`)
+  return {
+    kernelUrl: `ws://127.0.0.1:${kernelPort}`,
+    env: {
+      ...process.env,
+      ARROBA_KERNEL_PORT: String(kernelPort),
+      ARROBA_MCP_PORT: String(mcpPort),
+      ARROBA_DAEMON_SOCKET: socketPath,
+      ARROBA_DAEMON_ID: `watchdog-drill-${process.pid}-${Date.now()}`,
+    },
+  }
 }
 
 function workflowOutput(summary, message) {
@@ -136,12 +158,40 @@ async function main() {
     return
   }
 
-  const client = new LocalIpcClient(options.kernel)
+  let daemonChild = null
+  let kernelUrl = options.kernel
+  if (options.spawnDaemon) {
+    const spawned = deriveSpawnedKernelUrl()
+    kernelUrl = spawned.kernelUrl
+    daemonChild = spawn(
+      'cargo',
+      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/daemon/Cargo.toml'), '--bin', 'arroba-daemon'],
+      { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
+    )
+  }
+  const client = new LocalIpcClient(kernelUrl)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
+  let session = null
 
   try {
-    const session = unwrap(
+    if (daemonChild) {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          const probeClient = new LocalIpcClient(kernelUrl)
+          const probeSession = unwrap(
+            await probeClient.send(createSessionRequest(options.workspace, options.worktree)),
+            'SessionCreated',
+          ).session
+          await probeClient.send(endSessionRequest(probeSession.id)).catch(() => {})
+          await probeClient.close()
+          break
+        } catch {
+          await sleep(250)
+        }
+      }
+    }
+    session = unwrap(
       await client.send(createSessionRequest(options.workspace, options.worktree)),
       'SessionCreated',
     ).session
@@ -253,7 +303,7 @@ async function main() {
     const finalWatchdog = (finalSession.workflow_watchdogs ?? []).find((entry) => entry.id === watchdog.id)
     const workflowRuns = summarizeWorkflowRuns(finalSession, workflow.id, endpoint.id)
     console.log(JSON.stringify({
-      kernel: options.kernel,
+      kernel: kernelUrl,
       session: session.id,
       workflow: workflow.id,
       endpoint: endpoint.id,
@@ -261,7 +311,15 @@ async function main() {
       workflowRuns,
     }, null, 2))
   } finally {
+    try {
+      if (session?.id) {
+        await client.send(endSessionRequest(session.id)).catch(() => {})
+      }
+    } catch {}
     await client.close().catch(() => {})
+    if (daemonChild) {
+      daemonChild.kill('SIGTERM')
+    }
   }
 }
 

@@ -242,6 +242,7 @@ Required slices:
   - do not kill processes backing an active prompt
   - do not kill processes backing an active workflow run
 - make drill harnesses stop the daemon they launch so managed provider processes do not leak after live drills
+- make drill harnesses end the sessions they create on exit
 
 Late-stage follow-up:
 
@@ -261,6 +262,7 @@ Safety model:
 
 - safe teardown should only stop daemon-tracked managed processes that are not attached and not actively executing work
 - attached sessions must survive provider loss by degrading provider runs rather than losing the Arroba session itself
+- CLI process inspection should explain why a process is blocked from safe teardown
 
 ## Suggested Immediate Next Steps
 

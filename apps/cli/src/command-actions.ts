@@ -256,23 +256,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     return numeric
   }
   const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {
-    const parts = [
-      process.process_id,
-      `provider=${process.provider}`,
-      `pid=${process.pid ?? "-"}`,
-      `status=${process.status}`,
-      `mode=${process.endpoint_mode}`,
-      `safe=${String(process.teardown_safe)}`,
-      `provider_sessions=${process.provider_session_ids.join(",") || "-"}`,
-      `owners=${process.owner_provider_run_ids.join(",") || "-"}`,
-      `sessions=${process.owner_session_ids.join(",") || "-"}`,
-      `attached=${process.attached_session_ids.join(",") || "-"}`,
-      `workflow_runs=${process.active_workflow_run_ids.join(",") || "-"}`,
+    const lines = [
+      `${process.process_id} provider=${process.provider} pid=${process.pid ?? "-"} status=${process.status} mode=${process.endpoint_mode} safe=${String(process.teardown_safe)}`,
+      `  provider sessions: ${process.provider_session_ids.join(",") || "-"}`,
+      `  owner runs: ${process.owner_provider_run_ids.join(",") || "-"}`,
+      `  owner sessions: ${process.owner_session_ids.join(",") || "-"}`,
+      `  attached sessions: ${process.attached_session_ids.join(",") || "-"}`,
+      `  active workflow runs: ${process.active_workflow_run_ids.join(",") || "-"}`,
     ]
     if (process.teardown_blockers.length > 0) {
-      parts.push(`blockers=${process.teardown_blockers.join("; ")}`)
+      lines.push(`  blockers: ${process.teardown_blockers.join("; ")}`)
     }
-    return parts.join(" ")
+    return lines.join("\n")
   }
   const hasDuplicateWorkflowEdge = (
     workflow: WorkflowDefinition,
@@ -476,14 +471,23 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           return
         }
         const provider = parts[2] ?? null
+        const blocked = deps.listProviderProcesses
+          ? (await deps.listProviderProcesses(provider)).filter((process) => !process.teardown_safe)
+          : []
         const tornDown = await deps.teardownProviderProcesses(provider)
         if (tornDown.length === 0) {
+          if (blocked.length > 0) {
+            deps.appendNotice(`blocked provider processes:\n${blocked.map((process) => formatProviderProcessNotice(process)).join("\n")}`)
+          }
           deps.flashFooter("no safe provider processes to tear down", "info")
           return
         }
         deps.appendNotice(
           tornDown.map((process) => formatProviderProcessNotice(process)).join("\n"),
         )
+        if (blocked.length > 0) {
+          deps.appendNotice(`skipped blocked provider processes:\n${blocked.map((process) => formatProviderProcessNotice(process)).join("\n")}`)
+        }
         deps.flashFooter(`tore down ${tornDown.length} provider process(es)`, "info")
         return
       }

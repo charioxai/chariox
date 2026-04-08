@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import os from 'node:os'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -23,6 +25,7 @@ const {
   getSessionStateRequest,
   spawnAgentRequest,
   launchProviderRunRequest,
+  endSessionRequest,
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
@@ -43,6 +46,7 @@ function parseArgs(argv) {
     pollLimit: 120,
     pollIntervalMs: 2000,
     dryRun: false,
+    spawnDaemon: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -55,6 +59,7 @@ function parseArgs(argv) {
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++index])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++index])
     else if (arg === '--dry-run') options.dryRun = true
+    else if (arg === '--spawn-daemon') options.spawnDaemon = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -75,7 +80,24 @@ function printHelp() {
     '  --poll-limit 120',
     '  --poll-interval-ms 2000',
     '  --dry-run',
+    '  --spawn-daemon',
   ].join('\n'))
+}
+
+function deriveSpawnedKernelUrl() {
+  const kernelPort = 44000 + Math.floor(Math.random() * 1000)
+  const mcpPort = kernelPort + 1000
+  const socketPath = path.join(os.tmpdir(), `arroba-drill-${process.pid}-${Date.now()}.sock`)
+  return {
+    kernelUrl: `ws://127.0.0.1:${kernelPort}`,
+    env: {
+      ...process.env,
+      ARROBA_KERNEL_PORT: String(kernelPort),
+      ARROBA_MCP_PORT: String(mcpPort),
+      ARROBA_DAEMON_SOCKET: socketPath,
+      ARROBA_DAEMON_ID: `drill-${process.pid}-${Date.now()}`,
+    },
+  }
 }
 
 function workflowOutput(summary, messageJson) {
@@ -236,7 +258,18 @@ async function main() {
     return
   }
 
-  const client = new LocalIpcClient(options.kernel)
+  let daemonChild = null
+  let kernelUrl = options.kernel
+  if (options.spawnDaemon) {
+    const spawned = deriveSpawnedKernelUrl()
+    kernelUrl = spawned.kernelUrl
+    daemonChild = spawn(
+      'cargo',
+      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/daemon/Cargo.toml'), '--bin', 'arroba-daemon'],
+      { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
+    )
+  }
+  const client = new LocalIpcClient(kernelUrl)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
   const consoleEntriesFor = (state, workflowId) =>
@@ -247,9 +280,27 @@ async function main() {
     else console.log(prefix, JSON.stringify(details))
   }
 
+  let sessionId = null
   try {
+    if (daemonChild) {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          const probeClient = new LocalIpcClient(kernelUrl)
+          const probeSession = unwrap(
+            await probeClient.send(createSessionRequest(options.workspace, options.worktree)),
+            'SessionCreated',
+          ).session
+          await probeClient.send(endSessionRequest(probeSession.id)).catch(() => {})
+          await probeClient.close()
+          break
+        } catch {
+          await sleep(250)
+        }
+      }
+    }
     logStep('create_session')
     const session = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated').session
+    sessionId = session.id
     await client.send(attachToSessionRequest(session.id, `live-drill-${Date.now()}`))
 
     const agentIds = []
@@ -317,6 +368,7 @@ async function main() {
           })),
           failureEvents: run.failure_events || [],
         }, null, 2))
+        await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
         return
       }
@@ -340,12 +392,20 @@ async function main() {
       })),
       failureEvents: run?.failure_events || [],
     }, null, 2))
+    if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
     await client.close()
     process.exitCode = 1
   } catch (error) {
     console.error(error)
+    if (sessionId) {
+      try { await client.send(endSessionRequest(sessionId)) } catch {}
+    }
     try { await client.close() } catch {}
     process.exitCode = 1
+  } finally {
+    if (daemonChild) {
+      daemonChild.kill('SIGTERM')
+    }
   }
 }
 

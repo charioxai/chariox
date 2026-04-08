@@ -569,6 +569,10 @@ mod tests {
         assert_eq!(processes.len(), 1);
         assert!(!processes[0].teardown_safe);
         assert_eq!(processes[0].attached_session_ids, vec![session.id().to_string()]);
+        assert_eq!(
+            processes[0].teardown_blockers,
+            vec![format!("attached sessions: {}", session.id())]
+        );
 
         let torn_down = app
             .teardown_provider_processes(None)
@@ -580,6 +584,38 @@ mod tests {
                 .expect("run should still exist")
                 .state(),
             crate::provider::ProviderRunState::Running,
+        );
+    }
+
+    #[test]
+    fn ending_session_clears_tracked_provider_processes() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+
+        assert!(app.tracked_provider_processes.values().any(|process| {
+            process.owner_provider_run_ids == vec![run.id().to_string()]
+        }));
+
+        let _ = app.end_session(session.id()).expect("session should end");
+
+        assert!(app.tracked_provider_processes.is_empty());
+        assert!(app.tracked_provider_run_processes.is_empty());
+        assert!(
+            app.list_provider_processes(None)
+                .expect("provider processes should list")
+                .is_empty()
         );
     }
 }
