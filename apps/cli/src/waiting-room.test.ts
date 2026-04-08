@@ -90,6 +90,36 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   assert.equal(scrolledWindow[6]?.title, "session-2")
 })
 
+test("waiting room keeps session metadata column widths stable across scroll windows", () => {
+  const catalog = fallbackProviderCatalog()
+  const sessions = Array.from({ length: 12 }, (_, index) => ({
+    id: `session-${index + 1}`,
+    alias: null,
+    workspace_id: "/workspace",
+    worktree_id: "/workspace/tree",
+    status: index === 11 ? "Disconnected" : "Active",
+    created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
+    last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
+    attachment_ids: [],
+  }))
+
+  let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  state = moveWaitingRoomFocus(state, sessions, 4)
+  const firstWindow = waitingRoomRows(state, sessions, catalog)
+  const scrolledWindowHeader = firstWindow.find((row) => row.id === "session-header")?.columns
+  const firstWindowWidths = scrolledWindowHeader?.map((column) => column.length)
+  assert.deepEqual(firstWindowWidths, [12, 20, 20], "windowed rows should use the long status width baseline")
+
+  for (let step = 0; step < MAX_VISIBLE_WAITING_ROOM_SESSIONS; step += 1) {
+    state = moveWaitingRoomFocus(state, sessions, 1)
+  }
+
+  const secondWindow = waitingRoomRows(state, sessions, catalog)
+  const secondWindowHeader = secondWindow.find((row) => row.id === "session-header")?.columns
+  const secondWindowWidths = secondWindowHeader?.map((column) => column.length)
+  assert.deepEqual(secondWindowWidths, firstWindowWidths)
+})
+
 test("arrobaArtFrame resolves to the clean logo after the intro completes", () => {
   const first = arrobaArtFrame(0)
   const last = arrobaArtFrame(12)

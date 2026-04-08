@@ -9,6 +9,9 @@ import {
 } from "./provider-catalog.js"
 
 export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
+const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
+const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
+const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
 
 export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session"
 
@@ -33,6 +36,7 @@ export type WaitingRoomRow = {
   id: string
   title: string
   value: string
+  titleWidth: number
   columns?: string[]
   indent: number
   focused: boolean
@@ -177,23 +181,31 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
   const sessionWindow = waitingRoomSessionWindow(state, visibleSessions)
   const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
   const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
+  const allSessionTitles = visibleSessions.map((session) => session.alias ?? session.id)
   const statusWidth = Math.max(
-    "Status".length,
-    ...windowSessions.map((session) => formatSessionStatus(session.status).length),
+    WAITING_ROOM_STATUS_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionStatus(session.status).length),
   )
   const lastUsedWidth = Math.max(
     "Last used".length,
-    ...windowSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
+    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
   )
   const createdAtWidth = Math.max(
     "Created at".length,
-    ...windowSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
+    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
+  )
+  const titleWidth = Math.max(
+    WAITING_ROOM_ROW_TITLE_MIN_WIDTH,
+    ...allSessionTitles.map((title) => Math.max(0, title.length)),
   )
   const rows: WaitingRoomRow[] = [
     {
       id: "new",
       title: "Start New Session",
       value: "Press Enter",
+      titleWidth,
       indent: 0,
       focused: state.focus === "new",
       selectable: true,
@@ -203,6 +215,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: "provider",
       title: "Provider",
       value: formatBackendProviderLabel(choice.providerId),
+      titleWidth,
       indent: 1,
       focused: state.focus === "provider",
       selectable: true,
@@ -212,6 +225,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: "model",
       title: "Model",
       value: choice.model ? formatWaitingRoomModelLabel(choice.model, modelOptions) : "No models available",
+      titleWidth,
       indent: 1,
       focused: state.focus === "model",
       selectable: true,
@@ -221,6 +235,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: "effort",
       title: "Variant",
       value: choice.effort ? formatTitleCase(choice.effort) : "Default",
+      titleWidth,
       indent: 1,
       focused: state.focus === "effort",
       selectable: true,
@@ -230,6 +245,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: "join-header",
       title: "Join Existing Session",
       value: "",
+      titleWidth,
       indent: 0,
       focused: false,
       selectable: true,
@@ -242,6 +258,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: "no-sessions",
       title: "No sessions available",
       value: "",
+      titleWidth,
       indent: 1,
       focused: false,
       selectable: false,
@@ -254,6 +271,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
     id: "session-header",
     title: "Session",
     value: "",
+    titleWidth,
     columns: [
       formatWaitingRoomColumnHeader("Status", statusWidth),
       formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
@@ -271,6 +289,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       id: `session:${session.id}`,
       title: session.alias ?? session.id,
       value: formatSessionStatus(session.status),
+      titleWidth,
       columns: [
         formatWaitingRoomColumn(formatSessionStatus(session.status), statusWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
