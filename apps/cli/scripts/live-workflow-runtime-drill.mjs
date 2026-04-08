@@ -25,6 +25,8 @@ const {
   getSessionStateRequest,
   spawnAgentRequest,
   launchProviderRunRequest,
+  setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowRunOutputSchemaRequest,
   endSessionRequest,
 } = requests
 
@@ -71,7 +73,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workflow-runtime-drill.mjs [options]',
     '',
     'Options:',
-    '  --scenario simple-chain|validated-increment-chain|console-increment-chain',
+    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain',
     `  --kernel ${DEFAULT_KERNEL}`,
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
@@ -87,6 +89,7 @@ function printHelp() {
 function deriveSpawnedKernelUrl() {
   const kernelPort = 44000 + Math.floor(Math.random() * 1000)
   const mcpPort = kernelPort + 1000
+  const opencodePort = kernelPort + 2000
   const socketPath = path.join(os.tmpdir(), `arroba-drill-${process.pid}-${Date.now()}.sock`)
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
@@ -94,6 +97,7 @@ function deriveSpawnedKernelUrl() {
       ...process.env,
       ARROBA_KERNEL_PORT: String(kernelPort),
       ARROBA_MCP_PORT: String(mcpPort),
+      ARROBA_OPENCODE_PORT: String(opencodePort),
       ARROBA_DAEMON_SOCKET: socketPath,
       ARROBA_DAEMON_ID: `drill-${process.pid}-${Date.now()}`,
     },
@@ -225,6 +229,58 @@ function buildConsoleIncrementScenario(providers, model) {
   }
 }
 
+function buildFinalRunOutputScenario(providers, model, schemaPath) {
+  if (providers.length !== 2) {
+    throw new Error('final-run-output-chain requires exactly 2 providers')
+  }
+  return {
+    id: 'final-run-output-chain',
+    alias: 'final-run-output-chain',
+    providers,
+    model,
+    runOutputSchemaPath: schemaPath,
+    entryPrompt: 'Start the workflow with integer 1842. The workflow should return the incremented final result.',
+    nodePrompt(index) {
+      if (index === 0) {
+        return [
+          'Read the endpoint prompt for the starting integer.',
+          'Produce normal node-to-node workflow output for the downstream node.',
+          'Set `output.message` to JSON with exactly one integer field: `value`.',
+          'Use the integer from the endpoint prompt unchanged.',
+          'Do not add any other fields.',
+          'Your summary should be `sent 1842`.',
+        ].join('\n\n')
+      }
+      return [
+        'Read the upstream handoff payload for this workflow turn.',
+        'Extract `output.message` JSON from the previous node.',
+        'Read its integer field `value`.',
+        'Add 1 to that integer.',
+        'This node is the final workflow node. Generate final workflow run output JSON with exactly one integer field: `value` set to the incremented integer.',
+        'Do not generate normal node-to-node output for this final result.',
+        'Use the runtime MCP tool for final workflow run output submission and then finish the turn.',
+        'Your summary should be `received 1842, completed 1843`.',
+      ].join('\n\n')
+    },
+    edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
+      return {
+        AddWorkflowEdge: {
+          session_id: sessionId,
+          workflow_ref: workflowId,
+          from_node_id: fromNodeId,
+          to_node_id: toNodeId,
+          output_schema_ref: schemaPath,
+          validation_policy: 'warn',
+        },
+      }
+    },
+    async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
+      await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[1], true))
+    },
+  }
+}
+
 function createScenario(options, schemaPath) {
   if (options.scenario === 'simple-chain') return buildSimpleChainScenario(options.providers, options.model)
   if (options.scenario === 'validated-increment-chain') {
@@ -232,6 +288,9 @@ function createScenario(options, schemaPath) {
   }
   if (options.scenario === 'console-increment-chain') {
     return buildConsoleIncrementScenario(options.providers, options.model)
+  }
+  if (options.scenario === 'final-run-output-chain') {
+    return buildFinalRunOutputScenario(options.providers, options.model, schemaPath)
   }
   throw new Error(`unsupported scenario: ${options.scenario}`)
 }
@@ -335,6 +394,11 @@ async function main() {
       }
     }
 
+    if (typeof scenario.configureWorkflow === 'function') {
+      logStep('configure_workflow', { workflowId: workflow.id, scenario: scenario.id })
+      await scenario.configureWorkflow(client, session.id, workflow.id, nodeIds)
+    }
+
     logStep('create_endpoint', { entryNodeId: nodeIds[0] })
     const endpoint = unwrap(
       await client.send(createWorkflowEndpointRequest(session.id, workflow.id, nodeIds[0], 'start')),
@@ -343,7 +407,7 @@ async function main() {
 
     logStep('invoke', { endpointId: endpoint.id })
     const workflowRun = unwrap(
-      await client.send(invokeWorkflowEndpointRequest(session.id, workflow.id, endpoint.id, 'Run the workflow exactly as instructed.')),
+      await client.send(invokeWorkflowEndpointRequest(session.id, workflow.id, endpoint.id, scenario.entryPrompt ?? 'Run the workflow exactly as instructed.')),
       'WorkflowRunInvoked',
     ).workflow_run
 
@@ -358,6 +422,10 @@ async function main() {
           workflowId: workflow.id,
           workflowRunId: workflowRun.id,
           status: run.status,
+          finalOutput: run.final_output ?? null,
+          finalOutputValid: run.final_output_valid ?? null,
+          finalOutputWarning: run.final_output_warning ?? null,
+          completedByNodeRunId: run.completed_by_node_run_id ?? null,
           consoleEntries: consoleEntriesFor(state, workflow.id),
           nodeRuns: run.node_runs.map((nodeRun) => ({
             id: nodeRun.id,
@@ -382,6 +450,10 @@ async function main() {
       workflowId: workflow.id,
       workflowRunId: workflowRun.id,
       status: run?.status,
+      finalOutput: run?.final_output ?? null,
+      finalOutputValid: run?.final_output_valid ?? null,
+      finalOutputWarning: run?.final_output_warning ?? null,
+      completedByNodeRunId: run?.completed_by_node_run_id ?? null,
       consoleEntries: consoleEntriesFor(state, workflow.id),
       nodeRuns: run?.node_runs?.map((nodeRun) => ({
         id: nodeRun.id,
