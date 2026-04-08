@@ -8,6 +8,7 @@ use crate::agent::AgentInstance;
 
 pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
+pub const DEFAULT_WORKFLOW_LAUNCH_POLICY: WorkflowLaunchPolicy = WorkflowLaunchPolicy::Reject;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
@@ -55,6 +56,61 @@ impl WorkflowEndpointDefinition {
 pub enum WorkflowWatchdogPolicy {
     Skip,
     Queue,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowLaunchPolicy {
+    Reject,
+    Queue,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuedWorkflowLaunchSource {
+    Manual,
+    Watchdog,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedWorkflowLaunch {
+    id: String,
+    workflow_id: String,
+    endpoint_id: String,
+    invocation_prompt: Option<String>,
+    source: QueuedWorkflowLaunchSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watchdog_id: Option<String>,
+    queued_at_ms: u64,
+}
+
+impl QueuedWorkflowLaunch {
+    pub fn new(
+        id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        invocation_prompt: Option<String>,
+        source: QueuedWorkflowLaunchSource,
+        watchdog_id: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            workflow_id: workflow_id.into(),
+            endpoint_id: endpoint_id.into(),
+            invocation_prompt,
+            source,
+            watchdog_id,
+            queued_at_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn id(&self) -> &str { &self.id }
+    pub fn workflow_id(&self) -> &str { &self.workflow_id }
+    pub fn endpoint_id(&self) -> &str { &self.endpoint_id }
+    pub fn invocation_prompt(&self) -> Option<&str> { self.invocation_prompt.as_deref() }
+    pub fn source(&self) -> QueuedWorkflowLaunchSource { self.source }
+    pub fn watchdog_id(&self) -> Option<&str> { self.watchdog_id.as_deref() }
+    pub fn queued_at_ms(&self) -> u64 { self.queued_at_ms }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1553,6 +1609,10 @@ pub struct RuntimeSession {
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_launch_policy: Option<WorkflowLaunchPolicy>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    queued_workflow_launches: VecDeque<QueuedWorkflowLaunch>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_watchdogs: Vec<WorkflowWatchdogDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1600,6 +1660,8 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
+            workflow_launch_policy: None,
+            queued_workflow_launches: VecDeque::new(),
             workflow_watchdogs: Vec::new(),
             workflow_consoles: Vec::new(),
         }
@@ -1681,6 +1743,15 @@ impl RuntimeSession {
         &self.workflow_runs
     }
 
+    pub fn workflow_launch_policy(&self) -> WorkflowLaunchPolicy {
+        self.workflow_launch_policy
+            .unwrap_or(DEFAULT_WORKFLOW_LAUNCH_POLICY)
+    }
+
+    pub fn queued_workflow_launches(&self) -> &VecDeque<QueuedWorkflowLaunch> {
+        &self.queued_workflow_launches
+    }
+
     pub fn workflow_watchdogs(&self) -> &[WorkflowWatchdogDefinition] {
         &self.workflow_watchdogs
     }
@@ -1737,6 +1808,46 @@ impl RuntimeSession {
     pub fn create_workflow_run(&mut self, workflow_run: WorkflowRun) -> WorkflowRun {
         self.workflow_runs.push(workflow_run.clone());
         workflow_run
+    }
+
+    pub fn has_active_workflow_run(&self) -> bool {
+        self.workflow_runs.iter().any(|workflow_run| {
+            matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Created | WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
+            )
+        })
+    }
+
+    pub fn set_workflow_launch_policy(&mut self, policy: WorkflowLaunchPolicy) {
+        self.workflow_launch_policy = Some(policy);
+    }
+
+    pub fn enqueue_workflow_launch(
+        &mut self,
+        queued_launch: QueuedWorkflowLaunch,
+    ) -> QueuedWorkflowLaunch {
+        self.queued_workflow_launches.push_back(queued_launch.clone());
+        queued_launch
+    }
+
+    pub fn dequeue_workflow_launch(&mut self) -> Option<QueuedWorkflowLaunch> {
+        self.queued_workflow_launches.pop_front()
+    }
+
+    pub fn remove_queued_workflow_launch(
+        &mut self,
+        queue_item_id: &str,
+    ) -> Option<QueuedWorkflowLaunch> {
+        let index = self
+            .queued_workflow_launches
+            .iter()
+            .position(|queued_launch| queued_launch.id() == queue_item_id)?;
+        self.queued_workflow_launches.remove(index)
+    }
+
+    pub fn clear_queued_workflow_launches(&mut self) -> Vec<QueuedWorkflowLaunch> {
+        self.queued_workflow_launches.drain(..).collect()
     }
 
     pub fn workflow_run(&self, workflow_run_id: &str) -> Option<&WorkflowRun> {

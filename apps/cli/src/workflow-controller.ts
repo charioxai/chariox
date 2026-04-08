@@ -1,4 +1,5 @@
 import type {
+  QueuedWorkflowLaunch,
   RuntimeSession,
   WorkflowDefinition,
   WorkflowEdgeDefinition,
@@ -16,17 +17,21 @@ import {
   createWorkflowEndpointRequest,
   createWorkflowRequest,
   createWorkflowWatchdogRequest,
+  clearQueuedWorkflowLaunchesRequest,
   cancelWorkflowRunRequest,
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
+  listQueuedWorkflowLaunchesRequest,
   listWorkflowWatchdogsRequest,
   listWorkflowsRequest,
   listWorkflowRunsRequest,
+  removeQueuedWorkflowLaunchRequest,
   removeWorkflowEdgeRequest,
   removeWorkflowNodeRequest,
   removeWorkflowWatchdogRequest,
   resumeWorkflowRunRequest,
   resolveWorkflowRequest,
+  setWorkflowLaunchPolicyRequest,
   setWorkflowWatchdogEnabledRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
@@ -259,12 +264,24 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     const response = await deps.sendRequest(
       invokeWorkflowEndpointRequest(deps.sessionState().id, workflowRef, endpointRef, prompt),
     )
+    if ("WorkflowRunInvoked" in response) {
+      const payload = expectVariant<{
+        workflow_run: WorkflowRun
+        workflow: WorkflowDefinition
+        endpoint: WorkflowEndpointDefinition
+        session: RuntimeSession
+      }>(response, "WorkflowRunInvoked")
+      deps.applySessionState(payload.session)
+      deps.rebuildTranscript()
+      deps.applyResponseLayout()
+      return payload
+    }
     const payload = expectVariant<{
-      workflow_run: WorkflowRun
+      queued_launch: QueuedWorkflowLaunch
       workflow: WorkflowDefinition
       endpoint: WorkflowEndpointDefinition
       session: RuntimeSession
-    }>(response, "WorkflowRunInvoked")
+    }>(response, "WorkflowRunQueued")
     deps.applySessionState(payload.session)
     deps.rebuildTranscript()
     deps.applyResponseLayout()
@@ -324,6 +341,59 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     const payload = expectVariant<{ watchdog: WorkflowWatchdogDefinition; session: RuntimeSession }>(
       response,
       "WorkflowWatchdogRemoved",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const setWorkflowLaunchPolicy = async (policy: "reject" | "queue") => {
+    const response = await deps.sendRequest(
+      setWorkflowLaunchPolicyRequest(deps.sessionState().id, policy),
+    )
+    const payload = expectVariant<{ session: RuntimeSession }>(
+      response,
+      "WorkflowLaunchPolicyUpdated",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const listQueuedWorkflowLaunches = async () => {
+    const response = await deps.sendRequest(
+      listQueuedWorkflowLaunchesRequest(deps.sessionState().id),
+    )
+    const payload = expectVariant<{ queued_launches: QueuedWorkflowLaunch[] }>(
+      response,
+      "QueuedWorkflowLaunchesListed",
+    )
+    return payload.queued_launches
+  }
+
+  const removeQueuedWorkflowLaunch = async (queueItemRef: string) => {
+    const response = await deps.sendRequest(
+      removeQueuedWorkflowLaunchRequest(deps.sessionState().id, queueItemRef),
+    )
+    const payload = expectVariant<{ queued_launch: QueuedWorkflowLaunch; session: RuntimeSession }>(
+      response,
+      "QueuedWorkflowLaunchRemoved",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  const clearQueuedWorkflowLaunches = async () => {
+    const response = await deps.sendRequest(
+      clearQueuedWorkflowLaunchesRequest(deps.sessionState().id),
+    )
+    const payload = expectVariant<{ queued_launches: QueuedWorkflowLaunch[]; session: RuntimeSession }>(
+      response,
+      "QueuedWorkflowLaunchesCleared",
     )
     deps.applySessionState(payload.session)
     deps.rebuildTranscript()
@@ -392,6 +462,10 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
     removeWorkflowWatchdog,
+    setWorkflowLaunchPolicy,
+    listQueuedWorkflowLaunches,
+    removeQueuedWorkflowLaunch,
+    clearQueuedWorkflowLaunches,
     listWorkflowRuns,
     getWorkflowRun,
     cancelWorkflowRun,

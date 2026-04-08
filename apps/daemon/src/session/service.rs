@@ -7,9 +7,10 @@ use serde_json::Value;
 
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
-    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
-    WorkflowCompletionSnapshot, WorkflowDefinition, WorkflowEdgeDefinition,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
+    PromptSubmissionOutcome, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession,
+    SessionConfigState, SessionStatus, SessionStore, WorkflowCompletionSnapshot,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
+    WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy,
     WorkflowRuntimeToolCallEvent,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
@@ -45,6 +46,12 @@ pub struct WorkflowWatchdogTickPlan {
     pub invocation_prompt: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowLaunchAdmission {
+    StartNow,
+    Queued(QueuedWorkflowLaunch),
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
@@ -59,6 +66,7 @@ pub struct SessionService {
     next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
+    next_queued_workflow_launch_number: u64,
 }
 
 impl SessionService {
@@ -76,6 +84,7 @@ impl SessionService {
             next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
+            next_queued_workflow_launch_number: 0,
         }
     }
 
@@ -337,6 +346,37 @@ impl SessionService {
         })
     }
 
+    pub fn resolve_queued_workflow_launch_ref(
+        &self,
+        session_id: &str,
+        queue_item_ref: &str,
+    ) -> Result<String, DaemonError> {
+        let normalized_ref = queue_item_ref.trim().to_lowercase();
+        let session = self.get_session(session_id)?;
+        if let Some(queued_launch) = session
+            .queued_workflow_launches()
+            .iter()
+            .find(|queued_launch| queued_launch.id() == normalized_ref)
+        {
+            return Ok(queued_launch.id().to_string());
+        }
+        let id_matches = session
+            .queued_workflow_launches()
+            .iter()
+            .filter(|queued_launch| queued_launch.id().starts_with(&normalized_ref))
+            .map(|queued_launch| queued_launch.id().to_string())
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        Err(DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: normalized_ref.clone(),
+            reference: queue_item_ref.to_string(),
+            message: "queued workflow launch was not found",
+        })
+    }
+
     pub fn invoke_workflow_endpoint(
         &mut self,
         session_id: &str,
@@ -394,6 +434,150 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow_run(workflow_run))
+    }
+
+    pub fn set_workflow_launch_policy(
+        &mut self,
+        session_id: &str,
+        policy: WorkflowLaunchPolicy,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        session.set_workflow_launch_policy(policy);
+        Ok(session.clone())
+    }
+
+    pub fn list_queued_workflow_launches(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
+        Ok(self.get_session(session_id)?
+            .queued_workflow_launches()
+            .iter()
+            .cloned()
+            .collect())
+    }
+
+    pub fn remove_queued_workflow_launch(
+        &mut self,
+        session_id: &str,
+        queue_item_ref: &str,
+    ) -> Result<QueuedWorkflowLaunch, DaemonError> {
+        let queue_item_id = self.resolve_queued_workflow_launch_ref(session_id, queue_item_ref)?;
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        session
+            .remove_queued_workflow_launch(&queue_item_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: queue_item_id.clone(),
+                reference: queue_item_id,
+                message: "queued workflow launch was not found",
+            })
+    }
+
+    pub fn clear_queued_workflow_launches(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.clear_queued_workflow_launches())
+    }
+
+    pub fn admit_manual_workflow_launch(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+    ) -> Result<WorkflowLaunchAdmission, DaemonError> {
+        let session = self.get_session(session_id)?;
+        if !session.has_active_workflow_run() {
+            return Ok(WorkflowLaunchAdmission::StartNow);
+        }
+        match session.workflow_launch_policy() {
+            WorkflowLaunchPolicy::Reject => Err(DaemonError::WorkflowLaunchRejected {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                message:
+                    "another workflow run is already active in this session; change `/workflow launch-policy queue` to queue workflow launches"
+                        .to_string(),
+            }),
+            WorkflowLaunchPolicy::Queue => {
+                let queued = QueuedWorkflowLaunch::new(
+                    self.next_queued_workflow_launch_id(),
+                    workflow_id.to_string(),
+                    endpoint_id.to_string(),
+                    prompt,
+                    QueuedWorkflowLaunchSource::Manual,
+                    None,
+                );
+                let session = self
+                    .store
+                    .get_mut(session_id)
+                    .ok_or_else(|| DaemonError::SessionNotFound {
+                        session_id: session_id.to_string(),
+                    })?;
+                Ok(WorkflowLaunchAdmission::Queued(
+                    session.enqueue_workflow_launch(queued),
+                ))
+            }
+        }
+    }
+
+    pub fn queue_watchdog_workflow_launch(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        watchdog_id: &str,
+    ) -> Result<QueuedWorkflowLaunch, DaemonError> {
+        let queued = QueuedWorkflowLaunch::new(
+            self.next_queued_workflow_launch_id(),
+            workflow_id.to_string(),
+            endpoint_id.to_string(),
+            prompt,
+            QueuedWorkflowLaunchSource::Watchdog,
+            Some(watchdog_id.to_string()),
+        );
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.enqueue_workflow_launch(queued))
+    }
+
+    pub fn dequeue_next_workflow_launch(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<QueuedWorkflowLaunch>, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        if session.has_active_workflow_run() {
+            return Ok(None);
+        }
+        Ok(session.dequeue_workflow_launch())
     }
 
     fn validate_workflow_runnable(
@@ -1598,66 +1782,101 @@ impl SessionService {
         let mut plans = Vec::new();
         let session_ids = self.store.non_ended_sessions().map(|s| s.id().to_string()).collect::<Vec<_>>();
         for session_id in session_ids {
-            let session = match self.store.get_mut(&session_id) {
-                Some(session) => session,
-                None => continue,
-            };
-            let active_endpoint_runs = session
-                .workflow_runs()
-                .iter()
-                .filter(|run| {
+            let queued_launch_specs = {
+                let mut queued_launch_specs = Vec::new();
+                let session = match self.store.get_mut(&session_id) {
+                    Some(session) => session,
+                    None => continue,
+                };
+                let active_run_exists = session.workflow_runs().iter().any(|run| {
                     !matches!(
                         run.status(),
-                        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+                        WorkflowRunStatus::Completed
+                            | WorkflowRunStatus::Failed
+                            | WorkflowRunStatus::Stopped
                     )
-                })
-                .map(|run| (run.endpoint_id().to_string(), run.id().to_string(), run.status()))
-                .collect::<Vec<_>>();
-            let completed_statuses = session
-                .workflow_runs()
-                .iter()
-                .map(|run| (run.id().to_string(), run.status()))
-                .collect::<BTreeMap<_, _>>();
-            for watchdog in session.workflow_watchdogs_mut().iter_mut() {
-                if let Some(run_status) = watchdog
-                    .last_workflow_run_id()
-                    .and_then(|run_id| completed_statuses.get(run_id).copied())
-                {
-                    if matches!(
-                        run_status,
-                        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
-                    ) {
-                        watchdog.set_last_status(Some(
-                            match run_status {
-                                WorkflowRunStatus::Completed => "last_run_completed",
-                                WorkflowRunStatus::Failed => "last_run_failed",
-                                WorkflowRunStatus::Stopped => "last_run_stopped",
-                                _ => "last_run_finished",
-                            }
-                            .to_string(),
-                        ));
-                    }
-                }
-                if !watchdog.enabled() {
-                    continue;
-                }
-                if watchdog
-                    .max_wakeups()
-                    .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
-                {
-                    watchdog.set_enabled(false);
-                    watchdog.set_pending_run(false);
-                    watchdog.set_last_status(Some("completed_budget".to_string()));
-                    continue;
-                }
-                let endpoint_active = active_endpoint_runs
+                });
+                let completed_statuses = session
+                    .workflow_runs()
                     .iter()
-                    .any(|(endpoint_id, _, _)| endpoint_id == watchdog.endpoint_id());
-                let should_run_pending = watchdog.pending_run() && !endpoint_active;
-                let due_now = now_ms >= watchdog.next_run_at_ms();
-                if should_run_pending {
-                    watchdog.set_pending_run(false);
-                    watchdog.set_last_status(Some("invoking_pending".to_string()));
+                    .map(|run| (run.id().to_string(), run.status()))
+                    .collect::<BTreeMap<_, _>>();
+                for watchdog in session.workflow_watchdogs_mut().iter_mut() {
+                    if let Some(run_status) = watchdog
+                        .last_workflow_run_id()
+                        .and_then(|run_id| completed_statuses.get(run_id).copied())
+                    {
+                        if matches!(
+                            run_status,
+                            WorkflowRunStatus::Completed
+                                | WorkflowRunStatus::Failed
+                                | WorkflowRunStatus::Stopped
+                        ) {
+                            watchdog.set_last_status(Some(
+                                match run_status {
+                                    WorkflowRunStatus::Completed => "last_run_completed",
+                                    WorkflowRunStatus::Failed => "last_run_failed",
+                                    WorkflowRunStatus::Stopped => "last_run_stopped",
+                                    _ => "last_run_finished",
+                                }
+                                .to_string(),
+                            ));
+                        }
+                    }
+                    if !watchdog.enabled() {
+                        continue;
+                    }
+                    if watchdog
+                        .max_wakeups()
+                        .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+                    {
+                        watchdog.set_enabled(false);
+                        watchdog.set_pending_run(false);
+                        watchdog.set_last_status(Some("completed_budget".to_string()));
+                        continue;
+                    }
+                    let should_run_pending = watchdog.pending_run() && !active_run_exists;
+                    let due_now = now_ms >= watchdog.next_run_at_ms();
+                    if should_run_pending {
+                        watchdog.set_pending_run(false);
+                        watchdog.set_last_status(Some("invoking_pending".to_string()));
+                        plans.push(WorkflowWatchdogTickPlan {
+                            watchdog_id: watchdog.id().to_string(),
+                            session_id: session_id.clone(),
+                            workflow_id: watchdog.workflow_id().to_string(),
+                            endpoint_id: watchdog.endpoint_id().to_string(),
+                            invocation_prompt: watchdog.invocation_prompt().to_string(),
+                        });
+                        continue;
+                    }
+                    if !due_now {
+                        continue;
+                    }
+                    let next_run = now_ms.saturating_add(watchdog.interval_seconds() * 1000);
+                    if active_run_exists {
+                        match watchdog.policy() {
+                            WorkflowWatchdogPolicy::Skip => {
+                                watchdog.set_last_status(Some("skipped_running".to_string()));
+                                watchdog.set_next_run_at_ms(next_run);
+                            }
+                            WorkflowWatchdogPolicy::Queue => {
+                                if !watchdog.pending_run() {
+                                    queued_launch_specs.push((
+                                        watchdog.workflow_id().to_string(),
+                                        watchdog.endpoint_id().to_string(),
+                                        watchdog.invocation_prompt().to_string(),
+                                        watchdog.id().to_string(),
+                                    ));
+                                }
+                                watchdog.set_pending_run(true);
+                                watchdog.set_last_status(Some("queued_running".to_string()));
+                                watchdog.set_next_run_at_ms(next_run);
+                            }
+                        }
+                        continue;
+                    }
+                    watchdog.set_last_status(Some("invoking".to_string()));
+                    watchdog.set_next_run_at_ms(next_run);
                     plans.push(WorkflowWatchdogTickPlan {
                         watchdog_id: watchdog.id().to_string(),
                         session_id: session_id.clone(),
@@ -1665,35 +1884,23 @@ impl SessionService {
                         endpoint_id: watchdog.endpoint_id().to_string(),
                         invocation_prompt: watchdog.invocation_prompt().to_string(),
                     });
-                    continue;
                 }
-                if !due_now {
-                    continue;
-                }
-                let next_run = now_ms.saturating_add(watchdog.interval_seconds() * 1000);
-                if endpoint_active {
-                    match watchdog.policy() {
-                        WorkflowWatchdogPolicy::Skip => {
-                            watchdog.set_last_status(Some("skipped_running".to_string()));
-                            watchdog.set_next_run_at_ms(next_run);
-                        }
-                        WorkflowWatchdogPolicy::Queue => {
-                            watchdog.set_pending_run(true);
-                            watchdog.set_last_status(Some("queued_running".to_string()));
-                            watchdog.set_next_run_at_ms(next_run);
-                        }
-                    }
-                    continue;
-                }
-                watchdog.set_last_status(Some("invoking".to_string()));
-                watchdog.set_next_run_at_ms(next_run);
-                plans.push(WorkflowWatchdogTickPlan {
-                    watchdog_id: watchdog.id().to_string(),
-                    session_id: session_id.clone(),
-                    workflow_id: watchdog.workflow_id().to_string(),
-                    endpoint_id: watchdog.endpoint_id().to_string(),
-                    invocation_prompt: watchdog.invocation_prompt().to_string(),
-                });
+                queued_launch_specs
+            };
+            for (workflow_id, endpoint_id, invocation_prompt, watchdog_id) in queued_launch_specs {
+                let queued = QueuedWorkflowLaunch::new(
+                    self.next_queued_workflow_launch_id(),
+                    workflow_id,
+                    endpoint_id,
+                    Some(invocation_prompt),
+                    QueuedWorkflowLaunchSource::Watchdog,
+                    Some(watchdog_id),
+                );
+                let session = match self.store.get_mut(&session_id) {
+                    Some(session) => session,
+                    None => continue,
+                };
+                session.enqueue_workflow_launch(queued);
             }
         }
         Ok(plans)
@@ -1718,9 +1925,10 @@ impl SessionService {
                 workflow_id: String::new(),
                 reference: watchdog_id.to_string(),
                 message: "workflow watchdog was not found",
-            })?;
+        })?;
         watchdog.set_last_run_at_ms(Some(unix_epoch_ms()));
         watchdog.set_wakeups_executed(watchdog.wakeups_executed().saturating_add(1));
+        watchdog.set_pending_run(false);
         if watchdog
             .max_wakeups()
             .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
@@ -1733,6 +1941,55 @@ impl SessionService {
         }
         watchdog.set_last_error(None);
         watchdog.set_last_workflow_run_id(Some(workflow_run_id.to_string()));
+        Ok(watchdog.clone())
+    }
+
+    pub fn mark_workflow_watchdog_queued(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session
+            .workflow_watchdog_mut(watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_pending_run(true);
+        watchdog.set_last_status(Some("queued_running".to_string()));
+        watchdog.set_last_error(None);
+        Ok(watchdog.clone())
+    }
+
+    pub fn mark_workflow_watchdog_pending_started(
+        &mut self,
+        session_id: &str,
+        watchdog_id: &str,
+    ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let watchdog = session
+            .workflow_watchdog_mut(watchdog_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: String::new(),
+                reference: watchdog_id.to_string(),
+                message: "workflow watchdog was not found",
+            })?;
+        watchdog.set_pending_run(false);
+        watchdog.set_last_status(Some("invoking_pending".to_string()));
         Ok(watchdog.clone())
     }
 
@@ -2684,6 +2941,15 @@ impl SessionService {
             unix_epoch_ms() ^ self.next_workflow_watchdog_number.rotate_left(1)
         )
     }
+
+    fn next_queued_workflow_launch_id(&mut self) -> String {
+        self.next_queued_workflow_launch_number =
+            self.next_queued_workflow_launch_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_queued_workflow_launch_number.rotate_left(17)
+        )
+    }
 }
 
 fn describe_session_match(session: &RuntimeSession) -> String {
@@ -2703,7 +2969,8 @@ mod tests {
     use crate::error::DaemonError;
     use crate::session::{
         unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
-        WorkflowHandoffPayload, WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowWatchdogPolicy,
+        QueuedWorkflowLaunchSource, WorkflowHandoffPayload, WorkflowLaunchAdmission,
+        WorkflowLaunchPolicy, WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowWatchdogPolicy,
         WorktreeIsolationMode,
     };
 
@@ -3117,6 +3384,129 @@ mod tests {
             .cancel_workflow_run(session.id(), workflow_run.id())
             .expect_err("terminal workflow run should reject a second cancellation");
         assert!(matches!(error, DaemonError::InvalidWorkflowRunState { .. }));
+    }
+
+    #[test]
+    fn manual_workflow_launch_rejects_while_any_session_workflow_run_is_active() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+        let first_workflow = service
+            .create_workflow(session.id(), Some("first".to_string()))
+            .expect("first workflow should be created");
+        let first_node = service
+            .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
+            .expect("first node should be added");
+        let first_endpoint = service
+            .create_workflow_endpoint(session.id(), first_workflow.id(), first_node.id(), Some("entry".to_string()))
+            .expect("first endpoint should be created");
+
+        let second_workflow = service
+            .create_workflow(session.id(), Some("second".to_string()))
+            .expect("second workflow should be created");
+        let second_node = service
+            .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
+            .expect("second node should be added");
+        let second_endpoint = service
+            .create_workflow_endpoint(session.id(), second_workflow.id(), second_node.id(), Some("entry".to_string()))
+            .expect("second endpoint should be created");
+
+        let workflow_run = service
+            .invoke_workflow_endpoint(session.id(), first_workflow.id(), first_endpoint.id(), Some("go".to_string()))
+            .expect("first workflow run should be created");
+        assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
+
+        let error = service
+            .admit_manual_workflow_launch(
+                session.id(),
+                second_workflow.id(),
+                second_endpoint.id(),
+                Some("later".to_string()),
+            )
+            .expect_err("launch should reject while a session workflow run is active");
+        assert!(matches!(error, DaemonError::WorkflowLaunchRejected { .. }));
+    }
+
+    #[test]
+    fn manual_workflow_launch_queue_is_fifo_across_workflows() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+        let first_workflow = service
+            .create_workflow(session.id(), Some("first".to_string()))
+            .expect("first workflow should be created");
+        let first_node = service
+            .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
+            .expect("first node should be added");
+        let first_endpoint = service
+            .create_workflow_endpoint(session.id(), first_workflow.id(), first_node.id(), Some("entry".to_string()))
+            .expect("first endpoint should be created");
+
+        let second_workflow = service
+            .create_workflow(session.id(), Some("second".to_string()))
+            .expect("second workflow should be created");
+        let second_node = service
+            .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
+            .expect("second node should be added");
+        let second_endpoint = service
+            .create_workflow_endpoint(session.id(), second_workflow.id(), second_node.id(), Some("entry".to_string()))
+            .expect("second endpoint should be created");
+
+        service
+            .set_workflow_launch_policy(session.id(), WorkflowLaunchPolicy::Queue)
+            .expect("queue policy should be set");
+        let active = service
+            .invoke_workflow_endpoint(session.id(), first_workflow.id(), first_endpoint.id(), Some("go".to_string()))
+            .expect("active workflow run should be created");
+        assert_eq!(active.status(), WorkflowRunStatus::Created);
+
+        let first_queued = service
+            .admit_manual_workflow_launch(
+                session.id(),
+                second_workflow.id(),
+                second_endpoint.id(),
+                Some("second".to_string()),
+            )
+            .expect("second workflow should queue");
+        let second_queued = service
+            .admit_manual_workflow_launch(
+                session.id(),
+                first_workflow.id(),
+                first_endpoint.id(),
+                Some("third".to_string()),
+            )
+            .expect("third launch should queue");
+
+        let queued = service
+            .list_queued_workflow_launches(session.id())
+            .expect("queued launches should list");
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].source(), QueuedWorkflowLaunchSource::Manual);
+        assert_eq!(queued[1].source(), QueuedWorkflowLaunchSource::Manual);
+
+        match first_queued {
+            WorkflowLaunchAdmission::Queued(ref queued_launch) => assert_eq!(queued[0].id(), queued_launch.id()),
+            WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
+        }
+        match second_queued {
+            WorkflowLaunchAdmission::Queued(ref queued_launch) => assert_eq!(queued[1].id(), queued_launch.id()),
+            WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
+        }
+
+        service
+            .cancel_workflow_run(session.id(), active.id())
+            .expect("active workflow run should stop");
+        let dequeued = service
+            .dequeue_next_workflow_launch(session.id())
+            .expect("queued workflow launch should dequeue")
+            .expect("expected queued workflow launch");
+        assert_eq!(dequeued.id(), queued[0].id());
     }
 
     #[test]

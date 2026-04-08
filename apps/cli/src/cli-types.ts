@@ -20,8 +20,10 @@ export type RuntimeSession = {
   max_agents: number
   agents: AgentInstance[]
   config_state: SessionConfigState
+  workflow_launch_policy?: "reject" | "queue" | null
   workflows?: WorkflowDefinition[]
   workflow_runs?: WorkflowRun[]
+  queued_workflow_launches?: QueuedWorkflowLaunch[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
 }
@@ -235,6 +237,16 @@ export type WorkflowWatchdogDefinition = {
   pending_run?: boolean
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type QueuedWorkflowLaunch = {
+  id: string
+  workflow_id: string
+  endpoint_id: string
+  invocation_prompt?: string | null
+  source: "manual" | "watchdog"
+  watchdog_id?: string | null
+  queued_at_ms: number
 }
 
 export type WorkflowNodeDefinition = {

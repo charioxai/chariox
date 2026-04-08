@@ -17,9 +17,10 @@ use crate::provider::{
 };
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
-    PromptSubmissionOutcome, RuntimeSession, SessionConfigState, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowRun,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
+    PromptSubmissionOutcome, QueuedWorkflowLaunch, RuntimeSession, SessionConfigState,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
+    WorkflowLaunchPolicy, WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -427,6 +428,28 @@ pub struct RemoveWorkflowWatchdogRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowLaunchPolicyRequest {
+    pub session_id: String,
+    pub policy: WorkflowLaunchPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListQueuedWorkflowLaunchesRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveQueuedWorkflowLaunchRequest {
+    pub session_id: String,
+    pub queue_item_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClearQueuedWorkflowLaunchesRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -487,6 +510,10 @@ pub enum LocalDaemonRequest {
     ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest),
     SetWorkflowWatchdogEnabled(SetWorkflowWatchdogEnabledRequest),
     RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
+    SetWorkflowLaunchPolicy(SetWorkflowLaunchPolicyRequest),
+    ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
+    RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
+    ClearQueuedWorkflowLaunches(ClearQueuedWorkflowLaunchesRequest),
     ValidateWorkflowOutput(ValidateWorkflowOutputRequest),
     AckWorkflowTurn(AckWorkflowTurnRequest),
 }
@@ -673,6 +700,12 @@ pub enum LocalDaemonResponse {
         endpoint: WorkflowEndpointDefinition,
         session: RuntimeSession,
     },
+    WorkflowRunQueued {
+        queued_launch: QueuedWorkflowLaunch,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+        session: RuntimeSession,
+    },
     WorkflowRunsListed {
         workflow_runs: Vec<WorkflowRun>,
     },
@@ -702,6 +735,20 @@ pub enum LocalDaemonResponse {
     },
     WorkflowWatchdogRemoved {
         watchdog: WorkflowWatchdogDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowLaunchPolicyUpdated {
+        session: RuntimeSession,
+    },
+    QueuedWorkflowLaunchesListed {
+        queued_launches: Vec<QueuedWorkflowLaunch>,
+    },
+    QueuedWorkflowLaunchRemoved {
+        queued_launch: QueuedWorkflowLaunch,
+        session: RuntimeSession,
+    },
+    QueuedWorkflowLaunchesCleared {
+        queued_launches: Vec<QueuedWorkflowLaunch>,
         session: RuntimeSession,
     },
     WorkflowOutputValidated {
@@ -1190,20 +1237,35 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
-                let (workflow_run, workflow, endpoint) = self
-                    .invoke_workflow_endpoint_and_schedule(
-                        &request.session_id,
-                        &request.workflow_ref,
-                        &request.endpoint_ref,
-                        request.prompt,
-                    )?;
+                let outcome = self.invoke_workflow_endpoint_with_admission(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    request.prompt,
+                )?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::WorkflowRunInvoked {
-                    workflow_run,
-                    workflow,
-                    endpoint,
-                    session,
-                })
+                match outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        workflow,
+                        endpoint,
+                    } => Ok(LocalDaemonResponse::WorkflowRunInvoked {
+                        workflow_run,
+                        workflow,
+                        endpoint,
+                        session,
+                    }),
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Queued {
+                        queued_launch,
+                        workflow,
+                        endpoint,
+                    } => Ok(LocalDaemonResponse::WorkflowRunQueued {
+                        queued_launch,
+                        workflow,
+                        endpoint,
+                        session,
+                    }),
+                }
             }
             LocalDaemonRequest::ListWorkflowRuns(request) => {
                 Ok(LocalDaemonResponse::WorkflowRunsListed {
@@ -1238,6 +1300,7 @@ impl DaemonApp {
                 let workflow_run = self
                     .sessions_mut()
                     .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+                let _ = self.drain_session_workflow_launch_queue(&request.session_id)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowRunCancelled {
                     workflow_run,
@@ -1308,6 +1371,38 @@ impl DaemonApp {
                     .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
+            }
+            LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
+                let session = self
+                    .sessions_mut()
+                    .set_workflow_launch_policy(&request.session_id, request.policy)?;
+                let mut session = session;
+                session.set_agents(self.agents().get_session_agents(&request.session_id));
+                Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
+            }
+            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+                Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
+                    queued_launches: self
+                        .sessions()
+                        .list_queued_workflow_launches(&request.session_id)?,
+                })
+            }
+            LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => {
+                let queued_launch = self
+                    .sessions_mut()
+                    .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved { queued_launch, session })
+            }
+            LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
+                let queued_launches = self
+                    .sessions_mut()
+                    .clear_queued_workflow_launches(&request.session_id)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
+                    queued_launches,
+                    session,
+                })
             }
             LocalDaemonRequest::ValidateWorkflowOutput(request) => {
                 let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(

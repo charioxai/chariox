@@ -467,6 +467,7 @@ pub fn on_workflow_prompt_completed(
                     "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
                 ),
             );
+            maybe_start_next_queued_workflow_launch(app, session_id);
             return Ok(());
         }
         Err(error) => return Err(error),
@@ -531,6 +532,12 @@ pub fn on_workflow_prompt_completed(
         app.attachments().list_session_attachment_ids(session_id),
         format!("Workflow run `{}` {state_suffix}.", workflow_run.id()),
     );
+    if matches!(
+        workflow_run.status(),
+        WorkflowRunStatus::Completed | WorkflowRunStatus::Failed | WorkflowRunStatus::Stopped
+    ) {
+        maybe_start_next_queued_workflow_launch(app, session_id);
+    }
     Ok(())
 }
 
@@ -566,7 +573,40 @@ pub fn on_workflow_prompt_cancelled(
         app.attachments().list_session_attachment_ids(session_id),
         format!("Workflow run `{}` was stopped.", workflow_run.id()),
     );
+    maybe_start_next_queued_workflow_launch(app, session_id);
     Ok(())
+}
+
+fn maybe_start_next_queued_workflow_launch(app: &mut DaemonApp, session_id: &str) {
+    match app.drain_session_workflow_launch_queue(session_id) {
+        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+            workflow_run,
+            workflow,
+            endpoint,
+        })) => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Started queued workflow run `{}` for workflow `{}` endpoint `{}`.",
+                    workflow_run.id(),
+                    workflow.id(),
+                    endpoint.id()
+                ),
+            );
+        }
+        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Queued { .. })) => {}
+        Ok(None) => {}
+        Err(error) => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!("Failed to start queued workflow launch: {error}"),
+            );
+        }
+    }
 }
 
 pub fn read_workflow_console(

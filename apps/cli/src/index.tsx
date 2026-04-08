@@ -4821,10 +4821,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           workflowPrompt.endpoint.id,
           workflowInvocationPrompt,
         )
-        flashFooter(
-          `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-          "info",
-        )
+        if ("workflow_run" in payload) {
+          flashFooter(
+            `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+            "info",
+          )
+        } else {
+          flashFooter(`queued workflow launch ${payload.queued_launch.id}`, "info")
+        }
         recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
         promptInput.clear()
         syncPromptTextSnapshot()

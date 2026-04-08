@@ -308,6 +308,43 @@ export function removeWorkflowWatchdogRequest(sessionId: string, watchdogRef: st
   }
 }
 
+export function setWorkflowLaunchPolicyRequest(
+  sessionId: string,
+  policy: "reject" | "queue",
+) {
+  return {
+    SetWorkflowLaunchPolicy: {
+      session_id: sessionId,
+      policy,
+    },
+  }
+}
+
+export function listQueuedWorkflowLaunchesRequest(sessionId: string) {
+  return {
+    ListQueuedWorkflowLaunches: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export function removeQueuedWorkflowLaunchRequest(sessionId: string, queueItemRef: string) {
+  return {
+    RemoveQueuedWorkflowLaunch: {
+      session_id: sessionId,
+      queue_item_ref: queueItemRef,
+    },
+  }
+}
+
+export function clearQueuedWorkflowLaunchesRequest(sessionId: string) {
+  return {
+    ClearQueuedWorkflowLaunches: {
+      session_id: sessionId,
+    },
+  }
+}
+
 export function listWorkflowRunsRequest(sessionId: string, workflowRef?: string | null) {
   return {
     ListWorkflowRuns: {

@@ -5,7 +5,7 @@ mod types;
 pub use service::SessionService;
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowOutputValidationWarning,
+    WorkflowLaunchAdmission, WorkflowOutputValidationWarning, WorkflowWatchdogTickPlan,
 };
 pub use store::SessionStore;
 pub use types::WorkflowOutputValidationPolicy;
@@ -16,9 +16,10 @@ pub use types::{
     SessionStatus, WorkflowArtifactRef, WorkflowCompletionSnapshot, WorkflowDefinition,
     WorkflowConsole, WorkflowConsoleEntry, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
     WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode,
-    WorkflowHandoffPayload, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
-    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
+    WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage, WorkflowNodeDefinition,
+    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
     WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
-    WorktreeIsolationMode,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, QueuedWorkflowLaunch,
+    QueuedWorkflowLaunchSource, DEFAULT_WORKFLOW_LAUNCH_POLICY,
+    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, WorktreeIsolationMode,
 };

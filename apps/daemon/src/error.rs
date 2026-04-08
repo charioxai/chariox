@@ -80,6 +80,13 @@ pub enum DaemonError {
         session_id: String,
         workflow_run_id: String,
     },
+    #[error("workflow launch for endpoint `{endpoint_id}` in workflow `{workflow_id}` was rejected in session `{session_id}`: {message}")]
+    WorkflowLaunchRejected {
+        session_id: String,
+        workflow_id: String,
+        endpoint_id: String,
+        message: String,
+    },
     #[error("workflow edge `{from_node_id}` -> `{to_node_id}` already exists in workflow `{workflow_id}` for session `{session_id}`")]
     WorkflowEdgeConflict {
         session_id: String,

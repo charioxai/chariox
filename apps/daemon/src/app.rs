@@ -6,7 +6,7 @@ mod prompt_lifecycle;
 mod provider_runtime;
 mod session_runtime;
 mod terminal_fanout;
-mod workflow_runtime;
+pub(crate) mod workflow_runtime;
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest};
 use crate::attachment::{AttachmentService, RuntimeAttachment};

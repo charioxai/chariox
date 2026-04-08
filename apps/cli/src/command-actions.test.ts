@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentListSummary, parseRequestedViewLayout } from "./command-actions.js"
-import type { AgentInstance, ProviderProcessInfo, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, ProviderProcessInfo, QueuedWorkflowLaunch, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 
 function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {
@@ -766,12 +766,24 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let addedWorkflowNodeAgentId: string | null = null
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
+  let workflowLaunchPolicy: "reject" | "queue" = "reject"
+  let removedQueuedLaunchRef: string | null = null
   let cancelledWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
   let openedWorkflowTerminalId: string | null = null
   const selectedWorkflowIds: string[] = []
   const workflows = new Map<string, WorkflowDefinition>()
   const workflowRuns: WorkflowRun[] = []
+  const queuedWorkflowLaunches: QueuedWorkflowLaunch[] = [
+    {
+      id: "queued-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "entry",
+      invocation_prompt: "later",
+      source: "manual",
+      queued_at_ms: 1,
+    },
+  ]
   const resolvedWorkflowAgent = makeAgent({
     id: "agent-instance-1",
     agent_ref: "5f26c340",
@@ -985,6 +997,39 @@ test("workflow command opens the workflow screen and manages local workflows", a
         workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
         endpoint: { id: endpointRef, alias: null, entry_node_id: "node-1" },
         session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
+      }
+    },
+    setWorkflowLaunchPolicy: async (policy) => {
+      workflowLaunchPolicy = policy
+      return {
+        session: makeSession({
+          workflow_launch_policy: workflowLaunchPolicy,
+          queued_workflow_launches: queuedWorkflowLaunches,
+        }),
+      }
+    },
+    listQueuedWorkflowLaunches: async () => queuedWorkflowLaunches,
+    removeQueuedWorkflowLaunch: async (queueItemRef) => {
+      removedQueuedLaunchRef = queueItemRef
+      const index = queuedWorkflowLaunches.findIndex((item) => item.id === queueItemRef)
+      const queued_launch =
+        index >= 0 ? queuedWorkflowLaunches.splice(index, 1)[0]! : queuedWorkflowLaunches[0]!
+      return {
+        queued_launch,
+        session: makeSession({
+          workflow_launch_policy: workflowLaunchPolicy,
+          queued_workflow_launches: queuedWorkflowLaunches,
+        }),
+      }
+    },
+    clearQueuedWorkflowLaunches: async () => {
+      const queued_launches = queuedWorkflowLaunches.splice(0, queuedWorkflowLaunches.length)
+      return {
+        queued_launches,
+        session: makeSession({
+          workflow_launch_policy: workflowLaunchPolicy,
+          queued_workflow_launches: queuedWorkflowLaunches,
+        }),
       }
     },
     listWorkflowRuns: async () => workflowRuns,
@@ -1280,6 +1325,50 @@ test("workflow command opens the workflow screen and manages local workflows", a
     prompt: "summarize changes",
   })
   assert.equal(flashedMessage, "started workflow run run-1 [running]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow launch-policy",
+    args: ["launch-policy"],
+  })
+  assert.equal(flashedMessage, "workflow launch policy: reject")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow launch-policy queue",
+    args: ["launch-policy", "queue"],
+  })
+  assert.equal(flashedMessage, "workflow launch policy set to queue")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow queue",
+    args: ["queue"],
+  })
+  assert.equal(flashedMessage, "workflow queue: queued-1 [manual] workflow=workflow-1 endpoint=entry")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow queue remove queued-1",
+    args: ["queue", "remove", "queued-1"],
+  })
+  assert.equal(removedQueuedLaunchRef, "queued-1")
+  assert.equal(flashedMessage, "removed queued workflow launch queued-1")
+
+  queuedWorkflowLaunches.push({
+    id: "queued-2",
+    workflow_id: "workflow-1",
+    endpoint_id: "entry",
+    invocation_prompt: "later",
+    source: "manual",
+    queued_at_ms: 2,
+  })
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow queue flush",
+    args: ["queue", "flush"],
+  })
+  assert.equal(flashedMessage, "cleared 1 queued workflow launch")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

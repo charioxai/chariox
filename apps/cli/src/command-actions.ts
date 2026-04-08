@@ -4,6 +4,7 @@ import type {
   ProviderLoginStart,
   RuntimeAttachment,
   ProviderProcessInfo,
+  QueuedWorkflowLaunch,
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
@@ -22,6 +23,7 @@ import { readFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
 
 const WORKFLOW_MAX_TURNS_CONFIG_KEY = "workflow.max_turns"
+const WORKFLOW_LAUNCH_POLICY_CONFIG_KEY = "workflow.launch_policy"
 
 type FooterTone = "info" | "error"
 
@@ -77,9 +79,13 @@ type WorkflowEdgePayload = {
 }
 
 type WorkflowRunInvokePayload = {
-  workflow_run: WorkflowRun
   workflow: WorkflowDefinition
   endpoint: WorkflowEndpointDefinition
+  session: RuntimeSession
+} & ({ workflow_run: WorkflowRun } | { queued_launch: QueuedWorkflowLaunch })
+
+type QueuedWorkflowLaunchPayload = {
+  queued_launch: QueuedWorkflowLaunch
   session: RuntimeSession
 }
 
@@ -215,6 +221,10 @@ type CommandActionDeps = {
   listWorkflowWatchdogs?: (workflowRef?: string | null) => Promise<{ watchdogs: WorkflowWatchdogDefinition[] }>
   setWorkflowWatchdogEnabled?: (watchdogRef: string, enabled: boolean) => Promise<WorkflowWatchdogPayload>
   removeWorkflowWatchdog?: (watchdogRef: string) => Promise<WorkflowWatchdogPayload>
+  setWorkflowLaunchPolicy?: (policy: "reject" | "queue") => Promise<{ session: RuntimeSession }>
+  listQueuedWorkflowLaunches?: () => Promise<QueuedWorkflowLaunch[]>
+  removeQueuedWorkflowLaunch?: (queueItemRef: string) => Promise<QueuedWorkflowLaunchPayload>
+  clearQueuedWorkflowLaunches?: () => Promise<{ queued_launches: QueuedWorkflowLaunch[]; session: RuntimeSession }>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
@@ -234,6 +244,14 @@ type CommandActionDeps = {
 }
 
 export function createCommandActionHandlers(deps: CommandActionDeps) {
+  const currentWorkflowLaunchPolicy = (): "reject" | "queue" => {
+    const policy =
+      deps.sessionState().workflow_launch_policy ??
+      deps.sessionState().config_state?.values?.[WORKFLOW_LAUNCH_POLICY_CONFIG_KEY] ??
+      "reject"
+    return policy === "queue" ? "queue" : "reject"
+  }
+
   const parseWatchdogIntervalSeconds = (value: string | undefined): number | null => {
     if (!value) return null
     const match = value.trim().toLowerCase().match(/^(\d+)(s|m|h|d)$/)
@@ -244,6 +262,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
     return amount * multiplier
   }
+
+  const formatQueuedWorkflowLaunch = (queuedLaunch: QueuedWorkflowLaunch): string =>
+    `${queuedLaunch.id} [${queuedLaunch.source}] workflow=${queuedLaunch.workflow_id} endpoint=${queuedLaunch.endpoint_id}`
   const parseWatchdogMaxWakeups = (value: string | undefined): number | null | undefined => {
     if (value == null) return undefined
     const normalized = value.trim().toLowerCase()
@@ -849,10 +870,87 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.upsertWorkflowDefinition(payload.workflow)
       deps.selectWorkflowCanvas(payload.workflow.id)
       deps.showWorkflowScreen()
-      deps.flashFooter(
-        `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
-        "info",
-      )
+      if ("workflow_run" in payload) {
+        deps.flashFooter(
+          `started workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+          "info",
+        )
+      } else {
+        deps.flashFooter(
+          `queued workflow launch ${payload.queued_launch.id}; active workflow run in session`,
+          "info",
+        )
+      }
+      return
+    }
+
+    if (subcommand === "launch-policy") {
+      const value = args[1]?.trim().toLowerCase()
+      if (!value) {
+        deps.flashFooter(`workflow launch policy: ${currentWorkflowLaunchPolicy()}`, "info")
+        return
+      }
+      if (value !== "reject" && value !== "queue") {
+        deps.flashFooter("usage: /workflow launch-policy <reject|queue>", "error")
+        return
+      }
+      if (!deps.setWorkflowLaunchPolicy) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const payload = await deps.setWorkflowLaunchPolicy(value)
+      deps.applySessionState(payload.session)
+      deps.flashFooter(`workflow launch policy set to ${value}`, "info")
+      return
+    }
+
+    if (subcommand === "queue") {
+      const action = args[1]?.trim().toLowerCase() ?? "list"
+      if (action === "list") {
+        if (!deps.listQueuedWorkflowLaunches) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const queuedLaunches = await deps.listQueuedWorkflowLaunches()
+        deps.flashFooter(
+          queuedLaunches.length === 0
+            ? "workflow queue is empty"
+            : `workflow queue: ${queuedLaunches.map(formatQueuedWorkflowLaunch).join(", ")}`,
+          "info",
+        )
+        return
+      }
+      if (action === "flush") {
+        if (!deps.clearQueuedWorkflowLaunches) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const payload = await deps.clearQueuedWorkflowLaunches()
+        deps.applySessionState(payload.session)
+        deps.flashFooter(
+          payload.queued_launches.length === 0
+            ? "workflow queue already empty"
+            : `cleared ${payload.queued_launches.length} queued workflow launch${payload.queued_launches.length === 1 ? "" : "es"}`,
+          "info",
+        )
+        return
+      }
+      if (action === "remove") {
+        const queueItemRef = args[2]
+        if (!queueItemRef) {
+          deps.flashFooter("usage: /workflow queue remove <queue-item-ref>", "error")
+          return
+        }
+        if (!deps.removeQueuedWorkflowLaunch) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const payload = await deps.removeQueuedWorkflowLaunch(queueItemRef)
+        deps.applySessionState(payload.session)
+        deps.flashFooter(`removed queued workflow launch ${payload.queued_launch.id}`, "info")
+        return
+      }
+      deps.flashFooter("usage: /workflow queue [list|flush|remove <queue-item-ref>]", "error")
       return
     }
 
