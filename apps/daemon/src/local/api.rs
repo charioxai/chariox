@@ -115,6 +115,12 @@ pub struct ResolveSessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasSessionRequest {
+    pub session_id: String,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetSessionHistoryRequest {
     pub session_id: String,
     pub agent_id: Option<String>,
@@ -440,6 +446,7 @@ pub enum LocalDaemonRequest {
     StoreTransferredFile(StoreTransferredFileCapabilityRequest),
     EndSession(EndSessionRequest),
     DeleteSession(DeleteSessionRequest),
+    AliasSession(AliasSessionRequest),
     SpawnAgent(SpawnAgentRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
@@ -566,6 +573,9 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     SessionDeleted {
+        session: RuntimeSession,
+    },
+    SessionAliased {
         session: RuntimeSession,
     },
     AgentSpawned {
@@ -927,6 +937,13 @@ impl DaemonApp {
                 session: self
                     .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
             }),
+            LocalDaemonRequest::AliasSession(request) => {
+                let _session = self
+                    .sessions_mut()
+                    .assign_session_alias(&request.session_id, request.alias)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::SessionAliased { session })
+            }
             LocalDaemonRequest::SpawnAgent(request) => {
                 let create_request =
                     crate::agent::CreateAgentRequest::new(&request.session_id, &request.provider);
@@ -1334,7 +1351,7 @@ mod tests {
     use super::{
         AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
         AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
-        CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
+        AliasSessionRequest, CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
         CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
         CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
         EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetSessionStateRequest,
@@ -1458,6 +1475,50 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
         assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn local_request_api_aliases_sessions() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-1", "worktree-1"),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        let aliased = match app
+            .handle_local_request(LocalDaemonRequest::AliasSession(
+                AliasSessionRequest {
+                    session_id: session.id().to_string(),
+                    alias: "alpha".to_string(),
+                },
+            ))
+            .expect("alias should succeed")
+        {
+            LocalDaemonResponse::SessionAliased { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(aliased.alias(), Some("alpha"));
+
+        let resolved = match app
+            .handle_local_request(LocalDaemonRequest::ResolveSession(
+                ResolveSessionRequest {
+                    session_ref: "alpha".to_string(),
+                    workspace_id: Some("workspace-1".to_string()),
+                },
+            ))
+            .expect("alias resolve should succeed")
+        {
+            LocalDaemonResponse::SessionResolved { session } => session,
+            _ => panic!("unexpected local response"),
+        };
+
+        assert_eq!(resolved.id(), session.id());
     }
 
     #[test]

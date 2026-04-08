@@ -73,7 +73,7 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
     ["Status", "Last used", "Created at"],
   )
-  assert.equal(firstWindow[6]?.title, "alpha")
+  assert.equal(firstWindow[6]?.title, "session-1 (alpha)")
   assert.deepEqual(
     firstWindow[6]?.columns?.map((cell) => cell.trim()),
     ["Active", "2026-04-06 11:00 UTC", "2026-04-06 10:00 UTC"],
@@ -88,6 +88,26 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   const scrolledWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(scrolledWindow.find((row) => row.focused)?.title, "session-11")
   assert.equal(scrolledWindow[6]?.title, "session-2")
+})
+
+test("waiting room renders session rows with alias text", () => {
+  const catalog = fallbackProviderCatalog()
+  const sessions = [{
+    id: "session-1",
+    alias: "frontend",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace/tree",
+    status: "Active",
+    created_at_ms: Date.UTC(2026, 3, 6, 10, 0),
+    last_used_at_ms: Date.UTC(2026, 3, 6, 11, 0),
+    attachment_ids: [],
+  }]
+
+  const state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, sessions, catalog)
+  const aliasedSessionRow = rows.find((row) => row.id === "session:session-1")
+
+  assert.equal(aliasedSessionRow?.title, "session-1 (frontend)")
 })
 
 test("waiting room keeps session metadata column widths stable across scroll windows", () => {

@@ -34,8 +34,7 @@ export function computePrependedHistoryScrollTop(
   viewportHeight: number,
 ) {
   const heightDelta = Math.max(0, nextScrollHeight - previousScrollHeight)
-  const maxScrollTop = Math.max(0, nextScrollHeight - viewportHeight)
-  return Math.max(0, Math.min(previousScrollTop + heightDelta, maxScrollTop))
+  return clampScrollTop(previousScrollTop + heightDelta, nextScrollHeight, viewportHeight)
 }
 
 export function computeAnchoredScrollTop(
@@ -47,9 +46,7 @@ export function computeAnchoredScrollTop(
   if (anchorViewportOffset === null || nextAnchorY === null) {
     return null
   }
-
-  const maxScrollTop = Math.max(0, nextScrollHeight - viewportHeight)
-  return Math.max(0, Math.min(nextAnchorY - anchorViewportOffset, maxScrollTop))
+  return clampScrollTop(nextAnchorY - anchorViewportOffset, nextScrollHeight, viewportHeight)
 }
 
 export function computeCollapsedHistoryScrollTop(
@@ -59,8 +56,16 @@ export function computeCollapsedHistoryScrollTop(
   viewportHeight: number,
 ) {
   const heightDelta = Math.max(0, previousScrollHeight - nextScrollHeight)
-  const maxScrollTop = Math.max(0, nextScrollHeight - viewportHeight)
-  return Math.max(0, Math.min(previousScrollTop - heightDelta, maxScrollTop))
+  return clampScrollTop(previousScrollTop - heightDelta, nextScrollHeight, viewportHeight)
+}
+
+export function clampScrollTop(
+  scrollTop: number,
+  scrollHeight: number,
+  viewportHeight: number,
+) {
+  const maxScrollTop = Math.max(0, scrollHeight - viewportHeight)
+  return Math.max(0, Math.min(scrollTop, maxScrollTop))
 }
 
 export function findTurnPromptScrollTarget(

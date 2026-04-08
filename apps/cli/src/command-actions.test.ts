@@ -314,6 +314,101 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.equal(flashedMessage, "spawned agent agent-2 (review)")
 })
 
+  test("session command aliases the current session", async () => {
+    let flashedMessage = ""
+    let aliasedPayload: { sessionId: string; alias: string } | null = null
+    let appliedSession: Pick<RuntimeSession, "alias"> | null = null
+    const currentSession = makeSession()
+    const handlers = createCommandActionHandlers({
+      workspace: "workspace-1",
+      worktree: "worktree-1",
+      accountProfile: "default",
+      isAttached: () => true,
+      sessionState: () => currentSession,
+      attachmentState: () => ({ id: "attachment-1", session_id: "session-1" }),
+      providerRunState: () => null,
+      currentModelId: () => "openai/gpt-5",
+      currentVariantId: () => "medium",
+      currentProviderId: () => "opencode",
+      focusedAgentId: () => currentSession.focused_agent_id,
+      multiAgentResponseLayout: () => "split",
+      maxAgentsPerScreen: () => 3,
+      flashFooter: (message) => { flashedMessage = message },
+      appendNotice: () => {},
+      formatError: (error) => String(error),
+      createSession: async () => ({ id: "session-1", alias: null }),
+      attachBinding: async () => {},
+      resolveSession: async () => ({ id: "session-1", alias: null }),
+      listSessions: async () => [],
+      deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+      transitionToNoSession: () => {},
+      applyModelSelection: async () => {},
+      applyVariantSelection: async () => {},
+      setMultiAgentResponseLayout: () => {},
+      applyResponseLayout: () => {},
+      updateSessionResponseLayout: async () => ({
+        session: currentSession,
+        config: currentSession.config_state,
+      }),
+      updateSessionConfig: async () => ({ session: currentSession, config: currentSession.config_state }),
+      assignSessionAlias: async (sessionId, alias) => {
+        aliasedPayload = { sessionId, alias }
+        return { ...currentSession, alias }
+      },
+      applySessionState: (session) => {
+        appliedSession = session
+      },
+      refreshAgentPanes: async () => {},
+      saveUiPreferences: async () => {},
+      rebuildTranscript: () => {},
+      requestRender: () => {},
+      cycleAgentFocus: async () => ({ agent: null, session: currentSession }),
+      launchAgentProviderRun: async () => {
+        throw new Error("unused")
+      },
+      setProviderRunState: () => {},
+      refreshSessionState: async () => currentSession,
+      spawnAgent: async () => ({ agent: makeAgent(), session: currentSession }),
+      destroyAgent: async () => currentSession,
+      focusAgent: async () => ({ agent: makeAgent(), session: currentSession }),
+      resolveSessionAgent: () => ({ agent: null }),
+      workflowScreenActive: () => false,
+      showWorkflowScreen: () => {},
+      selectWorkflowCanvas: () => {},
+      replaceWorkflowDefinitions: () => {},
+      upsertWorkflowDefinition: () => {},
+      createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      listWorkflows: async () => [],
+      resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
+      assignWorkflowAlias: async () => null,
+      createWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      assignWorkflowEndpointAlias: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      bindWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      addWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      removeWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      addWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      removeWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+      formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+      refreshSplitPaneFocusRepaint: () => {},
+      formatSessionList: () => "",
+    })
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: "/session work-session",
+    action: "work-session",
+    args: ["work-session"],
+    value: "work-session",
+  })
+
+  assert.deepEqual(aliasedPayload, { sessionId: "session-1", alias: "work-session" })
+  assert.equal(
+    (appliedSession as (Pick<RuntimeSession, "alias"> | null))?.alias,
+    "work-session",
+  )
+  assert.equal(flashedMessage, "session session-1 aliased as work-session")
+})
+
 test("cycle agent focus keeps split pane contents stable within the same screen", async () => {
   const agentA = makeAgent({ id: "agent-a", agent_ref: "agent-a" })
   const agentB = makeAgent({ id: "agent-b", agent_ref: "agent-b" })

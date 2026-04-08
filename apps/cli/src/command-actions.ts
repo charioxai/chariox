@@ -124,6 +124,7 @@ type CommandActionDeps = {
   resolveSession: (reference: string, workspace: string) => Promise<ResolveSessionResult>
   listSessions: () => Promise<RuntimeSession[]>
   deleteSessionByRef: (reference: string, workspace: string) => Promise<DeleteSessionResult>
+  assignSessionAlias?: (sessionId: string, alias: string) => Promise<RuntimeSession>
   transitionToNoSession: (message: string) => void
   applyModelSelection: (value: string) => Promise<void>
   applyVariantSelection: (value: string) => Promise<void>
@@ -293,7 +294,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleSessionCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "session" }>,
   ): Promise<boolean> => {
-    const { action, value } = command
+    const { action, value, args } = command
 
     switch (action) {
       case "create":
@@ -334,8 +335,28 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         return true
       }
-      default:
-        return false
+      default: {
+        if (!action) {
+          return false
+        }
+        if (args.length !== 1) {
+          deps.flashFooter("usage: /session <alias>", "error")
+          return true
+        }
+        const alias = value
+        if (!deps.isAttached()) {
+          deps.flashFooter("attach to a session before setting an alias", "error")
+          return true
+        }
+        if (!deps.assignSessionAlias) {
+          deps.flashFooter("session aliases are unavailable in this build", "error")
+          return true
+        }
+        const session = await deps.assignSessionAlias(deps.sessionState().id, alias)
+        deps.applySessionState(session)
+        deps.flashFooter(`session ${session.id} aliased as ${session.alias}`, "info")
+        return true
+      }
     }
   }
 

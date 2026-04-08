@@ -215,6 +215,27 @@ impl SessionService {
         Ok(workflow.clone())
     }
 
+    pub fn assign_session_alias(
+        &mut self,
+        session_id: &str,
+        alias: String,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let alias = normalize_session_alias(Some(alias))?.ok_or_else(|| {
+            DaemonError::InvalidSessionAlias {
+                alias: String::new(),
+                message: "alias cannot be empty",
+            }
+        })?;
+
+        let session = self.get_session(session_id)?;
+        self.ensure_session_alias_available_for_update(session.workspace_id(), session.id(), &alias)?;
+
+        let session = self
+            .get_session_mut_for_operation(session_id, "assign alias")?;
+        session.set_alias(Some(alias));
+        Ok(session.clone())
+    }
+
     pub fn resolve_workflow_endpoint_ref(
         &self,
         session_id: &str,
@@ -2170,6 +2191,25 @@ impl SessionService {
         Ok(())
     }
 
+    fn ensure_session_alias_available_for_update(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        if self
+            .store
+            .non_ended_sessions()
+            .any(|session| session.id() != session_id && session.workspace_id() == workspace_id && session.alias() == Some(alias))
+        {
+            return Err(DaemonError::SessionAliasConflict {
+                workspace_id: workspace_id.to_string(),
+                alias: alias.to_string(),
+            })
+        }
+        Ok(())
+    }
+
     fn ensure_workflow_endpoint_alias_available(
         &self,
         session_id: &str,
@@ -2745,6 +2785,69 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn can_assign_alias_to_existing_session() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let updated = service
+            .assign_session_alias(session.id(), "dev_env".to_string())
+            .expect("alias should be assigned");
+
+        assert_eq!(updated.alias(), Some("dev_env"));
+        assert_eq!(
+            service
+                .resolve_session_ref("dev_env", Some("workspace-1"))
+                .expect("alias should resolve")
+                .id(),
+            session.id()
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_session_alias_on_assignment() {
+        let mut service = SessionService::new(&test_config());
+        service
+            .create_session(
+                CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
+            )
+            .expect("first session should be created");
+        let second = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-2"))
+            .expect("second session should be created");
+
+        let error = service
+            .assign_session_alias(second.id(), "MAIN".to_string())
+            .expect_err("duplicate alias should be rejected");
+
+        match error {
+            DaemonError::SessionAliasConflict {
+                workspace_id,
+                alias,
+            } => {
+                assert_eq!(workspace_id, "workspace-1");
+                assert_eq!(alias, "main");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn normalizes_aliases_when_assigned() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let updated = service
+            .assign_session_alias(session.id(), " Feature Main ".to_string())
+            .expect("alias should be assigned");
+
+        assert_eq!(updated.alias(), Some("feature_main"));
     }
 
     #[test]

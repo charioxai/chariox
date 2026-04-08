@@ -58,6 +58,15 @@ export function deleteSessionRequest(sessionRef: string, workspaceId?: string) {
   }
 }
 
+export function aliasSessionRequest(sessionId: string, alias: string) {
+  return {
+    AliasSession: {
+      session_id: sessionId,
+      alias,
+    },
+  }
+}
+
 export function getSessionStateRequest(sessionId: string) {
   return {
     GetSessionState: {

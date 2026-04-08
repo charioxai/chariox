@@ -10,6 +10,7 @@ type TranscriptScrollMonitorOptions = {
   lastTranscriptScrollTop: number
   hasMoreHistory: boolean
   loadingHistory: boolean
+  historyLoadingSuppressed?: boolean
 }
 
 type ShortViewportHistoryOptions = {
@@ -17,6 +18,7 @@ type ShortViewportHistoryOptions = {
   attached: boolean
   loadingHistory: boolean
   hasMoreHistory: boolean
+  historyLoadingSuppressed?: boolean
   scrollTop: number
   scrollHeight: number
   viewportHeight: number
@@ -38,6 +40,12 @@ export function evaluateTranscriptScrollMonitor(
       nextLastScrollTop: options.lastTranscriptScrollTop,
     }
   }
+  if (options.historyLoadingSuppressed) {
+    return {
+      shouldLoadOlderHistory: false,
+      nextLastScrollTop: options.currentScrollTop,
+    }
+  }
 
   return {
     shouldLoadOlderHistory:
@@ -57,6 +65,7 @@ export function shouldLoadShortViewportHistory(
     || !options.attached
     || options.loadingHistory
     || !options.hasMoreHistory
+    || options.historyLoadingSuppressed
   ) {
     return false
   }

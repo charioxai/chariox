@@ -1594,6 +1594,9 @@ impl RuntimeSession {
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
     }
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+    }
     pub fn worktree_id(&self) -> &str {
         &self.worktree_id
     }

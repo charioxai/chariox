@@ -42,6 +42,24 @@ test("evaluateTranscriptScrollMonitor stays idle while restoring scroll position
   )
 })
 
+test("evaluateTranscriptScrollMonitor stays idle while auto history loading is suppressed", () => {
+  assert.deepEqual(
+    evaluateTranscriptScrollMonitor({
+      hasScrollbox: true,
+      pendingHistoryScrollRestore: 0,
+      currentScrollTop: 0,
+      lastTranscriptScrollTop: 12,
+      hasMoreHistory: true,
+      loadingHistory: false,
+      historyLoadingSuppressed: true,
+    }),
+    {
+      shouldLoadOlderHistory: false,
+      nextLastScrollTop: 0,
+    },
+  )
+})
+
 test("shouldLoadShortViewportHistory only loads when the viewport is filled from the top", () => {
   assert.equal(
     shouldLoadShortViewportHistory({
@@ -62,6 +80,22 @@ test("shouldLoadShortViewportHistory only loads when the viewport is filled from
       loadingHistory: false,
       hasMoreHistory: true,
       scrollTop: 5,
+      scrollHeight: 10,
+      viewportHeight: 20,
+    }),
+    false,
+  )
+})
+
+test("shouldLoadShortViewportHistory stays idle while auto history loading is suppressed", () => {
+  assert.equal(
+    shouldLoadShortViewportHistory({
+      hasScrollbox: true,
+      attached: true,
+      loadingHistory: false,
+      hasMoreHistory: true,
+      historyLoadingSuppressed: true,
+      scrollTop: 0,
       scrollHeight: 10,
       viewportHeight: 20,
     }),

@@ -14,6 +14,13 @@ const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
 const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
 const WAITING_ROOM_MENU_TRAILING_PADDING = 2
 
+function formatWaitingRoomSessionTitle(session: SessionListEntry) {
+  if (!session.alias) {
+    return session.id
+  }
+  return `${session.id} (${session.alias})`
+}
+
 export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session"
 
 export type WaitingRoomKeyState = {
@@ -182,7 +189,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
   const sessionWindow = waitingRoomSessionWindow(state, visibleSessions)
   const sessionScrollbar = renderWaitingRoomScrollbar(sessionWindow.count, visibleSessions.length, sessionWindow.start)
   const windowSessions = visibleSessions.slice(sessionWindow.start, sessionWindow.start + sessionWindow.count)
-  const allSessionTitles = visibleSessions.map((session) => session.alias ?? session.id)
+  const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,
     ...visibleSessions.map((session) => formatSessionStatus(session.status).length),
@@ -288,7 +295,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
     const sessionIndex = sessionWindow.start + offset
     rows.push({
       id: `session:${session.id}`,
-      title: session.alias ?? session.id,
+      title: formatWaitingRoomSessionTitle(session),
       value: formatSessionStatus(session.status),
       titleWidth,
       columns: [
@@ -308,7 +315,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
 
 export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
   const visibleSessions = waitingRoomSessions(sessions)
-  const allSessionTitles = visibleSessions.map((session) => session.alias ?? session.id)
+  const allSessionTitles = visibleSessions.map(formatWaitingRoomSessionTitle)
 
   const statusWidth = Math.max(
     WAITING_ROOM_STATUS_MIN_WIDTH,

@@ -65,6 +65,22 @@ test("applyTranscriptDisplayState keeps completed turns expanded when the turn i
   assert.equal(assistantEntry?.blobCollapsible, false)
 })
 
+test("applyTranscriptDisplayState keeps the active turn expanded until completion is confirmed", () => {
+  const entries = applyTranscriptDisplayState(baseTurnEntries(), [], 1)
+
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Investigate the CLI transcript UI"],
+      ["reasoning", "Thinking through the render model"],
+      ["tool", "**bash** · COMPLETED\n\n**Command**\n```bash\n$ git status\n```"],
+      ["assistant", "I changed the transcript layout."],
+    ],
+  )
+
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+})
+
 test("setTranscriptBlobCollapsed expands an individual blob without disturbing turn expansion", () => {
   const expandedTurn = applyTranscriptDisplayState(baseTurnEntries(), [1])
   const entries = setTranscriptBlobCollapsed(expandedTurn, 3, [1], false)

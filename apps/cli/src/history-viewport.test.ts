@@ -5,6 +5,7 @@ import {
   computeAnchoredScrollTop,
   computeCollapsedHistoryScrollTop,
   computePrependedHistoryScrollTop,
+  clampScrollTop,
   findPrependedHistoryMergedHeadId,
   findTurnPromptScrollTarget,
 } from "./history-viewport.js"
@@ -78,6 +79,12 @@ test("computeAnchoredScrollTop clamps to the top when needed", () => {
 test("computeAnchoredScrollTop returns null without a usable anchor", () => {
   assert.equal(computeAnchoredScrollTop(null, 10, 180, 80), null)
   assert.equal(computeAnchoredScrollTop(10, null, 180, 80), null)
+})
+
+test("clampScrollTop keeps a preserved scroll position within the current viewport range", () => {
+  assert.equal(clampScrollTop(120, 300, 80), 120)
+  assert.equal(clampScrollTop(500, 300, 80), 220)
+  assert.equal(clampScrollTop(-20, 300, 80), 0)
 })
 
 test("computeCollapsedHistoryScrollTop shifts upward by removed height", () => {
