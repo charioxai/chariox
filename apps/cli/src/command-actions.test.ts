@@ -779,7 +779,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
       id: "queued-1",
       workflow_id: "workflow-1",
       endpoint_id: "entry",
-      invocation_prompt: "later",
+      invocation_prompt: "later prompt from endpoint invocation",
       source: "manual",
       queued_at_ms: 1,
     },
@@ -1345,7 +1345,10 @@ test("workflow command opens the workflow screen and manages local workflows", a
     raw: "/workflow queue",
     args: ["queue"],
   })
-  assert.equal(flashedMessage, "workflow queue: queued-1 [manual] workflow=workflow-1 endpoint=entry")
+  assert.equal(
+    flashedMessage,
+    'workflow queue: queued-1 [manual] workflow=workflow-1 endpoint=entry queued_at=1 prompt="later prompt from endpoint invocation"',
+  )
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

@@ -264,7 +264,23 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   }
 
   const formatQueuedWorkflowLaunch = (queuedLaunch: QueuedWorkflowLaunch): string =>
-    `${queuedLaunch.id} [${queuedLaunch.source}] workflow=${queuedLaunch.workflow_id} endpoint=${queuedLaunch.endpoint_id}`
+    [
+      queuedLaunch.id,
+      `[${queuedLaunch.source}]`,
+      `workflow=${queuedLaunch.workflow_id}`,
+      `endpoint=${queuedLaunch.endpoint_id}`,
+      queuedLaunch.watchdog_id ? `watchdog=${queuedLaunch.watchdog_id}` : null,
+      `queued_at=${queuedLaunch.queued_at_ms}`,
+      queuedLaunch.invocation_prompt && queuedLaunch.invocation_prompt.trim() !== ""
+        ? `prompt=${JSON.stringify(
+            queuedLaunch.invocation_prompt.length > 50
+              ? `${queuedLaunch.invocation_prompt.slice(0, 50)}...`
+              : queuedLaunch.invocation_prompt,
+          )}`
+        : null,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" ")
   const parseWatchdogMaxWakeups = (value: string | undefined): number | null | undefined => {
     if (value == null) return undefined
     const normalized = value.trim().toLowerCase()
