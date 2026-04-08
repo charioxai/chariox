@@ -949,6 +949,8 @@ fn render_workflow_node_system_prompt(
     workflow_node_run_id: &str,
     node_id: &str,
 ) -> String {
+    let turn_index_block =
+        workflow_node_turn_index_block(app, session_id, workflow_run_id, node_id);
     let completion_block = load_workflow_run_completion_prompt_template(
         app,
         session_id,
@@ -963,10 +965,48 @@ fn render_workflow_node_system_prompt(
         workflow_run_id,
         node_id,
     );
-    if completion_block.is_empty() && last_turn_block.is_empty() {
+    if turn_index_block.is_empty() && completion_block.is_empty() && last_turn_block.is_empty() {
         return String::new();
     }
-    format!("{completion_block}{last_turn_block}")
+    format!("{turn_index_block}{completion_block}{last_turn_block}")
+}
+
+fn workflow_node_turn_index_block(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    node_id: &str,
+) -> String {
+    let Some(workflow_run) = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok()
+    else {
+        return String::new();
+    };
+    let Some(workflow) = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+        .ok()
+    else {
+        return String::new();
+    };
+    let Some(node) = workflow.node(node_id) else {
+        return String::new();
+    };
+    let turn_index = workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| node_run.node_id() == node_id)
+        .count() as u32;
+    let mut block = format!(
+        "System node-level prompt:\nThis is turn {turn_index} for this node in the current workflow run.\n"
+    );
+    if let Some(max_turns) = node.max_turns() {
+        block.push_str(&format!("- node max turns: {max_turns}\n"));
+    }
+    block.push('\n');
+    block
 }
 
 fn load_workflow_run_completion_prompt_template(
@@ -1801,10 +1841,131 @@ mod tests {
         .expect("prompt should build");
 
         assert!(prompt.contains("This node is authorized to complete the workflow run."));
+        assert!(prompt.contains("This is turn 1 for this node in the current workflow run."));
         assert!(prompt.contains(
             "This is the last allowed turn for this node in the current workflow run."
         ));
         assert!(prompt.contains("validate_and_submit_workflow_run_output"));
+    }
+
+    #[test]
+    fn non_last_turn_nodes_still_receive_turn_index_prompt_block() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-scheduler-turn-index",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-scheduler".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-scheduler".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-scheduler-turn-index".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.sessions_mut()
+            .set_workflow_node_max_turns(session.id(), &workflow_id, &node_id, Some(3))
+            .expect("node max turns should update");
+        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
+            crate::local::SetWorkflowFlushContextRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                flush_agent_context_before_run: false,
+            },
+        ))
+        .expect("workflow flush context should update");
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id.clone(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should exist");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id,
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run_id = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist")
+            .id()
+            .to_string();
+        let prompt = prepare_workflow_turn_prompt(
+            &app,
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            &node_id,
+            "start",
+            Option::<&[WorkflowMessage]>::None,
+        )
+        .expect("prompt should build");
+
+        assert!(prompt.contains("This is turn 1 for this node in the current workflow run."));
+        assert!(prompt.contains("- node max turns: 3"));
+        assert!(!prompt.contains("This is the last allowed turn for this node in the current workflow run."));
     }
 
     #[test]

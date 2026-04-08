@@ -74,7 +74,7 @@ function printHelp() {
     'Usage: node apps/cli/scripts/live-workflow-runtime-drill.mjs [options]',
     '',
     'Options:',
-    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain',
+    '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain',
     `  --kernel ${DEFAULT_KERNEL}`,
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
@@ -282,6 +282,63 @@ function buildFinalRunOutputScenario(providers, model, schemaPath) {
   }
 }
 
+function buildCyclicFinalRunOutputScenario(providers, model, schemaPath) {
+  if (providers.length !== 2) {
+    throw new Error('cyclic-final-run-output-chain requires exactly 2 providers')
+  }
+  const original = 1842
+  const threshold = original + 5
+  return {
+    id: 'cyclic-final-run-output-chain',
+    alias: 'cyclic-final-run-output-chain',
+    providers,
+    model,
+    runOutputSchemaPath: schemaPath,
+    entryPrompt: `Start the workflow with original integer ${original}. Stop when the value reaches ${threshold} and return that final result.`,
+    nodePrompt(index) {
+      if (index === 0) {
+        return [
+          `The original number for this workflow is ${original}.`,
+          `If this is your first turn and there is no upstream handoff payload, generate normal node-to-node output with JSON {"value":${original}}.`,
+          'On later turns, read the upstream handoff payload and extract `output.message` JSON with integer field `value`.',
+          `If that value is smaller than ${threshold}, add 1 and forward it as normal node-to-node output JSON with exactly one integer field: \`value\`.`,
+          `If that value is ${threshold} or greater, complete the workflow run and submit final workflow run output JSON with exactly one integer field: \`value\` set to that received value.`,
+          'When you are generating final workflow run output, do not generate normal node-to-node output.',
+          `Use summaries like \`started ${original}\`, \`forwarded X\`, or \`completed ${threshold}\`.`,
+        ].join('\n\n')
+      }
+      return [
+        'Read the upstream handoff payload for this workflow turn.',
+        'Extract `output.message` JSON from the previous node.',
+        'Read its integer field `value`.',
+        'Add 1 to that integer.',
+        'Produce normal node-to-node workflow output JSON with exactly one integer field: `value` set to the incremented integer.',
+        'Do not add any other fields.',
+        'Your summary should say `received X, sent Y`.',
+      ].join('\n\n')
+    },
+    edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
+      return {
+        AddWorkflowEdge: {
+          session_id: sessionId,
+          workflow_ref: workflowId,
+          from_node_id: fromNodeId,
+          to_node_id: toNodeId,
+          output_schema_ref: schemaPath,
+          validation_policy: 'warn',
+        },
+      }
+    },
+    async configureWorkflow(client, sessionId, workflowId, nodeIds) {
+      await client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowId, schemaPath))
+      await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[0], true))
+    },
+    extraEdges(nodeIds) {
+      return [[nodeIds[1], nodeIds[0]]]
+    },
+  }
+}
+
 function createScenario(options, schemaPath) {
   if (options.scenario === 'simple-chain') return buildSimpleChainScenario(options.providers, options.model)
   if (options.scenario === 'validated-increment-chain') {
@@ -292,6 +349,9 @@ function createScenario(options, schemaPath) {
   }
   if (options.scenario === 'final-run-output-chain') {
     return buildFinalRunOutputScenario(options.providers, options.model, schemaPath)
+  }
+  if (options.scenario === 'cyclic-final-run-output-chain') {
+    return buildCyclicFinalRunOutputScenario(options.providers, options.model, schemaPath)
   }
   throw new Error(`unsupported scenario: ${options.scenario}`)
 }
@@ -411,6 +471,16 @@ async function main() {
         const edgeRequest = scenario.edgeRequest(session.id, workflow.id, nodeIds[index - 1], nodeIds[index])
         if (edgeRequest) {
           logStep('add_edge', { fromNodeId: nodeIds[index - 1], toNodeId: nodeIds[index] })
+          await client.send(edgeRequest)
+        }
+      }
+    }
+
+    if (typeof scenario.extraEdges === 'function') {
+      for (const [fromNodeId, toNodeId] of scenario.extraEdges(nodeIds)) {
+        const edgeRequest = scenario.edgeRequest(session.id, workflow.id, fromNodeId, toNodeId)
+        if (edgeRequest) {
+          logStep('add_edge', { fromNodeId, toNodeId })
           await client.send(edgeRequest)
         }
       }
