@@ -17,7 +17,7 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { WaitingRoomState } from "./waiting-room.js"
-import { arrobaArtFrame, waitingRoomRows } from "./waiting-room.js"
+import { arrobaArtFrame, waitingRoomMenuMinWidth, waitingRoomRows } from "./waiting-room.js"
 import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
@@ -180,7 +180,10 @@ export function buildNoSessionRenderable(
       content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`,
     }
   })
-  const menuWidth = renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0)
+  const menuWidth = Math.max(
+    renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
+    waitingRoomMenuMinWidth(sessions),
+  )
 
   const menu = new BoxRenderable(renderer, {
     flexDirection: "column",

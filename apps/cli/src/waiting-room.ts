@@ -305,6 +305,39 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
   return rows
 }
 
+export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
+  const visibleSessions = waitingRoomSessions(sessions)
+  const allSessionTitles = visibleSessions.map((session) => session.alias ?? session.id)
+
+  const statusWidth = Math.max(
+    WAITING_ROOM_STATUS_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionStatus(session.status).length),
+  )
+  const lastUsedWidth = Math.max(
+    "Last used".length,
+    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionTimestamp(session.last_used_at_ms ?? null).length),
+  )
+  const createdAtWidth = Math.max(
+    "Created at".length,
+    WAITING_ROOM_TIMESTAMP_MIN_WIDTH,
+    ...visibleSessions.map((session) => formatSessionTimestamp(session.created_at_ms ?? null).length),
+  )
+  const titleWidth = Math.max(
+    WAITING_ROOM_ROW_TITLE_MIN_WIDTH,
+    ...allSessionTitles.map((title) => Math.max(0, title.length)),
+  )
+
+  const titleWidthSpace = Math.max(0, titleWidth - 1)
+  const rowColumns = [
+    formatWaitingRoomColumnHeader("Status", statusWidth),
+    formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
+    formatWaitingRoomColumnHeader("Created at", createdAtWidth),
+  ]
+  const row = ` ${"  ".repeat(1)}${"Session".padEnd(titleWidthSpace, " ")} ${rowColumns.join("  ")}`
+  return row.length
+}
+
 export function arrobaArtFrame(step: number) {
   const progress = Math.max(0, Math.min(step, 12))
   return ARROBA_ASCII_ART.split("\n")
