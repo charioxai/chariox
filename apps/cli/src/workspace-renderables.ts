@@ -154,24 +154,38 @@ export function buildNoSessionRenderable(
     flexGrow: 1,
     flexDirection: "column",
     justifyContent: "center",
-    alignItems: "center",
+    alignItems: "stretch",
     gap: 1,
   })
   const rows = waitingRoomRows(state, sessions, catalog)
-  wrapper.add(
+
+  const intro = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    alignItems: "center",
+  })
+  intro.add(
     new TextRenderable(renderer, {
       content: arrobaArtFrame(state.introStep),
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
-    }),
+    })
   )
-  wrapper.add(
+  wrapper.add(intro)
+
+  const content = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 1,
+  })
+  content.add(
     new TextRenderable(renderer, {
       content: "No session attached. Dial in and choose your next run.",
       fg: theme.warning,
       wrapMode: "word",
-    }),
+    })
   )
   const renderedRows = rows.map((row) => {
     const prefix = row.focused ? ">" : " "
@@ -210,21 +224,22 @@ export function buildNoSessionRenderable(
       }),
     )
   }
-  wrapper.add(menu)
-  wrapper.add(
+  content.add(menu)
+  content.add(
     new TextRenderable(renderer, {
       content: renderWaitingRoomKeys(state),
       fg: theme.textMuted,
       wrapMode: "none",
-    }),
+    })
   )
-  wrapper.add(
+  content.add(
     new TextRenderable(renderer, {
       content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move through new-session options and saved sessions, ← → to adjust new-session choices, Enter to create or join.`,
       fg: theme.textMuted,
       wrapMode: "word",
-    }),
+    })
   )
+  wrapper.add(content)
   return wrapper
 }
 
