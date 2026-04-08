@@ -1474,11 +1474,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return false
   }
   const selectCommandCenterFromSubmit = () => {
+    const isSessionAliasPrompt = (prompt: string) => {
+      const command = parseSlashCommand(prompt)
+      if (!command || command.kind !== "session" || command.action === null) {
+        return false
+      }
+      const action = command.action.toLowerCase()
+      if (action === "new" || action === "create" || action === "attach" || action === "list" || action === "ls" || action === "delete") {
+        return false
+      }
+      return true
+    }
     const item = selectedCommandCenterItem()
     if (!item) {
       return false
     }
     const currentPrompt = promptInput?.plainText ?? ""
+    if (isSessionAliasPrompt(currentPrompt)) {
+      return false
+    }
     // Leaf commands like `/session attach ` should submit once fully typed.
     // Parent groups like `/workflow` should expand to their subcommands instead.
     if (shouldSubmitExactCommandCenterMatch(item, currentPrompt)) {
