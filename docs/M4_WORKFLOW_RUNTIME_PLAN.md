@@ -243,6 +243,13 @@ Required slices:
   - do not kill processes backing an active workflow run
 - make drill harnesses stop the daemon they launch so managed provider processes do not leak after live drills
 
+Late-stage follow-up:
+
+- add durable daemon identity and workspace-level manager semantics
+- persist a daemon runtime record and lock under `.arroba/runtime/daemon`
+- make the CLI prefer attach-or-start against that workspace daemon record
+- stamp managed provider children with daemon instance id so stale-child cleanup can be added later
+
 CLI target:
 
 - `/provider processes`

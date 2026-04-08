@@ -219,6 +219,12 @@ Still pending in M4:
   - tracked provider-native session ids per provider run
   - CLI `/provider processes` inspection
   - safe teardown of idle/orphaned managed provider processes without breaking attached sessions
+  - late-stage daemon identity and manager semantics:
+    - persisted daemon runtime record under `.arroba/runtime/daemon`
+    - single-active-daemon lock per workspace/worktree
+    - CLI attach-or-start behavior against the workspace daemon record
+    - managed child stamping with daemon instance id
+    - optional stale managed-child reap on daemon restart
 - watchdog wakeup budgeting:
   - default bounded `max_wakeups`
   - explicit `null` for unbounded schedules
