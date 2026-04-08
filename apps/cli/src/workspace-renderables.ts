@@ -168,6 +168,20 @@ export function buildNoSessionRenderable(
       wrapMode: "word",
     }),
   )
+  const renderedRows = rows.map((row) => {
+    const prefix = row.focused ? ">" : " "
+    const indent = "  ".repeat(row.indent)
+    const titleWidth = Math.max(24, row.titleWidth ?? 24)
+    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
+    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
+    const titleWidthSpace = Math.max(0, titleWidth - row.indent)
+    return {
+      row,
+      content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`,
+    }
+  })
+  const menuWidth = renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0)
+
   const menu = new BoxRenderable(renderer, {
     flexDirection: "column",
     gap: 0,
@@ -175,19 +189,14 @@ export function buildNoSessionRenderable(
     borderColor: theme.secondary,
     customBorderChars: SplitBorder.customBorderChars,
     paddingLeft: 1,
+    width: menuWidth,
   })
-  for (const row of rows) {
-    const prefix = row.focused ? ">" : " "
-    const indent = "  ".repeat(row.indent)
-    const titleWidth = Math.max(24, row.titleWidth ?? 24)
-    const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
-    const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
-    const titleWidthSpace = Math.max(0, titleWidth - row.indent)
+  for (const entry of renderedRows) {
     menu.add(
       new TextRenderable(renderer, {
-        content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`,
-        fg: row.focused ? theme.primary : row.selectable ? theme.text : theme.textMuted,
-        attributes: row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
+        content: entry.content,
+        fg: entry.row.focused ? theme.primary : entry.row.selectable ? theme.text : theme.textMuted,
+        attributes: entry.row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
         wrapMode: "none",
       }),
     )
