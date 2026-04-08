@@ -1365,6 +1365,46 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
     }
   }
+  const completeCommandCenterItem = (item: CommandCenterItem) => {
+    if (item.kind === "command" || item.kind === "group") {
+      setPromptText(item.value)
+      if (promptInput) {
+        promptInput.cursorOffset = item.value.length
+      }
+      syncPromptTextSnapshot()
+      syncCommandCenter(item.value)
+      return
+    }
+    if (item.kind === "provider") {
+      const command = `/provider ${item.value}`
+      setPromptText(command)
+      if (promptInput) {
+        promptInput.cursorOffset = command.length
+      }
+      syncPromptTextSnapshot()
+      syncCommandCenter(command)
+      return
+    }
+    if (item.kind === "model") {
+      const command = `/model ${item.value}`
+      setPromptText(command)
+      if (promptInput) {
+        promptInput.cursorOffset = command.length
+      }
+      syncPromptTextSnapshot()
+      syncCommandCenter(command)
+      return
+    }
+    if (item.kind === "variant") {
+      const command = `/variant ${item.value}`
+      setPromptText(command)
+      if (promptInput) {
+        promptInput.cursorOffset = command.length
+      }
+      syncPromptTextSnapshot()
+      syncCommandCenter(command)
+    }
+  }
   const moveCommandCenterSelection = (delta: number) => {
     const items = commandCenterItems()
     if (items.length === 0) {
@@ -1410,7 +1450,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       clearCommandCenter()
       return true
     }
-    if (event.name === "return" || event.name === "enter" || event.name === "tab") {
+    if (event.name === "return" || event.name === "enter") {
       const item = selectedCommandCenterItem()
       if (!item) {
         return false
@@ -1418,6 +1458,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       event.preventDefault?.()
       event.stopPropagation?.()
       void selectCommandCenterItem(item)
+      return true
+    }
+    if (event.name === "tab") {
+      const item = selectedCommandCenterItem()
+      if (!item) {
+        return false
+      }
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      completeCommandCenterItem(item)
       return true
     }
     return false
