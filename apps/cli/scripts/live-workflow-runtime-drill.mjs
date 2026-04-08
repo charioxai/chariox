@@ -25,6 +25,7 @@ const {
   getSessionStateRequest,
   spawnAgentRequest,
   launchProviderRunRequest,
+  listProviderProcessesRequest,
   setWorkflowNodeCanCompleteRunRequest,
   setWorkflowRunOutputSchemaRequest,
   endSessionRequest,
@@ -331,6 +332,15 @@ async function main() {
   const client = new LocalIpcClient(kernelUrl)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
+  const pidExists = (pid) => {
+    if (typeof pid !== 'number' || pid <= 0) return false
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
   const consoleEntriesFor = (state, workflowId) =>
     ((state.workflow_consoles || []).find((entry) => entry.workflow_id === workflowId)?.entries) || []
   const logStep = (name, details = null) => {
@@ -340,6 +350,18 @@ async function main() {
   }
 
   let sessionId = null
+  let trackedProviderProcesses = []
+  let cleanupReport = null
+  const captureTrackedProviderProcesses = async () => {
+    if (!daemonChild) return
+    const listed = unwrap(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed')?.processes || []
+    trackedProviderProcesses = listed.map((processInfo) => ({
+      processId: processInfo.process_id,
+      provider: processInfo.provider,
+      pid: processInfo.pid ?? null,
+      ownerRunIds: processInfo.owner_provider_run_ids || [],
+    }))
+  }
   try {
     if (daemonChild) {
       for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -436,6 +458,7 @@ async function main() {
           })),
           failureEvents: run.failure_events || [],
         }, null, 2))
+        await captureTrackedProviderProcesses()
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
         return
@@ -464,6 +487,7 @@ async function main() {
       })),
       failureEvents: run?.failure_events || [],
     }, null, 2))
+    await captureTrackedProviderProcesses()
     if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
     await client.close()
     process.exitCode = 1
@@ -477,6 +501,17 @@ async function main() {
   } finally {
     if (daemonChild) {
       daemonChild.kill('SIGTERM')
+      await sleep(1000)
+      cleanupReport = {
+        daemonPid: daemonChild.pid ?? null,
+        daemonAliveAfterKill: daemonChild.pid ? pidExists(daemonChild.pid) : false,
+        trackedProviderProcessesBeforeKill: trackedProviderProcesses,
+        trackedProviderProcessesAliveAfterKill: trackedProviderProcesses.map((processInfo) => ({
+          ...processInfo,
+          alive: processInfo.pid != null ? pidExists(processInfo.pid) : false,
+        })),
+      }
+      console.log(JSON.stringify({ cleanupReport }, null, 2))
     }
   }
 }
