@@ -397,7 +397,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
     kind: "session",
     raw: "/session work-session",
     action: "work-session",
-    args: ["work-session"],
+    args: [],
     value: "work-session",
   })
 

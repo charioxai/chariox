@@ -339,11 +339,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         if (!action) {
           return false
         }
-        if (args.length !== 1) {
+        if (args.length !== 0) {
           deps.flashFooter("usage: /session <alias>", "error")
           return true
         }
-        const alias = value
+        const alias = action
         if (!deps.isAttached()) {
           deps.flashFooter("attach to a session before setting an alias", "error")
           return true
