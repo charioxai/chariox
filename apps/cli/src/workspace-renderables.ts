@@ -173,9 +173,9 @@ export function buildNoSessionRenderable(
     menuRows.reduce((width, row) => Math.max(width, row.length), 0),
     waitingRoomMenuMinWidth(sessions),
   )
-  const menuAlignOffset = Math.max(0, Math.floor((baseMenuWidth - noSessionText.length) / 2))
-  const menuOffsetSpaces = " ".repeat(menuAlignOffset)
-  const anchoredMenuWidth = Math.max(baseMenuWidth + menuAlignOffset, noSessionText.length + menuAlignOffset)
+  const warningWidth = Math.max(baseMenuWidth, noSessionText.length)
+  const centeredNoSessionLine = centerTextToWidth(noSessionText, warningWidth)
+  const menuAlignOffset = Math.max(0, Math.floor((warningWidth - noSessionText.length) / 2))
 
   const intro = new BoxRenderable(renderer, {
     width: "100%",
@@ -191,26 +191,25 @@ export function buildNoSessionRenderable(
     })
   )
   wrapper.add(intro)
-
+  const renderedRows = rows.map((row, index) => ({
+    row,
+    content: `${menuRows[index]}${" ".repeat(waitingRoomMenuTrailingPadding())}`,
+  }))
+  const finalMenuWidth = Math.max(
+    renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
+  )
   const content = new BoxRenderable(renderer, {
-    width: anchoredMenuWidth,
+    width: Math.max(warningWidth, menuAlignOffset + finalMenuWidth),
     flexDirection: "column",
     alignItems: "flex-start",
     gap: 1,
   })
   content.add(
     new TextRenderable(renderer, {
-      content: `${menuOffsetSpaces}${noSessionText}`,
+      content: centeredNoSessionLine,
       fg: sessionWarning,
       wrapMode: "none",
     })
-  )
-  const renderedRows = rows.map((row, index) => ({
-    row,
-    content: `${menuOffsetSpaces}${menuRows[index]}${" ".repeat(waitingRoomMenuTrailingPadding())}`,
-  }))
-  const finalMenuWidth = Math.max(
-    renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
   )
 
   const menu = new BoxRenderable(renderer, {
@@ -219,7 +218,8 @@ export function buildNoSessionRenderable(
     border: ["left"],
     borderColor: theme.secondary,
     customBorderChars: SplitBorder.customBorderChars,
-    paddingLeft: 1,
+    paddingLeft: 0,
+    marginLeft: menuAlignOffset,
     width: finalMenuWidth,
   })
   for (const entry of renderedRows) {
