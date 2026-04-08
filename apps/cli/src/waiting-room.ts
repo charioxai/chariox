@@ -12,6 +12,7 @@ export const MAX_VISIBLE_WAITING_ROOM_SESSIONS = 10
 const WAITING_ROOM_ROW_TITLE_MIN_WIDTH = 24
 const WAITING_ROOM_STATUS_MIN_WIDTH = "Status".length
 const WAITING_ROOM_TIMESTAMP_MIN_WIDTH = "0000-00-00 00:00 UTC".length
+const WAITING_ROOM_MENU_TRAILING_PADDING = 2
 
 export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session"
 
@@ -334,8 +335,12 @@ export function waitingRoomMenuMinWidth(sessions: SessionListEntry[]) {
     formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
     formatWaitingRoomColumnHeader("Created at", createdAtWidth),
   ]
-  const row = ` ${"  ".repeat(1)}${"Session".padEnd(titleWidthSpace, " ")} ${rowColumns.join("  ")}`
+  const row = ` ${"  ".repeat(1)}${"Session".padEnd(titleWidthSpace, " ")} ${rowColumns.join("  ")}${" ".repeat(WAITING_ROOM_MENU_TRAILING_PADDING)}`
   return row.length
+}
+
+export function waitingRoomMenuTrailingPadding() {
+  return WAITING_ROOM_MENU_TRAILING_PADDING
 }
 
 export function arrobaArtFrame(step: number) {

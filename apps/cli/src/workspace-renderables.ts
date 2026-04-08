@@ -17,7 +17,12 @@ import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
 import type { WaitingRoomState } from "./waiting-room.js"
-import { arrobaArtFrame, waitingRoomMenuMinWidth, waitingRoomRows } from "./waiting-room.js"
+import {
+  arrobaArtFrame,
+  waitingRoomMenuMinWidth,
+  waitingRoomMenuTrailingPadding,
+  waitingRoomRows,
+} from "./waiting-room.js"
 import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
 
 type RenderContext = ReturnType<typeof useRenderer>
@@ -175,9 +180,10 @@ export function buildNoSessionRenderable(
     const value = row.columns ? ` ${row.columns.join("  ")}` : row.value ? ` ${row.value}` : ""
     const scrollbar = row.scrollbar ? `  ${row.scrollbar}` : ""
     const titleWidthSpace = Math.max(0, titleWidth - row.indent)
+    const trailingPadding = " ".repeat(waitingRoomMenuTrailingPadding())
     return {
       row,
-      content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}`,
+      content: `${prefix} ${indent}${row.title.padEnd(titleWidthSpace, " ")}${value}${scrollbar}${trailingPadding}`,
     }
   })
   const menuWidth = Math.max(
