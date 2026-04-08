@@ -288,11 +288,12 @@ impl PtyManager {
 
     pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
         let process_key = self.resolve_process_key(provider_run_id)?;
-        let process = self.processes.get(&process_key).ok_or_else(|| {
-            DaemonError::PtyProcessNotFound {
-                provider_run_id: provider_run_id.to_string(),
-            }
-        })?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
         Ok(process.child.process_id())
     }
 

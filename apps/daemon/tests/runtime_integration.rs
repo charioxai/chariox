@@ -1123,7 +1123,10 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
         .get_session(session.id())
         .expect("session should still exist after cancellation");
     assert!(session_state.active_prompt().is_none());
-    assert_eq!(session_state.scheduler_state(), arroba_daemon::session::SchedulerState::Idle);
+    assert_eq!(
+        session_state.scheduler_state(),
+        arroba_daemon::session::SchedulerState::Idle
+    );
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -2872,11 +2875,7 @@ fn schedule_mock_response(
     }
 
     thread::spawn(move || {
-        let (
-            response_delay,
-            emit_idle_before_completion,
-            emit_tool_call_before_completion,
-        ) = {
+        let (response_delay, emit_idle_before_completion, emit_tool_call_before_completion) = {
             let state = state.lock().expect("mock state should not be poisoned");
             (
                 state.response_delay,
@@ -3145,7 +3144,9 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
         },
     );
     assert!(
-        interim.iter().any(|record| record.kind == TerminalOutputKind::ProviderTool),
+        interim
+            .iter()
+            .any(|record| record.kind == TerminalOutputKind::ProviderTool),
         "mock tool activity should be observed"
     );
 

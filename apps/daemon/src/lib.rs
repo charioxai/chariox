@@ -150,7 +150,12 @@ mod tests {
             .expect("workflow node should be added");
         let _endpoint = app
             .sessions_mut()
-            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
             .expect("workflow endpoint should be created");
 
         let workflow = app
@@ -165,7 +170,10 @@ mod tests {
             .providers()
             .get_run(initial_run.id())
             .expect("initial provider run should still exist");
-        assert_eq!(flushed_run.state(), super::provider::ProviderRunState::Ended);
+        assert_eq!(
+            flushed_run.state(),
+            super::provider::ProviderRunState::Ended
+        );
     }
 
     #[test]

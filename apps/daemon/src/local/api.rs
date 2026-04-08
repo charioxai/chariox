@@ -18,9 +18,8 @@ use crate::provider::{
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, RuntimeSession, SessionConfigState,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
-    WorkflowLaunchPolicy, WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowLaunchPolicy,
+    WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
@@ -1439,9 +1438,10 @@ impl DaemonApp {
             }
             LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
                 Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
-                    watchdogs: self
-                        .sessions()
-                        .list_workflow_watchdogs(&request.session_id, request.workflow_ref.as_deref())?,
+                    watchdogs: self.sessions().list_workflow_watchdogs(
+                        &request.session_id,
+                        request.workflow_ref.as_deref(),
+                    )?,
                 })
             }
             LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => {
@@ -1461,11 +1461,13 @@ impl DaemonApp {
                 Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
             }
             LocalDaemonRequest::SetWorkflowFlushContext(request) => {
-                let workflow = self.sessions_mut().set_workflow_flush_agent_context_before_run(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    request.flush_agent_context_before_run,
-                )?;
+                let workflow = self
+                    .sessions_mut()
+                    .set_workflow_flush_agent_context_before_run(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        request.flush_agent_context_before_run,
+                    )?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
             }
@@ -1498,7 +1500,10 @@ impl DaemonApp {
                     .sessions_mut()
                     .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved { queued_launch, session })
+                Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
+                    queued_launch,
+                    session,
+                })
             }
             LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
                 let queued_launches = self
@@ -1590,17 +1595,17 @@ mod tests {
 
     use super::{
         AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
-        AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
-        AliasSessionRequest, CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
-        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-        CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
-        EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetSessionStateRequest,
-        GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-        RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        ResumeWorkflowRunRequest,
+        AliasSessionRequest, AliasWorkflowEndpointRequest, AliasWorkflowRequest,
+        AttachToSessionRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
+        CaptureScreenshotCapabilityRequest, CompletePromptRequest, CreateWorkflowEndpointRequest,
+        CreateWorkflowRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+        DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
+        GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
+        InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest,
+        ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+        ResolveSessionRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, StoreTransferredFileCapabilityRequest,
         SubmitPromptRequest, UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
     };
@@ -1732,12 +1737,10 @@ mod tests {
         };
 
         let aliased = match app
-            .handle_local_request(LocalDaemonRequest::AliasSession(
-                AliasSessionRequest {
-                    session_id: session.id().to_string(),
-                    alias: "alpha".to_string(),
-                },
-            ))
+            .handle_local_request(LocalDaemonRequest::AliasSession(AliasSessionRequest {
+                session_id: session.id().to_string(),
+                alias: "alpha".to_string(),
+            }))
             .expect("alias should succeed")
         {
             LocalDaemonResponse::SessionAliased { session } => session,
@@ -1746,12 +1749,10 @@ mod tests {
         assert_eq!(aliased.alias(), Some("alpha"));
 
         let resolved = match app
-            .handle_local_request(LocalDaemonRequest::ResolveSession(
-                ResolveSessionRequest {
-                    session_ref: "alpha".to_string(),
-                    workspace_id: Some("workspace-1".to_string()),
-                },
-            ))
+            .handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+                session_ref: "alpha".to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            }))
             .expect("alias resolve should succeed")
         {
             LocalDaemonResponse::SessionResolved { session } => session,
@@ -3165,7 +3166,10 @@ mod tests {
             LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } => workflow_run,
             _ => panic!("unexpected local response"),
         };
-        assert_eq!(cancelled.status(), crate::session::WorkflowRunStatus::Stopped);
+        assert_eq!(
+            cancelled.status(),
+            crate::session::WorkflowRunStatus::Stopped
+        );
         assert_eq!(
             app.sessions()
                 .get_session(session.id())
@@ -3189,10 +3193,12 @@ mod tests {
             .resolve_workflow_run_ref(session.id(), workflow_run.id())
             .expect("workflow run should resolve after cancellation");
         assert!(stopped_run.failure_events().iter().any(|event| {
-            matches!(event.kind(), crate::session::WorkflowFailureKind::RunStopped)
-                && event
-                    .message()
-                    .contains("workflow node run was stopped before validated completion")
+            matches!(
+                event.kind(),
+                crate::session::WorkflowFailureKind::RunStopped
+            ) && event
+                .message()
+                .contains("workflow node run was stopped before validated completion")
         }));
 
         let resumed = match app
@@ -3276,7 +3282,12 @@ mod tests {
             LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
             _ => panic!("unexpected local response"),
         };
-        let node = add_workflow_test_node(&mut app, session.id(), workflow.id(), unsupported_agent.id());
+        let node = add_workflow_test_node(
+            &mut app,
+            session.id(),
+            workflow.id(),
+            unsupported_agent.id(),
+        );
         let endpoint = match app
             .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
                 CreateWorkflowEndpointRequest {

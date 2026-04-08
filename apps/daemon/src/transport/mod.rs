@@ -63,11 +63,12 @@ impl TransportService {
         };
         let mut last_retryable_error = None;
         for attempt in 0..3 {
-            let provider_run_id = crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
-                app,
-                session_id,
-                target_agent_id,
-            )?;
+            let provider_run_id =
+                crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                    app,
+                    session_id,
+                    target_agent_id,
+                )?;
             match dispatch(app, &provider_run_id) {
                 Ok(()) => {
                     flow_control::note_prompt_started(app, session_id);
@@ -85,9 +86,11 @@ impl TransportService {
                 Err(other) => return Err(other),
             }
         }
-        Err(last_retryable_error.unwrap_or(DaemonError::NoActiveProviderRun {
-            session_id: session_id.to_string(),
-        }))
+        Err(
+            last_retryable_error.unwrap_or(DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            }),
+        )
     }
 
     pub fn cancel_active_prompt_after_dispatch_failure(

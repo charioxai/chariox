@@ -293,10 +293,7 @@ impl ProviderProcessService {
             .cloned()
     }
 
-    pub fn get_runs_by_runtime_mcp_auth_token(
-        &self,
-        auth_token: &str,
-    ) -> Vec<RuntimeProviderRun> {
+    pub fn get_runs_by_runtime_mcp_auth_token(&self, auth_token: &str) -> Vec<RuntimeProviderRun> {
         self.runs
             .values()
             .filter(|run| {
@@ -335,10 +332,7 @@ impl ProviderProcessService {
             let run_mut = self.get_run_mut(run.id())?;
             run_mut.set_resume_state(binding.resume_state.clone());
             run_mut.set_provider_session_id(
-                binding
-                    .resume_state
-                    .codex_thread_id()
-                    .map(str::to_string),
+                binding.resume_state.codex_thread_id().map(str::to_string),
             );
             self.apply_codex_run_selection(run.id(), binding.selection)?;
             return Ok(());

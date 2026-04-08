@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
-use std::sync::mpsc::TryRecvError;
 use crate::error::DaemonError;
 use crate::provider::opencode_client::OpenCodePart;
 use crate::terminal::TerminalOutputKind;
+use std::collections::BTreeMap;
+use std::sync::mpsc::TryRecvError;
 
 use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage};
 
@@ -711,7 +711,8 @@ mod tests {
 
     use super::{
         drain_opencode_events, latest_assistant_usage_tokens, render_snapshot_output_chunks,
-        render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
+        render_tool_transcript_update, OpenCodeAssistantCompletion, OpenCodeRuntimeState,
+        ToolTranscriptUpdate,
     };
 
     #[test]

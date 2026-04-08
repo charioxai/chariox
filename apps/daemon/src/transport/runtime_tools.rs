@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{
-    WorkflowArtifactRef, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowRuntimeToolCallEvent,
-    WorkflowTurnRuntimeState,
+    WorkflowArtifactRef, WorkflowNodeRunStatus, WorkflowOutputPayload,
+    WorkflowRuntimeToolCallEvent, WorkflowTurnRuntimeState,
 };
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
@@ -231,15 +231,17 @@ pub fn dispatch_runtime_tool_call(
             if !call.context.can_complete_workflow_run {
                 return Err(DaemonError::LocalTransport {
                     operation: "runtime_tool_validate_and_submit_workflow_run_output",
-                    message: "current workflow node run is not allowed to complete the workflow run"
-                        .to_string(),
+                    message:
+                        "current workflow node run is not allowed to complete the workflow run"
+                            .to_string(),
                 });
             }
-            let args = serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(call.arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_validate_and_submit_workflow_run_output",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
+            let args =
+                serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(call.arguments)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "runtime_tool_validate_and_submit_workflow_run_output",
+                        message: format!("invalid tool arguments: {error}"),
+                    })?;
             let workflow_run_id = app
                 .sessions()
                 .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
@@ -276,9 +278,10 @@ pub fn dispatch_runtime_tool_call(
             })
         }
         WORKFLOW_CONSOLE_READ_TOOL => {
-            let workflow_run = app
-                .sessions()
-                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            let workflow_run = app.sessions().resolve_workflow_run_ref(
+                &call.context.session_id,
+                &call.context.workflow_run_ref,
+            )?;
             let console = crate::scheduler::runtime::read_workflow_console(
                 app,
                 &call.context.session_id,
@@ -298,16 +301,16 @@ pub fn dispatch_runtime_tool_call(
             })
         }
         WORKFLOW_CONSOLE_WRITE_TOOL => {
-            let args =
-                serde_json::from_value::<WorkflowConsoleWriteArgs>(call.arguments).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "runtime_tool_workflow_console_write",
-                        message: format!("invalid tool arguments: {error}"),
-                    }
-                })?;
-            let workflow_run = app
-                .sessions()
-                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            let args = serde_json::from_value::<WorkflowConsoleWriteArgs>(call.arguments).map_err(
+                |error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_workflow_console_write",
+                    message: format!("invalid tool arguments: {error}"),
+                },
+            )?;
+            let workflow_run = app.sessions().resolve_workflow_run_ref(
+                &call.context.session_id,
+                &call.context.workflow_run_ref,
+            )?;
             let entry = crate::scheduler::runtime::write_workflow_console(
                 app,
                 &call.context.session_id,
@@ -326,9 +329,10 @@ pub fn dispatch_runtime_tool_call(
             })
         }
         WORKFLOW_CONSOLE_CLEAR_TOOL => {
-            let workflow_run = app
-                .sessions()
-                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?;
+            let workflow_run = app.sessions().resolve_workflow_run_ref(
+                &call.context.session_id,
+                &call.context.workflow_run_ref,
+            )?;
             crate::scheduler::runtime::clear_workflow_console(
                 app,
                 &call.context.session_id,
@@ -353,20 +357,13 @@ pub fn dispatch_runtime_tool_call(
             serde_json::to_string(&result.payload)
                 .unwrap_or_else(|_| String::from("<unserializable runtime tool result>")),
         ),
-        Err(error) => Some(
-            serde_json::json!({"error": error.to_string()}).to_string(),
-        ),
+        Err(error) => Some(serde_json::json!({"error": error.to_string()}).to_string()),
     };
     let ok = result.as_ref().map(|entry| entry.ok).unwrap_or(false);
     let _ = app.sessions_mut().record_workflow_runtime_tool_call(
         &call.context.session_id,
         &call.context.workflow_node_run_id,
-        WorkflowRuntimeToolCallEvent::new(
-            canonical_tool_name,
-            arguments_json,
-            result_json,
-            ok,
-        ),
+        WorkflowRuntimeToolCallEvent::new(canonical_tool_name, arguments_json, result_json, ok),
     );
 
     result
@@ -500,7 +497,10 @@ fn resolve_authenticated_workflow_turn(
                     })
                     .is_some_and(agent_matches);
                 if matches_active_agent {
-                    return Ok((workflow_run_ref.to_string(), workflow_node_run_id.to_string()));
+                    return Ok((
+                        workflow_run_ref.to_string(),
+                        workflow_node_run_id.to_string(),
+                    ));
                 }
             }
         }
@@ -576,13 +576,15 @@ fn resolve_authenticated_workflow_turn(
                     .iter()
                     .any(|agent_id| candidate_agent_id == agent_id)
         })
-        .map(|(workflow_run_id, workflow_node_run_id, _, candidate_delivery_token)| {
-            (
-                workflow_run_id.clone(),
-                workflow_node_run_id.clone(),
-                candidate_delivery_token.clone(),
-            )
-        })
+        .map(
+            |(workflow_run_id, workflow_node_run_id, _, candidate_delivery_token)| {
+                (
+                    workflow_run_id.clone(),
+                    workflow_node_run_id.clone(),
+                    candidate_delivery_token.clone(),
+                )
+            },
+        )
         .collect::<Vec<_>>();
 
     if let Some(requested_delivery_token) = delivery_token {
@@ -593,14 +595,18 @@ fn resolve_authenticated_workflow_turn(
 
     match candidates.len() {
         1 => {
-            let (workflow_run_id, workflow_node_run_id, _) =
-                candidates.into_iter().next().expect("candidate should exist");
+            let (workflow_run_id, workflow_node_run_id, _) = candidates
+                .into_iter()
+                .next()
+                .expect("candidate should exist");
             Ok((workflow_run_id, workflow_node_run_id))
         }
         0 => {
             if running_turns.len() == 1 {
-                let (workflow_run_id, workflow_node_run_id, _, _) =
-                    running_turns.into_iter().next().expect("candidate should exist");
+                let (workflow_run_id, workflow_node_run_id, _, _) = running_turns
+                    .into_iter()
+                    .next()
+                    .expect("candidate should exist");
                 return Ok((workflow_run_id, workflow_node_run_id));
             }
             Err(DaemonError::LocalTransport {
@@ -715,11 +721,10 @@ mod tests {
 
     use super::{
         dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
-        resolve_authenticated_workflow_turn,
-        workflow_runtime_tool_specs, RuntimeToolCall, WorkflowRuntimeToolContext,
-        ACK_WORKFLOW_TURN_TOOL, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
-        VALIDATE_WORKFLOW_OUTPUT_TOOL, WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL,
-        WORKFLOW_CONSOLE_WRITE_TOOL,
+        resolve_authenticated_workflow_turn, workflow_runtime_tool_specs, RuntimeToolCall,
+        WorkflowRuntimeToolContext, ACK_WORKFLOW_TURN_TOOL,
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL,
+        WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
     };
 
     #[test]
@@ -1073,7 +1078,10 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         };
-        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+        let node_run = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist");
 
         let result = dispatch_runtime_tool_call(
             &mut app,
@@ -1088,9 +1096,7 @@ mod tests {
                     workflow_node_run_id: node_run.id().to_string(),
                     delivery_token: None,
                     allowed_output_schema_refs: Vec::new(),
-                    workflow_run_output_schema_ref: Some(
-                        schema_path.to_string_lossy().to_string(),
-                    ),
+                    workflow_run_output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
                     can_complete_workflow_run: true,
                 },
             },
@@ -1109,10 +1115,7 @@ mod tests {
         );
         assert_eq!(updated_run.final_output_valid(), Some(false));
         assert!(updated_run.final_output_warning().is_some());
-        assert_eq!(
-            updated_run.completed_by_node_run_id(),
-            Some(node_run.id())
-        );
+        assert_eq!(updated_run.completed_by_node_run_id(), Some(node_run.id()));
     }
 
     #[test]
@@ -1358,5 +1361,4 @@ mod tests {
         assert_eq!(resolved_workflow_run_id, workflow_run.id());
         assert_eq!(resolved_node_run_id, node_run.id());
     }
-
 }

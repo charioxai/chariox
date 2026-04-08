@@ -28,10 +28,14 @@ impl DaemonApp {
         endpoint_ref: &str,
         prompt: Option<String>,
     ) -> Result<WorkflowLaunchOutcome, DaemonError> {
-        let workflow = self.sessions().resolve_workflow_ref(session_id, workflow_ref)?;
-        let endpoint = self
+        let workflow = self
             .sessions()
-            .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
+            .resolve_workflow_ref(session_id, workflow_ref)?;
+        let endpoint = self.sessions().resolve_workflow_endpoint_ref(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+        )?;
         crate::scheduler::runtime::validate_workflow_agents(self, session_id, &workflow)?;
         match self.sessions_mut().admit_manual_workflow_launch(
             session_id,
@@ -76,13 +80,20 @@ impl DaemonApp {
         endpoint_ref: &str,
         prompt: Option<String>,
     ) -> Result<(WorkflowRun, WorkflowDefinition, WorkflowEndpointDefinition), DaemonError> {
-        match self.invoke_workflow_endpoint_with_admission(session_id, workflow_ref, endpoint_ref, prompt)? {
+        match self.invoke_workflow_endpoint_with_admission(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+        )? {
             WorkflowLaunchOutcome::Started {
                 workflow_run,
                 workflow,
                 endpoint,
             } => Ok((workflow_run, workflow, endpoint)),
-            WorkflowLaunchOutcome::Queued { workflow, endpoint, .. } => Err(DaemonError::WorkflowLaunchRejected {
+            WorkflowLaunchOutcome::Queued {
+                workflow, endpoint, ..
+            } => Err(DaemonError::WorkflowLaunchRejected {
                 session_id: session_id.to_string(),
                 workflow_id: workflow.id().to_string(),
                 endpoint_id: endpoint.id().to_string(),
@@ -95,7 +106,10 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<WorkflowLaunchOutcome>, DaemonError> {
-        let Some(queued_launch) = self.sessions_mut().dequeue_next_workflow_launch(session_id)? else {
+        let Some(queued_launch) = self
+            .sessions_mut()
+            .dequeue_next_workflow_launch(session_id)?
+        else {
             return Ok(None);
         };
         if let Some(watchdog_id) = queued_launch.watchdog_id() {
@@ -207,14 +221,20 @@ impl DaemonApp {
             endpoint.id(),
             queued_launch.invocation_prompt().map(str::to_string),
         )?;
-        crate::scheduler::runtime::schedule_workflow_run_entry_node(self, session_id, &workflow_run)?;
+        crate::scheduler::runtime::schedule_workflow_run_entry_node(
+            self,
+            session_id,
+            &workflow_run,
+        )?;
         let workflow_run = self
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
         if let Some(watchdog_id) = queued_launch.watchdog_id() {
-            let _ = self
-                .sessions_mut()
-                .mark_workflow_watchdog_invoked(session_id, watchdog_id, workflow_run.id());
+            let _ = self.sessions_mut().mark_workflow_watchdog_invoked(
+                session_id,
+                watchdog_id,
+                workflow_run.id(),
+            );
         }
         Ok(WorkflowLaunchOutcome::Started {
             workflow_run,
@@ -247,8 +267,7 @@ impl DaemonApp {
             .is_some_and(|agent_id| workflow_agent_ids.contains(agent_id));
         if should_cancel_active_prompt {
             let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
-                self,
-                session_id,
+                self, session_id,
             )?;
         }
         for agent_id in workflow_agent_ids {

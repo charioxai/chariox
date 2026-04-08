@@ -248,7 +248,9 @@ pub fn resume_workflow_run(
     session_id: &str,
     workflow_run_ref: &str,
 ) -> Result<WorkflowRun, DaemonError> {
-    let workflow_run = app.sessions_mut().resume_workflow_run(session_id, workflow_run_ref)?;
+    let workflow_run = app
+        .sessions_mut()
+        .resume_workflow_run(session_id, workflow_run_ref)?;
     let resumable_node_runs = workflow_run
         .node_runs()
         .iter()
@@ -334,7 +336,9 @@ pub fn workflow_max_turns(app: &DaemonApp, session_id: &str) -> Option<usize> {
         .get(WORKFLOW_MAX_TURNS_CONFIG_KEY)
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .or(Some(crate::session::DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT))
+        .or(Some(
+            crate::session::DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+        ))
 }
 
 pub fn is_workflow_prompt_attachment(attachment_id: &str) -> bool {
@@ -443,9 +447,7 @@ pub fn on_workflow_prompt_completed(
     ) {
         Ok(update) => update,
         Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
-            edge_id,
-            message,
-            ..
+            edge_id, message, ..
         }) => {
             record_and_route_workflow_failure(
                 app,
@@ -458,8 +460,11 @@ pub fn on_workflow_prompt_completed(
                     message.clone(),
                 ),
             );
-            app.sessions_mut()
-                .stop_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)?;
+            app.sessions_mut().stop_workflow_node_run(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
             app.record_notice(
                 session_id,
                 None,
@@ -650,7 +655,8 @@ pub fn read_workflow_console(
     session_id: &str,
     workflow_id: &str,
 ) -> Result<WorkflowConsole, DaemonError> {
-    app.sessions().read_workflow_console(session_id, workflow_id)
+    app.sessions()
+        .read_workflow_console(session_id, workflow_id)
 }
 
 pub fn write_workflow_console(
@@ -690,7 +696,8 @@ pub fn clear_workflow_console(
     session_id: &str,
     workflow_id: &str,
 ) -> Result<WorkflowConsole, DaemonError> {
-    app.sessions_mut().clear_workflow_console(session_id, workflow_id)
+    app.sessions_mut()
+        .clear_workflow_console(session_id, workflow_id)
 }
 
 fn workflow_failure_policy() -> WorkflowFailurePolicy {
@@ -722,7 +729,10 @@ fn route_workflow_failure_mailboxes(
     failure: &WorkflowFailureEvent,
     policy: &WorkflowFailurePolicy,
 ) {
-    let workflow_run = match app.sessions().resolve_workflow_run_ref(session_id, workflow_run_id) {
+    let workflow_run = match app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+    {
         Ok(run) => run,
         Err(_) => return,
     };
@@ -873,10 +883,7 @@ fn build_workflow_turn_prompt(
     );
     format!(
         "{}Workflow-level prompt:\n{}\n\n{}\n{}",
-        entry_line,
-        workflow_prompt,
-        system_prompt,
-        system_node_prompt
+        entry_line, workflow_prompt, system_prompt, system_node_prompt
     )
 }
 
@@ -911,9 +918,12 @@ fn load_workflow_system_prompt_template(
     workflow_run_id: &str,
     workflow_node_run_id: &str,
 ) -> String {
-    let Some(path) =
-        workflow_system_prompt_template_path(app, session_id, workflow_run_id, workflow_node_run_id)
-    else {
+    let Some(path) = workflow_system_prompt_template_path(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    ) else {
         return default_workflow_system_prompt_template().to_string();
     };
     if !path.exists() {
@@ -959,12 +969,8 @@ fn render_workflow_node_system_prompt(
     )
     .filter(|_| workflow_node_can_complete_workflow_run(app, session_id, workflow_run_id, node_id))
     .unwrap_or_default();
-    let last_turn_block = workflow_last_turn_notice_block(
-        app,
-        session_id,
-        workflow_run_id,
-        node_id,
-    );
+    let last_turn_block =
+        workflow_last_turn_notice_block(app, session_id, workflow_run_id, node_id);
     if turn_index_block.is_empty() && completion_block.is_empty() && last_turn_block.is_empty() {
         return String::new();
     }
@@ -1058,7 +1064,11 @@ fn workflow_node_can_complete_workflow_run(
     app.sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)
         .ok()
-        .and_then(|run| app.sessions().resolve_workflow_ref(session_id, run.workflow_id()).ok())
+        .and_then(|run| {
+            app.sessions()
+                .resolve_workflow_ref(session_id, run.workflow_id())
+                .ok()
+        })
         .and_then(|workflow| workflow.node(node_id).cloned())
         .is_some_and(|node| node.can_complete_workflow_run())
 }
@@ -1716,9 +1726,8 @@ mod tests {
         let prompt_template_contents =
             fs::read_to_string(&expected_prompt_template).expect("template should read");
         assert!(prompt_template_contents.contains("ack_workflow_turn"));
-        assert!(prompt.contains(
-            "If you do not remember them exactly, read that file before continuing."
-        ));
+        assert!(prompt
+            .contains("If you do not remember them exactly, read that file before continuing."));
         let _ = fs::remove_dir_all(PathBuf::from(workdir));
     }
 
@@ -1842,9 +1851,8 @@ mod tests {
 
         assert!(prompt.contains("This node is authorized to complete the workflow run."));
         assert!(prompt.contains("This is turn 1 for this node in the current workflow run."));
-        assert!(prompt.contains(
-            "This is the last allowed turn for this node in the current workflow run."
-        ));
+        assert!(prompt
+            .contains("This is the last allowed turn for this node in the current workflow run."));
         assert!(prompt.contains("validate_and_submit_workflow_run_output"));
     }
 
@@ -1965,7 +1973,8 @@ mod tests {
 
         assert!(prompt.contains("This is turn 1 for this node in the current workflow run."));
         assert!(prompt.contains("- node max turns: 3"));
-        assert!(!prompt.contains("This is the last allowed turn for this node in the current workflow run."));
+        assert!(!prompt
+            .contains("This is the last allowed turn for this node in the current workflow run."));
     }
 
     #[test]

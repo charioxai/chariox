@@ -8,14 +8,13 @@ use serde_json::Value;
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession,
-    SessionConfigState, SessionStatus, SessionStore, WorkflowCompletionSnapshot,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
+    SessionConfigState, SessionStatus, SessionStore, WorkflowCompletionSnapshot, WorkflowConsole,
+    WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
     WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy,
-    WorkflowRuntimeToolCallEvent,
     WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
-    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus, WorkflowTurnEnvelope,
-    WorkflowTurnRuntimeState, WorkflowConsole, WorkflowConsoleEntry, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy,
+    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
+    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,18 +233,19 @@ impl SessionService {
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let workflow = session
-            .workflow_mut(&workflow_id)
-            .ok_or_else(|| DaemonError::WorkflowNotFound {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
         workflow.set_flush_agent_context_before_run(value);
         Ok(workflow.clone())
     }
@@ -260,18 +260,19 @@ impl SessionService {
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let workflow = session
-            .workflow_mut(&workflow_id)
-            .ok_or_else(|| DaemonError::WorkflowNotFound {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
         workflow.set_run_output_schema_ref(value);
         Ok(workflow.clone())
     }
@@ -289,10 +290,13 @@ impl SessionService {
         })?;
 
         let session = self.get_session(session_id)?;
-        self.ensure_session_alias_available_for_update(session.workspace_id(), session.id(), &alias)?;
+        self.ensure_session_alias_available_for_update(
+            session.workspace_id(),
+            session.id(),
+            &alias,
+        )?;
 
-        let session = self
-            .get_session_mut_for_operation(session_id, "assign alias")?;
+        let session = self.get_session_mut_for_operation(session_id, "assign alias")?;
         session.set_alias(Some(alias));
         Ok(session.clone())
     }
@@ -493,12 +497,12 @@ impl SessionService {
         session_id: &str,
         policy: WorkflowLaunchPolicy,
     ) -> Result<RuntimeSession, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         session.set_workflow_launch_policy(policy);
         Ok(session.clone())
     }
@@ -507,7 +511,8 @@ impl SessionService {
         &self,
         session_id: &str,
     ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
-        Ok(self.get_session(session_id)?
+        Ok(self
+            .get_session(session_id)?
             .queued_workflow_launches()
             .iter()
             .cloned()
@@ -520,12 +525,12 @@ impl SessionService {
         queue_item_ref: &str,
     ) -> Result<QueuedWorkflowLaunch, DaemonError> {
         let queue_item_id = self.resolve_queued_workflow_launch_ref(session_id, queue_item_ref)?;
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         session
             .remove_queued_workflow_launch(&queue_item_id)
             .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
@@ -540,12 +545,12 @@ impl SessionService {
         &mut self,
         session_id: &str,
     ) -> Result<Vec<QueuedWorkflowLaunch>, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         Ok(session.clear_queued_workflow_launches())
     }
 
@@ -607,12 +612,12 @@ impl SessionService {
             QueuedWorkflowLaunchSource::Watchdog,
             Some(watchdog_id.to_string()),
         );
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         Ok(session.enqueue_workflow_launch(queued))
     }
 
@@ -620,12 +625,12 @@ impl SessionService {
         &mut self,
         session_id: &str,
     ) -> Result<Option<QueuedWorkflowLaunch>, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         if session.has_active_workflow_run() {
             return Ok(None);
         }
@@ -970,12 +975,14 @@ impl SessionService {
                     "workflow node run `{workflow_node_run_id}` not found in session `{session_id}`"
                 ),
             })?;
-        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::LocalTransport {
-            operation: "record_workflow_runtime_tool_call",
-            message: format!(
-                "workflow node run `{workflow_node_run_id}` has no active turn envelope"
-            ),
-        })?;
+        let envelope = node_run
+            .turn_envelope_mut()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "record_workflow_runtime_tool_call",
+                message: format!(
+                    "workflow node run `{workflow_node_run_id}` has no active turn envelope"
+                ),
+            })?;
         envelope.add_runtime_tool_call(event);
         Ok(node_run.clone())
     }
@@ -989,12 +996,12 @@ impl SessionService {
         valid: bool,
         warning: Option<String>,
     ) -> Result<WorkflowRun, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
             DaemonError::WorkflowRunNotFound {
                 session_id: session_id.to_string(),
@@ -1020,12 +1027,12 @@ impl SessionService {
         final_output_warning: Option<String>,
         completed_by_node_run_id: Option<String>,
     ) -> Result<WorkflowRun, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
             DaemonError::WorkflowRunNotFound {
                 session_id: session_id.to_string(),
@@ -1115,7 +1122,9 @@ impl SessionService {
             });
         }
         let entry = WorkflowConsoleEntry::new(source_node_run_id, source_agent_id, text);
-        Ok(session.ensure_workflow_console(workflow_id).add_entry(entry))
+        Ok(session
+            .ensure_workflow_console(workflow_id)
+            .add_entry(entry))
     }
 
     pub fn clear_workflow_console(
@@ -1234,62 +1243,64 @@ impl SessionService {
             (workflow_run, source_node_run, workflow)
         };
         let mut validation_warnings = Vec::new();
-        let emitted_messages = if workflow_run.completed_by_node_run_id() == Some(source_node_run.id()) {
+        let emitted_messages = if workflow_run.completed_by_node_run_id()
+            == Some(source_node_run.id())
+        {
             Vec::new()
         } else {
             workflow
-            .edges()
-            .iter()
-            .filter(|edge| edge.from_node_id() == source_node_run.node_id())
-            .map(|edge| {
-                let warning =
-                    validate_workflow_edge_output(session_id, &workflow, edge, &completion)?;
-                if let Some(message) = warning.as_ref() {
-                    validation_warnings.push(WorkflowOutputValidationWarning {
-                        edge_id: edge.id().to_string(),
-                        message: message.clone(),
-                    });
-                }
-                let target_node = workflow.node(edge.to_node_id()).ok_or_else(|| {
-                    DaemonError::InvalidWorkflowGraphReference {
-                        session_id: session_id.to_string(),
-                        workflow_id: workflow.id().to_string(),
-                        reference: edge.to_node_id().to_string(),
-                        message: "target node does not exist",
+                .edges()
+                .iter()
+                .filter(|edge| edge.from_node_id() == source_node_run.node_id())
+                .map(|edge| {
+                    let warning =
+                        validate_workflow_edge_output(session_id, &workflow, edge, &completion)?;
+                    if let Some(message) = warning.as_ref() {
+                        validation_warnings.push(WorkflowOutputValidationWarning {
+                            edge_id: edge.id().to_string(),
+                            message: message.clone(),
+                        });
                     }
-                })?;
-                let payload = WorkflowHandoffPayload::new(
-                    workflow_run.id().to_string(),
-                    workflow.id().to_string(),
-                    source_node_run.id().to_string(),
-                    source_node_run.node_id().to_string(),
-                    source_node_run.agent_id().to_string(),
-                    target_node.id().to_string(),
-                    workflow_run.invocation_prompt().map(str::to_string),
-                    completion.clone(),
-                    edge.output_schema_ref().map(str::to_string),
-                    warning.clone(),
-                );
-                let message = WorkflowMessage::new(
-                    self.next_workflow_message_id(),
-                    Some(source_node_run.id().to_string()),
-                    target_node.id().to_string(),
-                    "handoff",
-                    format!(
-                        "handoff from `{}` to `{}`",
-                        source_node_run.node_id(),
-                        target_node.id()
-                    ),
-                    serde_json::to_string(&payload).map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "serialize workflow handoff payload",
-                            message: error.to_string(),
+                    let target_node = workflow.node(edge.to_node_id()).ok_or_else(|| {
+                        DaemonError::InvalidWorkflowGraphReference {
+                            session_id: session_id.to_string(),
+                            workflow_id: workflow.id().to_string(),
+                            reference: edge.to_node_id().to_string(),
+                            message: "target node does not exist",
                         }
-                    })?,
-                );
-                Ok(message)
-            })
-            .collect::<Result<Vec<_>, DaemonError>>()?
+                    })?;
+                    let payload = WorkflowHandoffPayload::new(
+                        workflow_run.id().to_string(),
+                        workflow.id().to_string(),
+                        source_node_run.id().to_string(),
+                        source_node_run.node_id().to_string(),
+                        source_node_run.agent_id().to_string(),
+                        target_node.id().to_string(),
+                        workflow_run.invocation_prompt().map(str::to_string),
+                        completion.clone(),
+                        edge.output_schema_ref().map(str::to_string),
+                        warning.clone(),
+                    );
+                    let message = WorkflowMessage::new(
+                        self.next_workflow_message_id(),
+                        Some(source_node_run.id().to_string()),
+                        target_node.id().to_string(),
+                        "handoff",
+                        format!(
+                            "handoff from `{}` to `{}`",
+                            source_node_run.node_id(),
+                            target_node.id()
+                        ),
+                        serde_json::to_string(&payload).map_err(|error| {
+                            DaemonError::LocalTransport {
+                                operation: "serialize workflow handoff payload",
+                                message: error.to_string(),
+                            }
+                        })?,
+                    );
+                    Ok(message)
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?
         };
 
         let next_workflow_node_run_number = &mut self.next_workflow_node_run_number;
@@ -1548,18 +1559,19 @@ impl SessionService {
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let workflow = session
-            .workflow_mut(&workflow_id)
-            .ok_or_else(|| DaemonError::WorkflowNotFound {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
         let node = workflow
             .node_mut(node_id)
             .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
@@ -1582,18 +1594,19 @@ impl SessionService {
             .resolve_workflow_ref(session_id, workflow_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let workflow = session
-            .workflow_mut(&workflow_id)
-            .ok_or_else(|| DaemonError::WorkflowNotFound {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
         let node = workflow
             .node_mut(node_id)
             .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
@@ -1906,12 +1919,12 @@ impl SessionService {
             policy,
             max_wakeups.unwrap_or(Some(crate::session::DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS)),
         );
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         Ok(session.add_workflow_watchdog(watchdog))
     }
 
@@ -1928,7 +1941,11 @@ impl SessionService {
         Ok(session
             .workflow_watchdogs()
             .iter()
-            .filter(|watchdog| workflow_id.as_deref().is_none_or(|id| watchdog.workflow_id() == id))
+            .filter(|watchdog| {
+                workflow_id
+                    .as_deref()
+                    .is_none_or(|id| watchdog.workflow_id() == id)
+            })
             .cloned()
             .collect())
     }
@@ -1975,20 +1992,20 @@ impl SessionService {
             .id()
             .to_string();
         let now = unix_epoch_ms();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let watchdog = session
-            .workflow_watchdog_mut(&watchdog_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(&watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: String::new(),
                 reference: watchdog_id.clone(),
                 message: "workflow watchdog was not found",
-            })?;
+            }
+        })?;
         watchdog.set_enabled(enabled);
         watchdog.set_last_error(None);
         watchdog.set_last_status(Some(if enabled {
@@ -2011,12 +2028,12 @@ impl SessionService {
             .resolve_workflow_watchdog_ref(session_id, watchdog_ref)?
             .id()
             .to_string();
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
         session
             .remove_workflow_watchdog(&watchdog_id)
             .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
@@ -2032,7 +2049,11 @@ impl SessionService {
         now_ms: u64,
     ) -> Result<Vec<WorkflowWatchdogTickPlan>, DaemonError> {
         let mut plans = Vec::new();
-        let session_ids = self.store.non_ended_sessions().map(|s| s.id().to_string()).collect::<Vec<_>>();
+        let session_ids = self
+            .store
+            .non_ended_sessions()
+            .map(|s| s.id().to_string())
+            .collect::<Vec<_>>();
         for session_id in session_ids {
             let queued_launch_specs = {
                 let mut queued_launch_specs = Vec::new();
@@ -2164,19 +2185,19 @@ impl SessionService {
         watchdog_id: &str,
         workflow_run_id: &str,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let watchdog = session
-            .workflow_watchdog_mut(watchdog_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: String::new(),
                 reference: watchdog_id.to_string(),
                 message: "workflow watchdog was not found",
+            }
         })?;
         watchdog.set_last_run_at_ms(Some(unix_epoch_ms()));
         watchdog.set_wakeups_executed(watchdog.wakeups_executed().saturating_add(1));
@@ -2201,20 +2222,20 @@ impl SessionService {
         session_id: &str,
         watchdog_id: &str,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let watchdog = session
-            .workflow_watchdog_mut(watchdog_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: String::new(),
                 reference: watchdog_id.to_string(),
                 message: "workflow watchdog was not found",
-            })?;
+            }
+        })?;
         watchdog.set_pending_run(true);
         watchdog.set_last_status(Some("queued_running".to_string()));
         watchdog.set_last_error(None);
@@ -2226,20 +2247,20 @@ impl SessionService {
         session_id: &str,
         watchdog_id: &str,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let watchdog = session
-            .workflow_watchdog_mut(watchdog_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: String::new(),
                 reference: watchdog_id.to_string(),
                 message: "workflow watchdog was not found",
-            })?;
+            }
+        })?;
         watchdog.set_pending_run(false);
         watchdog.set_last_status(Some("invoking_pending".to_string()));
         Ok(watchdog.clone())
@@ -2251,20 +2272,20 @@ impl SessionService {
         watchdog_id: &str,
         error: impl Into<String>,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
-        let session = self
-            .store
-            .get_mut(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        let watchdog = session
-            .workflow_watchdog_mut(watchdog_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let watchdog = session.workflow_watchdog_mut(watchdog_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: String::new(),
                 reference: watchdog_id.to_string(),
                 message: "workflow watchdog was not found",
-            })?;
+            }
+        })?;
         watchdog.set_last_status(Some("invoke_failed".to_string()));
         watchdog.set_last_error(Some(error.into()));
         Ok(watchdog.clone())
@@ -2727,15 +2748,15 @@ impl SessionService {
         session_id: &str,
         alias: &str,
     ) -> Result<(), DaemonError> {
-        if self
-            .store
-            .non_ended_sessions()
-            .any(|session| session.id() != session_id && session.workspace_id() == workspace_id && session.alias() == Some(alias))
-        {
+        if self.store.non_ended_sessions().any(|session| {
+            session.id() != session_id
+                && session.workspace_id() == workspace_id
+                && session.alias() == Some(alias)
+        }) {
             return Err(DaemonError::SessionAliasConflict {
                 workspace_id: workspace_id.to_string(),
                 alias: alias.to_string(),
-            })
+            });
         }
         Ok(())
     }
@@ -3053,7 +3074,13 @@ fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, Daem
         .trim()
         .to_lowercase()
         .chars()
-        .map(|char| if char.is_ascii_whitespace() { '_' } else { char })
+        .map(|char| {
+            if char.is_ascii_whitespace() {
+                '_'
+            } else {
+                char
+            }
+        })
         .collect::<String>();
     if normalized.is_empty() {
         return Err(DaemonError::InvalidSessionAlias {
@@ -3220,10 +3247,10 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::error::DaemonError;
     use crate::session::{
-        unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
-        QueuedWorkflowLaunchSource, WorkflowHandoffPayload, WorkflowLaunchAdmission,
-        WorkflowCompletionSnapshot, WorkflowLaunchPolicy, WorkflowNodeRunStatus,
-        WorkflowRunStatus, WorkflowWatchdogPolicy, WorktreeIsolationMode,
+        unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, QueuedWorkflowLaunchSource,
+        SchedulerState, SessionStatus, WorkflowCompletionSnapshot, WorkflowHandoffPayload,
+        WorkflowLaunchAdmission, WorkflowLaunchPolicy, WorkflowNodeRunStatus, WorkflowRunStatus,
+        WorkflowWatchdogPolicy, WorktreeIsolationMode,
     };
 
     fn test_config() -> DaemonConfig {
@@ -3724,7 +3751,10 @@ mod tests {
                 Some("review this diff".to_string()),
             )
             .expect("workflow run should be created");
-        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+        let node_run = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist");
 
         let update = service
             .complete_workflow_node_run(
@@ -3756,7 +3786,12 @@ mod tests {
             .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
             .expect("first node should be added");
         let first_endpoint = service
-            .create_workflow_endpoint(session.id(), first_workflow.id(), first_node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                first_workflow.id(),
+                first_node.id(),
+                Some("entry".to_string()),
+            )
             .expect("first endpoint should be created");
 
         let second_workflow = service
@@ -3766,11 +3801,21 @@ mod tests {
             .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
             .expect("second node should be added");
         let second_endpoint = service
-            .create_workflow_endpoint(session.id(), second_workflow.id(), second_node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                second_workflow.id(),
+                second_node.id(),
+                Some("entry".to_string()),
+            )
             .expect("second endpoint should be created");
 
         let workflow_run = service
-            .invoke_workflow_endpoint(session.id(), first_workflow.id(), first_endpoint.id(), Some("go".to_string()))
+            .invoke_workflow_endpoint(
+                session.id(),
+                first_workflow.id(),
+                first_endpoint.id(),
+                Some("go".to_string()),
+            )
             .expect("first workflow run should be created");
         assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
 
@@ -3800,7 +3845,12 @@ mod tests {
             .add_workflow_node(session.id(), first_workflow.id(), "agent-1")
             .expect("first node should be added");
         let first_endpoint = service
-            .create_workflow_endpoint(session.id(), first_workflow.id(), first_node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                first_workflow.id(),
+                first_node.id(),
+                Some("entry".to_string()),
+            )
             .expect("first endpoint should be created");
 
         let second_workflow = service
@@ -3810,14 +3860,24 @@ mod tests {
             .add_workflow_node(session.id(), second_workflow.id(), "agent-2")
             .expect("second node should be added");
         let second_endpoint = service
-            .create_workflow_endpoint(session.id(), second_workflow.id(), second_node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                second_workflow.id(),
+                second_node.id(),
+                Some("entry".to_string()),
+            )
             .expect("second endpoint should be created");
 
         service
             .set_workflow_launch_policy(session.id(), WorkflowLaunchPolicy::Queue)
             .expect("queue policy should be set");
         let active = service
-            .invoke_workflow_endpoint(session.id(), first_workflow.id(), first_endpoint.id(), Some("go".to_string()))
+            .invoke_workflow_endpoint(
+                session.id(),
+                first_workflow.id(),
+                first_endpoint.id(),
+                Some("go".to_string()),
+            )
             .expect("active workflow run should be created");
         assert_eq!(active.status(), WorkflowRunStatus::Created);
 
@@ -3846,11 +3906,15 @@ mod tests {
         assert_eq!(queued[1].source(), QueuedWorkflowLaunchSource::Manual);
 
         match first_queued {
-            WorkflowLaunchAdmission::Queued(ref queued_launch) => assert_eq!(queued[0].id(), queued_launch.id()),
+            WorkflowLaunchAdmission::Queued(ref queued_launch) => {
+                assert_eq!(queued[0].id(), queued_launch.id())
+            }
             WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
         }
         match second_queued {
-            WorkflowLaunchAdmission::Queued(ref queued_launch) => assert_eq!(queued[1].id(), queued_launch.id()),
+            WorkflowLaunchAdmission::Queued(ref queued_launch) => {
+                assert_eq!(queued[1].id(), queued_launch.id())
+            }
             WorkflowLaunchAdmission::StartNow => panic!("expected queued launch"),
         }
 
@@ -3929,7 +3993,12 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-1")
             .expect("node should be added");
         let endpoint = service
-            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
             .expect("endpoint should be created");
         let watchdog = service
             .create_workflow_watchdog(
@@ -3943,7 +4012,12 @@ mod tests {
             )
             .expect("watchdog should be created");
         let run = service
-            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), Some("manual".to_string()))
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("manual".to_string()),
+            )
             .expect("workflow should invoke");
         let plans = service
             .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
@@ -3971,7 +4045,12 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-1")
             .expect("node should be added");
         let endpoint = service
-            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
             .expect("endpoint should be created");
         let watchdog = service
             .create_workflow_watchdog(
@@ -3985,7 +4064,12 @@ mod tests {
             )
             .expect("watchdog should be created");
         let run = service
-            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), Some("manual".to_string()))
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("manual".to_string()),
+            )
             .expect("workflow should invoke");
         let queued = service
             .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
@@ -3997,7 +4081,10 @@ mod tests {
         assert_eq!(watchdog.last_status(), Some("queued_running"));
         assert!(watchdog.pending_run());
 
-        let session_mut = service.store.get_mut(session.id()).expect("session should exist");
+        let session_mut = service
+            .store
+            .get_mut(session.id())
+            .expect("session should exist");
         let active_run = session_mut
             .workflow_run_mut(run.id())
             .expect("workflow run should exist");
@@ -4518,7 +4605,12 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-1")
             .expect("node should be added");
         let endpoint = service
-            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
             .expect("endpoint should be created");
 
         let watchdog = service
@@ -4554,7 +4646,12 @@ mod tests {
             .add_workflow_node(session.id(), workflow.id(), "agent-1")
             .expect("node should be added");
         let endpoint = service
-            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
             .expect("endpoint should be created");
 
         let bounded = service

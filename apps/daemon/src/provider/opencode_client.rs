@@ -953,8 +953,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient, OpenCodeConfig,
-        OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo, OpenCodeSelectedModel,
+        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient,
+        OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
+        OpenCodeSelectedModel,
     };
 
     #[test]

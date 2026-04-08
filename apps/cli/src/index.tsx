@@ -188,6 +188,7 @@ import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
+  shouldSkipConsecutiveTranscriptEntry,
   shouldRenderProviderStatus,
   type ToolTranscriptUpdate,
 } from "./transcript.js"
@@ -2263,6 +2264,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const appendEntry = (entry: Omit<TranscriptEntry, "id">) => {
+    const previousEntry = entries.at(-1)
+    if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
+      return
+    }
     const nextId = entryCounter() + 1
     const nextEntry: TranscriptEntry = { id: nextId, ...entry }
     if (nextEntry.turnId === undefined && currentTurnId !== null) {
@@ -3500,6 +3505,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const appendTranscriptEntryToAgentPane = (agentId: string, entry: Omit<TranscriptEntry, "id">) => {
     const currentEntries = currentAgentPaneEntries(agentId).map((item) => ({ ...item }))
+    const previousEntry = currentEntries.at(-1)
+    if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
+      return
+    }
     const nextEntry: TranscriptEntry = {
       id: currentEntries.reduce((max, current) => Math.max(max, current.id), 0) + 1,
       ...entry,

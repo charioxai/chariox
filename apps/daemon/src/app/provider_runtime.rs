@@ -1,13 +1,14 @@
-use std::path::PathBuf;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use rand::distributions::{Alphanumeric, DistString};
 
+use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::error::DaemonError;
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderRunState,
-    RuntimeMcpBinding, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderResumeState,
+    ProviderRunState, RuntimeMcpBinding, RuntimeProviderRun,
 };
 
 impl DaemonApp {
@@ -53,13 +54,15 @@ impl DaemonApp {
             return Ok(removed);
         };
         self.tracked_provider_run_processes.remove(provider_run_id);
-        let should_remove_entry = if let Some(entry) = self.tracked_provider_processes.get_mut(&process_key)
-        {
-            entry.owner_provider_run_ids.retain(|id| id != provider_run_id);
-            entry.owner_provider_run_ids.is_empty()
-        } else {
-            false
-        };
+        let should_remove_entry =
+            if let Some(entry) = self.tracked_provider_processes.get_mut(&process_key) {
+                entry
+                    .owner_provider_run_ids
+                    .retain(|id| id != provider_run_id);
+                entry.owner_provider_run_ids.is_empty()
+            } else {
+                false
+            };
         if should_remove_entry {
             self.tracked_provider_processes.remove(&process_key);
         }
@@ -80,7 +83,7 @@ impl DaemonApp {
         if request.resume_state.is_none() {
             if let Some(agent_id) = request.agent_id.as_deref() {
                 if let Ok(agent) = self.agents.get_agent(agent_id) {
-                    let resume_state = agent.provider_resume_state().clone();
+                    let resume_state = sanitize_resume_state_for_launch(&request, &agent);
                     if !resume_state.is_empty() {
                         request = request.with_resume_state(resume_state);
                     }
@@ -311,7 +314,11 @@ impl DaemonApp {
             if !attached_session_ids.is_empty() {
                 teardown_blockers.push(format!(
                     "attached sessions: {}",
-                    attached_session_ids.iter().cloned().collect::<Vec<_>>().join(",")
+                    attached_session_ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
                 ));
             }
             if has_active_prompt {
@@ -320,11 +327,16 @@ impl DaemonApp {
             if !active_workflow_run_ids.is_empty() {
                 teardown_blockers.push(format!(
                     "active workflow runs: {}",
-                    active_workflow_run_ids.iter().cloned().collect::<Vec<_>>().join(",")
+                    active_workflow_run_ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
                 ));
             }
-            let teardown_safe =
-                attached_session_ids.is_empty() && active_workflow_run_ids.is_empty() && !has_active_prompt;
+            let teardown_safe = attached_session_ids.is_empty()
+                && active_workflow_run_ids.is_empty()
+                && !has_active_prompt;
             if let Some(mut process) = ProviderProcessInfo::from_runs(
                 tracked.process_id.clone(),
                 &runs,
@@ -367,9 +379,9 @@ impl DaemonApp {
                 if run.state() == ProviderRunState::Ended {
                     continue;
                 }
-                let _ = self
-                    .providers
-                    .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                let _ =
+                    self.providers
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
                 let _ = self.remove_tracked_provider_process_for_run(run.id());
             }
         }
@@ -485,18 +497,128 @@ impl DaemonApp {
     }
 }
 
+fn sanitize_resume_state_for_launch(
+    request: &LaunchProviderRequest,
+    agent: &AgentInstance,
+) -> ProviderResumeState {
+    let resume_state = agent.provider_resume_state().clone();
+    let requested_variant = request
+        .variant
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let agent_variant = agent.effort().filter(|value| !value.trim().is_empty());
+    let model_or_variant_changed =
+        agent.model() != Some(request.model.as_str()) || agent_variant != requested_variant;
+    if !model_or_variant_changed {
+        return resume_state;
+    }
+
+    match request.adapter_key.as_str() {
+        "opencode" => resume_state.without_opencode_session_id(),
+        "codex" => resume_state.without_codex_thread_id(),
+        _ => resume_state,
+    }
+}
+
 fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::{AgentInstance, GridPosition};
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
-    use crate::provider::LaunchProviderRequest;
+    use crate::provider::{LaunchProviderRequest, ProviderResumeState};
     use crate::session::CreateSessionRequest;
 
     use super::*;
+
+    #[test]
+    fn sanitize_resume_state_keeps_adapter_resume_when_model_and_variant_match() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "opencode",
+            Some("openai/gpt-5.4".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let mut resume_state = ProviderResumeState::from_opencode_session_id("open-session-1");
+        resume_state.set_codex_thread_id("thread-1");
+        agent.set_provider_resume_state(resume_state.clone());
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "openai/gpt-5.4",
+        )
+        .with_variant(Some("high".to_string()));
+
+        assert_eq!(
+            sanitize_resume_state_for_launch(&request, &agent),
+            resume_state
+        );
+    }
+
+    #[test]
+    fn sanitize_resume_state_clears_opencode_resume_when_model_changes() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "opencode",
+            Some("openai/gpt-5.4".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let mut resume_state = ProviderResumeState::from_opencode_session_id("open-session-1");
+        resume_state.set_codex_thread_id("thread-1");
+        agent.set_provider_resume_state(resume_state);
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        )
+        .with_variant(Some("high".to_string()));
+
+        let sanitized = sanitize_resume_state_for_launch(&request, &agent);
+        assert_eq!(sanitized.opencode_session_id(), None);
+        assert_eq!(sanitized.codex_thread_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn sanitize_resume_state_clears_codex_resume_when_variant_changes() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            Some("gpt-5.4".to_string()),
+            Some("medium".to_string()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let mut resume_state = ProviderResumeState::from_codex_thread_id("thread-1");
+        resume_state.set_opencode_session_id("open-session-1");
+        agent.set_provider_resume_state(resume_state);
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.4")
+                .with_variant(Some("high".to_string()));
+
+        let sanitized = sanitize_resume_state_for_launch(&request, &agent);
+        assert_eq!(sanitized.opencode_session_id(), Some("open-session-1"));
+        assert_eq!(sanitized.codex_thread_id(), None);
+    }
 
     #[test]
     fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
@@ -521,20 +643,27 @@ mod tests {
         assert_eq!(processes.len(), 1);
         assert!(processes[0].teardown_safe);
         assert!(processes[0].attached_session_ids.is_empty());
-        assert_eq!(processes[0].owner_provider_run_ids, vec![run.id().to_string()]);
+        assert_eq!(
+            processes[0].owner_provider_run_ids,
+            vec![run.id().to_string()]
+        );
         assert_eq!(app.tracked_provider_processes.len(), 1);
         assert_eq!(app.tracked_provider_run_processes.len(), 1);
-        assert_eq!(processes[0].pid, app.pty.process_id(run.id()).expect("pty pid should resolve"));
+        assert_eq!(
+            processes[0].pid,
+            app.pty
+                .process_id(run.id())
+                .expect("pty pid should resolve")
+        );
 
         let torn_down = app
             .teardown_provider_processes(None)
             .expect("safe teardown should succeed");
         assert_eq!(torn_down.len(), 1);
-        assert!(
-            app.list_provider_processes(None)
-                .expect("provider processes should relist")
-                .is_empty()
-        );
+        assert!(app
+            .list_provider_processes(None)
+            .expect("provider processes should relist")
+            .is_empty());
         assert!(app.tracked_provider_processes.is_empty());
         assert!(app.tracked_provider_run_processes.is_empty());
     }
@@ -568,7 +697,10 @@ mod tests {
             .expect("provider processes should list");
         assert_eq!(processes.len(), 1);
         assert!(!processes[0].teardown_safe);
-        assert_eq!(processes[0].attached_session_ids, vec![session.id().to_string()]);
+        assert_eq!(
+            processes[0].attached_session_ids,
+            vec![session.id().to_string()]
+        );
         assert_eq!(
             processes[0].teardown_blockers,
             vec![format!("attached sessions: {}", session.id())]
@@ -604,18 +736,18 @@ mod tests {
             ))
             .expect("provider launch should succeed");
 
-        assert!(app.tracked_provider_processes.values().any(|process| {
-            process.owner_provider_run_ids == vec![run.id().to_string()]
-        }));
+        assert!(app
+            .tracked_provider_processes
+            .values()
+            .any(|process| { process.owner_provider_run_ids == vec![run.id().to_string()] }));
 
         let _ = app.end_session(session.id()).expect("session should end");
 
         assert!(app.tracked_provider_processes.is_empty());
         assert!(app.tracked_provider_run_processes.is_empty());
-        assert!(
-            app.list_provider_processes(None)
-                .expect("provider processes should list")
-                .is_empty()
-        );
+        assert!(app
+            .list_provider_processes(None)
+            .expect("provider processes should list")
+            .is_empty());
     }
 }

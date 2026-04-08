@@ -182,6 +182,20 @@ impl ProviderResumeState {
     pub fn set_codex_thread_id(&mut self, thread_id: impl Into<String>) {
         self.codex_thread_id = Some(thread_id.into());
     }
+
+    pub fn without_opencode_session_id(&self) -> Self {
+        Self {
+            opencode_session_id: None,
+            codex_thread_id: self.codex_thread_id.clone(),
+        }
+    }
+
+    pub fn without_codex_thread_id(&self) -> Self {
+        Self {
+            opencode_session_id: self.opencode_session_id.clone(),
+            codex_thread_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +361,11 @@ impl RuntimeProviderRun {
             provider_session_id: request
                 .resume_state
                 .as_ref()
-                .and_then(|state| state.opencode_session_id().or_else(|| state.codex_thread_id()))
+                .and_then(|state| {
+                    state
+                        .opencode_session_id()
+                        .or_else(|| state.codex_thread_id())
+                })
                 .map(str::to_string),
             started_at_ms: now,
             last_activity_at_ms: now,
@@ -639,7 +657,10 @@ impl ProviderProcessInfo {
             .find(|run| run.endpoint_mode() == AgentEndpointMode::Managed)
             .or_else(|| runs.first())?;
         let status = if runs.iter().any(|run| {
-            matches!(run.state(), ProviderRunState::Starting | ProviderRunState::Running)
+            matches!(
+                run.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            )
         }) {
             ProviderProcessStatus::Active
         } else {
@@ -708,8 +729,11 @@ mod tests {
 
     #[test]
     fn runtime_provider_run_initializes_explicit_provider_session_id_from_resume_state() {
-        let request = LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
-            .with_resume_state(ProviderResumeState::from_opencode_session_id("open-session-1"));
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+                .with_resume_state(ProviderResumeState::from_opencode_session_id(
+                    "open-session-1",
+                ));
         let launch_result = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "opencode".to_string(),
@@ -726,7 +750,8 @@ mod tests {
 
     #[test]
     fn provider_process_info_prefers_explicit_provider_session_ids() {
-        let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
         let launch_result = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "codex".to_string(),

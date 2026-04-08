@@ -113,13 +113,27 @@ impl QueuedWorkflowLaunch {
         }
     }
 
-    pub fn id(&self) -> &str { &self.id }
-    pub fn workflow_id(&self) -> &str { &self.workflow_id }
-    pub fn endpoint_id(&self) -> &str { &self.endpoint_id }
-    pub fn invocation_prompt(&self) -> Option<&str> { self.invocation_prompt.as_deref() }
-    pub fn source(&self) -> QueuedWorkflowLaunchSource { self.source }
-    pub fn watchdog_id(&self) -> Option<&str> { self.watchdog_id.as_deref() }
-    pub fn queued_at_ms(&self) -> u64 { self.queued_at_ms }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+    pub fn endpoint_id(&self) -> &str {
+        &self.endpoint_id
+    }
+    pub fn invocation_prompt(&self) -> Option<&str> {
+        self.invocation_prompt.as_deref()
+    }
+    pub fn source(&self) -> QueuedWorkflowLaunchSource {
+        self.source
+    }
+    pub fn watchdog_id(&self) -> Option<&str> {
+        self.watchdog_id.as_deref()
+    }
+    pub fn queued_at_ms(&self) -> u64 {
+        self.queued_at_ms
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,23 +196,57 @@ impl WorkflowWatchdogDefinition {
         }
     }
 
-    pub fn id(&self) -> &str { &self.id }
-    pub fn workflow_id(&self) -> &str { &self.workflow_id }
-    pub fn endpoint_id(&self) -> &str { &self.endpoint_id }
-    pub fn enabled(&self) -> bool { self.enabled }
-    pub fn interval_seconds(&self) -> u64 { self.interval_seconds }
-    pub fn invocation_prompt(&self) -> &str { &self.invocation_prompt }
-    pub fn policy(&self) -> WorkflowWatchdogPolicy { self.policy }
-    pub fn max_wakeups(&self) -> Option<u64> { self.max_wakeups }
-    pub fn wakeups_executed(&self) -> u64 { self.wakeups_executed }
-    pub fn next_run_at_ms(&self) -> u64 { self.next_run_at_ms }
-    pub fn last_run_at_ms(&self) -> Option<u64> { self.last_run_at_ms }
-    pub fn last_status(&self) -> Option<&str> { self.last_status.as_deref() }
-    pub fn last_error(&self) -> Option<&str> { self.last_error.as_deref() }
-    pub fn last_workflow_run_id(&self) -> Option<&str> { self.last_workflow_run_id.as_deref() }
-    pub fn pending_run(&self) -> bool { self.pending_run }
-    pub fn created_at_ms(&self) -> u64 { self.created_at_ms }
-    pub fn updated_at_ms(&self) -> u64 { self.updated_at_ms }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn workflow_id(&self) -> &str {
+        &self.workflow_id
+    }
+    pub fn endpoint_id(&self) -> &str {
+        &self.endpoint_id
+    }
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+    pub fn interval_seconds(&self) -> u64 {
+        self.interval_seconds
+    }
+    pub fn invocation_prompt(&self) -> &str {
+        &self.invocation_prompt
+    }
+    pub fn policy(&self) -> WorkflowWatchdogPolicy {
+        self.policy
+    }
+    pub fn max_wakeups(&self) -> Option<u64> {
+        self.max_wakeups
+    }
+    pub fn wakeups_executed(&self) -> u64 {
+        self.wakeups_executed
+    }
+    pub fn next_run_at_ms(&self) -> u64 {
+        self.next_run_at_ms
+    }
+    pub fn last_run_at_ms(&self) -> Option<u64> {
+        self.last_run_at_ms
+    }
+    pub fn last_status(&self) -> Option<&str> {
+        self.last_status.as_deref()
+    }
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+    pub fn last_workflow_run_id(&self) -> Option<&str> {
+        self.last_workflow_run_id.as_deref()
+    }
+    pub fn pending_run(&self) -> bool {
+        self.pending_run
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+    pub fn updated_at_ms(&self) -> u64 {
+        self.updated_at_ms
+    }
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -1911,7 +1959,9 @@ impl RuntimeSession {
         self.workflow_runs.iter().any(|workflow_run| {
             matches!(
                 workflow_run.status(),
-                WorkflowRunStatus::Created | WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
+                WorkflowRunStatus::Created
+                    | WorkflowRunStatus::Running
+                    | WorkflowRunStatus::Waiting
             )
         })
     }
@@ -1924,7 +1974,8 @@ impl RuntimeSession {
         &mut self,
         queued_launch: QueuedWorkflowLaunch,
     ) -> QueuedWorkflowLaunch {
-        self.queued_workflow_launches.push_back(queued_launch.clone());
+        self.queued_workflow_launches
+            .push_back(queued_launch.clone());
         queued_launch
     }
 
@@ -1993,7 +2044,10 @@ impl RuntimeSession {
         Some(self.workflow_watchdogs.remove(index))
     }
 
-    pub fn workflow_node_run_mut(&mut self, workflow_node_run_id: &str) -> Option<&mut WorkflowNodeRun> {
+    pub fn workflow_node_run_mut(
+        &mut self,
+        workflow_node_run_id: &str,
+    ) -> Option<&mut WorkflowNodeRun> {
         self.workflow_runs
             .iter_mut()
             .find_map(|workflow_run| workflow_run.node_run_mut(workflow_node_run_id))
@@ -2011,7 +2065,10 @@ impl RuntimeSession {
             .find(|console| console.workflow_id() == workflow_id)
     }
 
-    pub fn ensure_workflow_console(&mut self, workflow_id: impl Into<String>) -> &mut WorkflowConsole {
+    pub fn ensure_workflow_console(
+        &mut self,
+        workflow_id: impl Into<String>,
+    ) -> &mut WorkflowConsole {
         let workflow_id = workflow_id.into();
         if let Some(index) = self
             .workflow_consoles
@@ -2020,7 +2077,8 @@ impl RuntimeSession {
         {
             return &mut self.workflow_consoles[index];
         }
-        self.workflow_consoles.push(WorkflowConsole::new(workflow_id));
+        self.workflow_consoles
+            .push(WorkflowConsole::new(workflow_id));
         let index = self.workflow_consoles.len() - 1;
         &mut self.workflow_consoles[index]
     }

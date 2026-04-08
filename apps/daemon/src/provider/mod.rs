@@ -26,10 +26,10 @@ pub use opencode_client::{
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub use service::ProviderProcessService;
 pub use types::{
-    default_provider_command_catalogs, AgentEndpointMode, ControlCapability,
-    ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
-    ProviderAssistantCompletion, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
-    ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
-    ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderRunState, RuntimeMcpBinding, RuntimeProviderRun,
+    default_provider_command_catalogs, AgentEndpointMode, ControlCapability, ControlCapabilityMode,
+    ControlOperation, LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,
+    ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
+    ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, RuntimeMcpBinding,
+    RuntimeProviderRun,
 };
