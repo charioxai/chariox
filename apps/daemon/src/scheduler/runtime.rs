@@ -1683,6 +1683,131 @@ mod tests {
     }
 
     #[test]
+    fn terminating_nodes_receive_completion_and_last_turn_prompt_blocks() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-scheduler-terminating",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-scheduler".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-scheduler".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-scheduler-terminating".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.sessions_mut()
+            .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
+            .expect("node completion setting should update");
+        app.sessions_mut()
+            .set_workflow_node_max_turns(session.id(), &workflow_id, &node_id, Some(1))
+            .expect("node max turns should update");
+        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
+            crate::local::SetWorkflowFlushContextRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                flush_agent_context_before_run: false,
+            },
+        ))
+        .expect("workflow flush context should update");
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id.clone(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should exist");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id,
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run_id = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist")
+            .id()
+            .to_string();
+        let prompt = prepare_workflow_turn_prompt(
+            &app,
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            &node_id,
+            "start",
+            Option::<&[WorkflowMessage]>::None,
+        )
+        .expect("prompt should build");
+
+        assert!(prompt.contains("This node is authorized to complete the workflow run."));
+        assert!(prompt.contains(
+            "This is the last allowed turn for this node in the current workflow run."
+        ));
+        assert!(prompt.contains("validate_and_submit_workflow_run_output"));
+    }
+
+    #[test]
     fn workflow_structured_output_accepts_json_message_values() {
         let parsed = parse_workflow_structured_output(
             r#"

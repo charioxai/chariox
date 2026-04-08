@@ -3222,8 +3222,8 @@ mod tests {
     use crate::session::{
         unix_epoch_ms, CreateSessionRequest, PromptSubmissionOutcome, SchedulerState, SessionStatus,
         QueuedWorkflowLaunchSource, WorkflowHandoffPayload, WorkflowLaunchAdmission,
-        WorkflowLaunchPolicy, WorkflowNodeRunStatus, WorkflowRunStatus, WorkflowWatchdogPolicy,
-        WorktreeIsolationMode,
+        WorkflowCompletionSnapshot, WorkflowLaunchPolicy, WorkflowNodeRunStatus,
+        WorkflowRunStatus, WorkflowWatchdogPolicy, WorktreeIsolationMode,
     };
 
     fn test_config() -> DaemonConfig {
@@ -3477,6 +3477,42 @@ mod tests {
     }
 
     #[test]
+    fn workflow_run_output_and_node_completion_settings_can_be_updated() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("workflow node should be added");
+
+        let updated_workflow = service
+            .set_workflow_run_output_schema_ref(
+                session.id(),
+                workflow.id(),
+                Some("/tmp/workflow-run-output-schema.json".to_string()),
+            )
+            .expect("workflow run output schema should update");
+        assert_eq!(
+            updated_workflow.run_output_schema_ref(),
+            Some("/tmp/workflow-run-output-schema.json")
+        );
+
+        let updated_node = service
+            .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+            .expect("node completion setting should update");
+        assert!(updated_node.can_complete_workflow_run());
+
+        let updated_node = service
+            .set_workflow_node_max_turns(session.id(), workflow.id(), node.id(), Some(3))
+            .expect("node max turns should update");
+        assert_eq!(updated_node.max_turns(), Some(3));
+    }
+
+    #[test]
     fn manages_workflow_nodes_edges_and_endpoints() {
         let mut service = SessionService::new(&test_config());
         let session = service
@@ -3654,6 +3690,55 @@ mod tests {
             .cancel_workflow_run(session.id(), workflow_run.id())
             .expect_err("terminal workflow run should reject a second cancellation");
         assert!(matches!(error, DaemonError::InvalidWorkflowRunState { .. }));
+    }
+
+    #[test]
+    fn node_turn_budget_exhaustion_stops_the_whole_run() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("workflow node should be added");
+        service
+            .set_workflow_node_max_turns(session.id(), workflow.id(), node.id(), Some(1))
+            .expect("node max turns should update");
+        let endpoint = service
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let workflow_run = service
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review this diff".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+
+        let update = service
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                node_run.id(),
+                Some(WorkflowCompletionSnapshot::new("done", None)),
+                None,
+            )
+            .expect("node completion should succeed");
+
+        assert_eq!(update.workflow_run.status(), WorkflowRunStatus::Stopped);
+        assert!(update.dispatches.is_empty());
+        assert!(update.workflow_run.final_output().is_none());
     }
 
     #[test]

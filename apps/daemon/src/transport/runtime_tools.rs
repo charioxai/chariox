@@ -959,6 +959,163 @@ mod tests {
     }
 
     #[test]
+    fn validate_and_submit_workflow_run_output_stores_invalid_output_with_warning() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "arroba-runtime-tools-run-output-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&temp_dir);
+        let schema_path = temp_dir.join("workflow-run-output-schema.json");
+        fs::write(
+            &schema_path,
+            r#"{"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}}"#,
+        )
+        .expect("schema fixture should be written");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-run-output", "worktree-run-output"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-run-output",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-run-output".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-run-output".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-run-output".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.sessions_mut()
+            .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
+            .expect("node completion setting should update");
+        app.sessions_mut()
+            .set_workflow_run_output_schema_ref(
+                session.id(),
+                &workflow_id,
+                Some(schema_path.to_string_lossy().to_string()),
+            )
+            .expect("workflow run output schema should update");
+        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
+            crate::local::SetWorkflowFlushContextRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                flush_agent_context_before_run: false,
+            },
+        ))
+        .expect("workflow flush context should update");
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id.clone(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should be added");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+
+        let result = dispatch_runtime_tool_call(
+            &mut app,
+            RuntimeToolCall {
+                tool_name: VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
+                arguments: serde_json::json!({
+                    "workflow_output_json": "{\"value\":\"bad\"}"
+                }),
+                context: WorkflowRuntimeToolContext {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: node_run.id().to_string(),
+                    delivery_token: None,
+                    allowed_output_schema_refs: Vec::new(),
+                    workflow_run_output_schema_ref: Some(
+                        schema_path.to_string_lossy().to_string(),
+                    ),
+                    can_complete_workflow_run: true,
+                },
+            },
+        )
+        .expect("workflow run output submission should succeed");
+
+        assert_eq!(result.payload["submitted"], true);
+        assert_eq!(result.payload["valid"], false);
+        let updated_run = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should still exist");
+        assert_eq!(
+            updated_run.final_output().map(|output| output.message()),
+            Some("{\"value\":\"bad\"}")
+        );
+        assert_eq!(updated_run.final_output_valid(), Some(false));
+        assert!(updated_run.final_output_warning().is_some());
+        assert_eq!(
+            updated_run.completed_by_node_run_id(),
+            Some(node_run.id())
+        );
+    }
+
+    #[test]
     fn authenticated_ack_runtime_tool_resolves_workflow_turn_without_active_prompt() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = match app

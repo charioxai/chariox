@@ -768,6 +768,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let workflowLaunchPolicy: "reject" | "queue" = "reject"
   let workflowFlushContext = true
+  let workflowRunOutputSchema: string | null = null
+  let workflowNodeCanCompleteRun = false
+  let workflowNodeMaxTurns: number | null = null
   let removedQueuedLaunchRef: string | null = null
   let cancelledWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
@@ -878,8 +881,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
         id: "workflow-1",
         alias: alias ?? null,
         flush_agent_context_before_run: workflowFlushContext,
+        run_output_schema_ref: workflowRunOutputSchema,
         nodes: [
-          { id: "node-1", agent_id: resolvedWorkflowAgent.id },
+          {
+            id: "node-1",
+            agent_id: resolvedWorkflowAgent.id,
+            can_complete_workflow_run: workflowNodeCanCompleteRun,
+            max_turns: workflowNodeMaxTurns,
+          },
           { id: "node-2", agent_id: reviewerAgent.id },
         ],
         edges: [],
@@ -922,6 +931,22 @@ test("workflow command opens the workflow screen and manages local workflows", a
         }),
       }
     },
+    setWorkflowRunOutputSchema: async (workflowRef, runOutputSchemaRef) => {
+      workflowRunOutputSchema = runOutputSchemaRef
+      const workflow = {
+        ...(workflows.get(workflowRef) ?? { id: workflowRef, alias: null }),
+        run_output_schema_ref: workflowRunOutputSchema,
+      }
+      workflows.set(workflowRef, workflow)
+      return {
+        workflow,
+        session: makeSession({
+          workflows: [...workflows.values()],
+          workflow_launch_policy: workflowLaunchPolicy,
+          queued_workflow_launches: queuedWorkflowLaunches,
+        }),
+      }
+    },
     createWorkflowEndpoint: async (workflowRef, entryNodeId, alias) => ({
       endpoint: { id: "endpoint-1", alias: alias ?? null, entry_node_id: entryNodeId },
       workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
@@ -940,16 +965,44 @@ test("workflow command opens the workflow screen and manages local workflows", a
     addWorkflowNode: async (_workflowRef, agentId) => {
       addedWorkflowNodeAgentId = agentId
       return {
-        node: { id: "node-1", agent_id: agentId },
+        node: { id: "node-1", agent_id: agentId, can_complete_workflow_run: workflowNodeCanCompleteRun, max_turns: workflowNodeMaxTurns },
         workflow: { id: "workflow-1", alias: null },
         session: makeSession(),
       }
     },
     removeWorkflowNode: async (_workflowRef, nodeId) => ({
-      node: { id: nodeId, agent_id: "agent-1" },
+      node: { id: nodeId, agent_id: "agent-1", can_complete_workflow_run: workflowNodeCanCompleteRun, max_turns: workflowNodeMaxTurns },
       workflow: { id: "workflow-1", alias: null },
       session: makeSession(),
     }),
+    setWorkflowNodeCanCompleteRun: async (workflowRef, nodeId, canCompleteWorkflowRun) => {
+      workflowNodeCanCompleteRun = canCompleteWorkflowRun
+      const workflow = workflows.get(workflowRef) ?? { id: workflowRef, alias: null, nodes: [] }
+      const nodes = (workflow.nodes ?? []).map((node) =>
+        node.id === nodeId ? { ...node, can_complete_workflow_run: canCompleteWorkflowRun } : node,
+      )
+      const nextWorkflow = { ...workflow, nodes }
+      workflows.set(workflowRef, nextWorkflow)
+      return {
+        node: nodes.find((node) => node.id === nodeId) ?? { id: nodeId, agent_id: "agent-1", can_complete_workflow_run: canCompleteWorkflowRun },
+        workflow: nextWorkflow,
+        session: makeSession({ workflows: [...workflows.values()] }),
+      }
+    },
+    setWorkflowNodeMaxTurns: async (workflowRef, nodeId, maxTurns) => {
+      workflowNodeMaxTurns = maxTurns
+      const workflow = workflows.get(workflowRef) ?? { id: workflowRef, alias: null, nodes: [] }
+      const nodes = (workflow.nodes ?? []).map((node) =>
+        node.id === nodeId ? { ...node, max_turns: maxTurns } : node,
+      )
+      const nextWorkflow = { ...workflow, nodes }
+      workflows.set(workflowRef, nextWorkflow)
+      return {
+        node: nodes.find((node) => node.id === nodeId) ?? { id: nodeId, agent_id: "agent-1", max_turns: maxTurns },
+        workflow: nextWorkflow,
+        session: makeSession({ workflows: [...workflows.values()] }),
+      }
+    },
     addWorkflowEdge: async (_workflowRef, fromNodeId, toNodeId) => {
       addedWorkflowEdgeRefs = { fromNodeId, toNodeId }
       const edge = { id: "edge-1", from_node_id: fromNodeId, to_node_id: toNodeId }
@@ -1367,6 +1420,20 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
+    raw: "/workflow run-output-schema workflow-1",
+    args: ["run-output-schema", "workflow-1"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 run-output-schema: none")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow run-output-schema workflow-1 /tmp/schema.json",
+    args: ["run-output-schema", "workflow-1", "/tmp/schema.json"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 run-output-schema set to /tmp/schema.json")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
     raw: "/workflow launch-policy queue",
     args: ["launch-policy", "queue"],
   })
@@ -1389,6 +1456,20 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(removedQueuedLaunchRef, "queued-1")
   assert.equal(flashedMessage, "removed queued workflow launch queued-1")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow node can-complete-run workflow-1 node-1 true",
+    args: ["node", "can-complete-run", "workflow-1", "node-1", "true"],
+  })
+  assert.equal(flashedMessage, "workflow node node-1 can-complete-run set to true")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow node max-turns workflow-1 node-1 2",
+    args: ["node", "max-turns", "workflow-1", "node-1", "2"],
+  })
+  assert.equal(flashedMessage, "workflow node node-1 max-turns set to 2")
 
   queuedWorkflowLaunches.push({
     id: "queued-2",
