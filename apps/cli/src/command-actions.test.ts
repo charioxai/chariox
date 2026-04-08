@@ -767,6 +767,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let workflowLaunchPolicy: "reject" | "queue" = "reject"
+  let workflowFlushContext = true
   let removedQueuedLaunchRef: string | null = null
   let cancelledWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
@@ -876,6 +877,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
       const workflow = {
         id: "workflow-1",
         alias: alias ?? null,
+        flush_agent_context_before_run: workflowFlushContext,
         nodes: [
           { id: "node-1", agent_id: resolvedWorkflowAgent.id },
           { id: "node-2", agent_id: reviewerAgent.id },
@@ -903,6 +905,22 @@ test("workflow command opens the workflow screen and manages local workflows", a
       const next = { ...workflow, alias }
       workflows.set(workflowId, next)
       return next
+    },
+    setWorkflowFlushContext: async (workflowRef, flushAgentContextBeforeRun) => {
+      workflowFlushContext = flushAgentContextBeforeRun
+      const workflow = {
+        ...(workflows.get(workflowRef) ?? { id: workflowRef, alias: null }),
+        flush_agent_context_before_run: workflowFlushContext,
+      }
+      workflows.set(workflowRef, workflow)
+      return {
+        workflow,
+        session: makeSession({
+          workflows: [...workflows.values()],
+          workflow_launch_policy: workflowLaunchPolicy,
+          queued_workflow_launches: queuedWorkflowLaunches,
+        }),
+      }
     },
     createWorkflowEndpoint: async (workflowRef, entryNodeId, alias) => ({
       endpoint: { id: "endpoint-1", alias: alias ?? null, entry_node_id: entryNodeId },
@@ -1332,6 +1350,20 @@ test("workflow command opens the workflow screen and manages local workflows", a
     args: ["launch-policy"],
   })
   assert.equal(flashedMessage, "workflow launch policy: reject")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow flush-context workflow-1",
+    args: ["flush-context", "workflow-1"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 flush-context: true")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow flush-context workflow-1 false",
+    args: ["flush-context", "workflow-1", "false"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 flush-context set to false")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

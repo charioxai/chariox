@@ -221,6 +221,10 @@ type CommandActionDeps = {
   listWorkflowWatchdogs?: (workflowRef?: string | null) => Promise<{ watchdogs: WorkflowWatchdogDefinition[] }>
   setWorkflowWatchdogEnabled?: (watchdogRef: string, enabled: boolean) => Promise<WorkflowWatchdogPayload>
   removeWorkflowWatchdog?: (watchdogRef: string) => Promise<WorkflowWatchdogPayload>
+  setWorkflowFlushContext?: (
+    workflowRef: string,
+    flushAgentContextBeforeRun: boolean,
+  ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
   setWorkflowLaunchPolicy?: (policy: "reject" | "queue") => Promise<{ session: RuntimeSession }>
   listQueuedWorkflowLaunches?: () => Promise<QueuedWorkflowLaunch[]>
   removeQueuedWorkflowLaunch?: (queueItemRef: string) => Promise<QueuedWorkflowLaunchPayload>
@@ -917,6 +921,43 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const payload = await deps.setWorkflowLaunchPolicy(value)
       deps.applySessionState(payload.session)
       deps.flashFooter(`workflow launch policy set to ${value}`, "info")
+      return
+    }
+
+    if (subcommand === "flush-context") {
+      const workflowRef = args[1]
+      const value = args[2]?.trim().toLowerCase()
+      if (!workflowRef) {
+        deps.flashFooter("usage: /workflow flush-context <workflow-ref> [true|false]", "error")
+        return
+      }
+      const resolved = await deps.resolveWorkflow(workflowRef)
+      deps.upsertWorkflowDefinition(resolved.workflow)
+      if (!value) {
+        deps.flashFooter(
+          `workflow ${resolved.workflow.id} flush-context: ${(resolved.workflow.flush_agent_context_before_run ?? true) ? "true" : "false"}`,
+          "info",
+        )
+        return
+      }
+      if (value !== "true" && value !== "false") {
+        deps.flashFooter("usage: /workflow flush-context <workflow-ref> [true|false]", "error")
+        return
+      }
+      if (!deps.setWorkflowFlushContext) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const payload = await deps.setWorkflowFlushContext(
+        resolved.workflow.id,
+        value === "true",
+      )
+      deps.applySessionState(payload.session)
+      deps.upsertWorkflowDefinition(payload.workflow)
+      deps.flashFooter(
+        `workflow ${payload.workflow.id} flush-context set to ${payload.workflow.flush_agent_context_before_run ? "true" : "false"}`,
+        "info",
+      )
       return
     }
 

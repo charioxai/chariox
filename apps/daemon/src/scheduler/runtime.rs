@@ -1057,7 +1057,7 @@ fn workflow_runtime_base_directory(
         .find(|candidate| candidate.id() == workflow_node_run_id)?;
     let base_directory = app
         .providers()
-        .get_run_for_agent(session_id, node_run.agent_id())
+        .get_latest_run_for_agent(session_id, node_run.agent_id())
         .and_then(|run| run.working_directory().cloned())
         .or_else(|| {
             let worktree = std::path::PathBuf::from(session.worktree_id());
@@ -1431,6 +1431,14 @@ mod tests {
             },
         ))
         .expect("instructions should update");
+        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
+            crate::local::SetWorkflowFlushContextRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                flush_agent_context_before_run: false,
+            },
+        ))
+        .expect("workflow flush context should update");
         app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
             CreateWorkflowEndpointRequest {
                 session_id: session.id().to_string(),

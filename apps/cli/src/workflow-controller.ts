@@ -31,6 +31,7 @@ import {
   removeWorkflowWatchdogRequest,
   resumeWorkflowRunRequest,
   resolveWorkflowRequest,
+  setWorkflowFlushContextRequest,
   setWorkflowLaunchPolicyRequest,
   setWorkflowWatchdogEnabledRequest,
   updateWorkflowNodeInstructionsRequest,
@@ -362,6 +363,27 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload
   }
 
+  const setWorkflowFlushContext = async (
+    workflowRef: string,
+    flushAgentContextBeforeRun: boolean,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowFlushContextRequest(
+        deps.sessionState().id,
+        workflowRef,
+        flushAgentContextBeforeRun,
+      ),
+    )
+    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowFlushContextUpdated",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   const listQueuedWorkflowLaunches = async () => {
     const response = await deps.sendRequest(
       listQueuedWorkflowLaunchesRequest(deps.sessionState().id),
@@ -462,6 +484,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
     removeWorkflowWatchdog,
+    setWorkflowFlushContext,
     setWorkflowLaunchPolicy,
     listQueuedWorkflowLaunches,
     removeQueuedWorkflowLaunch,

@@ -70,6 +70,7 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "workflow-new", label: "new", description: "Create a new workflow", value: "/workflow new " },
       { id: "workflow-run", label: "run", description: "Invoke a workflow endpoint", value: "/workflow run " },
       { id: "workflow-start", label: "start", description: "Alias for /workflow run", value: "/workflow start " },
+      { id: "workflow-flush-context", label: "flush-context", description: "Set whether workflow runs start with fresh provider sessions", value: "/workflow flush-context " },
       { id: "workflow-launch-policy", label: "launch-policy", description: "Set session-wide workflow launch admission", value: "/workflow launch-policy " },
       { id: "workflow-max-turns", label: "max-turns", description: "Set max workflow turns across all agents", value: "/workflow max-turns " },
       { id: "workflow-runs", label: "runs", description: "List workflow runs in the session", value: "/workflow runs " },

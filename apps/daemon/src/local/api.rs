@@ -428,6 +428,13 @@ pub struct RemoveWorkflowWatchdogRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowFlushContextRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub flush_agent_context_before_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkflowLaunchPolicyRequest {
     pub session_id: String,
     pub policy: WorkflowLaunchPolicy,
@@ -510,6 +517,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest),
     SetWorkflowWatchdogEnabled(SetWorkflowWatchdogEnabledRequest),
     RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
+    SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
     SetWorkflowLaunchPolicy(SetWorkflowLaunchPolicyRequest),
     ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
     RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
@@ -735,6 +743,10 @@ pub enum LocalDaemonResponse {
     },
     WorkflowWatchdogRemoved {
         watchdog: WorkflowWatchdogDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowFlushContextUpdated {
+        workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
     WorkflowLaunchPolicyUpdated {
@@ -1371,6 +1383,15 @@ impl DaemonApp {
                     .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
+            }
+            LocalDaemonRequest::SetWorkflowFlushContext(request) => {
+                let workflow = self.sessions_mut().set_workflow_flush_agent_context_before_run(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    request.flush_agent_context_before_run,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
             }
             LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
                 let session = self

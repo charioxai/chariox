@@ -276,6 +276,20 @@ export function createWorkflowWatchdogRequest(
   }
 }
 
+export function setWorkflowFlushContextRequest(
+  sessionId: string,
+  workflowRef: string,
+  flushAgentContextBeforeRun: boolean,
+) {
+  return {
+    SetWorkflowFlushContext: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      flush_agent_context_before_run: flushAgentContextBeforeRun,
+    },
+  }
+}
+
 export function listWorkflowWatchdogsRequest(sessionId: string, workflowRef?: string | null) {
   return {
     ListWorkflowWatchdogs: {

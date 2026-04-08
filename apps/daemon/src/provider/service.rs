@@ -248,6 +248,20 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    pub fn get_latest_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
+            })
+            .max_by_key(|run| (run.last_activity_at_ms(), run.started_at_ms()))
+            .cloned()
+    }
+
     pub fn get_session_run_for_provider(
         &self,
         session_id: &str,

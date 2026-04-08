@@ -208,6 +208,7 @@ export type TranscriptEntry = {
 export type WorkflowDefinition = {
   id: string
   alias: string | null
+  flush_agent_context_before_run?: boolean
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]
   endpoints?: WorkflowEndpointDefinition[]

@@ -19,7 +19,7 @@ pub use api::{
     PumpTerminalOutputRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
     ClearQueuedWorkflowLaunchesRequest, RemoveQueuedWorkflowLaunchRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RemoveWorkflowWatchdogRequest, ResizeTerminalRequest,
     ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest,
-    SetWorkflowLaunchPolicyRequest,
+    SetWorkflowFlushContextRequest, SetWorkflowLaunchPolicyRequest,
     SetWorkflowWatchdogEnabledRequest,
     StartProviderLoginRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
     TeardownProviderProcessesRequest,

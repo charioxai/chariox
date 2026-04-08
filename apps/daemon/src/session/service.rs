@@ -224,6 +224,32 @@ impl SessionService {
         Ok(workflow.clone())
     }
 
+    pub fn set_workflow_flush_agent_context_before_run(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        value: bool,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session = self
+            .store
+            .get_mut(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow = session
+            .workflow_mut(&workflow_id)
+            .ok_or_else(|| DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+            })?;
+        workflow.set_flush_agent_context_before_run(value);
+        Ok(workflow.clone())
+    }
+
     pub fn assign_session_alias(
         &mut self,
         session_id: &str,
@@ -3204,6 +3230,24 @@ mod tests {
                 .id(),
             first.id()
         );
+        assert!(first.flush_agent_context_before_run());
+    }
+
+    #[test]
+    fn workflow_flush_context_defaults_true_and_can_be_updated() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let workflow = service
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        assert!(workflow.flush_agent_context_before_run());
+
+        let updated = service
+            .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), false)
+            .expect("workflow flush setting should update");
+        assert!(!updated.flush_agent_context_before_run());
     }
 
     #[test]

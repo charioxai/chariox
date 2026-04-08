@@ -120,6 +120,55 @@ mod tests {
     }
 
     #[test]
+    fn workflow_runs_flush_participating_agent_provider_runs_by_default() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+
+        let initial_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("review".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be added");
+        let _endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .expect("workflow endpoint should be created");
+
+        let workflow = app
+            .sessions()
+            .resolve_workflow_ref(session.id(), workflow.id())
+            .expect("workflow should resolve with nodes");
+
+        app.flush_workflow_agent_context_if_needed(session.id(), &workflow)
+            .expect("workflow flush should succeed");
+
+        let flushed_run = app
+            .providers()
+            .get_run(initial_run.id())
+            .expect("initial provider run should still exist");
+        assert_eq!(flushed_run.state(), super::provider::ProviderRunState::Ended);
+    }
+
+    #[test]
     fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

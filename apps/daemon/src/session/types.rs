@@ -10,6 +10,10 @@ pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
 pub const DEFAULT_WORKFLOW_LAUNCH_POLICY: WorkflowLaunchPolicy = WorkflowLaunchPolicy::Reject;
 
+fn default_workflow_flush_agent_context_before_run() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
     id: String,
@@ -501,6 +505,8 @@ impl WorkflowConsole {
 pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
+    #[serde(default = "default_workflow_flush_agent_context_before_run")]
+    flush_agent_context_before_run: bool,
     nodes: Vec<WorkflowNodeDefinition>,
     edges: Vec<WorkflowEdgeDefinition>,
     endpoints: Vec<WorkflowEndpointDefinition>,
@@ -511,6 +517,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             nodes: Vec::new(),
             edges: Vec::new(),
             endpoints: Vec::new(),
@@ -523,6 +530,10 @@ impl WorkflowDefinition {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    pub fn flush_agent_context_before_run(&self) -> bool {
+        self.flush_agent_context_before_run
     }
 
     pub fn nodes(&self) -> &[WorkflowNodeDefinition] {
@@ -539,6 +550,10 @@ impl WorkflowDefinition {
 
     pub fn set_alias(&mut self, alias: Option<String>) {
         self.alias = alias;
+    }
+
+    pub fn set_flush_agent_context_before_run(&mut self, value: bool) {
+        self.flush_agent_context_before_run = value;
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {

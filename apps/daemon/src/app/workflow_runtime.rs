@@ -4,6 +4,7 @@ use crate::session::{
     unix_epoch_ms, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, WorkflowDefinition,
     WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun, WorkflowWatchdogTickPlan,
 };
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowLaunchOutcome {
@@ -39,6 +40,7 @@ impl DaemonApp {
             prompt.clone(),
         )? {
             WorkflowLaunchAdmission::StartNow => {
+                self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
                 let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
                     session_id,
                     workflow.id(),
@@ -198,6 +200,7 @@ impl DaemonApp {
             queued_launch.endpoint_id(),
         )?;
         crate::scheduler::runtime::validate_workflow_agents(self, session_id, &workflow)?;
+        self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
         let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
             session_id,
             workflow.id(),
@@ -218,5 +221,47 @@ impl DaemonApp {
             workflow,
             endpoint,
         })
+    }
+
+    pub(crate) fn flush_workflow_agent_context_if_needed(
+        &mut self,
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), DaemonError> {
+        if !workflow.flush_agent_context_before_run() {
+            return Ok(());
+        }
+        let workflow_agent_ids = workflow
+            .nodes()
+            .iter()
+            .map(|node| node.agent_id().to_string())
+            .collect::<BTreeSet<_>>();
+        if workflow_agent_ids.is_empty() {
+            return Ok(());
+        }
+        let should_cancel_active_prompt = self
+            .sessions()
+            .get_session(session_id)?
+            .active_prompt()
+            .map(|prompt| prompt.target_agent_id())
+            .is_some_and(|agent_id| workflow_agent_ids.contains(agent_id));
+        if should_cancel_active_prompt {
+            let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
+                self,
+                session_id,
+            )?;
+        }
+        for agent_id in workflow_agent_ids {
+            if let Some(run) = self.providers().get_run_for_agent(session_id, &agent_id) {
+                if run.state() == crate::provider::ProviderRunState::Ended {
+                    continue;
+                }
+                let run = self
+                    .providers
+                    .terminate_run(&mut self.sessions, session_id, run.id())?;
+                let _ = self.remove_tracked_provider_process_for_run(run.id());
+            }
+        }
+        Ok(())
     }
 }
