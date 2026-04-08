@@ -334,6 +334,7 @@ pub fn workflow_max_turns(app: &DaemonApp, session_id: &str) -> Option<usize> {
         .get(WORKFLOW_MAX_TURNS_CONFIG_KEY)
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
+        .or(Some(crate::session::DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT))
 }
 
 pub fn is_workflow_prompt_attachment(attachment_id: &str) -> bool {
@@ -495,6 +496,40 @@ pub fn on_workflow_prompt_completed(
             );
         }
     }
+    if workflow_run.status() == WorkflowRunStatus::Stopped
+        && workflow_run.final_output().is_none()
+        && workflow_run
+            .failure_events()
+            .iter()
+            .all(|event| event.kind() != WorkflowFailureKind::NodeTurnBudgetExhausted)
+    {
+        record_and_route_workflow_failure(
+            app,
+            session_id,
+            workflow_run_id,
+            &WorkflowFailureEvent::new(
+                WorkflowFailureKind::NodeTurnBudgetExhausted,
+                workflow_node_run_id,
+                Vec::new(),
+                "workflow run stopped after a node exhausted its turn budget",
+            ),
+        );
+    }
+    if workflow_run.final_output_valid() == Some(false) {
+        record_and_route_workflow_failure(
+            app,
+            session_id,
+            workflow_run_id,
+            &WorkflowFailureEvent::new(
+                WorkflowFailureKind::WorkflowRunOutputValidationFailed,
+                workflow_node_run_id,
+                Vec::new(),
+                workflow_run
+                    .final_output_warning()
+                    .unwrap_or("workflow run output validation failed"),
+            ),
+        );
+    }
     if validation_warnings.is_empty() {
         let updated = app.sessions_mut().mark_workflow_turn_validated_completed(
             session_id,
@@ -522,8 +557,9 @@ pub fn on_workflow_prompt_completed(
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
     let state_suffix = match workflow_run.status() {
         WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+        WorkflowRunStatus::Completing => "is completing",
         WorkflowRunStatus::Completed => "completed",
-        WorkflowRunStatus::Stopped => "stopped after reaching the max turn limit",
+        WorkflowRunStatus::Stopped => "stopped",
         _ => "updated",
     };
     app.record_notice(
@@ -828,11 +864,19 @@ fn build_workflow_turn_prompt(
         &reference_line,
         &control_line,
     );
+    let system_node_prompt = render_workflow_node_system_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        node_id,
+    );
     format!(
-        "{}Workflow-level prompt:\n{}\n\n{}\n",
+        "{}Workflow-level prompt:\n{}\n\n{}\n{}",
         entry_line,
         workflow_prompt,
-        system_prompt
+        system_prompt,
+        system_node_prompt
     )
 }
 
@@ -895,6 +939,126 @@ fn workflow_system_prompt_template_path(
             .join(".arroba")
             .join("system-prompts")
             .join("workflow-turn.md"),
+    )
+}
+
+fn render_workflow_node_system_prompt(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    node_id: &str,
+) -> String {
+    let completion_block = load_workflow_run_completion_prompt_template(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )
+    .filter(|_| workflow_node_can_complete_workflow_run(app, session_id, workflow_run_id, node_id))
+    .unwrap_or_default();
+    let last_turn_block = workflow_last_turn_notice_block(
+        app,
+        session_id,
+        workflow_run_id,
+        node_id,
+    );
+    if completion_block.is_empty() && last_turn_block.is_empty() {
+        return String::new();
+    }
+    format!("{completion_block}{last_turn_block}")
+}
+
+fn load_workflow_run_completion_prompt_template(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<String> {
+    let path = workflow_run_completion_prompt_template_path(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, default_workflow_run_completion_prompt_template());
+    }
+    Some(
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| default_workflow_run_completion_prompt_template().to_string()),
+    )
+}
+
+fn workflow_run_completion_prompt_template_path(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<std::path::PathBuf> {
+    let base_directory =
+        workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
+    Some(
+        base_directory
+            .join(".arroba")
+            .join("system-prompts")
+            .join("workflow-run-completion.md"),
+    )
+}
+
+fn workflow_node_can_complete_workflow_run(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    node_id: &str,
+) -> bool {
+    app.sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok()
+        .and_then(|run| app.sessions().resolve_workflow_ref(session_id, run.workflow_id()).ok())
+        .and_then(|workflow| workflow.node(node_id).cloned())
+        .is_some_and(|node| node.can_complete_workflow_run())
+}
+
+fn workflow_last_turn_notice_block(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    node_id: &str,
+) -> String {
+    let Some(workflow_run) = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok()
+    else {
+        return String::new();
+    };
+    let Some(workflow) = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
+        .ok()
+    else {
+        return String::new();
+    };
+    let Some(node) = workflow.node(node_id) else {
+        return String::new();
+    };
+    let Some(max_turns) = node.max_turns() else {
+        return String::new();
+    };
+    let turn_index = workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| node_run.node_id() == node_id)
+        .count() as u32;
+    if turn_index != max_turns {
+        return String::new();
+    }
+    format!(
+        "System node-level prompt:\nThis is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_output`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n"
     )
 }
 
@@ -1245,6 +1409,10 @@ fn write_workflow_control_mailbox_entry(
             WorkflowFailureKind::MissingAck => "missing_ack",
             WorkflowFailureKind::MissingStructuredOutput => "missing_structured_output",
             WorkflowFailureKind::OutputValidationFailed => "output_validation_failed",
+            WorkflowFailureKind::WorkflowRunOutputValidationFailed => {
+                "workflow_run_output_validation_failed"
+            }
+            WorkflowFailureKind::NodeTurnBudgetExhausted => "node_turn_budget_exhausted",
             WorkflowFailureKind::RunStopped => "run_stopped",
             WorkflowFailureKind::ProviderFailure => "provider_failure",
             WorkflowFailureKind::TransportFailure => "transport_failure",
@@ -1580,6 +1748,10 @@ fn workflow_completion_summary(source: &str) -> String {
 
 fn default_workflow_system_prompt_template() -> &'static str {
     "You are an agent participating in an Arroba workflow turn.\n\n{{NODE_INSTRUCTION_REFERENCE_BLOCK}}Your node-level instructions are in the referenced markdown file above. If you do not remember them exactly, read that file before continuing.\n\n{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}{{OUTGOING_EDGE_CONTRACTS_BLOCK}}{{CONTROL_MAILBOX_BLOCK}}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\nIf an outgoing edge contract for this turn includes an `output_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_output` with the delivery token above, that `output_schema_ref`, and your proposed `output.message` JSON. If no `output_schema_ref` is present for this turn, do not call `validate_workflow_output`.\n\nIf your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream output message\"}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream payload is only output.message plus any workflow-owned artifacts.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes an `output_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
+}
+
+fn default_workflow_run_completion_prompt_template() -> &'static str {
+    "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_output`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n"
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

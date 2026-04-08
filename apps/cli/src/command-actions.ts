@@ -237,6 +237,20 @@ type CommandActionDeps = {
     nodeId: string,
     instructions: string | null,
   ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeCanCompleteRun?: (
+    workflowRef: string,
+    nodeId: string,
+    canCompleteWorkflowRun: boolean,
+  ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeMaxTurns?: (
+    workflowRef: string,
+    nodeId: string,
+    maxTurns: number | null,
+  ) => Promise<WorkflowNodePayload>
+  setWorkflowRunOutputSchema?: (
+    workflowRef: string,
+    runOutputSchemaRef: string | null,
+  ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
   openWorkflowNodeInstructionsEditor?: (workflowId: string, nodeId: string, draft: string) => void
   closeWorkflowNodeInstructionsEditor?: () => void
   getWorkflowNodeInstructionsDraft?: () => string
@@ -961,6 +975,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "run-output-schema") {
+      const workflowRef = args[1]
+      const value = args[2]
+      if (!workflowRef) {
+        deps.flashFooter("usage: /workflow run-output-schema <workflow-ref> [schema-ref|none]", "error")
+        return
+      }
+      const resolved = await deps.resolveWorkflow(workflowRef)
+      deps.upsertWorkflowDefinition(resolved.workflow)
+      if (value === undefined) {
+        deps.flashFooter(
+          `workflow ${resolved.workflow.id} run-output-schema: ${resolved.workflow.run_output_schema_ref ?? "none"}`,
+          "info",
+        )
+        return
+      }
+      if (!deps.setWorkflowRunOutputSchema) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const schemaRef = value.trim().toLowerCase() === "none" ? null : value
+      const payload = await deps.setWorkflowRunOutputSchema(resolved.workflow.id, schemaRef)
+      deps.applySessionState(payload.session)
+      deps.upsertWorkflowDefinition(payload.workflow)
+      deps.flashFooter(
+        `workflow ${payload.workflow.id} run-output-schema set to ${payload.workflow.run_output_schema_ref ?? "none"}`,
+        "info",
+      )
+      return
+    }
+
     if (subcommand === "queue") {
       const action = args[1]?.trim().toLowerCase() ?? "list"
       if (action === "list") {
@@ -1233,8 +1278,59 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         deps.flashFooter("editing node instructions in the I/O panel; submit text then /workflow node instructions save", "info")
         return
       }
+      if (action === "can-complete-run") {
+        const nodeId = args[3]
+        const value = args[4]?.trim().toLowerCase()
+        if (!workflowRef || !nodeId || (value !== "true" && value !== "false")) {
+          deps.flashFooter("usage: /workflow node can-complete-run <workflow-ref> <node-id> <true|false>", "error")
+          return
+        }
+        if (!deps.setWorkflowNodeCanCompleteRun) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const payload = await deps.setWorkflowNodeCanCompleteRun(workflowRef, nodeId, value === "true")
+        deps.applySessionState(payload.session)
+        deps.upsertWorkflowDefinition(payload.workflow)
+        deps.flashFooter(
+          `workflow node ${payload.node.id} can-complete-run set to ${payload.node.can_complete_workflow_run ? "true" : "false"}`,
+          "info",
+        )
+        return
+      }
+      if (action === "max-turns") {
+        const nodeId = args[3]
+        const value = args[4]?.trim().toLowerCase()
+        if (!workflowRef || !nodeId || !value) {
+          deps.flashFooter("usage: /workflow node max-turns <workflow-ref> <node-id> <count|none>", "error")
+          return
+        }
+        if (!deps.setWorkflowNodeMaxTurns) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        let maxTurns: number | null
+        if (value === "none") {
+          maxTurns = null
+        } else {
+          const parsed = Number.parseInt(value, 10)
+          if (!Number.isFinite(parsed) || parsed <= 0) {
+            deps.flashFooter("usage: /workflow node max-turns <workflow-ref> <node-id> <count|none>", "error")
+            return
+          }
+          maxTurns = parsed
+        }
+        const payload = await deps.setWorkflowNodeMaxTurns(workflowRef, nodeId, maxTurns)
+        deps.applySessionState(payload.session)
+        deps.upsertWorkflowDefinition(payload.workflow)
+        deps.flashFooter(
+          `workflow node ${payload.node.id} max-turns set to ${payload.node.max_turns ?? "none"}`,
+          "info",
+        )
+        return
+      }
       deps.flashFooter(
-        "usage: /workflow node add <workflow-ref> <agent-id> | remove <workflow-ref> <node-id> | instructions ...",
+        "usage: /workflow node add <workflow-ref> <agent-id> | remove <workflow-ref> <node-id> | instructions ... | can-complete-run <workflow-ref> <node-id> <true|false> | max-turns <workflow-ref> <node-id> <count|none>",
         "error",
       )
       return

@@ -33,6 +33,9 @@ import {
   resolveWorkflowRequest,
   setWorkflowFlushContextRequest,
   setWorkflowLaunchPolicyRequest,
+  setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowNodeMaxTurnsRequest,
+  setWorkflowRunOutputSchemaRequest,
   setWorkflowWatchdogEnabledRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
@@ -239,6 +242,34 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     )
   }
 
+  const setWorkflowNodeCanCompleteRun = async (
+    workflowRef: string,
+    nodeId: string,
+    canCompleteWorkflowRun: boolean,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowNodeCanCompleteRunRequest(deps.sessionState().id, workflowRef, nodeId, canCompleteWorkflowRun),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeCanCompleteRunUpdated",
+    )
+  }
+
+  const setWorkflowNodeMaxTurns = async (
+    workflowRef: string,
+    nodeId: string,
+    maxTurns: number | null,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowNodeMaxTurnsRequest(deps.sessionState().id, workflowRef, nodeId, maxTurns),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeMaxTurnsUpdated",
+    )
+  }
+
   const addWorkflowEdge = async (workflowRef: string, fromNodeId: string, toNodeId: string) => {
     const response = await deps.sendRequest(
       addWorkflowEdgeRequest(deps.sessionState().id, workflowRef, fromNodeId, toNodeId),
@@ -384,6 +415,23 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload
   }
 
+  const setWorkflowRunOutputSchema = async (
+    workflowRef: string,
+    runOutputSchemaRef: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowRunOutputSchemaRequest(deps.sessionState().id, workflowRef, runOutputSchemaRef),
+    )
+    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowRunOutputSchemaUpdated",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   const listQueuedWorkflowLaunches = async () => {
     const response = await deps.sendRequest(
       listQueuedWorkflowLaunchesRequest(deps.sessionState().id),
@@ -477,6 +525,8 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     addWorkflowNode,
     removeWorkflowNode,
     updateWorkflowNodeInstructions,
+    setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeMaxTurns,
     addWorkflowEdge,
     removeWorkflowEdge,
     invokeWorkflowEndpoint,
@@ -485,6 +535,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     setWorkflowWatchdogEnabled,
     removeWorkflowWatchdog,
     setWorkflowFlushContext,
+    setWorkflowRunOutputSchema,
     setWorkflowLaunchPolicy,
     listQueuedWorkflowLaunches,
     removeQueuedWorkflowLaunch,

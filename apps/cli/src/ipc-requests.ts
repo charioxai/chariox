@@ -211,6 +211,38 @@ export function updateWorkflowNodeInstructionsRequest(
   }
 }
 
+export function setWorkflowNodeCanCompleteRunRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  canCompleteWorkflowRun: boolean,
+) {
+  return {
+    SetWorkflowNodeCanCompleteRun: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      can_complete_workflow_run: canCompleteWorkflowRun,
+    },
+  }
+}
+
+export function setWorkflowNodeMaxTurnsRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  maxTurns: number | null,
+) {
+  return {
+    SetWorkflowNodeMaxTurns: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      max_turns: maxTurns,
+    },
+  }
+}
+
 export function addWorkflowEdgeRequest(
   sessionId: string,
   workflowRef: string,
@@ -286,6 +318,20 @@ export function setWorkflowFlushContextRequest(
       session_id: sessionId,
       workflow_ref: workflowRef,
       flush_agent_context_before_run: flushAgentContextBeforeRun,
+    },
+  }
+}
+
+export function setWorkflowRunOutputSchemaRequest(
+  sessionId: string,
+  workflowRef: string,
+  runOutputSchemaRef: string | null,
+) {
+  return {
+    SetWorkflowRunOutputSchema: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      run_output_schema_ref: runOutputSchemaRef,
     },
   }
 }

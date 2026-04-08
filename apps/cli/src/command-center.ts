@@ -71,6 +71,7 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "workflow-run", label: "run", description: "Invoke a workflow endpoint", value: "/workflow run " },
       { id: "workflow-start", label: "start", description: "Alias for /workflow run", value: "/workflow start " },
       { id: "workflow-flush-context", label: "flush-context", description: "Set whether workflow runs start with fresh provider sessions", value: "/workflow flush-context " },
+      { id: "workflow-run-output-schema", label: "run-output-schema", description: "Set the workflow final output schema", value: "/workflow run-output-schema " },
       { id: "workflow-launch-policy", label: "launch-policy", description: "Set session-wide workflow launch admission", value: "/workflow launch-policy " },
       { id: "workflow-max-turns", label: "max-turns", description: "Set max workflow turns across all agents", value: "/workflow max-turns " },
       { id: "workflow-runs", label: "runs", description: "List workflow runs in the session", value: "/workflow runs " },
@@ -110,6 +111,8 @@ const COMMAND_TREE: CommandNode[] = [
         children: [
           { id: "workflow-node-add", label: "add", description: "Add a workflow node for an agent", value: "/workflow node add " },
           { id: "workflow-node-remove", label: "remove", description: "Remove a workflow node", value: "/workflow node remove " },
+          { id: "workflow-node-can-complete-run", label: "can-complete-run", description: "Allow a node to complete the workflow run", value: "/workflow node can-complete-run " },
+          { id: "workflow-node-max-turns", label: "max-turns", description: "Set the node turn budget for one workflow run", value: "/workflow node max-turns " },
           {
             id: "workflow-node-instructions",
             label: "instructions",

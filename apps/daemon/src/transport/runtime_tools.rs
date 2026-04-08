@@ -5,11 +5,14 @@ use serde_json::Value;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{
-    WorkflowNodeRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnRuntimeState,
+    WorkflowArtifactRef, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowRuntimeToolCallEvent,
+    WorkflowTurnRuntimeState,
 };
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
+pub const VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL: &str =
+    "validate_and_submit_workflow_run_output";
 pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
 pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
@@ -33,6 +36,8 @@ pub struct WorkflowRuntimeToolContext {
     pub workflow_node_run_id: String,
     pub delivery_token: Option<String>,
     pub allowed_output_schema_refs: Vec<String>,
+    pub workflow_run_output_schema_ref: Option<String>,
+    pub can_complete_workflow_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +71,13 @@ pub struct WorkflowConsoleWriteArgs {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateAndSubmitWorkflowRunOutputArgs {
+    pub workflow_output_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
 #[allow(dead_code)]
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
@@ -90,6 +102,19 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "output_schema_ref": {"type": "string"},
                     "output_json": {"type": "string"},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
+            description: "Validate and submit the final workflow run output for the current workflow turn.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["workflow_output_json"],
+                "properties": {
+                    "workflow_output_json": {"type": "string"},
                     "delivery_token": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -201,6 +226,54 @@ pub fn dispatch_runtime_tool_call(
                     }),
                 }),
             }
+        }
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => {
+            if !call.context.can_complete_workflow_run {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_and_submit_workflow_run_output",
+                    message: "current workflow node run is not allowed to complete the workflow run"
+                        .to_string(),
+                });
+            }
+            let args = serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(call.arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_and_submit_workflow_run_output",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+            let workflow_run_id = app
+                .sessions()
+                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
+                .id()
+                .to_string();
+            let warning = call
+                .context
+                .workflow_run_output_schema_ref
+                .as_deref()
+                .and_then(|schema_ref| {
+                    validate_workflow_output_schema(schema_ref, &args.workflow_output_json).err()
+                });
+            let output = WorkflowOutputPayload::new(
+                args.workflow_output_json.clone(),
+                Vec::<WorkflowArtifactRef>::new(),
+            );
+            let workflow_run = app.sessions_mut().submit_workflow_run_final_output(
+                &call.context.session_id,
+                &workflow_run_id,
+                &call.context.workflow_node_run_id,
+                output,
+                warning.is_none(),
+                warning.clone(),
+            )?;
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "submitted": true,
+                    "valid": warning.is_none(),
+                    "warning": warning,
+                    "workflow_run_id": workflow_run.id(),
+                    "workflow_node_run_id": call.context.workflow_node_run_id,
+                }),
+            })
         }
         WORKFLOW_CONSOLE_READ_TOOL => {
             let workflow_run = app
@@ -329,6 +402,11 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 .ok()
                 .and_then(|args| args.delivery_token)
         }
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => {
+            serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(arguments.clone())
+                .ok()
+                .and_then(|args| args.delivery_token)
+        }
         WORKFLOW_CONSOLE_READ_TOOL | WORKFLOW_CONSOLE_WRITE_TOOL | WORKFLOW_CONSOLE_CLEAR_TOOL => {
             None
         }
@@ -346,6 +424,13 @@ pub fn dispatch_authenticated_runtime_tool_call(
         &workflow_run_ref,
         &workflow_node_run_id,
     )?;
+    let (workflow_run_output_schema_ref, can_complete_workflow_run) =
+        workflow_run_completion_context_for_active_workflow_turn(
+            app,
+            &session_id,
+            &workflow_run_ref,
+            &workflow_node_run_id,
+        )?;
 
     dispatch_runtime_tool_call(
         app,
@@ -358,6 +443,8 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 workflow_node_run_id,
                 delivery_token: None,
                 allowed_output_schema_refs,
+                workflow_run_output_schema_ref,
+                can_complete_workflow_run,
             },
         },
     )
@@ -559,6 +646,38 @@ fn allowed_output_schema_refs_for_active_workflow_turn(
         .collect())
 }
 
+fn workflow_run_completion_context_for_active_workflow_turn(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_ref: &str,
+    workflow_node_run_id: &str,
+) -> Result<(Option<String>, bool), DaemonError> {
+    let workflow_run = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+    let workflow = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
+    let node_id = workflow_run
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)
+        .map(|node_run| node_run.node_id())
+        .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            reference: workflow_node_run_id.to_string(),
+            message: "workflow node run was not found while resolving completion scope",
+        })?;
+    let can_complete = workflow
+        .node(node_id)
+        .is_some_and(|node| node.can_complete_workflow_run());
+    Ok((
+        workflow.run_output_schema_ref().map(str::to_string),
+        can_complete,
+    ))
+}
+
 pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> Result<(), String> {
     let schema_source = std::fs::read_to_string(schema_ref)
         .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
@@ -598,19 +717,21 @@ mod tests {
         dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
         resolve_authenticated_workflow_turn,
         workflow_runtime_tool_specs, RuntimeToolCall, WorkflowRuntimeToolContext,
-        ACK_WORKFLOW_TURN_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL, WORKFLOW_CONSOLE_CLEAR_TOOL,
-        WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
+        ACK_WORKFLOW_TURN_TOOL, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+        VALIDATE_WORKFLOW_OUTPUT_TOOL, WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL,
+        WORKFLOW_CONSOLE_WRITE_TOOL,
     };
 
     #[test]
     fn workflow_runtime_tool_specs_expose_ack_and_validation() {
         let specs = workflow_runtime_tool_specs();
-        assert_eq!(specs.len(), 5);
+        assert_eq!(specs.len(), 6);
         assert_eq!(specs[0].name, ACK_WORKFLOW_TURN_TOOL);
         assert_eq!(specs[1].name, VALIDATE_WORKFLOW_OUTPUT_TOOL);
-        assert_eq!(specs[2].name, WORKFLOW_CONSOLE_READ_TOOL);
-        assert_eq!(specs[3].name, WORKFLOW_CONSOLE_WRITE_TOOL);
-        assert_eq!(specs[4].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
+        assert_eq!(specs[2].name, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL);
+        assert_eq!(specs[3].name, WORKFLOW_CONSOLE_READ_TOOL);
+        assert_eq!(specs[4].name, WORKFLOW_CONSOLE_WRITE_TOOL);
+        assert_eq!(specs[5].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
     }
 
     #[test]
@@ -640,6 +761,8 @@ mod tests {
                     workflow_node_run_id: "workflow-node-run-x".to_string(),
                     delivery_token: None,
                     allowed_output_schema_refs: vec!["/not/allowed.json".to_string()],
+                    workflow_run_output_schema_ref: None,
+                    can_complete_workflow_run: false,
                 },
             },
         )
@@ -772,6 +895,8 @@ mod tests {
                     workflow_node_run_id: node_run.id().to_string(),
                     delivery_token: Some(envelope.delivery_token().to_string()),
                     allowed_output_schema_refs: Vec::new(),
+                    workflow_run_output_schema_ref: None,
+                    can_complete_workflow_run: false,
                 },
             },
         )
@@ -824,6 +949,8 @@ mod tests {
                     workflow_node_run_id: "workflow-node-run-x".to_string(),
                     delivery_token: None,
                     allowed_output_schema_refs: vec![schema_path.to_string_lossy().to_string()],
+                    workflow_run_output_schema_ref: None,
+                    can_complete_workflow_run: false,
                 },
             },
         )

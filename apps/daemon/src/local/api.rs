@@ -329,6 +329,23 @@ pub struct UpdateWorkflowNodeInstructionsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeCanCompleteRunRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub can_complete_workflow_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeMaxTurnsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddWorkflowEdgeRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -435,6 +452,14 @@ pub struct SetWorkflowFlushContextRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowRunOutputSchemaRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_output_schema_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkflowLaunchPolicyRequest {
     pub session_id: String,
     pub policy: WorkflowLaunchPolicy,
@@ -506,6 +531,8 @@ pub enum LocalDaemonRequest {
     AddWorkflowNode(AddWorkflowNodeRequest),
     RemoveWorkflowNode(RemoveWorkflowNodeRequest),
     UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest),
+    SetWorkflowNodeCanCompleteRun(SetWorkflowNodeCanCompleteRunRequest),
+    SetWorkflowNodeMaxTurns(SetWorkflowNodeMaxTurnsRequest),
     AddWorkflowEdge(AddWorkflowEdgeRequest),
     RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
     InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest),
@@ -518,6 +545,7 @@ pub enum LocalDaemonRequest {
     SetWorkflowWatchdogEnabled(SetWorkflowWatchdogEnabledRequest),
     RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
     SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
+    SetWorkflowRunOutputSchema(SetWorkflowRunOutputSchemaRequest),
     SetWorkflowLaunchPolicy(SetWorkflowLaunchPolicyRequest),
     ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
     RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
@@ -692,6 +720,16 @@ pub enum LocalDaemonResponse {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
+    WorkflowNodeCanCompleteRunUpdated {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeMaxTurnsUpdated {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
     WorkflowEdgeAdded {
         edge: WorkflowEdgeDefinition,
         workflow: WorkflowDefinition,
@@ -746,6 +784,10 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowFlushContextUpdated {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowRunOutputSchemaUpdated {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
@@ -1213,6 +1255,40 @@ impl DaemonApp {
                     session,
                 })
             }
+            LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => {
+                let node = self.sessions_mut().set_workflow_node_can_complete_run(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.node_id,
+                    request.can_complete_workflow_run,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
+                let node = self.sessions_mut().set_workflow_node_max_turns(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.node_id,
+                    request.max_turns,
+                )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
             LocalDaemonRequest::AddWorkflowEdge(request) => {
                 let edge = self.sessions_mut().add_workflow_edge(
                     &request.session_id,
@@ -1393,6 +1469,15 @@ impl DaemonApp {
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
             }
+            LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => {
+                let workflow = self.sessions_mut().set_workflow_run_output_schema_ref(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    request.run_output_schema_ref.clone(),
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
+            }
             LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
                 let session = self
                     .sessions_mut()
@@ -1441,6 +1526,8 @@ impl DaemonApp {
                             workflow_node_run_id: String::new(),
                             delivery_token: None,
                             allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
+                            workflow_run_output_schema_ref: None,
+                            can_complete_workflow_run: false,
                         },
                     },
                 )?;
@@ -1467,6 +1554,8 @@ impl DaemonApp {
                             workflow_node_run_id: request.workflow_node_run_id.clone(),
                             delivery_token: Some(request.delivery_token.clone()),
                             allowed_output_schema_refs: Vec::new(),
+                            workflow_run_output_schema_ref: None,
+                            can_complete_workflow_run: false,
                         },
                     },
                 )?;

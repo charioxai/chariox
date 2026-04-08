@@ -9,9 +9,14 @@ use crate::agent::AgentInstance;
 pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
 pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
 pub const DEFAULT_WORKFLOW_LAUNCH_POLICY: WorkflowLaunchPolicy = WorkflowLaunchPolicy::Reject;
+pub const DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT: usize = 128;
 
 fn default_workflow_flush_agent_context_before_run() -> bool {
     true
+}
+
+fn default_workflow_node_can_complete_workflow_run() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +252,10 @@ pub struct WorkflowNodeDefinition {
     agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
+    #[serde(default = "default_workflow_node_can_complete_workflow_run")]
+    can_complete_workflow_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_turns: Option<u32>,
 }
 
 impl WorkflowNodeDefinition {
@@ -255,6 +264,8 @@ impl WorkflowNodeDefinition {
             id: id.into(),
             agent_id: agent_id.into(),
             instructions: None,
+            can_complete_workflow_run: default_workflow_node_can_complete_workflow_run(),
+            max_turns: None,
         }
     }
 
@@ -272,6 +283,22 @@ impl WorkflowNodeDefinition {
 
     pub fn set_instructions(&mut self, instructions: Option<String>) {
         self.instructions = instructions;
+    }
+
+    pub fn can_complete_workflow_run(&self) -> bool {
+        self.can_complete_workflow_run
+    }
+
+    pub fn set_can_complete_workflow_run(&mut self, value: bool) {
+        self.can_complete_workflow_run = value;
+    }
+
+    pub fn max_turns(&self) -> Option<u32> {
+        self.max_turns
+    }
+
+    pub fn set_max_turns(&mut self, value: Option<u32>) {
+        self.max_turns = value;
     }
 }
 
@@ -337,6 +364,8 @@ pub enum WorkflowFailureKind {
     MissingAck,
     MissingStructuredOutput,
     OutputValidationFailed,
+    WorkflowRunOutputValidationFailed,
+    NodeTurnBudgetExhausted,
     RunStopped,
     ProviderFailure,
     TransportFailure,
@@ -507,6 +536,8 @@ pub struct WorkflowDefinition {
     alias: Option<String>,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
     flush_agent_context_before_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_output_schema_ref: Option<String>,
     nodes: Vec<WorkflowNodeDefinition>,
     edges: Vec<WorkflowEdgeDefinition>,
     endpoints: Vec<WorkflowEndpointDefinition>,
@@ -518,6 +549,7 @@ impl WorkflowDefinition {
             id: id.into(),
             alias,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
+            run_output_schema_ref: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             endpoints: Vec::new(),
@@ -540,6 +572,10 @@ impl WorkflowDefinition {
         &self.nodes
     }
 
+    pub fn run_output_schema_ref(&self) -> Option<&str> {
+        self.run_output_schema_ref.as_deref()
+    }
+
     pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
         &self.edges
     }
@@ -554,6 +590,10 @@ impl WorkflowDefinition {
 
     pub fn set_flush_agent_context_before_run(&mut self, value: bool) {
         self.flush_agent_context_before_run = value;
+    }
+
+    pub fn set_run_output_schema_ref(&mut self, value: Option<String>) {
+        self.run_output_schema_ref = value;
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {
@@ -633,6 +673,7 @@ pub enum WorkflowRunStatus {
     Created,
     Running,
     Waiting,
+    Completing,
     Completed,
     Failed,
     Stopped,
@@ -1176,6 +1217,14 @@ pub struct WorkflowRun {
     messages: Vec<WorkflowMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     failure_events: Vec<WorkflowFailureEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_output: Option<WorkflowOutputPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_output_valid: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_output_warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_by_node_run_id: Option<String>,
     created_at_ms: u64,
     started_at_ms: Option<u64>,
     completed_at_ms: Option<u64>,
@@ -1203,6 +1252,10 @@ impl WorkflowRun {
             node_runs,
             messages,
             failure_events: Vec::new(),
+            final_output: None,
+            final_output_valid: None,
+            final_output_warning: None,
+            completed_by_node_run_id: None,
             created_at_ms: unix_epoch_ms(),
             started_at_ms: None,
             completed_at_ms: None,
@@ -1259,6 +1312,22 @@ impl WorkflowRun {
         &self.failure_events
     }
 
+    pub fn final_output(&self) -> Option<&WorkflowOutputPayload> {
+        self.final_output.as_ref()
+    }
+
+    pub fn final_output_valid(&self) -> Option<bool> {
+        self.final_output_valid
+    }
+
+    pub fn final_output_warning(&self) -> Option<&str> {
+        self.final_output_warning.as_deref()
+    }
+
+    pub fn completed_by_node_run_id(&self) -> Option<&str> {
+        self.completed_by_node_run_id.as_deref()
+    }
+
     pub fn messages_mut(&mut self) -> &mut [WorkflowMessage] {
         &mut self.messages
     }
@@ -1306,6 +1375,19 @@ impl WorkflowRun {
     pub fn resume(&mut self) {
         self.status = WorkflowRunStatus::Waiting;
         self.completed_at_ms = None;
+    }
+
+    pub fn set_final_output(
+        &mut self,
+        output: Option<WorkflowOutputPayload>,
+        valid: Option<bool>,
+        warning: Option<String>,
+        completed_by_node_run_id: Option<String>,
+    ) {
+        self.final_output = output;
+        self.final_output_valid = valid;
+        self.final_output_warning = warning;
+        self.completed_by_node_run_id = completed_by_node_run_id;
     }
 }
 
