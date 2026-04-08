@@ -21,12 +21,14 @@ Already implemented:
 - daemon-owned downstream routing that creates structured handoff messages and schedules downstream node prompts
 - CLI `/workflow run`, `/workflow runs`, and `/workflow cancel` commands
 - basic workflow canvas runtime visibility for the selected workflow and its nodes
+- interval watchdogs with `skip` and `queue` policies
 
 Not implemented yet:
 
 - explicit per-node policy overrides (`input_gate` / `output_release`)
 - richer run inspection/history UI beyond the current selected-workflow status view
-- time-based or recurring workflow schedules
+- full cron syntax for recurring schedules
+- daemon-owned provider process inspection/teardown
 
 ## Key Gaps To Resolve First
 
@@ -218,6 +220,41 @@ That later slice can introduce:
 - enable/disable controls
 - daemon-online-only execution semantics
 
+Status:
+
+- interval watchdogs are landed
+- full cron syntax is still pending
+- watchdogs should now gain a bounded wakeup budget:
+  - default bounded `max_wakeups`
+  - explicit `null` to allow unbounded schedules when the user opts in
+
+### Phase 7. Provider Process Ownership And Cleanup
+
+The daemon should become the explicit owner of managed provider runtime processes.
+
+Required slices:
+
+- track managed provider processes and their owner provider runs
+- track provider-native session ids per provider run when available
+- expose tracked processes in the CLI through `/provider processes`
+- support safe teardown only by default:
+  - do not kill processes still needed by an attached session
+  - do not kill processes backing an active prompt
+  - do not kill processes backing an active workflow run
+- make drill harnesses stop the daemon they launch so managed provider processes do not leak after live drills
+
+CLI target:
+
+- `/provider processes`
+- `/provider processes <provider>`
+- `/provider processes teardown`
+- `/provider processes teardown <provider>`
+
+Safety model:
+
+- safe teardown should only stop daemon-tracked managed processes that are not attached and not actively executing work
+- attached sessions must survive provider loss by degrading provider runs rather than losing the Arroba session itself
+
 ## Suggested Immediate Next Steps
 
 1. Lock the v1 execution model in code and docs before adding any slash command.
@@ -225,7 +262,9 @@ That later slice can introduce:
 3. Ship endpoint-triggered manual runs with a narrow DAG-first scheduler.
 4. Add richer run inspection beyond the current selected-workflow header/node status view.
 5. Enrich the completion contract with real node outputs, artifacts, and explicit stop/fail semantics.
-6. Add cron syntax only after interval watchdogs are proven in live drills.
+6. Add default-bounded `max_wakeups` to watchdogs, with explicit `null` for unbounded schedules.
+7. Add daemon-owned provider process inspection and safe teardown.
+8. Add cron syntax only after interval watchdogs are proven in live drills.
 
 ## Non-Goals For The First Slice
 

@@ -394,7 +394,7 @@ impl DaemonApp {
             {
                 self.sessions.set_active_provider_run(session_id, None)?;
             }
-            let _ = self.pty.remove_process(provider_run_id)?;
+            let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
             self.providers.clear_runtime(provider_run_id);
             return Ok(true);
         }
@@ -421,7 +421,7 @@ impl DaemonApp {
         let ended_run =
             self.providers
                 .mark_run_ended(&mut self.sessions, session_id, provider_run_id)?;
-        let _ = self.pty.remove_process(provider_run_id)?;
+        let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
 
         if had_active_prompt {
             let active_prompt_status = self

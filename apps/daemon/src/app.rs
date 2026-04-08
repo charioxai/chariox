@@ -45,6 +45,8 @@ pub struct DaemonApp {
     transfer_capabilities: FileTransferService,
     pty: PtyManager,
     providers: ProviderProcessService,
+    pub(crate) tracked_provider_processes: BTreeMap<String, TrackedProviderProcess>,
+    pub(crate) tracked_provider_run_processes: BTreeMap<String, String>,
     pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
     pub(crate) prompt_idle_timeout: Duration,
     sessions: SessionService,
@@ -57,6 +59,17 @@ pub(crate) struct ActivePromptState {
     pub(crate) last_output_at: Option<Instant>,
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TrackedProviderProcess {
+    pub(crate) process_id: String,
+    pub(crate) provider: String,
+    pub(crate) pid: Option<u32>,
+    pub(crate) endpoint_mode: crate::provider::AgentEndpointMode,
+    pub(crate) process_label: String,
+    pub(crate) started_at_ms: u64,
+    pub(crate) owner_provider_run_ids: Vec<String>,
 }
 
 impl DaemonApp {
@@ -104,6 +117,8 @@ impl DaemonApp {
             transfer_capabilities: FileTransferService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
+            tracked_provider_processes: BTreeMap::new(),
+            tracked_provider_run_processes: BTreeMap::new(),
             prompt_activity: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             sessions: SessionService::new(&config),

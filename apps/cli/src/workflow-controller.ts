@@ -277,6 +277,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     intervalSeconds: number,
     invocationPrompt: string,
     policy: "skip" | "queue",
+    maxWakeups?: number | null,
   ) => {
     const response = await deps.sendRequest(
       createWorkflowWatchdogRequest(
@@ -286,6 +287,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
         intervalSeconds,
         invocationPrompt,
         policy,
+        maxWakeups,
       ),
     )
     const payload = expectVariant<{

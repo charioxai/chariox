@@ -11,7 +11,7 @@ pub use api::{
     CreateWorkflowRequest, CreateWorkflowWatchdogRequest, CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
     DetachFromSessionRequest, EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest,
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
-    GetProviderRunRequest,
+    GetProviderRunRequest, ListProviderProcessesRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, GetWorkflowRunRequest,
     InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
     ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
@@ -21,6 +21,7 @@ pub use api::{
     ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest, SpawnAgentRequest,
     SetWorkflowWatchdogEnabledRequest,
     StartProviderLoginRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+    TeardownProviderProcessesRequest,
     UpdateSessionConfigRequest, UpdateWorkflowNodeInstructionsRequest,
     ValidateWorkflowOutputRequest,
 };

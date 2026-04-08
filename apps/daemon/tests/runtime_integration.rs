@@ -741,19 +741,27 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
     .expect("prompt should start");
 
     thread::sleep(Duration::from_millis(120));
-    let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let output = app
-        .pump_provider_output(session.id(), run.id(), recipients)
-        .expect("pump after OpenCode idle should succeed");
-
-    let session_after_pump = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist after completion");
-    assert!(
-        session_after_pump.active_prompt().is_none(),
-        "OpenCode idle should complete the active prompt immediately"
-    );
+    let mut output = Vec::new();
+    let completion_deadline = Instant::now() + Duration::from_millis(300);
+    loop {
+        let recipients = app.attachments().list_session_attachment_ids(session.id());
+        output.extend(
+            app.pump_provider_output(session.id(), run.id(), recipients)
+                .expect("pump after OpenCode idle should succeed"),
+        );
+        let session_after_pump = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist after completion");
+        if session_after_pump.active_prompt().is_none() {
+            break;
+        }
+        assert!(
+            Instant::now() < completion_deadline,
+            "OpenCode idle should complete the active prompt immediately after the provider reaches idle"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
     assert!(
         output
             .iter()

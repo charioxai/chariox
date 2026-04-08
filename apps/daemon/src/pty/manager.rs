@@ -282,6 +282,20 @@ impl PtyManager {
         self.process_aliases.contains_key(provider_run_id)
     }
 
+    pub fn process_key(&self, provider_run_id: &str) -> Result<String, DaemonError> {
+        self.resolve_process_key(provider_run_id)
+    }
+
+    pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process = self.processes.get(&process_key).ok_or_else(|| {
+            DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            }
+        })?;
+        Ok(process.child.process_id())
+    }
+
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
             return Ok(false);

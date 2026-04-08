@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 
 pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 64;
+pub const DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS: u64 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
@@ -65,6 +66,10 @@ pub struct WorkflowWatchdogDefinition {
     interval_seconds: u64,
     invocation_prompt: String,
     policy: WorkflowWatchdogPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_wakeups: Option<u64>,
+    #[serde(default)]
+    wakeups_executed: u64,
     next_run_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_run_at_ms: Option<u64>,
@@ -88,6 +93,7 @@ impl WorkflowWatchdogDefinition {
         interval_seconds: u64,
         invocation_prompt: impl Into<String>,
         policy: WorkflowWatchdogPolicy,
+        max_wakeups: Option<u64>,
     ) -> Self {
         let now = unix_epoch_ms();
         Self {
@@ -98,6 +104,8 @@ impl WorkflowWatchdogDefinition {
             interval_seconds,
             invocation_prompt: invocation_prompt.into(),
             policy,
+            max_wakeups,
+            wakeups_executed: 0,
             next_run_at_ms: now.saturating_add(interval_seconds.saturating_mul(1000)),
             last_run_at_ms: None,
             last_status: None,
@@ -116,6 +124,8 @@ impl WorkflowWatchdogDefinition {
     pub fn interval_seconds(&self) -> u64 { self.interval_seconds }
     pub fn invocation_prompt(&self) -> &str { &self.invocation_prompt }
     pub fn policy(&self) -> WorkflowWatchdogPolicy { self.policy }
+    pub fn max_wakeups(&self) -> Option<u64> { self.max_wakeups }
+    pub fn wakeups_executed(&self) -> u64 { self.wakeups_executed }
     pub fn next_run_at_ms(&self) -> u64 { self.next_run_at_ms }
     pub fn last_run_at_ms(&self) -> Option<u64> { self.last_run_at_ms }
     pub fn last_status(&self) -> Option<&str> { self.last_status.as_deref() }
@@ -157,6 +167,16 @@ impl WorkflowWatchdogDefinition {
 
     pub fn set_pending_run(&mut self, value: bool) {
         self.pending_run = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_max_wakeups(&mut self, value: Option<u64>) {
+        self.max_wakeups = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_wakeups_executed(&mut self, value: u64) {
+        self.wakeups_executed = value;
         self.updated_at_ms = unix_epoch_ms();
     }
 }

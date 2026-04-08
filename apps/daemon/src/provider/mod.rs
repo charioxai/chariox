@@ -30,6 +30,6 @@ pub use types::{
     ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
     ProviderAssistantCompletion, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
-    ProviderPromptChunk, ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState,
-    RuntimeMcpBinding, RuntimeProviderRun,
+    ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderResumeState, ProviderRunState, RuntimeMcpBinding, RuntimeProviderRun,
 };

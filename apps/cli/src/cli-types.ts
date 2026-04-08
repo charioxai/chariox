@@ -75,10 +75,30 @@ export type RuntimeProviderRun = {
   variant: string | null
   usage_tokens_total: number | null
   state: string
+  started_at_ms?: number
+  last_activity_at_ms?: number
   control_capabilities?: {
     operation: string
     mode: string
   }[]
+}
+
+export type ProviderProcessInfo = {
+  process_id: string
+  provider: string
+  process_label: string
+  pid?: number | null
+  endpoint_mode: string
+  status: "active" | "idle"
+  started_at_ms: number
+  last_activity_at_ms: number
+  provider_session_ids: string[]
+  owner_session_ids: string[]
+  owner_provider_run_ids: string[]
+  attached_session_ids: string[]
+  active_workflow_run_ids: string[]
+  teardown_safe: boolean
+  teardown_blockers: string[]
 }
 
 export type ProviderAuthStatus = {
@@ -205,6 +225,8 @@ export type WorkflowWatchdogDefinition = {
   interval_seconds: number
   invocation_prompt: string
   policy: "skip" | "queue"
+  max_wakeups?: number | null
+  wakeups_executed: number
   next_run_at_ms: number
   last_run_at_ms?: number | null
   last_status?: string | null

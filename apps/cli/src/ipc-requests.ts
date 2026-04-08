@@ -75,6 +75,22 @@ export function getSessionStateRequest(sessionId: string) {
   }
 }
 
+export function listProviderProcessesRequest(provider?: string | null) {
+  return {
+    ListProviderProcesses: {
+      provider: provider ?? null,
+    },
+  }
+}
+
+export function teardownProviderProcessesRequest(provider?: string | null) {
+  return {
+    TeardownProviderProcesses: {
+      provider: provider ?? null,
+    },
+  }
+}
+
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
   return {
     CreateWorkflow: {
@@ -244,6 +260,7 @@ export function createWorkflowWatchdogRequest(
   intervalSeconds: number,
   invocationPrompt: string,
   policy: "skip" | "queue",
+  maxWakeups?: number | null,
 ) {
   return {
     CreateWorkflowWatchdog: {
@@ -253,6 +270,8 @@ export function createWorkflowWatchdogRequest(
       interval_seconds: intervalSeconds,
       invocation_prompt: invocationPrompt,
       policy,
+      max_wakeups_configured: maxWakeups !== undefined,
+      max_wakeups: maxWakeups ?? null,
     },
   }
 }

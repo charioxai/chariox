@@ -184,6 +184,148 @@ test("provider command can switch backends and manage codex auth", async () => {
   assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
 })
 
+test("provider processes command lists and tears down safe daemon-tracked processes", async () => {
+  let flashedMessage = ""
+  let notice = ""
+  let listedProvider: string | null | undefined = undefined
+  let tornDownProvider: string | null | undefined = undefined
+
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: () => null,
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    focusedAgentId: () => "agent-1",
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: (message) => { notice = message },
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyProviderSelection: async () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    getProviderAuthStatus: async () => ({
+      provider: "codex",
+      auth_state: "authenticated",
+      account_profile: "user@example.com",
+      login_hint: null,
+      detected_version: "codex-cli 0.118.0",
+    }),
+    startProviderLogin: async () => ({
+      provider: "codex",
+      login_kind: "chatgptDeviceCode",
+      login_id: "login-1",
+      auth_url: null,
+      verification_url: "https://auth.openai.com/codex/device",
+      user_code: "ABCD-1234",
+    }),
+    logoutProvider: async (provider) => ({ provider }),
+    listProviderProcesses: async (provider) => {
+      listedProvider = provider
+      return [
+        {
+          process_id: "codex:shared-token",
+          provider: "codex",
+          process_label: "codex:gpt-5.4",
+          pid: 4321,
+          endpoint_mode: "managed",
+          status: "idle",
+          started_at_ms: 1,
+          last_activity_at_ms: 2,
+          provider_session_ids: ["thread-1"],
+          owner_session_ids: ["session-1"],
+          owner_provider_run_ids: ["provider-run-1"],
+          attached_session_ids: [],
+          active_workflow_run_ids: [],
+          teardown_safe: true,
+          teardown_blockers: [],
+        },
+      ]
+    },
+    teardownProviderProcesses: async (provider) => {
+      tornDownProvider = provider
+      return [
+        {
+          process_id: "codex:shared-token",
+          provider: "codex",
+          process_label: "codex:gpt-5.4",
+          pid: 4321,
+          endpoint_mode: "managed",
+          status: "idle",
+          started_at_ms: 1,
+          last_activity_at_ms: 2,
+          provider_session_ids: ["thread-1"],
+          owner_session_ids: ["session-1"],
+          owner_provider_run_ids: ["provider-run-1"],
+          attached_session_ids: [],
+          active_workflow_run_ids: [],
+          teardown_safe: true,
+          teardown_blockers: [],
+        },
+      ]
+    },
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({ session: makeSession(), config: makeSession().config_state }),
+    updateSessionConfig: async () => ({ session: makeSession(), config: makeSession().config_state }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: makeSession() }),
+    launchAgentProviderRun: async () => { throw new Error("unused") },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => makeSession(),
+    spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    destroyAgent: async () => makeSession(),
+    focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
+    resolveSessionAgent: () => ({ agent: makeAgent() }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => {},
+    selectWorkflowCanvas: () => {},
+    replaceWorkflowDefinitions: () => {},
+    upsertWorkflowDefinition: () => {},
+    createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    listWorkflows: async () => [],
+    resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    assignWorkflowEndpointAlias: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    bindWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    addWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    removeWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: makeSession() }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes codex", value: "processes codex" })
+  assert.equal(listedProvider, "codex")
+  assert.equal(flashedMessage, "listed 1 provider process(es)")
+  assert.match(notice, /codex:shared-token provider=codex pid=4321 status=idle mode=managed safe=true/)
+  assert.match(notice, /provider_sessions=thread-1/)
+
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider processes teardown codex", value: "processes teardown codex" })
+  assert.equal(tornDownProvider, "codex")
+  assert.equal(flashedMessage, "tore down 1 provider process(es)")
+  assert.match(notice, /codex:shared-token provider=codex pid=4321 status=idle mode=managed safe=true/)
+})
+
 test("agent spawn refreshes session state after launching the provider run", async () => {
   const firstAgent = makeAgent()
   const secondAgent = makeAgent({

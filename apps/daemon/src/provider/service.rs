@@ -217,6 +217,16 @@ impl ProviderProcessService {
             })
     }
 
+    pub fn list_runs(&self) -> Vec<RuntimeProviderRun> {
+        self.runs.values().cloned().collect()
+    }
+
+    pub fn record_run_activity(&mut self, run_id: &str) -> Result<(), DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.touch_activity();
+        Ok(())
+    }
+
     pub fn get_run_for_agent(
         &self,
         session_id: &str,
@@ -308,8 +318,14 @@ impl ProviderProcessService {
         if run.adapter_key() == "codex" {
             let binding = initialize_codex_runtime(run)?;
             self.codex_runs.insert(run.id().to_string(), binding.state);
-            self.get_run_mut(run.id())?
-                .set_resume_state(binding.resume_state.clone());
+            let run_mut = self.get_run_mut(run.id())?;
+            run_mut.set_resume_state(binding.resume_state.clone());
+            run_mut.set_provider_session_id(
+                binding
+                    .resume_state
+                    .codex_thread_id()
+                    .map(str::to_string),
+            );
             self.apply_codex_run_selection(run.id(), binding.selection)?;
             return Ok(());
         }
@@ -320,8 +336,14 @@ impl ProviderProcessService {
         let binding = initialize_opencode_runtime(run)?;
         self.opencode_runs
             .insert(run.id().to_string(), binding.state);
-        self.get_run_mut(run.id())?
-            .set_resume_state(binding.resume_state.clone());
+        let run_mut = self.get_run_mut(run.id())?;
+        run_mut.set_resume_state(binding.resume_state.clone());
+        run_mut.set_provider_session_id(
+            binding
+                .resume_state
+                .opencode_session_id()
+                .map(str::to_string),
+        );
         self.apply_opencode_run_selection(run.id(), binding.selection)?;
         self.sync_run_selection(run.id())?;
         Ok(())
@@ -393,6 +415,7 @@ impl ProviderProcessService {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<bool, DaemonError> {
+        let _ = self.record_run_activity(run.id());
         if run.adapter_key() == "codex" {
             let state =
                 self.codex_runs
@@ -425,6 +448,7 @@ impl ProviderProcessService {
         &mut self,
         provider_run_id: &str,
     ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
+        let _ = self.record_run_activity(provider_run_id);
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "codex" {
             let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {

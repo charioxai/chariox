@@ -143,7 +143,7 @@ impl DaemonApp {
             .map(|run| run.id().to_string())
             .collect::<Vec<_>>();
         for run in terminated_runs {
-            self.pty.remove_process(run.id())?;
+            self.remove_tracked_provider_process_for_run(run.id())?;
         }
 
         let removed_agents = self.agents.remove_session_agents(session_id);

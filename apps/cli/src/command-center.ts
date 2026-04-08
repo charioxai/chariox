@@ -146,6 +146,12 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "provider-login", label: "login", description: "Start provider login", value: "/provider login " },
       { id: "provider-logout", label: "logout", description: "Log out a provider", value: "/provider logout " },
       { id: "provider-reauth", label: "reauth", description: "Reauthenticate a provider", value: "/provider reauth " },
+      {
+        id: "provider-processes",
+        label: "processes",
+        description: "List daemon-tracked provider processes or safely tear them down",
+        value: "/provider processes ",
+      },
     ],
   },
   {

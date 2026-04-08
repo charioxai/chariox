@@ -3,6 +3,7 @@ import type {
   ProviderAuthStatus,
   ProviderLoginStart,
   RuntimeAttachment,
+  ProviderProcessInfo,
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
@@ -132,6 +133,8 @@ type CommandActionDeps = {
   getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
   logoutProvider?: (provider: string) => Promise<{ provider: string }>
+  listProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
+  teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -207,6 +210,7 @@ type CommandActionDeps = {
     intervalSeconds: number,
     invocationPrompt: string,
     policy: "skip" | "queue",
+    maxWakeups?: number | null,
   ) => Promise<WorkflowWatchdogPayload>
   listWorkflowWatchdogs?: (workflowRef?: string | null) => Promise<{ watchdogs: WorkflowWatchdogDefinition[] }>
   setWorkflowWatchdogEnabled?: (watchdogRef: string, enabled: boolean) => Promise<WorkflowWatchdogPayload>
@@ -239,6 +243,36 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     if (!Number.isFinite(amount) || amount <= 0) return null
     const multiplier = unit === "s" ? 1 : unit === "m" ? 60 : unit === "h" ? 3600 : 86400
     return amount * multiplier
+  }
+  const parseWatchdogMaxWakeups = (value: string | undefined): number | null | undefined => {
+    if (value == null) return undefined
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) return undefined
+    if (normalized === "null" || normalized === "unbounded") return null
+    const numeric = Number(normalized)
+    if (!Number.isFinite(numeric) || numeric <= 0 || !Number.isInteger(numeric)) {
+      return undefined
+    }
+    return numeric
+  }
+  const formatProviderProcessNotice = (process: ProviderProcessInfo): string => {
+    const parts = [
+      process.process_id,
+      `provider=${process.provider}`,
+      `pid=${process.pid ?? "-"}`,
+      `status=${process.status}`,
+      `mode=${process.endpoint_mode}`,
+      `safe=${String(process.teardown_safe)}`,
+      `provider_sessions=${process.provider_session_ids.join(",") || "-"}`,
+      `owners=${process.owner_provider_run_ids.join(",") || "-"}`,
+      `sessions=${process.owner_session_ids.join(",") || "-"}`,
+      `attached=${process.attached_session_ids.join(",") || "-"}`,
+      `workflow_runs=${process.active_workflow_run_ids.join(",") || "-"}`,
+    ]
+    if (process.teardown_blockers.length > 0) {
+      parts.push(`blockers=${process.teardown_blockers.join("; ")}`)
+    }
+    return parts.join(" ")
   }
   const hasDuplicateWorkflowEdge = (
     workflow: WorkflowDefinition,
@@ -365,7 +399,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     const { value } = command
     if (!value) {
-      deps.flashFooter("usage: /provider <opencode|codex|status|login|logout|reauth>", "error")
+      deps.flashFooter("usage: /provider <opencode|codex|status|login|logout|reauth|processes>", "error")
       return
     }
     const parts = value.split(/\s+/).filter(Boolean)
@@ -433,6 +467,40 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       ].filter(Boolean).join(" • ")
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
+      return
+    }
+    if (action === "processes") {
+      if (parts[1] === "teardown") {
+        if (!deps.teardownProviderProcesses) {
+          deps.flashFooter("provider process teardown is not available in this daemon", "error")
+          return
+        }
+        const provider = parts[2] ?? null
+        const tornDown = await deps.teardownProviderProcesses(provider)
+        if (tornDown.length === 0) {
+          deps.flashFooter("no safe provider processes to tear down", "info")
+          return
+        }
+        deps.appendNotice(
+          tornDown.map((process) => formatProviderProcessNotice(process)).join("\n"),
+        )
+        deps.flashFooter(`tore down ${tornDown.length} provider process(es)`, "info")
+        return
+      }
+      if (!deps.listProviderProcesses) {
+        deps.flashFooter("provider process inspection is not available in this daemon", "error")
+        return
+      }
+      const provider = maybeProvider ?? null
+      const processes = await deps.listProviderProcesses(provider)
+      if (processes.length === 0) {
+        deps.flashFooter("no daemon-tracked provider processes", "info")
+        return
+      }
+      deps.appendNotice(
+        processes.map((process) => formatProviderProcessNotice(process)).join("\n"),
+      )
+      deps.flashFooter(`listed ${processes.length} provider process(es)`, "info")
       return
     }
     if (value !== "opencode" && value !== "codex") {
@@ -1148,13 +1216,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const intervalLiteral = args[5]
         const hasPolicyArg = args[6] === "skip" || args[6] === "queue"
         const policy = (hasPolicyArg ? args[6] : "skip") as "skip" | "queue"
+        const maxWakeupsKeyword = args[hasPolicyArg ? 7 : 6]
+        const hasMaxWakeupsArg = maxWakeupsKeyword === "max-wakeups"
+        const maxWakeupsLiteral = hasMaxWakeupsArg ? args[hasPolicyArg ? 8 : 7] : undefined
+        const maxWakeups = hasMaxWakeupsArg ? parseWatchdogMaxWakeups(maxWakeupsLiteral) : undefined
         const prompt = args
-          .slice(hasPolicyArg ? 7 : 6)
+          .slice(hasMaxWakeupsArg ? (hasPolicyArg ? 9 : 8) : (hasPolicyArg ? 7 : 6))
           .join(" ")
           .trim() || "Run the workflow exactly as instructed."
         if (!workflowRef || !endpointRef || everyLiteral !== "every") {
           deps.flashFooter(
-            "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt]",
+            "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt]",
             "error",
           )
           return
@@ -1164,12 +1236,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           deps.flashFooter("watchdog interval must be like 30s, 5m, 1h, or 1d", "error")
           return
         }
+        if (hasMaxWakeupsArg && maxWakeups === undefined) {
+          deps.flashFooter("max-wakeups must be a positive integer or `null`", "error")
+          return
+        }
         const payload = await deps.createWorkflowWatchdog(
           workflowRef,
           endpointRef,
           intervalSeconds,
           prompt,
           policy,
+          maxWakeups,
         )
         deps.applySessionState(payload.session)
         deps.selectWorkflowCanvas(payload.workflow?.id ?? workflowRef)
@@ -1188,7 +1265,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           return
         }
         deps.appendNotice(payload.watchdogs.map((watchdog) =>
-          `${watchdog.id} workflow=${watchdog.workflow_id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)} next=${new Date(watchdog.next_run_at_ms).toISOString()}${watchdog.pending_run ? " pending=true" : ""}`
+          `${watchdog.id} workflow=${watchdog.workflow_id} endpoint=${watchdog.endpoint_id} every=${watchdog.interval_seconds}s policy=${watchdog.policy} enabled=${String(watchdog.enabled)} wakeups=${watchdog.wakeups_executed}/${watchdog.max_wakeups ?? "unbounded"} next=${new Date(watchdog.next_run_at_ms).toISOString()}${watchdog.pending_run ? " pending=true" : ""}`
         ).join("\n"))
         deps.flashFooter(`listed ${payload.watchdogs.length} workflow watchdog(s)`, "info")
         return
@@ -1227,7 +1304,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
+        "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
         "error",
       )
       return

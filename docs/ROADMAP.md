@@ -175,6 +175,7 @@ Status:
   - live mixed-provider workflow drills across Codex and OpenCode
   - workflow-scoped shared console
   - endpoint-scoped watchdog scheduling with interval triggers
+  - watchdog `skip` and `queue` scheduling policies
 - recent OpenCode multi-agent stabilization now covers:
   - queued prompts preserving their target agent run even while another agent is actively working
   - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
@@ -213,6 +214,18 @@ Still pending in M4:
   - file/workspace claim tracking
   - mergeability/integration validation
 - multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
+- daemon-owned provider runtime process ledger:
+  - tracked managed provider processes
+  - tracked provider-native session ids per provider run
+  - CLI `/provider processes` inspection
+  - safe teardown of idle/orphaned managed provider processes without breaking attached sessions
+- watchdog wakeup budgeting:
+  - default bounded `max_wakeups`
+  - explicit `null` for unbounded schedules
+- live-drill operational cleanup:
+  - every reusable drill harness should own and stop the daemon it starts
+- kernel/daemon naming cleanup:
+  - evaluate renaming `scheduler` to `runtime` or equivalent so ownership boundaries read correctly
 
 The following workflow-runtime items are no longer pending in M4:
 

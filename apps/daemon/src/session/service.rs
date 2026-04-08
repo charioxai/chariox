@@ -1451,6 +1451,7 @@ impl SessionService {
         interval_seconds: u64,
         invocation_prompt: String,
         policy: WorkflowWatchdogPolicy,
+        max_wakeups: Option<Option<u64>>,
     ) -> Result<WorkflowWatchdogDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
@@ -1467,6 +1468,7 @@ impl SessionService {
             interval_seconds,
             invocation_prompt,
             policy,
+            max_wakeups.unwrap_or(Some(crate::session::DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS)),
         );
         let session = self
             .store
@@ -1639,6 +1641,15 @@ impl SessionService {
                 if !watchdog.enabled() {
                     continue;
                 }
+                if watchdog
+                    .max_wakeups()
+                    .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+                {
+                    watchdog.set_enabled(false);
+                    watchdog.set_pending_run(false);
+                    watchdog.set_last_status(Some("completed_budget".to_string()));
+                    continue;
+                }
                 let endpoint_active = active_endpoint_runs
                     .iter()
                     .any(|(endpoint_id, _, _)| endpoint_id == watchdog.endpoint_id());
@@ -1709,7 +1720,17 @@ impl SessionService {
                 message: "workflow watchdog was not found",
             })?;
         watchdog.set_last_run_at_ms(Some(unix_epoch_ms()));
-        watchdog.set_last_status(Some("started".to_string()));
+        watchdog.set_wakeups_executed(watchdog.wakeups_executed().saturating_add(1));
+        if watchdog
+            .max_wakeups()
+            .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+        {
+            watchdog.set_enabled(false);
+            watchdog.set_pending_run(false);
+            watchdog.set_last_status(Some("completed_budget".to_string()));
+        } else {
+            watchdog.set_last_status(Some("started".to_string()));
+        }
         watchdog.set_last_error(None);
         watchdog.set_last_workflow_run_id(Some(workflow_run_id.to_string()));
         Ok(watchdog.clone())
@@ -2519,7 +2540,12 @@ fn normalize_session_alias(alias: Option<String>) -> Result<Option<String>, Daem
     let Some(alias) = alias else {
         return Ok(None);
     };
-    let normalized = alias.trim().to_lowercase();
+    let normalized = alias
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|char| if char.is_ascii_whitespace() { '_' } else { char })
+        .collect::<String>();
     if normalized.is_empty() {
         return Err(DaemonError::InvalidSessionAlias {
             alias,
@@ -3168,6 +3194,7 @@ mod tests {
                 1,
                 "run".to_string(),
                 WorkflowWatchdogPolicy::Skip,
+                None,
             )
             .expect("watchdog should be created");
         let run = service
@@ -3209,6 +3236,7 @@ mod tests {
                 1,
                 "run".to_string(),
                 WorkflowWatchdogPolicy::Queue,
+                None,
             )
             .expect("watchdog should be created");
         let run = service
@@ -3729,5 +3757,98 @@ mod tests {
             Some(prompt_id.as_str())
         );
         assert_eq!(session.scheduler_state(), SchedulerState::Running);
+    }
+
+    #[test]
+    fn workflow_watchdog_defaults_to_bounded_max_wakeups() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
+        let workflow = service
+            .create_workflow(session.id(), Some("watchdog".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("node should be added");
+        let endpoint = service
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .expect("endpoint should be created");
+
+        let watchdog = service
+            .create_workflow_watchdog(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                1,
+                "run".to_string(),
+                WorkflowWatchdogPolicy::Skip,
+                None,
+            )
+            .expect("watchdog should be created");
+
+        assert_eq!(
+            watchdog.max_wakeups(),
+            Some(crate::session::DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS),
+        );
+        assert_eq!(watchdog.wakeups_executed(), 0);
+    }
+
+    #[test]
+    fn workflow_watchdog_budget_can_be_unbounded_or_auto_disable_when_exhausted() {
+        let mut service = SessionService::new(&test_config());
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        seed_agents(&mut service, session.id(), &["agent-1"]);
+        let workflow = service
+            .create_workflow(session.id(), Some("watchdog".to_string()))
+            .expect("workflow should be created");
+        let node = service
+            .add_workflow_node(session.id(), workflow.id(), "agent-1")
+            .expect("node should be added");
+        let endpoint = service
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".to_string()))
+            .expect("endpoint should be created");
+
+        let bounded = service
+            .create_workflow_watchdog(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                1,
+                "run".to_string(),
+                WorkflowWatchdogPolicy::Skip,
+                Some(Some(1)),
+            )
+            .expect("bounded watchdog should be created");
+        let unbounded = service
+            .create_workflow_watchdog(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                1,
+                "run".to_string(),
+                WorkflowWatchdogPolicy::Skip,
+                Some(None),
+            )
+            .expect("unbounded watchdog should be created");
+
+        let bounded = service
+            .mark_workflow_watchdog_invoked(session.id(), bounded.id(), "workflow-run-1")
+            .expect("bounded watchdog should update");
+        assert_eq!(bounded.max_wakeups(), Some(1));
+        assert_eq!(bounded.wakeups_executed(), 1);
+        assert!(!bounded.enabled());
+        assert_eq!(bounded.last_status(), Some("completed_budget"));
+
+        let unbounded = service
+            .mark_workflow_watchdog_invoked(session.id(), unbounded.id(), "workflow-run-2")
+            .expect("unbounded watchdog should update");
+        assert_eq!(unbounded.max_wakeups(), None);
+        assert_eq!(unbounded.wakeups_executed(), 1);
+        assert!(unbounded.enabled());
+        assert_eq!(unbounded.last_status(), Some("started"));
     }
 }

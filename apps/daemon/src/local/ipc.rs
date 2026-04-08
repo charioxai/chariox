@@ -396,6 +396,7 @@ mod tests {
     use std::io::Write;
     use std::net::Shutdown;
     use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
 
     use tokio::sync::oneshot;
@@ -418,8 +419,17 @@ mod tests {
         LocalIpcClient, StdUnixStream,
     };
 
+    static LOCAL_IPC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn local_ipc_test_guard() -> MutexGuard<'static, ()> {
+        LOCAL_IPC_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
+        let _guard = local_ipc_test_guard();
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -491,6 +501,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn malformed_request_does_not_block_followup_request() {
+        let _guard = local_ipc_test_guard();
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -537,6 +548,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
+        let _guard = local_ipc_test_guard();
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -739,6 +751,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
+        let _guard = local_ipc_test_guard();
         let config = DaemonConfig::for_tests();
         let socket_path = config.local_socket_path.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

@@ -21,6 +21,7 @@ import type {
   ProviderLogoutResult,
   PromptAttachmentPart,
   PromptSubmittedPayload,
+  ProviderProcessInfo,
   RuntimeAttachment,
   RuntimeNoticeRecord,
   RuntimeProviderRun,
@@ -81,6 +82,7 @@ import {
   getSessionHistoryRequest,
   getSessionStateRequest,
   launchProviderRunRequest,
+  listProviderProcessesRequest,
   logoutProviderRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
@@ -91,6 +93,7 @@ import {
   startProviderLoginRequest,
   storeTransferredFileRequest,
   submitPromptRequest,
+  teardownProviderProcessesRequest,
   updateSessionConfigRequest,
 } from "./ipc-requests.js"
 import { createProcessLogger, type ArrobaLogger } from "./logging.js"
@@ -4322,6 +4325,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
     startProviderLogin: (provider) => startProviderLogin(client, provider),
     logoutProvider: (provider) => logoutProvider(client, provider),
+    listProviderProcesses: async (provider) => {
+      const response = await client.send<Record<string, unknown>>(
+        listProviderProcessesRequest(provider),
+      )
+      return expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
+    },
+    teardownProviderProcesses: async (provider) => {
+      const response = await client.send<Record<string, unknown>>(
+        teardownProviderProcessesRequest(provider),
+      )
+      return expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesTornDown").processes
+    },
     logViewCommand: (fields) => {
       appLogger?.info("handling view command", fields)
       logViewDebug("view command:after set layout", fields)

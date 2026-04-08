@@ -13,7 +13,7 @@ use crate::capability::{
 use crate::error::DaemonError;
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
-    RuntimeProviderRun,
+    ProviderProcessInfo, RuntimeProviderRun,
 };
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
@@ -103,6 +103,16 @@ pub struct StartProviderLoginRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogoutProviderRequest {
     pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListProviderProcessesRequest {
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeardownProviderProcessesRequest {
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +403,8 @@ pub struct CreateWorkflowWatchdogRequest {
     pub interval_seconds: u64,
     pub invocation_prompt: String,
     pub policy: WorkflowWatchdogPolicy,
+    pub max_wakeups_configured: bool,
+    pub max_wakeups: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,6 +441,8 @@ pub enum LocalDaemonRequest {
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
+    ListProviderProcesses(ListProviderProcessesRequest),
+    TeardownProviderProcesses(TeardownProviderProcessesRequest),
     GetSessionHistory(GetSessionHistoryRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     SubmitPrompt(SubmitPromptRequest),
@@ -518,6 +532,12 @@ pub enum LocalDaemonResponse {
     },
     ProviderLoggedOut {
         provider: String,
+    },
+    ProviderProcessesListed {
+        processes: Vec<ProviderProcessInfo>,
+    },
+    ProviderProcessesTornDown {
+        processes: Vec<ProviderProcessInfo>,
     },
     SessionHistory {
         entries: Vec<SessionHistoryPageEntry>,
@@ -789,6 +809,16 @@ impl DaemonApp {
             }
             LocalDaemonRequest::LogoutProvider(request) => {
                 self.handle_logout_provider_request(request)
+            }
+            LocalDaemonRequest::ListProviderProcesses(request) => {
+                Ok(LocalDaemonResponse::ProviderProcessesListed {
+                    processes: self.list_provider_processes(request.provider.as_deref())?,
+                })
+            }
+            LocalDaemonRequest::TeardownProviderProcesses(request) => {
+                Ok(LocalDaemonResponse::ProviderProcessesTornDown {
+                    processes: self.teardown_provider_processes(request.provider.as_deref())?,
+                })
             }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 let page = self.session_history_page(
@@ -1234,6 +1264,11 @@ impl DaemonApp {
                     request.interval_seconds,
                     request.invocation_prompt,
                     request.policy,
+                    if request.max_wakeups_configured {
+                        Some(request.max_wakeups)
+                    } else {
+                        None
+                    },
                 )?;
                 let workflow = self
                     .sessions()

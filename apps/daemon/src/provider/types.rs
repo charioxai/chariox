@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +302,10 @@ pub struct RuntimeProviderRun {
     control_capabilities: Vec<ControlCapability>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     resume_state: ProviderResumeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_session_id: Option<String>,
+    started_at_ms: u64,
+    last_activity_at_ms: u64,
 }
 
 impl RuntimeProviderRun {
@@ -309,6 +314,7 @@ impl RuntimeProviderRun {
         request: &LaunchProviderRequest,
         launch_result: ProviderLaunchResult,
     ) -> Self {
+        let now = unix_epoch_ms();
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -338,6 +344,13 @@ impl RuntimeProviderRun {
                 request.runtime_mcp_binding.is_some(),
             ),
             resume_state: request.resume_state.clone().unwrap_or_default(),
+            provider_session_id: request
+                .resume_state
+                .as_ref()
+                .and_then(|state| state.opencode_session_id().or_else(|| state.codex_thread_id()))
+                .map(str::to_string),
+            started_at_ms: now,
+            last_activity_at_ms: now,
         }
     }
 
@@ -348,6 +361,7 @@ impl RuntimeProviderRun {
         adapter_key: String,
     ) -> Self {
         let inferred_has_runtime_mcp_binding = matches!(adapter_key.as_str(), "codex" | "opencode");
+        let now = unix_epoch_ms();
         Self {
             id: id.into(),
             session_id,
@@ -375,6 +389,9 @@ impl RuntimeProviderRun {
                 inferred_has_runtime_mcp_binding,
             ),
             resume_state: ProviderResumeState::default(),
+            provider_session_id: None,
+            started_at_ms: now,
+            last_activity_at_ms: now,
         }
     }
 
@@ -472,12 +489,32 @@ impl RuntimeProviderRun {
         self.resume_state = resume_state;
     }
 
+    pub fn provider_session_id(&self) -> Option<&str> {
+        self.provider_session_id.as_deref()
+    }
+
+    pub fn set_provider_session_id(&mut self, provider_session_id: Option<String>) {
+        self.provider_session_id = provider_session_id;
+    }
+
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {
         self.runtime_mcp_auth_token = auth_token;
     }
 
     pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {
         self.control_capabilities = capabilities;
+    }
+
+    pub fn started_at_ms(&self) -> u64 {
+        self.started_at_ms
+    }
+
+    pub fn last_activity_at_ms(&self) -> u64 {
+        self.last_activity_at_ms
+    }
+
+    pub fn touch_activity(&mut self) {
+        self.last_activity_at_ms = unix_epoch_ms();
     }
 
     pub fn mark_running(&mut self) {
@@ -553,4 +590,166 @@ pub struct ProviderPromptSignalBatch {
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
     pub notices: Vec<String>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProcessStatus {
+    Active,
+    Idle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderProcessInfo {
+    pub process_id: String,
+    pub provider: String,
+    pub process_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub endpoint_mode: AgentEndpointMode,
+    pub status: ProviderProcessStatus,
+    pub started_at_ms: u64,
+    pub last_activity_at_ms: u64,
+    #[serde(default)]
+    pub provider_session_ids: Vec<String>,
+    #[serde(default)]
+    pub owner_session_ids: Vec<String>,
+    #[serde(default)]
+    pub owner_provider_run_ids: Vec<String>,
+    #[serde(default)]
+    pub attached_session_ids: Vec<String>,
+    #[serde(default)]
+    pub active_workflow_run_ids: Vec<String>,
+    pub teardown_safe: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teardown_blockers: Vec<String>,
+}
+
+impl ProviderProcessInfo {
+    pub fn from_runs(
+        process_id: String,
+        runs: &[RuntimeProviderRun],
+        attached_session_ids: BTreeSet<String>,
+        active_workflow_run_ids: BTreeSet<String>,
+        teardown_safe: bool,
+        teardown_blockers: Vec<String>,
+    ) -> Option<Self> {
+        let first = runs
+            .iter()
+            .find(|run| run.endpoint_mode() == AgentEndpointMode::Managed)
+            .or_else(|| runs.first())?;
+        let status = if runs.iter().any(|run| {
+            matches!(run.state(), ProviderRunState::Starting | ProviderRunState::Running)
+        }) {
+            ProviderProcessStatus::Active
+        } else {
+            ProviderProcessStatus::Idle
+        };
+        let started_at_ms = runs
+            .iter()
+            .map(RuntimeProviderRun::started_at_ms)
+            .min()
+            .unwrap_or_else(unix_epoch_ms);
+        let last_activity_at_ms = runs
+            .iter()
+            .map(RuntimeProviderRun::last_activity_at_ms)
+            .max()
+            .unwrap_or_else(unix_epoch_ms);
+        let provider_session_ids = runs
+            .iter()
+            .filter_map(|run| {
+                run.provider_session_id().map(str::to_string).or_else(|| {
+                    run.resume_state()
+                        .opencode_session_id()
+                        .or_else(|| run.resume_state().codex_thread_id())
+                        .map(str::to_string)
+                })
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let owner_session_ids = runs
+            .iter()
+            .map(|run| run.session_id().to_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let owner_provider_run_ids = runs
+            .iter()
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        Some(Self {
+            process_id,
+            provider: first.provider().to_string(),
+            process_label: first.process_label().to_string(),
+            pid: None,
+            endpoint_mode: first.endpoint_mode(),
+            status,
+            started_at_ms,
+            last_activity_at_ms,
+            provider_session_ids,
+            owner_session_ids,
+            owner_provider_run_ids,
+            attached_session_ids: attached_session_ids.into_iter().collect(),
+            active_workflow_run_ids: active_workflow_run_ids.into_iter().collect(),
+            teardown_safe,
+            teardown_blockers,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderProcessInfo,
+        ProviderResumeState, RuntimeProviderRun,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn runtime_provider_run_initializes_explicit_provider_session_id_from_resume_state() {
+        let request = LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default")
+            .with_resume_state(ProviderResumeState::from_opencode_session_id("open-session-1"));
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+        assert_eq!(run.provider_session_id(), Some("open-session-1"));
+    }
+
+    #[test]
+    fn provider_process_info_prefers_explicit_provider_session_ids() {
+        let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+        run.set_provider_session_id(Some("thread-123".to_string()));
+        run.mark_running();
+        let info = ProviderProcessInfo::from_runs(
+            "process-1".to_string(),
+            &[run],
+            BTreeSet::new(),
+            BTreeSet::new(),
+            true,
+            Vec::new(),
+        )
+        .expect("process info should be built");
+        assert_eq!(info.status, super::ProviderProcessStatus::Active);
+        assert_eq!(info.provider_session_ids, vec!["thread-123".to_string()]);
+    }
 }

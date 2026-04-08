@@ -1,15 +1,71 @@
 use std::path::PathBuf;
+use std::collections::BTreeSet;
 
 use rand::distributions::{Alphanumeric, DistString};
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::error::DaemonError;
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderRunState, RuntimeMcpBinding,
-    RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderRunState,
+    RuntimeMcpBinding, RuntimeProviderRun,
 };
 
 impl DaemonApp {
+    fn register_managed_provider_process(
+        &mut self,
+        run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let process_key = self.pty.process_key(run.id())?;
+        let pid = self.pty.process_id(run.id())?;
+        let process_id = format!("managed:{}:{}", run.provider(), process_key);
+        let entry = self
+            .tracked_provider_processes
+            .entry(process_key.clone())
+            .or_insert_with(|| TrackedProviderProcess {
+                process_id: process_id.clone(),
+                provider: run.provider().to_string(),
+                pid,
+                endpoint_mode: run.endpoint_mode(),
+                process_label: run.process_label().to_string(),
+                started_at_ms: run.started_at_ms(),
+                owner_provider_run_ids: Vec::new(),
+            });
+        entry.pid = pid.or(entry.pid);
+        if !entry.owner_provider_run_ids.iter().any(|id| id == run.id()) {
+            entry.owner_provider_run_ids.push(run.id().to_string());
+        }
+        self.tracked_provider_run_processes
+            .insert(run.id().to_string(), process_key);
+        Ok(())
+    }
+
+    pub(crate) fn remove_tracked_provider_process_for_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let process_key = self
+            .tracked_provider_run_processes
+            .get(provider_run_id)
+            .cloned()
+            .or_else(|| self.pty.process_key(provider_run_id).ok());
+        let removed = self.pty.remove_process(provider_run_id)?;
+        let Some(process_key) = process_key else {
+            return Ok(removed);
+        };
+        self.tracked_provider_run_processes.remove(provider_run_id);
+        let should_remove_entry = if let Some(entry) = self.tracked_provider_processes.get_mut(&process_key)
+        {
+            entry.owner_provider_run_ids.retain(|id| id != provider_run_id);
+            entry.owner_provider_run_ids.is_empty()
+        } else {
+            false
+        };
+        if should_remove_entry {
+            self.tracked_provider_processes.remove(&process_key);
+        }
+        Ok(removed)
+    }
+
     pub fn launch_provider(
         &mut self,
         mut request: LaunchProviderRequest,
@@ -136,6 +192,7 @@ impl DaemonApp {
                 }
                 return Err(error);
             }
+            self.register_managed_provider_process(&run)?;
         }
         crate::logging::info_with_fields(
             "daemon.app",
@@ -155,7 +212,7 @@ impl DaemonApp {
                     "error": error.to_string(),
                 }),
             );
-            let _ = self.pty.remove_process(run.id());
+            let _ = self.remove_tracked_provider_process_for_run(run.id());
             self.providers.clear_runtime(run.id());
             let _ = self
                 .providers
@@ -178,6 +235,7 @@ impl DaemonApp {
             }),
         );
         let run = self.providers.get_run(run.id())?;
+        let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
             let _ = self.agents.set_agent_runtime_profile(
                 agent_id,
@@ -188,6 +246,134 @@ impl DaemonApp {
             )?;
         }
         Ok(run)
+    }
+
+    pub fn list_provider_processes(
+        &self,
+        provider: Option<&str>,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        let mut processes = Vec::new();
+        for tracked in self.tracked_provider_processes.values() {
+            if provider.is_some_and(|value| tracked.provider != value) {
+                continue;
+            }
+            let runs = tracked
+                .owner_provider_run_ids
+                .iter()
+                .filter_map(|run_id| self.providers.get_run(run_id).ok())
+                .filter(|run| run.state() != ProviderRunState::Ended)
+                .collect::<Vec<_>>();
+            if runs.is_empty() {
+                continue;
+            }
+            let owner_session_ids = runs
+                .iter()
+                .map(|run| run.session_id().to_string())
+                .collect::<BTreeSet<_>>();
+            let attached_session_ids = owner_session_ids
+                .iter()
+                .filter(|session_id| {
+                    !self
+                        .attachments
+                        .list_session_attachment_ids(session_id)
+                        .is_empty()
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let active_workflow_run_ids = owner_session_ids
+                .iter()
+                .flat_map(|session_id| {
+                    self.sessions
+                        .get_session(session_id)
+                        .ok()
+                        .map(|session| session.workflow_runs().iter().cloned().collect::<Vec<_>>())
+                        .into_iter()
+                        .flatten()
+                        .filter(|run| {
+                            !matches!(
+                                run.status(),
+                                crate::session::WorkflowRunStatus::Completed
+                                    | crate::session::WorkflowRunStatus::Failed
+                                    | crate::session::WorkflowRunStatus::Stopped
+                            )
+                        })
+                        .map(|run| run.id().to_string())
+                })
+                .collect::<BTreeSet<_>>();
+            let has_active_prompt = owner_session_ids.iter().any(|session_id| {
+                self.sessions
+                    .get_session(session_id)
+                    .ok()
+                    .and_then(|session| session.active_prompt().cloned())
+                    .is_some()
+            });
+            let mut teardown_blockers = Vec::new();
+            if !attached_session_ids.is_empty() {
+                teardown_blockers.push(format!(
+                    "attached sessions: {}",
+                    attached_session_ids.iter().cloned().collect::<Vec<_>>().join(",")
+                ));
+            }
+            if has_active_prompt {
+                teardown_blockers.push("active prompt".to_string());
+            }
+            if !active_workflow_run_ids.is_empty() {
+                teardown_blockers.push(format!(
+                    "active workflow runs: {}",
+                    active_workflow_run_ids.iter().cloned().collect::<Vec<_>>().join(",")
+                ));
+            }
+            let teardown_safe =
+                attached_session_ids.is_empty() && active_workflow_run_ids.is_empty() && !has_active_prompt;
+            if let Some(mut process) = ProviderProcessInfo::from_runs(
+                tracked.process_id.clone(),
+                &runs,
+                attached_session_ids,
+                active_workflow_run_ids,
+                teardown_safe,
+                teardown_blockers,
+            ) {
+                process.pid = tracked.pid;
+                process.process_label = tracked.process_label.clone();
+                process.endpoint_mode = tracked.endpoint_mode;
+                process.started_at_ms = tracked.started_at_ms;
+                processes.push(process);
+            }
+        }
+        Ok(processes)
+    }
+
+    pub fn teardown_provider_processes(
+        &mut self,
+        provider: Option<&str>,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        let safe_processes = self
+            .list_provider_processes(provider)?
+            .into_iter()
+            .filter(|process| process.teardown_safe)
+            .collect::<Vec<_>>();
+        for process in &safe_processes {
+            let run_ids: Vec<String> = self
+                .tracked_provider_processes
+                .values()
+                .find(|tracked| tracked.process_id == process.process_id)
+                .map(|tracked| tracked.owner_provider_run_ids.clone())
+                .unwrap_or_else(|| process.owner_provider_run_ids.clone());
+            for run_id in run_ids {
+                let run = match self.providers.get_run(&run_id) {
+                    Ok(run) => run,
+                    Err(_) => continue,
+                };
+                if run.state() == ProviderRunState::Ended {
+                    continue;
+                }
+                let _ = self
+                    .providers
+                    .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                let _ = self.remove_tracked_provider_process_for_run(run.id());
+            }
+        }
+        Ok(safe_processes)
     }
 
     pub(crate) fn sync_active_provider_run_for_agent(
@@ -301,4 +487,99 @@ impl DaemonApp {
 
 fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::config::DaemonConfig;
+    use crate::provider::LaunchProviderRequest;
+    use crate::session::CreateSessionRequest;
+
+    use super::*;
+
+    #[test]
+    fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+
+        let processes = app
+            .list_provider_processes(None)
+            .expect("provider processes should list");
+        assert_eq!(processes.len(), 1);
+        assert!(processes[0].teardown_safe);
+        assert!(processes[0].attached_session_ids.is_empty());
+        assert_eq!(processes[0].owner_provider_run_ids, vec![run.id().to_string()]);
+        assert_eq!(app.tracked_provider_processes.len(), 1);
+        assert_eq!(app.tracked_provider_run_processes.len(), 1);
+        assert_eq!(processes[0].pid, app.pty.process_id(run.id()).expect("pty pid should resolve"));
+
+        let torn_down = app
+            .teardown_provider_processes(None)
+            .expect("safe teardown should succeed");
+        assert_eq!(torn_down.len(), 1);
+        assert!(
+            app.list_provider_processes(None)
+                .expect("provider processes should relist")
+                .is_empty()
+        );
+        assert!(app.tracked_provider_processes.is_empty());
+        assert!(app.tracked_provider_run_processes.is_empty());
+    }
+
+    #[test]
+    fn provider_processes_do_not_teardown_when_session_is_attached() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let _attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("session should attach");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider launch should succeed");
+
+        let processes = app
+            .list_provider_processes(None)
+            .expect("provider processes should list");
+        assert_eq!(processes.len(), 1);
+        assert!(!processes[0].teardown_safe);
+        assert_eq!(processes[0].attached_session_ids, vec![session.id().to_string()]);
+
+        let torn_down = app
+            .teardown_provider_processes(None)
+            .expect("safe teardown should succeed");
+        assert!(torn_down.is_empty());
+        assert_eq!(
+            app.providers()
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+    }
 }
