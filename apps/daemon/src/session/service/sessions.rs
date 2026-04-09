@@ -1,0 +1,564 @@
+use super::*;
+use crate::session::PromptStatus;
+
+impl SessionService {
+    pub fn resolve_session_ref(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let normalized_ref = session_ref.trim().to_lowercase();
+        if normalized_ref.is_empty() {
+            return Err(DaemonError::SessionNotFound {
+                session_id: normalized_ref,
+            });
+        }
+
+        let all_sessions = self.store.non_ended_sessions().cloned().collect::<Vec<_>>();
+        let workspace_sessions = all_sessions
+            .iter()
+            .filter(|session| {
+                workspace_id.is_none_or(|workspace| session.workspace_id() == workspace)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if let Some(session) = all_sessions
+            .iter()
+            .find(|session| session.id() == normalized_ref)
+        {
+            return Ok(session.clone());
+        }
+        if let Some(session) = workspace_sessions
+            .iter()
+            .find(|session| session.alias() == Some(normalized_ref.as_str()))
+        {
+            return Ok(session.clone());
+        }
+
+        let id_matches = all_sessions
+            .iter()
+            .filter(|session| session.id().starts_with(&normalized_ref))
+            .cloned()
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        if id_matches.len() > 1 {
+            return Err(DaemonError::AmbiguousSessionRef {
+                session_ref: normalized_ref,
+                matches: id_matches
+                    .into_iter()
+                    .map(|session| describe_session_match(&session))
+                    .collect(),
+            });
+        }
+
+        let alias_matches = workspace_sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Ok(alias_matches[0].clone());
+        }
+        if alias_matches.len() > 1 {
+            return Err(DaemonError::AmbiguousSessionRef {
+                session_ref: normalized_ref,
+                matches: alias_matches
+                    .into_iter()
+                    .map(|session| describe_session_match(&session))
+                    .collect(),
+            });
+        }
+
+        Err(DaemonError::SessionNotFound {
+            session_id: normalized_ref,
+        })
+    }
+
+    pub fn transition_session(
+        &mut self,
+        session_id: &str,
+        next_status: SessionStatus,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        if !session.transition_to(next_status) {
+            return Err(DaemonError::InvalidSessionTransition {
+                session_id: session_id.to_string(),
+                from: session.status(),
+                to: next_status,
+            });
+        }
+
+        session.touch();
+
+        Ok(session.clone())
+    }
+
+    pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.transition_session(session_id, SessionStatus::Ended)
+    }
+
+    pub fn delete_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.store
+            .remove(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })
+    }
+
+    pub fn add_attachment_to_session(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        if session.status() == SessionStatus::Ended {
+            let _ = session.transition_to(SessionStatus::Parked);
+        }
+
+        session.add_attachment(attachment_id);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn remove_attachment_from_session(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(RuntimeSession, PromptDetachEffect), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "detach")?;
+
+        if !session.remove_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let removed_queued_prompt_count =
+            session.remove_queued_prompts_by_attachment(attachment_id);
+
+        session.touch();
+
+        Ok((
+            session.clone(),
+            PromptDetachEffect {
+                removed_active_prompt: false,
+                removed_queued_prompt_count,
+            },
+        ))
+    }
+
+    pub fn set_active_provider_run(
+        &mut self,
+        session_id: &str,
+        provider_run_id: Option<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "set active provider run")?;
+
+        session.set_active_provider_run(provider_run_id);
+
+        let target_status = if session.active_provider_run_id().is_some() {
+            SessionStatus::Active
+        } else if session.status() == SessionStatus::Active {
+            SessionStatus::Parked
+        } else {
+            session.status()
+        };
+
+        let _ = session.transition_to(target_status);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn set_focused_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: Option<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        session.set_focused_agent(agent_id);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn submit_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: &str,
+        prompt: impl Into<String>,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let prompt_id = self.next_prompt_id();
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        )
+        .with_attachments(attachments);
+        let session = self.get_session_mut_for_operation(session_id, "submit prompt")?;
+
+        if !session.has_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let outcome = session.submit_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
+    pub fn submit_workflow_prompt(
+        &mut self,
+        session_id: &str,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        prompt: impl Into<String>,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let prompt_id = self.next_prompt_id();
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            source_attachment_id,
+            target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run_id, workflow_node_run_id);
+        let session = self.get_session_mut_for_operation(session_id, "submit workflow prompt")?;
+        let outcome = session.submit_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
+    pub fn cancel_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "cancel prompt")?;
+        let cancelled =
+            session
+                .cancel_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), cancelled))
+    }
+
+    pub fn begin_cancelling_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "begin cancelling prompt")?;
+        let prompt = session.begin_cancelling_active_prompt().ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            }
+        })?;
+        Ok((session.clone(), prompt))
+    }
+
+    pub fn finalize_active_prompt_cancellation(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "finalize prompt cancellation")?;
+        let prompt = session
+            .finalize_active_prompt_cancellation()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        Ok((session.clone(), prompt))
+    }
+
+    pub fn complete_active_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
+        let completed =
+            session
+                .complete_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), completed))
+    }
+
+    pub fn complete_active_prompt_only(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
+        let completed =
+            session
+                .complete_active_prompt_only()
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok((session.clone(), completed))
+    }
+
+    pub fn peek_next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::PromptQueueItem>, DaemonError> {
+        let session = self.get_session(session_id)?;
+        Ok(session.peek_next_queued_prompt())
+    }
+
+    pub fn activate_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "activate next prompt")?;
+        let next = session
+            .pop_next_queued_prompt()
+            .map(|prompt| session.activate_prompt(prompt));
+        Ok((session.clone(), next))
+    }
+
+    pub fn activate_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: super::PromptQueueItem,
+    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "activate prompt")?;
+        let active = session.activate_prompt(prompt);
+        Ok((session.clone(), active))
+    }
+
+    pub fn pop_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "pop next prompt")?;
+        let next = session.pop_next_queued_prompt();
+        Ok((session.clone(), next))
+    }
+
+    pub fn update_config(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        values: BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<(RuntimeSession, SessionConfigState), DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "update config")?;
+
+        if !session.has_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        if requires_idle && session.active_prompt().is_some() {
+            return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
+                session_id: session_id.to_string(),
+            });
+        }
+
+        session.apply_config_changes(values, attachment_id);
+        Ok((session.clone(), session.config_state().clone()))
+    }
+
+    pub fn store(&self) -> &SessionStore {
+        &self.store
+    }
+
+    pub fn active_session_count(&self) -> usize {
+        self.store.active_session_count()
+    }
+
+    pub(super) fn ensure_alias_available(
+        &self,
+        workspace_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        if self
+            .store
+            .non_ended_sessions()
+            .any(|session| session.workspace_id() == workspace_id && session.alias() == Some(alias))
+        {
+            return Err(DaemonError::SessionAliasConflict {
+                workspace_id: workspace_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_workflow_alias_available(
+        &self,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        if session
+            .workflows()
+            .iter()
+            .any(|workflow| workflow.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowAliasConflict {
+                session_id: session_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_workflow_alias_available_for_update(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        if session
+            .workflows()
+            .iter()
+            .any(|workflow| workflow.id() != workflow_id && workflow.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowAliasConflict {
+                session_id: session_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_session_alias_available_for_update(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        if self.store.non_ended_sessions().any(|session| {
+            session.id() != session_id
+                && session.workspace_id() == workspace_id
+                && session.alias() == Some(alias)
+        }) {
+            return Err(DaemonError::SessionAliasConflict {
+                workspace_id: workspace_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_workflow_endpoint_alias_available(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        let workflow =
+            session
+                .workflow(workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.to_string(),
+                })?;
+        if workflow
+            .endpoints()
+            .iter()
+            .any(|endpoint| endpoint.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowEndpointAliasConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_workflow_endpoint_alias_available_for_update(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        alias: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.get_session(session_id)?;
+        let workflow =
+            session
+                .workflow(workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.to_string(),
+                })?;
+        if workflow
+            .endpoints()
+            .iter()
+            .any(|endpoint| endpoint.id() != endpoint_id && endpoint.alias() == Some(alias))
+        {
+            return Err(DaemonError::WorkflowEndpointAliasConflict {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.to_string(),
+                alias: alias.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn get_session_mut_for_operation(
+        &mut self,
+        session_id: &str,
+        operation: &'static str,
+    ) -> Result<&mut RuntimeSession, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+
+        if session.status() == SessionStatus::Ended {
+            return Err(DaemonError::SessionOperationNotAllowed {
+                session_id: session_id.to_string(),
+                status: session.status(),
+                operation,
+            });
+        }
+
+        session.touch();
+        Ok(session)
+    }
+
+    pub(super) fn next_prompt_id(&mut self) -> String {
+        self.next_prompt_number += 1;
+        format!("prompt-{}", self.next_prompt_number)
+    }
+}
