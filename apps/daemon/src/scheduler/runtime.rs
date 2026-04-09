@@ -215,7 +215,15 @@ pub fn schedule_workflow_node_prompt(
                     ),
                 );
                 if let Ok(Some(cancelled)) =
-                    TransportService::cancel_active_prompt_after_dispatch_failure(app, session_id)
+                    TransportService::cancel_active_prompt_after_dispatch_failure(
+                        app,
+                        session_id,
+                        target_agent_id,
+                        app.providers()
+                            .get_run_for_agent(session_id, target_agent_id)
+                            .map(|run| run.id().to_string())
+                            .as_deref(),
+                    )
                 {
                     let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
                 }
@@ -354,7 +362,7 @@ pub fn ensure_workflow_provider_run_for_agent(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    match app.ensure_active_provider_run_for_agent(session_id, agent_id) {
+    match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
         Ok(provider_run_id) => Ok(provider_run_id),
         Err(DaemonError::NoActiveProviderRun { .. }) => {
             let agent = app.agents().get_agent(agent_id)?;
@@ -378,7 +386,7 @@ pub fn ensure_workflow_provider_run_for_agent(
             if let Some(worktree_id) = agent.worktree_id() {
                 request = request.with_working_directory(PathBuf::from(worktree_id));
             }
-            let provider_run = app.launch_provider(request)?;
+            let provider_run = app.launch_provider_detached(request)?;
             Ok(provider_run.id().to_string())
         }
         Err(error) => Err(error),

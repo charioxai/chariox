@@ -9,26 +9,28 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        target_agent_id: Option<&str>,
         prompt: &str,
         attachments: Vec<crate::session::PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
         let session_before = self.sessions.get_session(session_id)?;
 
-        let target_agent_id = session_before
-            .focused_agent_id()
+        let target_agent_id = target_agent_id
+            .or_else(|| session_before.focused_agent_id())
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "no focused agent".to_string(),
             })?
             .to_string();
-        let queued_while_active = session_before.active_prompt().is_some();
+        let queued_while_active = session_before
+            .active_prompt_for_agent(&target_agent_id)
+            .is_some();
         let provider_run_id = if queued_while_active {
             self.providers
                 .get_run_for_agent(session_id, &target_agent_id)
                 .map(|run| run.id().to_string())
-                .or_else(|| session_before.active_provider_run_id().map(str::to_string))
         } else {
-            Some(self.ensure_active_provider_run_for_agent(session_id, &target_agent_id)?)
+            Some(self.ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)?)
         };
 
         self.append_user_prompt_history(
@@ -69,11 +71,13 @@ impl DaemonApp {
                     prompt.prompt(),
                     prompt.attachments(),
                 ) {
-                    let _ = self.sessions.cancel_active_prompt(session_id);
-                    flow_control::clear_prompt_activity(self, session_id);
+                    let _ = self
+                        .sessions
+                        .cancel_active_prompt(session_id, &target_agent_id);
+                    flow_control::clear_prompt_activity(self, provider_run_id);
                     return Err(error);
                 }
-                flow_control::note_prompt_started(self, session_id);
+                flow_control::note_prompt_started(self, provider_run_id);
             }
             PromptSubmissionOutcome::Queued { prompt } => {
                 if let Some(provider_run_id) = provider_run_id.as_deref() {
@@ -90,11 +94,16 @@ impl DaemonApp {
                     provider_run_id.as_deref(),
                     self.other_attachment_ids(session_id, attachment_id),
                     format!(
-                        "A queued message from attachment `{}` was added to session `{}` as `{}`. Queue depth is now {}.",
+                        "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
                         attachment_id,
+                        target_agent_id,
                         session_id,
                         prompt.id(),
-                        session_before.queued_prompts().len() + 1
+                        session_before
+                            .queued_prompts_for_agent(&target_agent_id)
+                            .map(|queue| queue.len())
+                            .unwrap_or(0)
+                            + 1
                     ),
                 );
             }
@@ -106,18 +115,15 @@ impl DaemonApp {
     pub fn complete_active_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
     ) -> Result<PromptCompletion, DaemonError> {
-        let provider_run_id = self
+        let (_session, completed) = self
             .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_string);
-        let (_session, completed) = self.sessions.complete_active_prompt_only(session_id)?;
-        if !flow_control::prompt_completion_recorded(self, session_id) {
+            .complete_active_prompt_only(session_id, agent_id)?;
+        if !flow_control::prompt_completion_recorded(self, provider_run_id.unwrap_or(agent_id)) {
             let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
-            let completion_provider_run_id = provider_run_id
-                .as_deref()
-                .unwrap_or("provider-run-completed");
+            let completion_provider_run_id = provider_run_id.unwrap_or("provider-run-completed");
             self.record_assistant_message_completion(
                 session_id,
                 completion_provider_run_id,
@@ -125,22 +131,24 @@ impl DaemonApp {
                 &format!("prompt-complete:{}", completed.id()),
                 crate::session::unix_epoch_ms(),
             );
-            flow_control::mark_prompt_completion_recorded(self, session_id);
+            flow_control::mark_prompt_completion_recorded(self, completion_provider_run_id);
         }
         crate::scheduler::runtime::on_workflow_prompt_completed(
             self,
             session_id,
             &completed,
-            provider_run_id.as_deref(),
+            provider_run_id,
         )?;
-        flow_control::clear_prompt_activity(self, session_id);
+        if let Some(provider_run_id) = provider_run_id {
+            flow_control::clear_prompt_activity(self, provider_run_id);
+        }
         let started_next = if self
             .sessions
             .get_session(session_id)?
-            .active_prompt()
+            .active_prompt_for_agent(agent_id)
             .is_none()
         {
-            self.advance_next_queued_prompt(session_id)?
+            self.advance_next_queued_prompt(session_id, agent_id)?
         } else {
             None
         };
@@ -160,25 +168,42 @@ impl DaemonApp {
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.cancel_active_prompt_internal(session_id, Some(attachment_id))
+        let target_agent_id = self
+            .sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        self.cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
     }
 
     pub(crate) fn cancel_active_prompt_for_runtime(
         &mut self,
         session_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.cancel_active_prompt_internal(session_id, None)
+        let target_agent_id = self
+            .sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        self.cancel_active_prompt_internal(session_id, &target_agent_id, None)
     }
 
     fn cancel_active_prompt_internal(
         &mut self,
         session_id: &str,
+        agent_id: &str,
         attachment_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
         let active_prompt = self
             .sessions
             .get_session(session_id)?
-            .active_prompt()
+            .active_prompt_for_agent(agent_id)
             .cloned()
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
@@ -190,13 +215,12 @@ impl DaemonApp {
             });
         }
         let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string())
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
-            })?
-            .to_string();
+            })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
 
         if !self.providers.abort_structured_runtime(&provider_run_id)? {
@@ -208,8 +232,10 @@ impl DaemonApp {
             )?;
         }
 
-        let (_session, prompt) = self.sessions.begin_cancelling_active_prompt(session_id)?;
-        flow_control::note_prompt_settlement_requested(self, session_id);
+        let (_session, prompt) = self
+            .sessions
+            .begin_cancelling_active_prompt(session_id, agent_id)?;
+        flow_control::note_prompt_settlement_requested(self, &provider_run_id);
         let recipients = match attachment_id {
             Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
             None => self.attachments.list_session_attachment_ids(session_id),
@@ -237,9 +263,10 @@ impl DaemonApp {
     pub(crate) fn advance_next_queued_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self.sessions.peek_next_queued_prompt(session_id)?;
+            let next_candidate = self.sessions.peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
@@ -248,7 +275,7 @@ impl DaemonApp {
                 peeked.source_attachment_id(),
             );
             let provider_run_id = match self
-                .ensure_active_provider_run_for_agent(session_id, &target_agent_id)
+                .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
             {
                 Ok(provider_run_id) => provider_run_id,
                 Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
@@ -291,7 +318,7 @@ impl DaemonApp {
             };
 
             let (_session, next_candidate) =
-                self.sessions.activate_next_queued_prompt(session_id)?;
+                self.sessions.activate_next_queued_prompt(session_id, &target_agent_id)?;
             let Some(next) = next_candidate else {
                 continue;
             };
@@ -308,11 +335,14 @@ impl DaemonApp {
                         active.prompt(),
                         active.attachments(),
                     ) {
-                        let cancelled = self.sessions.cancel_active_prompt(session_id)?.1;
+                        let cancelled = self
+                            .sessions
+                            .cancel_active_prompt(session_id, &target_agent_id)?
+                            .1;
                         crate::scheduler::runtime::on_workflow_prompt_cancelled(
                             self, session_id, &cancelled,
                         )?;
-                        flow_control::clear_prompt_activity(self, session_id);
+                        flow_control::clear_prompt_activity(self, &provider_run_id);
                         return Err(dispatch_error);
                     }
                     if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
@@ -327,7 +357,7 @@ impl DaemonApp {
                     crate::scheduler::runtime::on_workflow_prompt_started(
                         self, session_id, &active,
                     )?;
-                    flow_control::note_prompt_started(self, session_id);
+                    flow_control::note_prompt_started(self, &provider_run_id);
                     return Ok(Some(active));
                 }
                 self.record_notice(
@@ -374,7 +404,7 @@ impl DaemonApp {
                 )?;
             }
             crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
-            flow_control::note_prompt_started(self, session_id);
+            flow_control::note_prompt_started(self, &provider_run_id);
             return Ok(Some(active));
         }
     }
@@ -385,6 +415,12 @@ impl DaemonApp {
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
             if self
                 .sessions
@@ -416,7 +452,7 @@ impl DaemonApp {
         let had_active_prompt = self
             .sessions
             .get_session(session_id)?
-            .active_prompt()
+            .active_prompt_for_agent(&agent_id)
             .is_some();
         let ended_run =
             self.providers
@@ -427,18 +463,21 @@ impl DaemonApp {
             let active_prompt_status = self
                 .sessions
                 .get_session(session_id)?
-                .active_prompt()
+                .active_prompt_for_agent(&agent_id)
                 .map(|prompt| prompt.status());
             if active_prompt_status == Some(PromptStatus::Cancelling) {
                 let cancelled = self
                     .sessions
-                    .finalize_active_prompt_cancellation(session_id)?
+                    .finalize_active_prompt_cancellation(session_id, &agent_id)?
                     .1;
                 crate::scheduler::runtime::on_workflow_prompt_cancelled(
                     self, session_id, &cancelled,
                 )?;
             } else {
-                let completed = self.sessions.complete_active_prompt_only(session_id)?.1;
+                let completed = self
+                    .sessions
+                    .complete_active_prompt_only(session_id, &agent_id)?
+                    .1;
                 crate::scheduler::runtime::on_workflow_prompt_completed(
                     self,
                     session_id,
@@ -446,11 +485,11 @@ impl DaemonApp {
                     Some(provider_run_id),
                 )?;
             }
-            flow_control::clear_prompt_activity(self, session_id);
+            flow_control::clear_prompt_activity(self, provider_run_id);
         }
         self.providers.clear_runtime(provider_run_id);
         let started_next = if had_active_prompt {
-            self.advance_next_queued_prompt(session_id)?
+            self.advance_next_queued_prompt(session_id, &agent_id)?
         } else {
             None
         };
@@ -484,19 +523,23 @@ impl DaemonApp {
     pub(crate) fn finalize_active_prompt_cancellation(
         &mut self,
         session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
         let (_session, prompt) = self
             .sessions
-            .finalize_active_prompt_cancellation(session_id)?;
+            .finalize_active_prompt_cancellation(session_id, agent_id)?;
         crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, &prompt)?;
-        flow_control::clear_prompt_activity(self, session_id);
+        if let Some(provider_run_id) = provider_run_id {
+            flow_control::clear_prompt_activity(self, provider_run_id);
+        }
         let started_next = if self
             .sessions
             .get_session(session_id)?
-            .active_provider_run_id()
-            .is_some()
+            .active_prompt_for_agent(agent_id)
+            .is_none()
         {
-            self.advance_next_queued_prompt(session_id)?
+            self.advance_next_queued_prompt(session_id, agent_id)?
         } else {
             None
         };

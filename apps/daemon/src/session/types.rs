@@ -1897,6 +1897,24 @@ pub enum PromptSubmissionOutcome {
     Queued { prompt: PromptQueueItem },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPromptState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_prompt: Option<PromptQueueItem>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    queued_prompts: VecDeque<PromptQueueItem>,
+}
+
+impl AgentPromptState {
+    pub fn active_prompt(&self) -> Option<&PromptQueueItem> {
+        self.active_prompt.as_ref()
+    }
+
+    pub fn queued_prompts(&self) -> &VecDeque<PromptQueueItem> {
+        &self.queued_prompts
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptCompletion {
     pub completed: PromptQueueItem,
@@ -1969,6 +1987,8 @@ pub struct RuntimeSession {
     max_agents: i32,
     agents: Vec<AgentInstance>,
     attachment_ids: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    prompt_states: BTreeMap<String, AgentPromptState>,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
     scheduler_state: SchedulerState,
@@ -2015,6 +2035,7 @@ impl RuntimeSession {
             max_agents: DEFAULT_SESSION_MAX_AGENTS,
             agents: Vec::new(),
             attachment_ids: BTreeSet::new(),
+            prompt_states: BTreeMap::new(),
             active_prompt: None,
             queued_prompts: VecDeque::new(),
             scheduler_state: SchedulerState::Idle,
@@ -2085,6 +2106,9 @@ impl RuntimeSession {
     pub fn attachment_ids(&self) -> &BTreeSet<String> {
         &self.attachment_ids
     }
+    pub fn prompt_states(&self) -> &BTreeMap<String, AgentPromptState> {
+        &self.prompt_states
+    }
     pub fn active_prompt(&self) -> Option<&PromptQueueItem> {
         self.active_prompt.as_ref()
     }
@@ -2093,6 +2117,26 @@ impl RuntimeSession {
     }
     pub fn queued_prompts(&self) -> &VecDeque<PromptQueueItem> {
         &self.queued_prompts
+    }
+    pub fn active_prompt_for_agent(&self, agent_id: &str) -> Option<&PromptQueueItem> {
+        self.prompt_states
+            .get(agent_id)
+            .and_then(AgentPromptState::active_prompt)
+    }
+    pub fn queued_prompts_for_agent(&self, agent_id: &str) -> Option<&VecDeque<PromptQueueItem>> {
+        self.prompt_states
+            .get(agent_id)
+            .map(AgentPromptState::queued_prompts)
+    }
+    pub fn has_any_active_prompt(&self) -> bool {
+        self.prompt_states
+            .values()
+            .any(|state| state.active_prompt().is_some())
+    }
+    pub fn has_any_prompt_work(&self) -> bool {
+        self.prompt_states.values().any(|state| {
+            state.active_prompt().is_some() || !state.queued_prompts().is_empty()
+        })
     }
     pub fn scheduler_state(&self) -> SchedulerState {
         self.scheduler_state
@@ -2149,6 +2193,7 @@ impl RuntimeSession {
 
     pub fn set_focused_agent(&mut self, agent_id: Option<String>) {
         self.focused_agent_id = agent_id;
+        self.refresh_prompt_projection();
     }
 
     pub fn touch(&mut self) {
@@ -2306,31 +2351,38 @@ impl RuntimeSession {
     }
 
     pub fn submit_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {
-        if self.active_prompt.is_none() {
+        let agent_id = prompt.target_agent_id().to_string();
+        let prompt_state = self.prompt_states.entry(agent_id).or_default();
+        if prompt_state.active_prompt.is_none() {
             let mut running = prompt;
             running.set_status(PromptStatus::Running);
-            self.active_prompt = Some(running.clone());
+            prompt_state.active_prompt = Some(running.clone());
+            self.refresh_prompt_projection();
             self.refresh_scheduler_state();
             PromptSubmissionOutcome::Started { prompt: running }
         } else {
             let mut queued = prompt;
             queued.set_status(PromptStatus::Queued);
-            self.queued_prompts.push_back(queued.clone());
+            prompt_state.queued_prompts.push_back(queued.clone());
+            self.refresh_prompt_projection();
             self.refresh_scheduler_state();
             PromptSubmissionOutcome::Queued { prompt: queued }
         }
     }
 
-    pub fn complete_active_prompt(&mut self) -> Option<PromptCompletion> {
-        let mut completed = self.active_prompt.take()?;
+    pub fn complete_active_prompt(&mut self, agent_id: &str) -> Option<PromptCompletion> {
+        let prompt_state = self.prompt_states.get_mut(agent_id)?;
+        let mut completed = prompt_state.active_prompt.take()?;
         completed.set_status(PromptStatus::Completed);
 
-        let started_next = self.queued_prompts.pop_front().map(|mut next| {
+        let started_next = prompt_state.queued_prompts.pop_front().map(|mut next| {
             next.set_status(PromptStatus::Running);
-            self.active_prompt = Some(next.clone());
+            prompt_state.active_prompt = Some(next.clone());
             next
         });
 
+        self.drop_empty_prompt_state(agent_id);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
 
         Some(PromptCompletion {
@@ -2339,55 +2391,91 @@ impl RuntimeSession {
         })
     }
 
-    pub fn complete_active_prompt_only(&mut self) -> Option<PromptQueueItem> {
-        let mut completed = self.active_prompt.take()?;
+    pub fn complete_active_prompt_only(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
+        let prompt_state = self.prompt_states.get_mut(agent_id)?;
+        let mut completed = prompt_state.active_prompt.take()?;
         completed.set_status(PromptStatus::Completed);
+        self.drop_empty_prompt_state(agent_id);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         Some(completed)
     }
 
-    pub fn cancel_active_prompt_only(&mut self) -> Option<PromptQueueItem> {
-        let mut cancelled = self.active_prompt.take()?;
+    pub fn cancel_active_prompt_only(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
+        let prompt_state = self.prompt_states.get_mut(agent_id)?;
+        let mut cancelled = prompt_state.active_prompt.take()?;
         cancelled.set_status(PromptStatus::Cancelled);
+        self.drop_empty_prompt_state(agent_id);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         Some(cancelled)
     }
 
-    pub fn begin_cancelling_active_prompt(&mut self) -> Option<PromptQueueItem> {
-        self.active_prompt
+    pub fn begin_cancelling_active_prompt(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
+        self.prompt_states
+            .get_mut(agent_id)?
+            .active_prompt
             .as_mut()?
             .set_status(PromptStatus::Cancelling);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
-        self.active_prompt.clone()
+        self.prompt_states
+            .get(agent_id)
+            .and_then(|state| state.active_prompt.clone())
     }
 
-    pub fn finalize_active_prompt_cancellation(&mut self) -> Option<PromptQueueItem> {
-        let active = self.active_prompt.as_ref()?;
+    pub fn finalize_active_prompt_cancellation(
+        &mut self,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        let active = self
+            .prompt_states
+            .get(agent_id)?
+            .active_prompt
+            .as_ref()?;
         if active.status() != PromptStatus::Cancelling {
             return None;
         }
 
-        let mut cancelled = self.active_prompt.take()?;
+        let prompt_state = self.prompt_states.get_mut(agent_id)?;
+        let mut cancelled = prompt_state.active_prompt.take()?;
         cancelled.set_status(PromptStatus::Cancelled);
+        self.drop_empty_prompt_state(agent_id);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         Some(cancelled)
     }
 
-    pub fn peek_next_queued_prompt(&self) -> Option<PromptQueueItem> {
-        self.queued_prompts.front().cloned()
+    pub fn peek_next_queued_prompt(&self, agent_id: &str) -> Option<PromptQueueItem> {
+        self.prompt_states
+            .get(agent_id)
+            .and_then(|state| state.queued_prompts.front().cloned())
     }
 
-    pub fn activate_next_queued_prompt(&mut self) -> Option<PromptQueueItem> {
-        let mut next = self.queued_prompts.pop_front()?;
+    pub fn activate_next_queued_prompt(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
+        let prompt_state = self.prompt_states.get_mut(agent_id)?;
+        let mut next = prompt_state.queued_prompts.pop_front()?;
         next.set_status(PromptStatus::Running);
-        self.active_prompt = Some(next.clone());
+        prompt_state.active_prompt = Some(next.clone());
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         Some(next)
     }
 
     pub fn clear_active_prompt_if(&mut self, prompt_id: &str) -> bool {
-        if self.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id) {
-            self.active_prompt = None;
+        let target_agent_id = self
+            .prompt_states
+            .iter()
+            .find_map(|(agent_id, state)| {
+                (state.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id))
+                    .then(|| agent_id.clone())
+            });
+        if let Some(agent_id) = target_agent_id {
+            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                prompt_state.active_prompt = None;
+            }
+            self.drop_empty_prompt_state(&agent_id);
+            self.refresh_prompt_projection();
             self.refresh_scheduler_state();
             return true;
         }
@@ -2396,32 +2484,59 @@ impl RuntimeSession {
     }
 
     pub fn remove_queued_prompts_by_attachment(&mut self, attachment_id: &str) -> usize {
-        let original_len = self.queued_prompts.len();
-        self.queued_prompts
-            .retain(|prompt| prompt.source_attachment_id() != attachment_id);
-        let removed = original_len - self.queued_prompts.len();
+        let mut removed = 0;
+        let agent_ids: Vec<String> = self.prompt_states.keys().cloned().collect();
+        for agent_id in agent_ids {
+            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                let original_len = prompt_state.queued_prompts.len();
+                prompt_state
+                    .queued_prompts
+                    .retain(|prompt| prompt.source_attachment_id() != attachment_id);
+                removed += original_len - prompt_state.queued_prompts.len();
+            }
+            self.drop_empty_prompt_state(&agent_id);
+        }
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         removed
     }
 
     pub fn remove_queued_prompts_by_workflow_run(&mut self, workflow_run_id: &str) -> usize {
-        let original_len = self.queued_prompts.len();
-        self.queued_prompts
-            .retain(|prompt| prompt.workflow_run_id() != Some(workflow_run_id));
-        let removed = original_len - self.queued_prompts.len();
+        let mut removed = 0;
+        let agent_ids: Vec<String> = self.prompt_states.keys().cloned().collect();
+        for agent_id in agent_ids {
+            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                let original_len = prompt_state.queued_prompts.len();
+                prompt_state
+                    .queued_prompts
+                    .retain(|prompt| prompt.workflow_run_id() != Some(workflow_run_id));
+                removed += original_len - prompt_state.queued_prompts.len();
+            }
+            self.drop_empty_prompt_state(&agent_id);
+        }
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         removed
     }
 
-    pub fn pop_next_queued_prompt(&mut self) -> Option<PromptQueueItem> {
-        let next = self.queued_prompts.pop_front();
+    pub fn pop_next_queued_prompt(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
+        let next = self
+            .prompt_states
+            .get_mut(agent_id)?
+            .queued_prompts
+            .pop_front();
+        self.drop_empty_prompt_state(agent_id);
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         next
     }
 
     pub fn activate_prompt(&mut self, mut prompt: PromptQueueItem) -> PromptQueueItem {
+        let agent_id = prompt.target_agent_id().to_string();
         prompt.set_status(PromptStatus::Running);
-        self.active_prompt = Some(prompt.clone());
+        let prompt_state = self.prompt_states.entry(agent_id).or_default();
+        prompt_state.active_prompt = Some(prompt.clone());
+        self.refresh_prompt_projection();
         self.refresh_scheduler_state();
         prompt
     }
@@ -2458,6 +2573,7 @@ impl RuntimeSession {
             self.active_provider_run_id = None;
             self.focused_agent_id = None;
             self.attachment_ids.clear();
+            self.prompt_states.clear();
             self.active_prompt = None;
             self.queued_prompts.clear();
             self.scheduler_state = SchedulerState::Idle;
@@ -2467,17 +2583,63 @@ impl RuntimeSession {
     }
 
     fn refresh_scheduler_state(&mut self) {
-        self.scheduler_state = if self.active_prompt.is_some() {
-            if self.queued_prompts.is_empty() {
+        self.scheduler_state = if self
+            .prompt_states
+            .values()
+            .any(|state| state.active_prompt.is_some())
+        {
+            if self
+                .prompt_states
+                .values()
+                .all(|state| state.queued_prompts.is_empty())
+            {
                 SchedulerState::Running
             } else {
                 SchedulerState::Waiting
             }
-        } else if self.queued_prompts.is_empty() {
+        } else if self
+            .prompt_states
+            .values()
+            .all(|state| state.queued_prompts.is_empty())
+        {
             SchedulerState::Idle
         } else {
             SchedulerState::Runnable
         };
+    }
+
+    fn refresh_prompt_projection(&mut self) {
+        let projected_agent_id = self
+            .focused_agent_id
+            .clone()
+            .filter(|agent_id| self.prompt_states.contains_key(agent_id))
+            .or_else(|| {
+                self.prompt_states
+                    .iter()
+                    .find(|(_, state)| state.active_prompt.is_some())
+                    .map(|(agent_id, _)| agent_id.clone())
+            })
+            .or_else(|| self.prompt_states.keys().next().cloned());
+        if let Some(agent_id) = projected_agent_id {
+            if let Some(state) = self.prompt_states.get(&agent_id) {
+                self.active_prompt = state.active_prompt.clone();
+                self.queued_prompts = state.queued_prompts.clone();
+                return;
+            }
+        }
+        self.active_prompt = None;
+        self.queued_prompts.clear();
+    }
+
+    fn drop_empty_prompt_state(&mut self, agent_id: &str) {
+        let should_remove = self
+            .prompt_states
+            .get(agent_id)
+            .map(|state| state.active_prompt.is_none() && state.queued_prompts.is_empty())
+            .unwrap_or(false);
+        if should_remove {
+            self.prompt_states.remove(agent_id);
+        }
     }
 }
 

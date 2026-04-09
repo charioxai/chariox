@@ -50,11 +50,12 @@ test("attach and submit requests preserve full terminal fields", () => {
     },
   })
   assert.deepEqual(
-    submitPromptRequest("session-1", "attachment-1", "hi", [{ url: "file:///a.txt", mime: "text/plain", filename: "a.txt" }]),
+    submitPromptRequest("session-1", "attachment-1", "agent-a", "hi", [{ url: "file:///a.txt", mime: "text/plain", filename: "a.txt" }]),
     {
       SubmitPrompt: {
         session_id: "session-1",
         attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
         prompt: "hi",
         attachments: [{ url: "file:///a.txt", mime: "text/plain", filename: "a.txt" }],
       },

@@ -484,6 +484,7 @@ mod tests {
             .send(&LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
+                target_agent_id: None,
                 prompt: "ipc smoke\n".to_string(),
                 attachments: Vec::new(),
             }))

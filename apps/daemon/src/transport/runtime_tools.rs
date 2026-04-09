@@ -1539,7 +1539,7 @@ mod tests {
             .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
             .expect("runtime auth token should exist");
         app.sessions_mut()
-            .complete_active_prompt_only(session.id())
+            .complete_active_prompt_only(session.id(), &agent_id)
             .expect("active prompt should be clearable for test");
 
         let result = dispatch_authenticated_runtime_tool_call(
@@ -1667,7 +1667,7 @@ mod tests {
             .delivery_token()
             .to_string();
         app.sessions_mut()
-            .complete_active_prompt_only(session.id())
+            .complete_active_prompt_only(session.id(), &active_agent_id)
             .expect("active prompt should be clearable");
 
         let (resolved_workflow_run_id, resolved_node_run_id) = resolve_authenticated_workflow_turn(

@@ -639,6 +639,7 @@ export function pumpTerminalOutputRequest(sessionId: string, attachmentId: strin
 export function submitPromptRequest(
   sessionId: string,
   attachmentId: string,
+  targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
 ) {
@@ -646,6 +647,7 @@ export function submitPromptRequest(
     SubmitPrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
+      target_agent_id: targetAgentId,
       prompt,
       attachments,
     },

@@ -158,13 +158,24 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::SubmitPrompt(request) => {
-                let outcome = crate::transport::TransportService::schedule_direct_prompt(
-                    self,
-                    &request.session_id,
-                    &request.attachment_id,
-                    &request.prompt,
-                    request.attachments,
-                )?;
+                let outcome = if request.target_agent_id.is_some() {
+                    crate::transport::TransportService::schedule_direct_prompt_to_agent(
+                        self,
+                        &request.session_id,
+                        &request.attachment_id,
+                        request.target_agent_id.as_deref(),
+                        &request.prompt,
+                        request.attachments,
+                    )?
+                } else {
+                    crate::transport::TransportService::schedule_direct_prompt(
+                        self,
+                        &request.session_id,
+                        &request.attachment_id,
+                        &request.prompt,
+                        request.attachments,
+                    )?
+                };
                 let mut session = self.sessions().get_session(&request.session_id)?;
                 session.set_agents(self.agents().get_session_agents(&request.session_id));
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })

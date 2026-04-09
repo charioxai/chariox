@@ -482,6 +482,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: first.id().to_string(),
+            target_agent_id: None,
             prompt: "first local prompt\n".to_string(),
             attachments: Vec::new(),
         }))
@@ -490,6 +491,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: second.id().to_string(),
+            target_agent_id: None,
             prompt: "second local prompt\n".to_string(),
             attachments: Vec::new(),
         }))
@@ -1747,7 +1749,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
 }
 
 #[test]
-fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_its_own_run() {
+fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_selection() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -1816,12 +1818,12 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
         "reviewer prompt should queue\n",
         Vec::new(),
     )
-    .expect("reviewer prompt should queue");
+    .expect("reviewer prompt should start");
     match second_submission {
-        PromptSubmissionOutcome::Queued { prompt } => {
+        PromptSubmissionOutcome::Started { prompt } => {
             assert_eq!(prompt.target_agent_id(), reviewer.id());
         }
-        _ => panic!("expected reviewer prompt to queue"),
+        _ => panic!("expected reviewer prompt to start immediately"),
     }
 
     let queued_state = app
@@ -1835,19 +1837,21 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
     );
     assert_eq!(
         queued_state
-            .active_prompt()
+            .active_prompt_for_agent(default_agent.id())
             .expect("default prompt should still be active")
             .target_agent_id(),
         default_agent.id()
     );
     assert_eq!(
         queued_state
-            .queued_prompts()
-            .front()
-            .expect("reviewer prompt should remain queued")
+            .active_prompt_for_agent(reviewer.id())
+            .expect("reviewer prompt should also be active")
             .target_agent_id(),
         reviewer.id()
     );
+    assert!(queued_state
+        .queued_prompts_for_agent(reviewer.id())
+        .is_none_or(|queue| queue.is_empty()));
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
     let default_records = collect_provider_records_until(
@@ -1862,8 +1866,8 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
                     .sessions()
                     .get_session(session.id())
                     .expect("session should still exist")
-                    .active_provider_run_id()
-                    == Some(reviewer_run.id())
+                    .active_prompt_for_agent(default_agent.id())
+                    .is_none()
         },
     );
     assert!(default_records
@@ -1882,7 +1886,7 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
                     .sessions()
                     .get_session(session.id())
                     .expect("session should still exist")
-                    .active_prompt()
+                    .active_prompt_for_agent(reviewer.id())
                     .is_none()
         },
     );
@@ -1899,7 +1903,12 @@ fn queued_prompt_for_another_agent_waits_without_switching_runs_and_advances_on_
         settled_state.active_provider_run_id(),
         Some(reviewer_run.id())
     );
-    assert!(settled_state.queued_prompts().is_empty());
+    assert!(settled_state
+        .queued_prompts_for_agent(default_agent.id())
+        .is_none_or(|queue| queue.is_empty()));
+    assert!(settled_state
+        .queued_prompts_for_agent(reviewer.id())
+        .is_none_or(|queue| queue.is_empty()));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);

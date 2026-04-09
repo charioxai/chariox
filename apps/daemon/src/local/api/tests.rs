@@ -1596,7 +1596,11 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
         crate::session::PromptStatus::Cancelling
     );
     let _ = app
-        .finalize_active_prompt_cancellation(session.id())
+        .finalize_active_prompt_cancellation(
+            session.id(),
+            "agent-1",
+            None,
+        )
         .expect("workflow cancellation should finalize");
     assert!(app
         .sessions()
@@ -2048,6 +2052,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
             prompt: "keep streaming while focus changes\n".to_string(),
             attachments: Vec::new(),
         }))
@@ -2222,6 +2227,7 @@ fn local_request_api_rejects_prompt_without_active_provider_run() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
             prompt: "whoami".to_string(),
             attachments: Vec::new(),
         }))
@@ -2326,6 +2332,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: a.id().to_string(),
+            target_agent_id: None,
             prompt: "first".to_string(),
             attachments: Vec::new(),
         }))
@@ -2334,6 +2341,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: b.id().to_string(),
+            target_agent_id: None,
             prompt: "second".to_string(),
             attachments: Vec::new(),
         }))
@@ -2467,6 +2475,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
             prompt: "first prompt\n".to_string(),
             attachments: Vec::new(),
         }))
@@ -2475,6 +2484,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
             prompt: "second prompt\n".to_string(),
             attachments: Vec::new(),
         }))

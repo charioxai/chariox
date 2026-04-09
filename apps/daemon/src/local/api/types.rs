@@ -29,6 +29,7 @@ pub struct DetachFromSessionRequest {
 pub struct SubmitPromptRequest {
     pub session_id: String,
     pub attachment_id: String,
+    pub target_agent_id: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub attachments: Vec<PromptAttachment>,

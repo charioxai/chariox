@@ -101,10 +101,12 @@ import { runLogViewer } from "./logs.js"
 import { evaluateConnectionHealth, runPollingLoop } from "./polling-effects.js"
 import {
   loadPreferences,
+  mergeSessionPromptState,
   mergeUiPreferences,
   resolveMaxAgentsPerScreen,
   saveProviderPreferences,
-  saveSessionPromptHistory,
+  saveSessionPromptState,
+  sessionPromptDraftEntry,
   saveUiPreferences,
   sessionPromptHistoryEntries,
   type ArrobaPreferences,
@@ -473,6 +475,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialPromptHistory = initialBinding?.session
     ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
     : []
+  const initialPromptDraft = initialBinding?.session
+    ? sessionPromptDraftEntry(initialPreferences, initialBinding.session.id)
+    : ""
   const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
   const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
   const [sessionState, setSessionState] = createSignal(initialSession)
@@ -610,13 +615,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let subscribedSessionId: string | null = null
   let subscribedAttachmentId: string | null = null
   let lastLoggedFocusedBadgeState: string | null = null
+  let pendingAgentFocusTransition: Promise<void> | null = null
   let currentTurnId = computeCurrentTurnId(initialEntries)
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
-  let promptTextSnapshot = ""
+  let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
+  let pendingPromptDraftPersist: ReturnType<typeof startTimeout> | undefined
+  let pendingPromptDraftSessionId: string | null = null
+  let pendingPromptDraftValue = ""
 
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
@@ -1677,25 +1686,66 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       : theme.backgroundElement
   )
   const restorePromptHistory = (sessionId: string | null) => {
+    const preferences = untrack(preferencesState)
     const nextEntries = sessionId
-      ? sessionPromptHistoryEntries(untrack(preferencesState), sessionId)
+      ? sessionPromptHistoryEntries(preferences, sessionId)
       : []
+    const nextDraft = sessionId
+      ? sessionPromptDraftEntry(preferences, sessionId)
+      : ""
     setPromptHistoryEntries(nextEntries)
     setPromptHistoryIndex(null)
     setPromptHistoryDraft(null)
+    promptTextSnapshot = nextDraft
+    setPromptText(nextDraft)
   }
-  const persistPromptHistory = async (sessionId: string, entries: readonly string[]) => {
-    setPreferencesState((current) => ({
-      ...current,
-      sessions: {
-        ...(current.sessions ?? {}),
-        [sessionId]: {
-          ...(current.sessions?.[sessionId] ?? {}),
-          promptHistory: [...entries],
-        },
-      },
-    }))
-    await saveSessionPromptHistory(sessionId, entries)
+  const clearPendingPromptDraftPersist = () => {
+    if (pendingPromptDraftPersist) {
+      clearTimeout(pendingPromptDraftPersist)
+      pendingPromptDraftPersist = undefined
+    }
+  }
+  const persistSessionPromptState = async (
+    sessionId: string,
+    next: {
+      promptHistory?: readonly string[]
+      promptDraft?: string | null
+    },
+  ) => {
+    setPreferencesState((current) => mergeSessionPromptState(current, sessionId, next))
+    await saveSessionPromptState(sessionId, next)
+  }
+  const flushPendingPromptDraftPersist = async () => {
+    clearPendingPromptDraftPersist()
+    if (!pendingPromptDraftSessionId) {
+      return
+    }
+    const sessionId = pendingPromptDraftSessionId
+    const promptDraft = pendingPromptDraftValue
+    pendingPromptDraftSessionId = null
+    pendingPromptDraftValue = ""
+    await persistSessionPromptState(sessionId, { promptDraft })
+  }
+  const schedulePromptDraftPersist = (sessionId: string, promptDraft: string) => {
+    pendingPromptDraftSessionId = sessionId
+    pendingPromptDraftValue = promptDraft
+    clearPendingPromptDraftPersist()
+    pendingPromptDraftPersist = startTimeout(() => {
+      pendingPromptDraftPersist = undefined
+      const queuedSessionId = pendingPromptDraftSessionId
+      if (!queuedSessionId) {
+        return
+      }
+      const queuedDraft = pendingPromptDraftValue
+      pendingPromptDraftSessionId = null
+      pendingPromptDraftValue = ""
+      void persistSessionPromptState(queuedSessionId, { promptDraft: queuedDraft }).catch((error) => {
+        appLogger?.warn("failed to persist prompt draft", {
+          session_id: queuedSessionId,
+          error: formatError(error),
+        })
+      })
+    }, 300)
   }
   const recordPromptAreaHistoryEntry = (sessionId: string | null, rawPrompt: string) => {
     if (!sessionId) {
@@ -1705,8 +1755,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPromptHistoryEntries(nextPromptHistoryEntries)
     setPromptHistoryIndex(null)
     setPromptHistoryDraft(null)
-    void persistPromptHistory(sessionId, nextPromptHistoryEntries).catch((error) => {
-      appLogger?.warn("failed to persist prompt history", {
+    pendingPromptDraftSessionId = null
+    pendingPromptDraftValue = ""
+    clearPendingPromptDraftPersist()
+    void persistSessionPromptState(sessionId, {
+      promptHistory: nextPromptHistoryEntries,
+      promptDraft: "",
+    }).catch((error) => {
+      appLogger?.warn("failed to persist session prompt state", {
         session_id: sessionId,
         error: formatError(error),
       })
@@ -2170,10 +2226,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       syncPendingPromptAttachmentsFromText(value)
       promptTextSnapshot = value
       syncCommandCenter(value)
+      const sessionId = attachmentState()?.session_id
+      if (sessionId) {
+        schedulePromptDraftPersist(sessionId, value)
+      }
       return
     }
     setPromptText(drop.nextText)
     syncCommandCenter(drop.nextText)
+    const sessionId = attachmentState()?.session_id
+    if (sessionId) {
+      schedulePromptDraftPersist(sessionId, drop.nextText)
+    }
     promptDropPending = true
     void attachPromptFiles(drop.files, drop.insertAt)
       .catch((error) => {
@@ -2288,10 +2352,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
 
+  const trackAgentFocusTransition = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const transition = operation()
+    const completion = transition.then(
+      () => undefined,
+      () => undefined,
+    )
+    pendingAgentFocusTransition = completion
+    try {
+      return await transition
+    } finally {
+      if (pendingAgentFocusTransition === completion) {
+        pendingAgentFocusTransition = null
+      }
+    }
+  }
+
+  const waitForPendingAgentFocusTransition = async () => {
+    if (!pendingAgentFocusTransition) {
+      return
+    }
+    await pendingAgentFocusTransition
+  }
+
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     recordTurnActivity("prompt_submit")
     turnCompletionConfirmed = false
     const targetAgentId = agentId ?? focusedAgentId()
+    clearExpandedTurnsForAgent(targetAgentId)
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
       const paneEntries = agentPaneEntries()[targetAgentId] ?? []
       appendTranscriptEntryToAgentPane(targetAgentId, {
@@ -2485,6 +2573,28 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const markAssistantMessageCompleted = (_agentId: string | null | undefined) => {
+    const completionAgentId = _agentId ?? visibleTranscriptAgentId()
+    const turnId = completionAgentId && splitAgentResponseMode() && completionAgentId !== visibleTranscriptAgentId()
+      ? computeCurrentTurnId(currentAgentPaneEntries(completionAgentId))
+      : computeCurrentTurnId(entries.filter(Boolean))
+    if (completionAgentId && turnId !== null) {
+      const nextExpandedTurnIds = [...new Set([...expandedTurnIdsForAgent(completionAgentId), turnId])]
+        .sort((left, right) => left - right)
+      setExpandedTurnIdsByAgent((current) => ({
+        ...current,
+        [completionAgentId]: nextExpandedTurnIds,
+      }))
+      if (completionAgentId === visibleTranscriptAgentId()) {
+        const currentEntries = entries.filter(Boolean)
+        const nextEntries = applyTranscriptDisplayState(currentEntries, nextExpandedTurnIds)
+        setEntries(reconcile(nextEntries))
+        setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
+        persistVisibleTranscriptEntries(nextEntries)
+        reconcileMountedTranscript(currentEntries, nextEntries)
+      } else {
+        setAgentTranscriptEntries(completionAgentId, currentAgentPaneEntries(completionAgentId))
+      }
+    }
     turnCompletionConfirmed = true
     maybeScheduleConfirmedTurnCompletion()
     updateSessionChrome()
@@ -3298,6 +3408,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
+  const clearExpandedTurnsForAgent = (agentId: string | null | undefined) => {
+    if (!agentId) {
+      return
+    }
+    setExpandedTurnIdsByAgent((current) => {
+      if (!(agentId in current)) {
+        return current
+      }
+      const next = { ...current }
+      delete next[agentId]
+      return next
+    })
+  }
+
   const applyExpandedTurns = (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => {
     return applyTranscriptDisplayState(entries, expandedTurnIds)
   }
@@ -3685,6 +3809,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       applyExpandedTurns,
       reindexEntries: reindexTranscriptEntries,
       formatPreview: formatTranscriptPreview,
+      preserveExpandedTurnIds: true,
     })
 
     pruneAuxiliaryAgentPanes(session)
@@ -4496,14 +4621,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }, 0)
     },
     cycleAgentFocus: async () => {
-      const response = await client.send<Record<string, unknown>>(
-        cycleAgentFocusRequest(sessionState().id),
-      )
-      const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
-      return {
-        agent: payload.agent,
-        session: await getSessionState(client, sessionState().id),
-      }
+      return trackAgentFocusTransition(async () => {
+        const response = await client.send<Record<string, unknown>>(
+          cycleAgentFocusRequest(sessionState().id),
+        )
+        const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
+        return {
+          agent: payload.agent,
+          session: await getSessionState(client, sessionState().id),
+        }
+      })
     },
     launchAgentProviderRun: (model, variant, agentId) =>
       launchProviderRun(
@@ -4534,14 +4661,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return getSessionState(client, sessionState().id)
     },
     focusAgent: async (agentId) => {
-      const response = await client.send<Record<string, unknown>>(
-        focusAgentRequest(sessionState().id, agentId),
-      )
-      const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
-      return {
-        agent: payload.agent,
-        session: await getSessionState(client, sessionState().id),
-      }
+      return trackAgentFocusTransition(async () => {
+        const response = await client.send<Record<string, unknown>>(
+          focusAgentRequest(sessionState().id, agentId),
+        )
+        const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
+        return {
+          agent: payload.agent,
+          session: await getSessionState(client, sessionState().id),
+        }
+      })
     },
     resolveSessionAgent: (reference) => {
       const resolved = resolveSessionAgent(reference)
@@ -4661,6 +4790,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       created_session: createdSessionState(),
     })
     try {
+      await flushPendingPromptDraftPersist().catch((error) => {
+        appLogger?.warn("failed to flush prompt draft during exit", {
+          error: formatError(error),
+        })
+      })
       const attachment = attachmentState()
       if (!attachment) {
         exitCleanupFailed = false
@@ -4697,6 +4831,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       created_session: createdSessionState(),
     })
     try {
+      await flushPendingPromptDraftPersist().catch((error) => {
+        appLogger?.warn("failed to flush prompt draft during waiting-room transition", {
+          error: formatError(error),
+        })
+      })
       const attachment = attachmentState()
       if (attachment) {
         if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
@@ -4876,8 +5015,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
 
-      const targetAgentId = focusedAgentId()
       try {
+        await waitForPendingAgentFocusTransition()
+        const targetAgentId = focusedAgentId()
         activeToolLabels.clear()
         setProviderActivityLabel(null)
         setActiveStatusLabel(null)
@@ -4893,15 +5033,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           client,
           sessionState().id,
           attachment.id,
+          targetAgentId,
           forwardedPrompt,
           [],
           options,
           appLogger,
         )
         const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+        const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
         applySessionState(payload.session)
-        setStreamingAgentId(payload.session.active_prompt?.target_agent_id ?? targetAgentId)
-        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), payload.session.active_prompt?.target_agent_id ?? targetAgentId)
+        setStreamingAgentId(submittedTargetAgentId)
+        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), submittedTargetAgentId)
         setWorking(true)
         updateSessionChrome()
         recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
@@ -4973,8 +5115,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       mime: file.mime,
       filename: file.filename,
     }))
-    const targetAgentId = focusedAgentId()
     try {
+      await waitForPendingAgentFocusTransition()
+      const targetAgentId = focusedAgentId()
       appLogger?.info("submitting prompt", {
         chars: prompt.length,
         attachments: attachments.length,
@@ -4993,15 +5136,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         client,
         sessionState().id,
         attachment.id,
+        targetAgentId,
         prompt,
         attachments,
         options,
         appLogger,
       )
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+      const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
       applySessionState(payload.session)
-      setStreamingAgentId(payload.session.active_prompt?.target_agent_id ?? targetAgentId)
-      appendUserPrompt(renderPromptTranscript(prompt), payload.session.active_prompt?.target_agent_id ?? targetAgentId)
+      setStreamingAgentId(submittedTargetAgentId)
+      appendUserPrompt(renderPromptTranscript(prompt), submittedTargetAgentId)
       setWorking(true)
       updateSessionChrome()
       const outcomeName = firstVariantName(payload.outcome)
@@ -5754,6 +5899,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (footerFlashTimeout) {
       clearTimeout(footerFlashTimeout)
     }
+    clearPendingPromptDraftPersist()
     if (pendingTurnCompletion) {
       clearTimeout(pendingTurnCompletion)
     }
@@ -5901,6 +6047,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         promptInput = value
         value.syntaxStyle = promptTokenStyle
         syncPromptPlaceholder()
+        if (promptTextSnapshot) {
+          setPromptText(promptTextSnapshot)
+        }
         syncPromptTextSnapshot()
         refreshPromptAttachmentHighlights()
         ensureBackgroundPollersStarted()
@@ -5998,6 +6147,7 @@ async function submitPromptWithRecovery(
   client: LocalIpcClient,
   sessionId: string,
   attachmentId: string,
+  targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
   options: CliOptions,
@@ -6005,7 +6155,7 @@ async function submitPromptWithRecovery(
 ): Promise<Record<string, unknown>> {
   try {
     return await client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, prompt, attachments),
+      submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
     )
   } catch (error) {
     if (!isRecoverableProviderError(error)) {
@@ -6023,6 +6173,7 @@ async function submitPromptWithRecovery(
         options.accountProfile,
         options.model,
         options.effort,
+        targetAgentId,
       ),
     )
     await maybeResize(client, sessionId)
@@ -6030,9 +6181,19 @@ async function submitPromptWithRecovery(
       session_id: sessionId,
     })
     return client.send<Record<string, unknown>>(
-      submitPromptRequest(sessionId, attachmentId, prompt, attachments),
+      submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
     )
   }
+}
+
+function submittedPromptTargetAgentId(payload: PromptSubmittedPayload) {
+  const outcome = payload.outcome as Record<string, unknown>
+  const variant = Object.values(outcome)[0]
+  if (!variant || typeof variant !== "object") {
+    return null
+  }
+  const prompt = (variant as { prompt?: { target_agent_id?: unknown } }).prompt
+  return typeof prompt?.target_agent_id === "string" ? prompt.target_agent_id : null
 }
 
 function isRecoverableProviderError(error: unknown): boolean {

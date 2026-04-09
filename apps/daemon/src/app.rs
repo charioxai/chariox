@@ -599,11 +599,15 @@ impl DaemonApp {
             }
         };
         if !chunks.is_empty() {
-            crate::transport::flow_control::note_prompt_response_content(self, session_id);
+            crate::transport::flow_control::note_prompt_response_content(self, provider_run_id);
         }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if !exited {
-            crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
+            crate::transport::flow_control::maybe_complete_active_prompt(
+                self,
+                session_id,
+                provider_run_id,
+            )?;
         }
 
         Ok(chunks
@@ -624,26 +628,34 @@ impl DaemonApp {
     pub fn pump_active_prompt_outputs(&mut self) {
         let sessions = self.sessions.list_sessions();
         for session in sessions {
-            if session.active_prompt().is_none() {
-                continue;
-            }
-            let Some(provider_run_id) = session.active_provider_run_id() else {
-                continue;
-            };
-            let recipient_attachment_ids =
-                self.attachments.list_session_attachment_ids(session.id());
-            if let Err(error) =
-                self.pump_provider_output(session.id(), provider_run_id, recipient_attachment_ids)
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.app",
-                    "background prompt pump failed",
-                    serde_json::json!({
-                        "session_id": session.id(),
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                );
+            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session.id());
+            for agent_id in session.prompt_states().keys() {
+                if session.active_prompt_for_agent(agent_id).is_none() {
+                    continue;
+                }
+                let Some(provider_run_id) = self
+                    .providers
+                    .get_run_for_agent(session.id(), agent_id)
+                    .map(|run| run.id().to_string())
+                else {
+                    continue;
+                };
+                if let Err(error) = self.pump_provider_output(
+                    session.id(),
+                    &provider_run_id,
+                    recipient_attachment_ids.clone(),
+                ) {
+                    crate::logging::warn_with_fields(
+                        "daemon.app",
+                        "background prompt pump failed",
+                        serde_json::json!({
+                            "session_id": session.id(),
+                            "provider_run_id": provider_run_id,
+                            "agent_id": agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
         }
     }
@@ -768,9 +780,9 @@ impl DaemonApp {
             )
         });
         if saw_response_content {
-            crate::transport::flow_control::note_prompt_response_content(self, session_id);
+            crate::transport::flow_control::note_prompt_response_content(self, provider_run_id);
         } else if saw_runtime_activity {
-            crate::transport::flow_control::note_prompt_output(self, session_id);
+            crate::transport::flow_control::note_prompt_output(self, provider_run_id);
         }
         for completion in &poll_result.completions {
             self.record_assistant_message_completion(
@@ -780,7 +792,7 @@ impl DaemonApp {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            crate::transport::flow_control::mark_prompt_completion_recorded(self, session_id);
+            crate::transport::flow_control::mark_prompt_completion_recorded(self, provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
         let records = poll_result
@@ -801,19 +813,32 @@ impl DaemonApp {
         if exited {
             return Ok(records);
         }
+        let agent_id = provider_run
+            .agent_instance_id()
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
         let active_prompt_status = self
             .sessions
             .get_session(session_id)?
-            .active_prompt()
+            .active_prompt_for_agent(agent_id)
             .map(|prompt| prompt.status());
         if active_prompt_status == Some(PromptStatus::Cancelling) {
             if prompt_completed {
-                let _ = self.finalize_active_prompt_cancellation(session_id)?;
+                let _ = self.finalize_active_prompt_cancellation(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                )?;
             }
         } else if prompt_completed && active_prompt_status.is_some() {
-            let _ = self.complete_active_prompt(session_id)?;
+            let _ = self.complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
         } else if !prompt_completed && active_prompt_status == Some(PromptStatus::Cancelling) {
-            crate::transport::flow_control::maybe_complete_active_prompt(self, session_id)?;
+            crate::transport::flow_control::maybe_complete_active_prompt(
+                self,
+                session_id,
+                provider_run_id,
+            )?;
         }
         Ok(records)
     }

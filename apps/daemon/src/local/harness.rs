@@ -75,6 +75,7 @@ pub fn run_local_harness(app: &mut DaemonApp) -> Result<LocalHarnessReport, Daem
     let _ = app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
         session_id: session.id().to_string(),
         attachment_id: prompt_source.id().to_string(),
+        target_agent_id: None,
         prompt: "harness smoke\n".to_string(),
         attachments: Vec::new(),
     }))?;

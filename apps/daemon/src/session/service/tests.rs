@@ -1264,11 +1264,11 @@ fn prompt_queue_starts_then_queues_then_advances() {
     );
 
     let (_session, completed) = service
-        .complete_active_prompt(created.id())
+        .complete_active_prompt(created.id(), "agent-1")
         .expect("active prompt should complete");
     assert_eq!(completed.id(), "prompt-1");
     let (session, started_next) = service
-        .activate_next_queued_prompt(created.id())
+        .activate_next_queued_prompt(created.id(), "agent-1")
         .expect("next prompt should activate");
     assert_eq!(
         started_next.expect("next prompt should start").id(),

@@ -89,7 +89,9 @@ impl DaemonApp {
                     attachment_id
                 ),
             );
-            let _ = self.advance_next_queued_prompt(attachment.session_id())?;
+            if let Some(agent_id) = session_after_detach.focused_agent_id() {
+                let _ = self.advance_next_queued_prompt(attachment.session_id(), agent_id)?;
+            }
         }
 
         let remaining_attachment_ids = self
@@ -109,7 +111,11 @@ impl DaemonApp {
                     )?;
                 }
             }
-            crate::transport::flow_control::clear_prompt_activity(self, attachment.session_id());
+            for run in self.providers.list_runs() {
+                if run.session_id() == attachment.session_id() {
+                    crate::transport::flow_control::clear_prompt_activity(self, run.id());
+                }
+            }
         }
 
         crate::logging::info_with_fields(
@@ -152,7 +158,11 @@ impl DaemonApp {
             .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
             .collect();
 
-        crate::transport::flow_control::clear_prompt_activity(self, session_id);
+        for run in self.providers.list_runs() {
+            if run.session_id() == session_id {
+                crate::transport::flow_control::clear_prompt_activity(self, run.id());
+            }
+        }
         let ended = self.sessions.end_session(session_id)?;
         crate::logging::info_with_fields(
             "daemon.session",

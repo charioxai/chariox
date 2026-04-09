@@ -251,6 +251,80 @@ impl DaemonApp {
         Ok(run)
     }
 
+    pub(crate) fn launch_provider_detached(
+        &mut self,
+        mut request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        if request.agent_id.is_none() {
+            request.agent_id = self
+                .sessions
+                .get_session(&request.session_id)?
+                .focused_agent_id()
+                .map(str::to_string);
+        }
+        if request.resume_state.is_none() {
+            if let Some(agent_id) = request.agent_id.as_deref() {
+                if let Ok(agent) = self.agents.get_agent(agent_id) {
+                    let resume_state = sanitize_resume_state_for_launch(&request, &agent);
+                    if !resume_state.is_empty() {
+                        request = request.with_resume_state(resume_state);
+                    }
+                }
+            }
+        }
+        if (request.adapter_key == "opencode" || request.adapter_key == "codex")
+            && request.working_directory.is_none()
+        {
+            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
+                self.agents
+                    .get_agent(agent_id)
+                    .ok()
+                    .and_then(|agent| agent.worktree_id().map(PathBuf::from))
+            });
+            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
+                PathBuf::from(
+                    self.sessions
+                        .get_session(&request.session_id)
+                        .map(|session| session.worktree_id().to_string())
+                        .unwrap_or_default(),
+                )
+            }));
+        }
+        if request.runtime_mcp_binding.is_none() {
+            let shared_auth_token = self
+                .providers
+                .get_session_run_for_provider(&request.session_id, &request.provider)
+                .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string));
+            request = request.with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                self.config.runtime_mcp_url(),
+                shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
+            ));
+        }
+        let run = self.providers.launch_run_detached(request)?;
+        if run.endpoint_mode() == AgentEndpointMode::Managed {
+            if let Err(error) = self.pty.spawn_for_run(&run) {
+                let _ =
+                    self.providers
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                return Err(error);
+            }
+            self.register_managed_provider_process(&run)?;
+        }
+        self.providers.initialize_runtime(&run)?;
+        let run = self.providers.get_run(run.id())?;
+        let _ = self.providers.record_run_activity(run.id());
+        if let Some(agent_id) = run.agent_instance_id() {
+            let _ = self.agents.set_agent_runtime_profile(
+                agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                run.resume_state().clone(),
+            )?;
+        }
+        Ok(run)
+    }
+
     pub fn list_provider_processes(
         &self,
         provider: Option<&str>,
@@ -476,24 +550,49 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn ensure_active_provider_run_for_agent(
+    pub(crate) fn ensure_prompt_provider_run_for_agent(
         &mut self,
         session_id: &str,
         agent_id: &str,
     ) -> Result<String, DaemonError> {
-        self.sync_active_provider_run_for_agent(session_id, agent_id)?;
-        if let Some(provider_run_id) = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_string)
-        {
-            return Ok(provider_run_id);
+        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
+            return match agent_run.state() {
+                ProviderRunState::Running | ProviderRunState::Starting => {
+                    Ok(agent_run.id().to_string())
+                }
+                ProviderRunState::Parked => {
+                    let resumed = self.providers.resume_run_detached(agent_run.id())?;
+                    Ok(resumed.id().to_string())
+                }
+                ProviderRunState::Ended => Err(DaemonError::NoActiveProviderRun {
+                    session_id: session_id.to_string(),
+                }),
+            };
         }
 
-        Err(DaemonError::NoActiveProviderRun {
-            session_id: session_id.to_string(),
-        })
+        let agent = self.agents.get_agent(agent_id)?;
+        let adapter_key = match agent.provider() {
+            "default" => "opencode",
+            value => value,
+        };
+        let provider = match agent.provider() {
+            "default" => "opencode",
+            value => value,
+        };
+        let mut request = LaunchProviderRequest::new(
+            session_id,
+            adapter_key,
+            provider,
+            "default",
+            agent.model().unwrap_or("default"),
+        )
+        .with_agent_id(agent.id().to_string())
+        .with_variant(agent.effort().map(str::to_string));
+        if let Some(worktree_id) = agent.worktree_id() {
+            request = request.with_working_directory(PathBuf::from(worktree_id));
+        }
+        let provider_run = self.launch_provider_detached(request)?;
+        Ok(provider_run.id().to_string())
     }
 }
 

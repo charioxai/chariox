@@ -262,11 +262,12 @@ impl SessionService {
     pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "cancel prompt")?;
         let cancelled =
             session
-                .cancel_active_prompt_only()
+                .cancel_active_prompt_only(agent_id)
                 .ok_or_else(|| DaemonError::NoActivePrompt {
                     session_id: session_id.to_string(),
                 })?;
@@ -276,9 +277,10 @@ impl SessionService {
     pub fn begin_cancelling_active_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "begin cancelling prompt")?;
-        let prompt = session.begin_cancelling_active_prompt().ok_or_else(|| {
+        let prompt = session.begin_cancelling_active_prompt(agent_id).ok_or_else(|| {
             DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             }
@@ -289,11 +291,12 @@ impl SessionService {
     pub fn finalize_active_prompt_cancellation(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session =
             self.get_session_mut_for_operation(session_id, "finalize prompt cancellation")?;
         let prompt = session
-            .finalize_active_prompt_cancellation()
+            .finalize_active_prompt_cancellation(agent_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -303,11 +306,12 @@ impl SessionService {
     pub fn complete_active_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
         let completed =
             session
-                .complete_active_prompt_only()
+                .complete_active_prompt_only(agent_id)
                 .ok_or_else(|| DaemonError::NoActivePrompt {
                     session_id: session_id.to_string(),
                 })?;
@@ -317,11 +321,12 @@ impl SessionService {
     pub fn complete_active_prompt_only(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
         let completed =
             session
-                .complete_active_prompt_only()
+                .complete_active_prompt_only(agent_id)
                 .ok_or_else(|| DaemonError::NoActivePrompt {
                     session_id: session_id.to_string(),
                 })?;
@@ -331,19 +336,19 @@ impl SessionService {
     pub fn peek_next_queued_prompt(
         &self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<Option<super::PromptQueueItem>, DaemonError> {
         let session = self.get_session(session_id)?;
-        Ok(session.peek_next_queued_prompt())
+        Ok(session.peek_next_queued_prompt(agent_id))
     }
 
     pub fn activate_next_queued_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "activate next prompt")?;
-        let next = session
-            .pop_next_queued_prompt()
-            .map(|prompt| session.activate_prompt(prompt));
+        let next = session.pop_next_queued_prompt(agent_id).map(|prompt| session.activate_prompt(prompt));
         Ok((session.clone(), next))
     }
 
@@ -360,9 +365,10 @@ impl SessionService {
     pub fn pop_next_queued_prompt(
         &mut self,
         session_id: &str,
+        agent_id: &str,
     ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "pop next prompt")?;
-        let next = session.pop_next_queued_prompt();
+        let next = session.pop_next_queued_prompt(agent_id);
         Ok((session.clone(), next))
     }
 
@@ -382,7 +388,7 @@ impl SessionService {
             });
         }
 
-        if requires_idle && session.active_prompt().is_some() {
+        if requires_idle && session.has_any_active_prompt() {
             return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
                 session_id: session_id.to_string(),
             });

@@ -78,6 +78,26 @@ impl ProviderProcessService {
         Ok(run)
     }
 
+    pub fn launch_run_detached(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
+            DaemonError::ProviderAdapterNotFound {
+                adapter_key: request.adapter_key.clone(),
+            }
+        })?;
+
+        let run_id = self.next_run_id();
+        let launch_result = adapter.connect(&request)?;
+        let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
+        run.mark_running();
+
+        self.runs.insert(run_id, run.clone());
+
+        Ok(run)
+    }
+
     pub fn park_run(
         &mut self,
         sessions: &mut SessionService,
@@ -161,6 +181,26 @@ impl ProviderProcessService {
         let run = self.get_run_mut(run_id)?;
         run.mark_running();
         sessions.set_active_provider_run(session_id, Some(run_id.to_string()))?;
+
+        Ok(run.clone())
+    }
+
+    pub fn resume_run_detached(&mut self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
+        let run_snapshot = self.get_run(run_id)?;
+
+        if run_snapshot.state() != ProviderRunState::Parked {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run_id.to_string(),
+                state: run_snapshot.state(),
+                operation: "resume",
+            });
+        }
+
+        let adapter = self.adapter_for(run_snapshot.adapter_key())?;
+        adapter.resume(&run_snapshot);
+
+        let run = self.get_run_mut(run_id)?;
+        run.mark_running();
 
         Ok(run.clone())
     }
