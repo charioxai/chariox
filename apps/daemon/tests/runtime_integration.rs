@@ -1699,7 +1699,7 @@ fn focusing_another_agent_during_an_opencode_prompt_keeps_the_working_run_active
     assert_eq!(session_state.focused_agent_id(), Some(reviewer.id()));
     assert_eq!(
         session_state.active_provider_run_id(),
-        Some(reviewer_run.id())
+        Some(default_run.id())
     );
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
@@ -1833,7 +1833,7 @@ fn prompt_for_another_agent_starts_on_its_own_run_without_switching_focus_select
     assert_eq!(queued_state.focused_agent_id(), Some(reviewer.id()));
     assert_eq!(
         queued_state.active_provider_run_id(),
-        Some(reviewer_run.id())
+        Some(default_run.id())
     );
     assert_eq!(
         queued_state

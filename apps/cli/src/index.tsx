@@ -703,6 +703,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const agentPanePreview = (agentId: string) => agentPanePreviews()[agentId] ?? ""
   const agentActivityLabel = (agentId: string | null | undefined) => (agentId ? agentActivityLabels()[agentId] ?? null : null)
   const focusedAgent = () => sessionState().agents.find((agent) => agent.id === focusedAgentId()) ?? null
+  const focusedProviderRun = () => {
+    const run = providerRunState()
+    const agentId = focusedAgentId()
+    return run && run.agent_instance_id === agentId ? run : null
+  }
   const formatAgentLabel = (agent: AgentInstance | null | undefined) => {
     if (!agent) {
       return ""
@@ -929,6 +934,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const toolLabel = activeToolLabelForAgent(agentId)
     return toolLabel ?? agentActivityLabel(agentId)
   }
+  const focusedAgentBusy = () => {
+    const agentId = focusedAgentId()
+    if (!agentId) {
+      return false
+    }
+    const focused = sessionState().agents.find((agent) => agent.id === agentId) ?? null
+    return submitting()
+      || agentHasPromptWork(sessionState(), agentId)
+      || streamingAgentId() === agentId
+      || Boolean(focusedActivityLabel())
+      || Boolean(focused && (focused.is_processing || focused.state === "Working"))
+      || (sessionState().agents.length <= 1 && working())
+  }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
       return false
@@ -965,8 +983,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const focusedStatusBadge = () => deriveFocusedStatusBadge({
     attached: isAttached(),
-    sessionStatusMode: sessionStatusMode(),
+    daemonDisconnected: daemonDisconnected(),
     activeStatusLabel: focusedActivityLabel(),
+    focusedHasPromptWork: agentHasPromptWork(sessionState(), focusedAgentId()),
+    focusedIsProcessing: Boolean(focusedAgent() && (focusedAgent()!.is_processing || focusedAgent()!.state === "Working")),
+    focusedIsStreaming: streamingAgentId() === focusedAgentId(),
+    submitting: submitting(),
+    singleAgentWorkingLatch: sessionState().agents.length <= 1 && working(),
   })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
@@ -1316,21 +1339,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     flashFooter(`${providerId === "codex" ? "Codex" : "OpenCode"} selected`, "info")
   }
   const currentProviderSelection = () => deriveCurrentProviderSelection({
-    providerRun: providerRunState(),
+    providerRun: focusedProviderRun(),
+    focusedAgent: focusedAgent(),
     waitingRoomState: waitingRoomState(),
     defaultProvider: options.provider ?? "opencode",
     defaultModel: options.model,
     defaultEffort: options.effort,
   })
   const promptMetaParts = (): PromptMetaPart[] => derivePromptMetaState({
-    providerRun: providerRunState(),
+    providerRun: focusedProviderRun(),
+    focusedAgent: focusedAgent(),
     waitingRoomState: waitingRoomState(),
     defaultProvider: options.provider ?? "opencode",
     defaultModel: options.model,
     defaultEffort: options.effort,
   })
   const promptUsageMeta = () => derivePromptUsageState({
-    providerRun: providerRunState(),
+    providerRun: focusedProviderRun(),
     catalog: providerCatalogState(),
   })
   const currentModelId = () => currentProviderSelection().model
@@ -2364,8 +2389,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const expanding = toggleEntry?.toggleMode === "expand"
     setExpandedTurnState(agentId, turnId, expanding)
     const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
-      ? [...expandedTurnIdsForAgent(agentId), turnId]
-      : expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId))
+      ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
+      : [...expandedTurnIdsForAgent(agentId), turnId])
     setEntries(reconcile(nextEntries))
     setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     persistVisibleTranscriptEntries(nextEntries)
@@ -2411,7 +2436,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     lastTranscriptScrollTop = transcriptScrollbox.scrollTop
   }
 
-  const trackAgentFocusTransition = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const trackAgentFocusTransition = async <T,>(operation: () => Promise<T>): Promise<T> => {
     const transition = operation()
     const completion = transition.then(
       () => undefined,
@@ -2600,13 +2625,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (statusLine() === "Cancellation requested.") {
         setStatusLine(DEFAULT_CONNECTED_STATUS)
       }
-      if (!nextSession.active_prompt) {
+      if (!transition.nextHasPromptWork) {
         turnCompletionConfirmed = true
         cancelPendingTurnCompletion()
         setWorking(false)
       }
     }
-    if (!nextSession.active_prompt) {
+    if (!transition.nextHasPromptWork) {
       setSubmitting(false)
       stopRequestInFlight = false
     }
@@ -2639,6 +2664,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       : computeCurrentTurnId(entries.filter(Boolean))
     if (completionAgentId && turnId !== null) {
       const nextExpandedTurnIds = [...new Set([...expandedTurnIdsForAgent(completionAgentId), turnId])]
+        .filter((value) => value !== turnId)
         .sort((left, right) => left - right)
       setExpandedTurnIdsByAgent((current) => ({
         ...current,
@@ -2951,13 +2977,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     const providerRun = providerRunState()
-    const fallbackModel = providerRun?.model ?? null
-    const activeRun = providerRun
-      ? {
-          agentInstanceId: providerRun.agent_instance_id,
-          model: providerRun.model,
-        }
-      : null
     const visibleAgents = responseVisibleAgents()
     const renderFooter = (
       agent: AgentInstance | null | undefined,
@@ -2973,9 +2992,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       const focused = agent?.id === focusedAgentId()
       renderStatusBadgeTexts(badgeTexts, badge.label, badge.tone)
+      const activeRun = providerRun && providerRun.agent_instance_id === agent?.id
+        ? {
+            agentInstanceId: providerRun.agent_instance_id,
+            model: providerRun.model,
+          }
+        : null
       setTextRenderable(
         footerText,
-        formatSplitPaneFooter(agent ?? null, providerCatalogState(), activeRun, fallbackModel),
+        formatSplitPaneFooter(agent ?? null, providerCatalogState(), activeRun, null),
         focused ? theme.text : theme.textMuted,
         focused ? TextAttributes.BOLD : TextAttributes.NONE,
       )
@@ -3436,9 +3461,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setExpandedTurnIdsByAgent((current) => {
       const previous = new Set(current[agentId] ?? [])
       if (expanded) {
-        previous.add(turnId)
-      } else {
         previous.delete(turnId)
+      } else {
+        previous.add(turnId)
       }
 
       if (previous.size === 0) {
@@ -3574,8 +3599,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentTranscriptEntries(
       agentId,
       applyTranscriptDisplayState(currentEntries, expanding
-        ? [...expandedTurnIdsForAgent(agentId), turnId]
-        : expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)),
+        ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
+        : [...expandedTurnIdsForAgent(agentId), turnId]),
     )
     restoreTranscriptScrollAnchor(anchor, auxiliaryAgentPaneRenderables(agentId))
     retainPromptFocus()
@@ -4693,11 +4718,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         }
       })
     },
-    launchAgentProviderRun: (model, variant, agentId) =>
+    launchAgentProviderRun: (provider, model, variant, agentId) =>
       launchProviderRun(
         client,
         sessionState().id,
-        options.provider ?? "opencode",
+        provider,
         options.accountProfile,
         model,
         variant,

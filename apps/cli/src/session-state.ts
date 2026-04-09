@@ -194,13 +194,16 @@ export function derivePromptLifecycleTransition(
   currentSession: RuntimeSession,
   nextSession: RuntimeSession,
 ): PromptLifecycleTransition {
-  const previousPromptId = currentSession.active_prompt?.id ?? null
-  const nextPromptId = nextSession.active_prompt?.id ?? null
+  const previousPromptIds = collectActivePromptIds(currentSession)
+  const nextPromptIds = collectActivePromptIds(nextSession)
+  const nextPromptIdSet = new Set(nextPromptIds)
   return {
-    activePromptChanged: previousPromptId !== nextPromptId,
+    activePromptChanged:
+      previousPromptIds.length !== nextPromptIds.length
+      || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
     cancelledPromptSettled:
-      currentSession.active_prompt?.status === "cancelling"
-      && previousPromptId !== nextPromptId,
+      collectActivePromptRecords(currentSession)
+        .some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),
   }
 }
 
@@ -261,4 +264,18 @@ function normalizeMultiAgentResponseLayout(
   value?: string | null,
 ): MultiAgentResponseLayout | null {
   return value === "split" || value === "individual" ? value : null
+}
+
+function collectActivePromptRecords(session: RuntimeSession) {
+  if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
+    return Object.values(session.prompt_states)
+      .map((state) => state.active_prompt)
+      .filter((prompt): prompt is NonNullable<typeof prompt> => Boolean(prompt))
+      .sort((left, right) => left.id.localeCompare(right.id))
+  }
+  return session.active_prompt ? [session.active_prompt] : []
+}
+
+function collectActivePromptIds(session: RuntimeSession) {
+  return collectActivePromptRecords(session).map((prompt) => prompt.id)
 }

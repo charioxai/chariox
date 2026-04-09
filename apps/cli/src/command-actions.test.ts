@@ -554,6 +554,139 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.equal(flashedMessage, "spawned agent agent-2 (review)")
 })
 
+test("agent spawn count clones the originally focused agent provider and model for each spawn", async () => {
+  const sourceAgent = makeAgent({
+    id: "agent-source",
+    agent_ref: "agent-source",
+    provider: "opencode",
+    model: "openai/gpt-5.4",
+  })
+  let currentSession = makeSession({
+    focused_agent_id: sourceAgent.id,
+    agents: [sourceAgent],
+  })
+  const spawnCalls: Array<{ provider: string; alias: string | undefined; model: string | undefined; effort: string | undefined }> = []
+  const launchCalls: Array<{ provider: string; model: string; effort: string; agentId: string }> = []
+  let refreshCount = 0
+  let flashedMessage = ""
+
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: () => currentSession,
+    attachmentState: () => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: () => null,
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    focusedAgentId: () => currentSession.focused_agent_id,
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({
+      session: currentSession,
+      config: currentSession.config_state,
+    }),
+    updateSessionConfig: async () => ({ session: currentSession, config: currentSession.config_state }),
+    applySessionState: (session) => {
+      currentSession = session
+    },
+    refreshAgentPanes: async () => {
+      refreshCount += 1
+    },
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: currentSession }),
+    launchAgentProviderRun: async (provider, model, effort, agentId) => {
+      launchCalls.push({ provider, model, effort, agentId })
+      return {
+        id: `provider-run-${launchCalls.length}`,
+        session_id: "session-1",
+        agent_instance_id: agentId,
+        adapter_key: provider,
+        provider,
+        account_profile: "default",
+        model,
+        variant: effort,
+        usage_tokens_total: null,
+        state: "running",
+      }
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (provider, alias, model, effort) => {
+      spawnCalls.push({ provider, alias, model, effort })
+      const agent = makeAgent({
+        id: `agent-${spawnCalls.length}`,
+        agent_ref: `agent-${spawnCalls.length}`,
+        provider,
+        model: model ?? null,
+        state: "Focused",
+      })
+      currentSession = makeSession({
+        focused_agent_id: agent.id,
+        agents: [...currentSession.agents, agent],
+      })
+      return { agent, session: currentSession }
+    },
+    destroyAgent: async () => currentSession,
+    focusAgent: async () => ({ agent: currentSession.agents[0] ?? sourceAgent, session: currentSession }),
+    resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => {},
+    selectWorkflowCanvas: () => {},
+    replaceWorkflowDefinitions: () => {},
+    upsertWorkflowDefinition: () => {},
+    createWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    listWorkflows: async () => [],
+    resolveWorkflow: async () => ({ workflow: { id: "workflow-1", alias: null } }),
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    assignWorkflowEndpointAlias: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    bindWorkflowEndpoint: async () => ({ endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    addWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    removeWorkflowNode: async () => ({ node: { id: "node-1", agent_id: "agent-1" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    addWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    removeWorkflowEdge: async () => ({ edge: { id: "edge-1", from_node_id: "node-1", to_node_id: "node-2" }, workflow: { id: "workflow-1", alias: null }, session: currentSession }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleAgentCommand({
+    kind: "agent",
+    raw: "/agent spawn 2",
+    args: ["spawn", "2"],
+  })
+
+  assert.deepEqual(spawnCalls, [
+    { provider: "opencode", alias: undefined, model: "openai/gpt-5.4", effort: "high" },
+    { provider: "opencode", alias: undefined, model: "openai/gpt-5.4", effort: "high" },
+  ])
+  assert.deepEqual(launchCalls, [
+    { provider: "opencode", model: "openai/gpt-5.4", effort: "high", agentId: "agent-1" },
+    { provider: "opencode", model: "openai/gpt-5.4", effort: "high", agentId: "agent-2" },
+  ])
+  assert.equal(refreshCount, 4)
+  assert.equal(flashedMessage, "spawned 2 agents from agent-source")
+  assert.equal(currentSession.focused_agent_id, "agent-2")
+})
+
   test("session command aliases the current session", async () => {
     let flashedMessage = ""
     let aliasedPayload: { sessionId: string; alias: string } | null = null

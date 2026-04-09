@@ -18,7 +18,6 @@ impl DaemonApp {
             .and_then(|agent_id| {
                 self.providers
                     .get_run_for_agent(session.id(), agent_id)
-                    .or_else(|| self.providers.get_latest_run_for_agent(session.id(), agent_id))
                     .map(|run| run.id().to_string())
             });
         session.set_active_provider_run(projected_run_id);
@@ -32,7 +31,6 @@ impl DaemonApp {
         let projected_run_id = self
             .providers
             .get_run_for_agent(session_id, agent_id)
-            .or_else(|| self.providers.get_latest_run_for_agent(session_id, agent_id))
             .map(|run| run.id().to_string());
         let _ = self
             .sessions
@@ -565,6 +563,23 @@ impl DaemonApp {
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
+                if session.active_prompt().is_none() {
+                    let current_active_run_id = session
+                        .active_provider_run_id()
+                        .map(str::to_string);
+                    if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+                        let active_run = self.providers.get_run(current_active_run_id)?;
+                        if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
+                            && active_run.state() == ProviderRunState::Running
+                        {
+                            self.providers.park_run(
+                                &mut self.sessions,
+                                session_id,
+                                current_active_run_id,
+                            )?;
+                        }
+                    }
+                }
                 self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
             } else {
                 self.sessions.set_active_provider_run(session_id, None)?;

@@ -93,6 +93,8 @@ Delete the current session, or the referenced session if a ref is provided.
 
 ### `/agent spawn [alias] [model]`
 
+### `/agent spawn <number_of_agents>`
+
 Spawn a new agent in the current session.
 
 ### `/agent delete [ref]`

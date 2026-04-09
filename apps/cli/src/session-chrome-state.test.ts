@@ -40,6 +40,11 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
   assert.deepEqual(
     deriveCurrentProviderSelection({
       providerRun: null,
+      focusedAgent: agent("agent-a", {
+        provider: "codex",
+        model: "openai/gpt-5.3-codex",
+        effort: "medium",
+      }),
       waitingRoomState: waitingRoomState({
         modelId: "anthropic/claude-sonnet-4",
         effort: "medium",
@@ -48,8 +53,8 @@ test("deriveCurrentProviderSelection prefers provider run and falls back to wait
       defaultEffort: "high",
     }),
     {
-      provider: "opencode",
-      model: "anthropic/claude-sonnet-4",
+      provider: "codex",
+      model: "openai/gpt-5.3-codex",
       effort: "medium",
     },
   )
@@ -178,8 +183,12 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: false,
-      sessionStatusMode: "idle",
+      daemonDisconnected: false,
       activeStatusLabel: null,
+      focusedHasPromptWork: false,
+      focusedIsProcessing: false,
+      focusedIsStreaming: false,
+      submitting: false,
     }),
     { label: "", tone: "idle" },
   )
@@ -187,8 +196,12 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      sessionStatusMode: "disconnected",
+      daemonDisconnected: true,
       activeStatusLabel: "reading",
+      focusedHasPromptWork: false,
+      focusedIsProcessing: false,
+      focusedIsStreaming: false,
+      submitting: false,
     }),
     { label: "DISCONNECTED", tone: "disconnected" },
   )
@@ -196,8 +209,12 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      sessionStatusMode: "working",
+      daemonDisconnected: false,
       activeStatusLabel: null,
+      focusedHasPromptWork: true,
+      focusedIsProcessing: false,
+      focusedIsStreaming: false,
+      submitting: false,
     }),
     { label: "THINKING", tone: "working" },
   )
@@ -205,8 +222,12 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      sessionStatusMode: "idle",
-      activeStatusLabel: "reading",
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedHasPromptWork: false,
+      focusedIsProcessing: false,
+      focusedIsStreaming: false,
+      submitting: false,
     }),
     { label: "IDLE", tone: "idle" },
   )
@@ -214,8 +235,12 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
   assert.deepEqual(
     deriveFocusedStatusBadge({
       attached: true,
-      sessionStatusMode: "working",
+      daemonDisconnected: false,
       activeStatusLabel: "reading",
+      focusedHasPromptWork: false,
+      focusedIsProcessing: false,
+      focusedIsStreaming: false,
+      submitting: false,
     }),
     { label: "READING", tone: "working" },
   )

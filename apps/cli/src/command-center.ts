@@ -50,7 +50,12 @@ const COMMAND_TREE: CommandNode[] = [
     description: "Manage agents in the current session",
     value: "/agent ",
     children: [
-      { id: "agent-spawn", label: "spawn", description: "Spawn a new agent in the session", value: "/agent spawn " },
+      {
+        id: "agent-spawn",
+        label: "spawn",
+        description: "Spawn one or more agents in the session",
+        value: "/agent spawn ",
+      },
       { id: "agent-delete", label: "delete", description: "Delete the focused or named agent", value: "/agent delete " },
       { id: "agent-destroy", label: "destroy", description: "Alias for /agent delete", value: "/agent destroy " },
       { id: "agent-focus", label: "focus", description: "Focus on a specific agent", value: "/agent focus " },

@@ -184,6 +184,7 @@ Current local CLI controls:
 - `/session delete [ref]` deletes the current or referenced session; deleting the active session returns the CLI to its no-session landing state
 - manual multi-agent session commands exist today:
   - `/agent spawn [alias] [model]`
+  - `/agent spawn <number_of_agents>`
   - `/agent delete [name-or-alias]`
   - `/agent focus <id>`
   - `/agent list`

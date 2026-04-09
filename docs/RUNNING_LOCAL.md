@@ -163,6 +163,7 @@ Inside the CLI:
   - `/session delete [ref]`
 - manual multi-agent session commands:
   - `/agent spawn [alias] [model]`
+  - `/agent spawn <number_of_agents>`
   - `/agent delete [name-or-alias]`
   - `/agent focus <id>`
   - `/agent list`

@@ -74,7 +74,7 @@ pub(crate) fn maybe_complete_active_prompt(
         .prompt_activity
         .get(provider_run_id)
         .map(|state| {
-            state.saw_response_content
+            (state.saw_response_content || state.completion_recorded)
                 && state
                     .last_output_at
                     .map(|last_output_at| last_output_at.elapsed() >= app.prompt_idle_timeout)

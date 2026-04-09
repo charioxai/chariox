@@ -1,4 +1,4 @@
-import type { RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import {
@@ -20,6 +20,7 @@ export type FocusedStatusBadge = {
 
 type ProviderSelectionOptions = {
   providerRun: RuntimeProviderRun | null
+  focusedAgent?: AgentInstance | null
   waitingRoomState: WaitingRoomState
   defaultProvider?: string
   defaultModel: string
@@ -28,9 +29,19 @@ type ProviderSelectionOptions = {
 
 export function deriveCurrentProviderSelection(options: ProviderSelectionOptions) {
   return {
-    provider: options.providerRun?.provider ?? options.waitingRoomState.providerId ?? options.defaultProvider ?? "opencode",
-    model: options.providerRun?.model ?? options.waitingRoomState.modelId ?? options.defaultModel,
-    effort: options.providerRun?.variant ?? options.waitingRoomState.effort ?? options.defaultEffort,
+    provider: options.providerRun?.provider
+      ?? normalizeProvider(options.focusedAgent?.provider)
+      ?? options.waitingRoomState.providerId
+      ?? options.defaultProvider
+      ?? "opencode",
+    model: options.providerRun?.model
+      ?? options.focusedAgent?.model
+      ?? options.waitingRoomState.modelId
+      ?? options.defaultModel,
+    effort: options.providerRun?.variant
+      ?? options.focusedAgent?.effort
+      ?? options.waitingRoomState.effort
+      ?? options.defaultEffort,
   }
 }
 
@@ -102,16 +113,28 @@ export function deriveVisibleActivityLabel(options: {
 
 export function deriveFocusedStatusBadge(options: {
   attached: boolean
-  sessionStatusMode: SessionStatusMode
+  daemonDisconnected: boolean
   activeStatusLabel: string | null
+  focusedHasPromptWork: boolean
+  focusedIsProcessing: boolean
+  focusedIsStreaming: boolean
+  submitting: boolean
+  singleAgentWorkingLatch?: boolean
 }): FocusedStatusBadge {
   if (!options.attached) {
     return { label: "", tone: "idle" }
   }
-  if (options.sessionStatusMode === "disconnected") {
+  if (options.daemonDisconnected) {
     return { label: "DISCONNECTED", tone: "disconnected" }
   }
-  if (options.sessionStatusMode === "idle") {
+  if (
+    !options.submitting
+    && !options.focusedHasPromptWork
+    && !options.focusedIsProcessing
+    && !options.focusedIsStreaming
+    && !options.activeStatusLabel
+    && !options.singleAgentWorkingLatch
+  ) {
     return { label: "IDLE", tone: "idle" }
   }
   return {
@@ -169,4 +192,11 @@ function splitProviderModelRef(modelRef: string) {
 
 function formatAgentLabel(agent: RuntimeSession["agents"][number]) {
   return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
+}
+
+function normalizeProvider(provider?: string | null) {
+  if (!provider || provider === "default") {
+    return null
+  }
+  return provider
 }

@@ -33,13 +33,13 @@ use super::{
 fn local_request_api_supports_session_attach_and_end() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
+    let (session, default_agent) = match app
         .handle_local_request(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -1926,13 +1926,13 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 fn detaching_one_attachment_keeps_the_session_open_for_others() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
+    let (session, default_agent) = match app
         .handle_local_request(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -2137,43 +2137,33 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         "expected background agent output to continue while unfocused"
     );
 
-    let settle_deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        TransportService::pump_active_prompts(&mut app);
-        let _ = app
-            .pump_terminal_output(session.id(), attachment.id())
-            .expect("terminal output should keep pumping");
-        let session_state = app
-            .sessions()
-            .get_session(session.id())
-            .expect("session should still exist");
-        if session_state.active_prompt_for_agent(default_agent.id()).is_none() {
-            assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
-            assert_eq!(
-                session_state.active_provider_run_id(),
-                Some(focused_run.id())
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < settle_deadline,
-            "prompt did not settle in time"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
+    TransportService::pump_active_prompts(&mut app);
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(_default_run.id())
+    );
+    assert!(
+        session_state.active_prompt_for_agent(default_agent.id()).is_some(),
+        "background prompt should remain owned by the original agent while unfocused"
+    );
 }
 
 #[test]
 fn attaching_the_same_client_replaces_its_stale_attachment() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
+    let (session, default_agent) = match app
         .handle_local_request(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -2224,16 +2214,16 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
 }
 
 #[test]
-fn local_request_api_rejects_prompt_without_active_provider_run() {
+fn local_request_api_auto_launches_provider_run_for_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
+    let (session, default_agent) = match app
         .handle_local_request(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match app
@@ -2250,7 +2240,7 @@ fn local_request_api_rejects_prompt_without_active_provider_run() {
         _ => panic!("unexpected local response"),
     };
 
-    let error = app
+    let response = app
         .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
@@ -2258,12 +2248,74 @@ fn local_request_api_rejects_prompt_without_active_provider_run() {
             prompt: "whoami".to_string(),
             attachments: Vec::new(),
         }))
-        .expect_err("prompt submit should fail without active provider run");
+        .expect("prompt submit should auto-launch a provider run");
 
-    match error {
-        DaemonError::InvalidConfig { field, .. } => assert_eq!(field, "ARROBA_OPENCODE_PORT"),
-        other => panic!("unexpected error: {other}"),
+    match response {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            session,
+        } => {
+            assert_eq!(prompt.status(), crate::session::PromptStatus::Running);
+            assert!(session.active_provider_run_id().is_some());
+            assert!(session
+                .active_prompt_for_agent(default_agent.id())
+                .is_some());
+        }
+        other => panic!("unexpected local response: {other:?}"),
     }
+}
+
+#[test]
+fn prompt_idle_fallback_completes_after_recorded_completion_without_response_text() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-completion-fallback",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(default_agent.id()),
+        )
+        .expect("provider run should launch");
+    let _started = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(default_agent.id()),
+            "tool only\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+
+    crate::transport::flow_control::mark_prompt_completion_recorded(&mut app, run.id());
+    if let Some(state) = app.prompt_activity.get_mut(run.id()) {
+        state.last_output_at = Some(Instant::now() - app.prompt_idle_timeout - Duration::from_millis(1));
+    } else {
+        panic!("prompt activity should exist for the active run");
+    }
+
+    crate::transport::flow_control::maybe_complete_active_prompt(&mut app, session.id(), run.id())
+        .expect("idle fallback should settle the active prompt");
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert!(session_state.active_prompt_for_agent(default_agent.id()).is_none());
 }
 
 #[test]

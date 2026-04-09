@@ -163,6 +163,7 @@ type CommandActionDeps = {
   afterViewRender?: (layout: MultiAgentResponseLayout) => void
   cycleAgentFocus: () => Promise<AgentCyclePayload>
   launchAgentProviderRun: (
+    provider: string,
     model: string,
     variant: string,
     agentId: string,
@@ -387,6 +388,41 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       ? `, failures ${workflowRun.failure_events?.length ?? 0}`
       : ""
     return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}${failureSummary}]`
+  }
+
+  const parseSpawnCount = (value: string | undefined): number | null => {
+    if (!value || !/^\d+$/.test(value)) {
+      return null
+    }
+    const count = Number(value)
+    return Number.isInteger(count) && count > 0 ? count : null
+  }
+
+  const spawnAndLaunchAgent = async (options: {
+    provider: string
+    alias?: string | undefined
+    model: string
+    effort: string
+  }): Promise<AgentSpawnPayload> => {
+    const payload = await deps.spawnAgent(options.provider, options.alias, options.model, options.effort)
+    deps.applySessionState(payload.session)
+    await deps.refreshAgentPanes(payload.session)
+    const run = await deps.launchAgentProviderRun(
+      options.provider,
+      options.model,
+      options.effort,
+      payload.agent.id,
+    )
+    deps.setProviderRunState(run)
+    const refreshedSession = await deps.refreshSessionState(payload.session.id)
+    deps.applySessionState(refreshedSession)
+    await deps.refreshAgentPanes(refreshedSession)
+    deps.rebuildTranscript()
+    deps.refreshSplitPaneFocusRepaint()
+    return {
+      agent: payload.agent,
+      session: refreshedSession,
+    }
   }
 
   const handleSessionCommand = async (
@@ -679,6 +715,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       if (!nextSession.active_provider_run_id && payload.agent) {
         const run = await deps.launchAgentProviderRun(
+          payload.agent.provider,
           payload.agent.model ?? deps.currentModelId(),
           deps.currentVariantId(),
           payload.agent.id,
@@ -712,25 +749,46 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
     switch (subcommand) {
       case "spawn": {
-        const alias = args[1]
-        const model = args[2]
-        const provider = deps.currentProviderId()
-        const effort = deps.currentVariantId()
+        const spawnArgs = args.slice(1)
         try {
-          const payload = await deps.spawnAgent(provider, alias, model ?? deps.currentModelId(), effort)
-          deps.applySessionState(payload.session)
-          await deps.refreshAgentPanes(payload.session)
-          const run = await deps.launchAgentProviderRun(
-            model ?? deps.currentModelId(),
+          const count = parseSpawnCount(spawnArgs[0])
+          if (count !== null && spawnArgs.length === 1) {
+            const session = deps.sessionState()
+            const sourceAgent = session.agents.find((agent) => agent.id === session.focused_agent_id)
+              ?? session.agents[0]
+              ?? null
+            if (!sourceAgent) {
+              deps.flashFooter("no focused agent to clone", "error")
+              return
+            }
+
+            const provider = sourceAgent.provider ?? deps.currentProviderId()
+            const model = sourceAgent.model ?? deps.currentModelId()
+            const effort = deps.currentVariantId()
+            for (let index = 0; index < count; index += 1) {
+              await spawnAndLaunchAgent({
+                provider,
+                model,
+                effort,
+              })
+            }
+            deps.flashFooter(
+              `spawned ${count} agent${count === 1 ? "" : "s"} from ${deps.formatAgentLabel(sourceAgent)}`,
+              "info",
+            )
+            return
+          }
+
+          const alias = spawnArgs[0]
+          const model = spawnArgs[1]
+          const provider = deps.currentProviderId()
+          const effort = deps.currentVariantId()
+          const payload = await spawnAndLaunchAgent({
+            provider,
+            alias,
+            model: model ?? deps.currentModelId(),
             effort,
-            payload.agent.id,
-          )
-          deps.setProviderRunState(run)
-          const refreshedSession = await deps.refreshSessionState(payload.session.id)
-          deps.applySessionState(refreshedSession)
-          await deps.refreshAgentPanes(refreshedSession)
-          deps.rebuildTranscript()
-          deps.refreshSplitPaneFocusRepaint()
+          })
           deps.flashFooter(`spawned agent ${payload.agent.agent_ref}${alias ? ` (${alias})` : ""}`, "info")
         } catch (error) {
           deps.flashFooter(deps.formatError(error), "error")
@@ -787,6 +845,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           }
           if (!nextSession.active_provider_run_id) {
             const run = await deps.launchAgentProviderRun(
+              payload.agent.provider,
               payload.agent.model ?? deps.currentModelId(),
               deps.currentVariantId(),
               payload.agent.id,
@@ -814,7 +873,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       default:
         deps.flashFooter(
-          "usage: /agent spawn [alias] [model] | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
+          "usage: /agent spawn [alias] [model] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | list | cycle",
           "error",
         )
     }
