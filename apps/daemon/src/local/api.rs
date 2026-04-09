@@ -1326,11 +1326,13 @@ impl DaemonApp {
                     .sessions()
                     .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
-                    node,
-                    workflow,
-                    session,
-                })
+                Ok(
+                    LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                        node,
+                        workflow,
+                        session,
+                    },
+                )
             }
             LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
                 let node = self
@@ -1345,11 +1347,13 @@ impl DaemonApp {
                     .sessions()
                     .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
-                    node,
-                    workflow,
-                    session,
-                })
+                Ok(
+                    LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                        node,
+                        workflow,
+                        session,
+                    },
+                )
             }
             LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
                 let node = self.sessions_mut().set_workflow_node_max_turns(
@@ -1569,10 +1573,12 @@ impl DaemonApp {
                         request.intermediate_output_schema_ref.clone(),
                     )?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated {
-                    workflow,
-                    session,
-                })
+                Ok(
+                    LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated {
+                        workflow,
+                        session,
+                    },
+                )
             }
             LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
                 let session = self

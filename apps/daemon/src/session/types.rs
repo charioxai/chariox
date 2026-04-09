@@ -914,10 +914,7 @@ impl WorkflowTurnEnvelope {
         self.pending_final_output.as_ref()
     }
 
-    pub fn set_pending_intermediate_output(
-        &mut self,
-        value: Option<WorkflowRunOutputSubmission>,
-    ) {
+    pub fn set_pending_intermediate_output(&mut self, value: Option<WorkflowRunOutputSubmission>) {
         self.pending_intermediate_output = value;
     }
 

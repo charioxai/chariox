@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use jsonschema::JSONSchema;
 use serde_json::Value;
 
+use super::types::{WorkflowIntermediateOutput, WorkflowRunOutputSubmission};
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession,
@@ -16,7 +17,6 @@ use super::{
     WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
-use super::types::{WorkflowIntermediateOutput, WorkflowRunOutputSubmission};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDispatch {
@@ -35,6 +35,19 @@ pub struct WorkflowCompletionUpdate {
 pub struct WorkflowOutputValidationWarning {
     pub edge_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct WorkflowCompletionContext {
+    workflow_run: WorkflowRun,
+    source_node_run: WorkflowNodeRun,
+    workflow: WorkflowDefinition,
+}
+
+#[derive(Debug, Clone)]
+struct PendingWorkflowTurnOutputs {
+    intermediate: Option<WorkflowRunOutputSubmission>,
+    final_output: Option<WorkflowRunOutputSubmission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1037,19 +1050,21 @@ impl SessionService {
             }
         })?;
         let workflow_id = workflow_run.workflow_id().to_string();
-        let node_run = workflow_run.node_run_mut(workflow_node_run_id).ok_or_else(|| {
-            DaemonError::InvalidWorkflowGraphReference {
+        let node_run = workflow_run
+            .node_run_mut(workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: workflow_id.clone(),
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn envelope was not prepared",
             }
-        })?;
-        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-            session_id: session_id.to_string(),
-            workflow_id: workflow_id.clone(),
-            reference: workflow_node_run_id.to_string(),
-            message: "workflow turn envelope was not prepared",
         })?;
         envelope.set_pending_final_output(Some(WorkflowRunOutputSubmission::new(
             output, valid, warning,
@@ -1079,19 +1094,21 @@ impl SessionService {
             }
         })?;
         let workflow_id = workflow_run.workflow_id().to_string();
-        let node_run = workflow_run.node_run_mut(workflow_node_run_id).ok_or_else(|| {
-            DaemonError::InvalidWorkflowGraphReference {
+        let node_run = workflow_run
+            .node_run_mut(workflow_node_run_id)
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: workflow_id.clone(),
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
+            })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow turn envelope was not prepared",
             }
-        })?;
-        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-            session_id: session_id.to_string(),
-            workflow_id: workflow_id.clone(),
-            reference: workflow_node_run_id.to_string(),
-            message: "workflow turn envelope was not prepared",
         })?;
         envelope.set_pending_intermediate_output(Some(WorkflowRunOutputSubmission::new(
             output, valid, warning,
@@ -1289,100 +1306,13 @@ impl SessionService {
         completion: Option<WorkflowCompletionSnapshot>,
         max_turns: Option<usize>,
     ) -> Result<WorkflowCompletionUpdate, DaemonError> {
-        let (workflow_run, source_node_run, workflow) = {
-            let session =
-                self.store
-                    .get(session_id)
-                    .ok_or_else(|| DaemonError::SessionNotFound {
-                        session_id: session_id.to_string(),
-                    })?;
-            let workflow_run = session
-                .workflow_run(workflow_run_id)
-                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
-                    session_id: session_id.to_string(),
-                    workflow_run_id: workflow_run_id.to_string(),
-                })?
-                .clone();
-            let source_node_run = workflow_run
-                .node_runs()
-                .iter()
-                .find(|node_run| node_run.id() == workflow_node_run_id)
-                .cloned()
-                .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-                    session_id: session_id.to_string(),
-                    workflow_id: workflow_run.workflow_id().to_string(),
-                    reference: workflow_node_run_id.to_string(),
-                    message: "workflow node run was not found",
-                })?;
-            let workflow = session
-                .workflow(workflow_run.workflow_id())
-                .ok_or_else(|| DaemonError::WorkflowNotFound {
-                    session_id: session_id.to_string(),
-                    workflow_id: workflow_run.workflow_id().to_string(),
-                })?
-                .clone();
-            (workflow_run, source_node_run, workflow)
-        };
-        let mut validation_warnings = Vec::new();
-        let emitted_messages = if workflow_run.completed_by_node_run_id()
-            == Some(source_node_run.id())
-        {
-            Vec::new()
-        } else {
-            workflow
-                .edges()
-                .iter()
-                .filter(|edge| edge.from_node_id() == source_node_run.node_id())
-                .map(|edge| {
-                    let warning =
-                        validate_workflow_edge_output(session_id, &workflow, edge, &completion)?;
-                    if let Some(message) = warning.as_ref() {
-                        validation_warnings.push(WorkflowOutputValidationWarning {
-                            edge_id: edge.id().to_string(),
-                            message: message.clone(),
-                        });
-                    }
-                    let target_node = workflow.node(edge.to_node_id()).ok_or_else(|| {
-                        DaemonError::InvalidWorkflowGraphReference {
-                            session_id: session_id.to_string(),
-                            workflow_id: workflow.id().to_string(),
-                            reference: edge.to_node_id().to_string(),
-                            message: "target node does not exist",
-                        }
-                    })?;
-                    let payload = WorkflowHandoffPayload::new(
-                        workflow_run.id().to_string(),
-                        workflow.id().to_string(),
-                        source_node_run.id().to_string(),
-                        source_node_run.node_id().to_string(),
-                        source_node_run.agent_id().to_string(),
-                        target_node.id().to_string(),
-                        workflow_run.invocation_prompt().map(str::to_string),
-                        completion.clone(),
-                        edge.output_schema_ref().map(str::to_string),
-                        warning.clone(),
-                    );
-                    let message = WorkflowMessage::new(
-                        self.next_workflow_message_id(),
-                        Some(source_node_run.id().to_string()),
-                        target_node.id().to_string(),
-                        "handoff",
-                        format!(
-                            "handoff from `{}` to `{}`",
-                            source_node_run.node_id(),
-                            target_node.id()
-                        ),
-                        serde_json::to_string(&payload).map_err(|error| {
-                            DaemonError::LocalTransport {
-                                operation: "serialize workflow handoff payload",
-                                message: error.to_string(),
-                            }
-                        })?,
-                    );
-                    Ok(message)
-                })
-                .collect::<Result<Vec<_>, DaemonError>>()?
-        };
+        let context = self.load_workflow_completion_context(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        let (emitted_messages, validation_warnings) =
+            self.build_workflow_completion_messages(session_id, &context, completion.as_ref())?;
 
         let session =
             self.store
@@ -1407,64 +1337,21 @@ impl SessionService {
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
-        let pending_intermediate_output = node_run
-            .turn_envelope_mut()
-            .and_then(|envelope| envelope.pending_intermediate_output().cloned());
-        let pending_final_output = node_run
-            .turn_envelope_mut()
-            .and_then(|envelope| envelope.pending_final_output().cloned());
-        node_run.set_status(WorkflowNodeRunStatus::Completed);
-        node_run.set_summary(Some(
-            completion
-                .as_ref()
-                .map(|value| value.summary().to_string())
-                .unwrap_or_else(|| "completed".to_string()),
-        ));
-        node_run.set_completion(completion);
-        if let Some(envelope) = node_run.turn_envelope_mut() {
-            envelope.set_pending_intermediate_output(None);
-            envelope.set_pending_final_output(None);
-        }
+        let pending_outputs =
+            Self::take_pending_workflow_turn_outputs(node_run.turn_envelope_mut());
+        Self::apply_workflow_node_completion(node_run, completion);
         workflow_run.clear_active_node_run();
-        if let Some(submission) = pending_intermediate_output {
-            workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new(
-                format!(
-                    "workflow-intermediate-output-{}-{}",
-                    workflow_node_run_id,
-                    unix_epoch_ms()
-                ),
-                workflow_node_run_id.to_string(),
-                submission.output().clone(),
-                submission.valid(),
-                submission.warning().map(str::to_string),
-            ));
-        }
-        if let Some(submission) = pending_final_output {
-            workflow_run.set_final_output(
-                Some(submission.output().clone()),
-                Some(submission.valid()),
-                submission.warning().map(str::to_string),
-                Some(workflow_node_run_id.to_string()),
-            );
-            workflow_run.set_status(WorkflowRunStatus::Completing);
-        }
+        Self::commit_pending_workflow_turn_outputs(
+            workflow_run,
+            workflow_node_run_id,
+            pending_outputs,
+        );
         for message in emitted_messages {
             workflow_run.add_message(message);
         }
         if workflow_run.completed_by_node_run_id() == Some(workflow_node_run_id) {
             workflow_run.retain_messages(|_| false);
-            for other_node_run in workflow_run.node_runs_mut() {
-                if other_node_run.id() != workflow_node_run_id
-                    && !matches!(
-                        other_node_run.status(),
-                        WorkflowNodeRunStatus::Completed
-                            | WorkflowNodeRunStatus::Failed
-                            | WorkflowNodeRunStatus::Stopped
-                    )
-                {
-                    other_node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                }
-            }
+            Self::stop_other_workflow_node_runs(workflow_run, workflow_node_run_id);
             workflow_run.set_status(WorkflowRunStatus::Completed);
             return Ok(WorkflowCompletionUpdate {
                 workflow_run: workflow_run.clone(),
@@ -1477,17 +1364,18 @@ impl SessionService {
             &mut self.next_workflow_node_run_number,
             session_id,
             &workflow_id,
-            &workflow,
+            &context.workflow,
             workflow_run,
         )?;
-        let node_turn_budget_exhausted = workflow
-            .node(source_node_run.node_id())
+        let node_turn_budget_exhausted = context
+            .workflow
+            .node(context.source_node_run.node_id())
             .and_then(|node| node.max_turns())
             .is_some_and(|limit| {
                 let completed_turns = workflow_run
                     .node_runs()
                     .iter()
-                    .filter(|node_run| node_run.node_id() == source_node_run.node_id())
+                    .filter(|node_run| node_run.node_id() == context.source_node_run.node_id())
                     .count() as u32;
                 completed_turns >= limit
             });
@@ -1508,18 +1396,7 @@ impl SessionService {
         });
         if node_turn_budget_exhausted {
             workflow_run.retain_messages(|_| false);
-            for other_node_run in workflow_run.node_runs_mut() {
-                if other_node_run.id() != workflow_node_run_id
-                    && !matches!(
-                        other_node_run.status(),
-                        WorkflowNodeRunStatus::Completed
-                            | WorkflowNodeRunStatus::Failed
-                            | WorkflowNodeRunStatus::Stopped
-                    )
-                {
-                    other_node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                }
-            }
+            Self::stop_other_workflow_node_runs(workflow_run, workflow_node_run_id);
             workflow_run.set_final_output(None, None, None, None);
             workflow_run.set_status(WorkflowRunStatus::Stopped);
             return Ok(WorkflowCompletionUpdate {
@@ -1546,6 +1423,199 @@ impl SessionService {
             dispatches,
             validation_warnings,
         })
+    }
+
+    fn load_workflow_completion_context(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowCompletionContext, DaemonError> {
+        let session = self
+            .store
+            .get(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let workflow_run = session
+            .workflow_run(workflow_run_id)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            })?
+            .clone();
+        let source_node_run = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_run.workflow_id().to_string(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            })?;
+        let workflow = session
+            .workflow(workflow_run.workflow_id())
+            .ok_or_else(|| DaemonError::WorkflowNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_run.workflow_id().to_string(),
+            })?
+            .clone();
+        Ok(WorkflowCompletionContext {
+            workflow_run,
+            source_node_run,
+            workflow,
+        })
+    }
+
+    fn build_workflow_completion_messages(
+        &mut self,
+        session_id: &str,
+        context: &WorkflowCompletionContext,
+        completion: Option<&WorkflowCompletionSnapshot>,
+    ) -> Result<(Vec<WorkflowMessage>, Vec<WorkflowOutputValidationWarning>), DaemonError> {
+        if context.workflow_run.completed_by_node_run_id() == Some(context.source_node_run.id()) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut validation_warnings = Vec::new();
+        let completion = completion.cloned();
+        let emitted_messages = context
+            .workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == context.source_node_run.node_id())
+            .map(|edge| {
+                let warning = validate_workflow_edge_output(
+                    session_id,
+                    &context.workflow,
+                    edge,
+                    &completion,
+                )?;
+                if let Some(message) = warning.as_ref() {
+                    validation_warnings.push(WorkflowOutputValidationWarning {
+                        edge_id: edge.id().to_string(),
+                        message: message.clone(),
+                    });
+                }
+                let target_node = context.workflow.node(edge.to_node_id()).ok_or_else(|| {
+                    DaemonError::InvalidWorkflowGraphReference {
+                        session_id: session_id.to_string(),
+                        workflow_id: context.workflow.id().to_string(),
+                        reference: edge.to_node_id().to_string(),
+                        message: "target node does not exist",
+                    }
+                })?;
+                let payload = WorkflowHandoffPayload::new(
+                    context.workflow_run.id().to_string(),
+                    context.workflow.id().to_string(),
+                    context.source_node_run.id().to_string(),
+                    context.source_node_run.node_id().to_string(),
+                    context.source_node_run.agent_id().to_string(),
+                    target_node.id().to_string(),
+                    context.workflow_run.invocation_prompt().map(str::to_string),
+                    completion.clone(),
+                    edge.output_schema_ref().map(str::to_string),
+                    warning.clone(),
+                );
+                let message = WorkflowMessage::new(
+                    self.next_workflow_message_id(),
+                    Some(context.source_node_run.id().to_string()),
+                    target_node.id().to_string(),
+                    "handoff",
+                    format!(
+                        "handoff from `{}` to `{}`",
+                        context.source_node_run.node_id(),
+                        target_node.id()
+                    ),
+                    serde_json::to_string(&payload).map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "serialize workflow handoff payload",
+                            message: error.to_string(),
+                        }
+                    })?,
+                );
+                Ok(message)
+            })
+            .collect::<Result<Vec<_>, DaemonError>>()?;
+        Ok((emitted_messages, validation_warnings))
+    }
+
+    fn take_pending_workflow_turn_outputs(
+        envelope: Option<&mut WorkflowTurnEnvelope>,
+    ) -> PendingWorkflowTurnOutputs {
+        let intermediate = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.pending_intermediate_output().cloned());
+        let final_output = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.pending_final_output().cloned());
+        if let Some(envelope) = envelope {
+            envelope.set_pending_intermediate_output(None);
+            envelope.set_pending_final_output(None);
+        }
+        PendingWorkflowTurnOutputs {
+            intermediate,
+            final_output,
+        }
+    }
+
+    fn apply_workflow_node_completion(
+        node_run: &mut WorkflowNodeRun,
+        completion: Option<WorkflowCompletionSnapshot>,
+    ) {
+        node_run.set_status(WorkflowNodeRunStatus::Completed);
+        node_run.set_summary(Some(
+            completion
+                .as_ref()
+                .map(|value| value.summary().to_string())
+                .unwrap_or_else(|| "completed".to_string()),
+        ));
+        node_run.set_completion(completion);
+    }
+
+    fn commit_pending_workflow_turn_outputs(
+        workflow_run: &mut WorkflowRun,
+        workflow_node_run_id: &str,
+        pending_outputs: PendingWorkflowTurnOutputs,
+    ) {
+        if let Some(submission) = pending_outputs.intermediate {
+            workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new(
+                format!(
+                    "workflow-intermediate-output-{}-{}",
+                    workflow_node_run_id,
+                    unix_epoch_ms()
+                ),
+                workflow_node_run_id.to_string(),
+                submission.output().clone(),
+                submission.valid(),
+                submission.warning().map(str::to_string),
+            ));
+        }
+        if let Some(submission) = pending_outputs.final_output {
+            workflow_run.set_final_output(
+                Some(submission.output().clone()),
+                Some(submission.valid()),
+                submission.warning().map(str::to_string),
+                Some(workflow_node_run_id.to_string()),
+            );
+            workflow_run.set_status(WorkflowRunStatus::Completing);
+        }
+    }
+
+    fn stop_other_workflow_node_runs(workflow_run: &mut WorkflowRun, workflow_node_run_id: &str) {
+        for other_node_run in workflow_run.node_runs_mut() {
+            if other_node_run.id() != workflow_node_run_id
+                && !matches!(
+                    other_node_run.status(),
+                    WorkflowNodeRunStatus::Completed
+                        | WorkflowNodeRunStatus::Failed
+                        | WorkflowNodeRunStatus::Stopped
+                )
+            {
+                other_node_run.set_status(WorkflowNodeRunStatus::Stopped);
+            }
+        }
     }
 
     pub fn stop_workflow_node_run(

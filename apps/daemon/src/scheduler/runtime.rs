@@ -967,7 +967,9 @@ fn render_workflow_node_system_prompt(
         workflow_run_id,
         workflow_node_run_id,
     )
-    .filter(|_| workflow_node_can_emit_intermediate_output(app, session_id, workflow_run_id, node_id))
+    .filter(|_| {
+        workflow_node_can_emit_intermediate_output(app, session_id, workflow_run_id, node_id)
+    })
     .unwrap_or_default();
     let completion_block = load_workflow_run_completion_prompt_template(
         app,

@@ -308,13 +308,14 @@ pub fn dispatch_runtime_tool_call(
                     message: "current workflow node run is not allowed to emit intermediate workflow run output".to_string(),
                 });
             }
-            let args = serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
-                call.arguments,
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
-                message: format!("invalid tool arguments: {error}"),
-            })?;
+            let args =
+                serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
+                    call.arguments,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
             let workflow_run_id = app
                 .sessions()
                 .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
@@ -477,13 +478,11 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 .ok()
                 .and_then(|args| args.delivery_token)
         }
-        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
-            serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
-                arguments.clone(),
-            )
-            .ok()
-            .and_then(|args| args.delivery_token)
-        }
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => serde_json::from_value::<
+            ValidateAndSubmitIntermediateWorkflowRunOutputArgs,
+        >(arguments.clone())
+        .ok()
+        .and_then(|args| args.delivery_token),
         WORKFLOW_CONSOLE_READ_TOOL | WORKFLOW_CONSOLE_WRITE_TOOL | WORKFLOW_CONSOLE_CLEAR_TOOL => {
             None
         }
@@ -506,13 +505,12 @@ pub fn dispatch_authenticated_runtime_tool_call(
         workflow_intermediate_output_schema_ref,
         can_complete_workflow_run,
         can_emit_intermediate_workflow_run_output,
-    ) =
-        workflow_run_completion_context_for_active_workflow_turn(
-            app,
-            &session_id,
-            &workflow_run_ref,
-            &workflow_node_run_id,
-        )?;
+    ) = workflow_run_completion_context_for_active_workflow_turn(
+        app,
+        &session_id,
+        &workflow_run_ref,
+        &workflow_node_run_id,
+    )?;
 
     dispatch_runtime_tool_call(
         app,
@@ -768,7 +766,11 @@ fn workflow_run_completion_context_for_active_workflow_turn(
     let intermediate_schema_ref = node
         .and_then(|node| node.intermediate_output_schema_ref())
         .map(str::to_string)
-        .or_else(|| workflow.intermediate_output_schema_ref().map(str::to_string));
+        .or_else(|| {
+            workflow
+                .intermediate_output_schema_ref()
+                .map(str::to_string)
+        });
     Ok((
         workflow.run_output_schema_ref().map(str::to_string),
         intermediate_schema_ref,
@@ -828,7 +830,10 @@ mod tests {
         assert_eq!(specs[0].name, ACK_WORKFLOW_TURN_TOOL);
         assert_eq!(specs[1].name, VALIDATE_WORKFLOW_OUTPUT_TOOL);
         assert_eq!(specs[2].name, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL);
-        assert_eq!(specs[3].name, VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL);
+        assert_eq!(
+            specs[3].name,
+            VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL
+        );
         assert_eq!(specs[4].name, WORKFLOW_CONSOLE_READ_TOOL);
         assert_eq!(specs[5].name, WORKFLOW_CONSOLE_WRITE_TOOL);
         assert_eq!(specs[6].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
@@ -1243,7 +1248,10 @@ mod tests {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = match app
             .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-intermediate-output", "worktree-intermediate-output"),
+                CreateSessionRequest::new(
+                    "workspace-intermediate-output",
+                    "worktree-intermediate-output",
+                ),
             ))
             .expect("session should exist")
         {
@@ -1300,7 +1308,12 @@ mod tests {
             other => panic!("unexpected response: {other:?}"),
         };
         app.sessions_mut()
-            .set_workflow_node_can_emit_intermediate_output(session.id(), &workflow_id, &node_id, true)
+            .set_workflow_node_can_emit_intermediate_output(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                true,
+            )
             .expect("node intermediate output capability should update");
         app.sessions_mut()
             .set_workflow_intermediate_output_schema_ref(
@@ -1337,10 +1350,15 @@ mod tests {
             ))
             .expect("workflow should invoke")
         {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
+                workflow_run
+            }
             other => panic!("unexpected response: {other:?}"),
         };
-        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+        let node_run = workflow_run
+            .node_runs()
+            .first()
+            .expect("node run should exist");
 
         let result = dispatch_runtime_tool_call(
             &mut app,
@@ -1356,7 +1374,9 @@ mod tests {
                     delivery_token: None,
                     allowed_output_schema_refs: Vec::new(),
                     workflow_run_output_schema_ref: None,
-                    workflow_intermediate_output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
+                    workflow_intermediate_output_schema_ref: Some(
+                        schema_path.to_string_lossy().to_string(),
+                    ),
                     can_complete_workflow_run: false,
                     can_emit_intermediate_workflow_run_output: true,
                 },
@@ -1375,7 +1395,9 @@ mod tests {
                 session.id(),
                 workflow_run.id(),
                 node_run.id(),
-                Some(crate::session::WorkflowCompletionSnapshot::new("done", None)),
+                Some(crate::session::WorkflowCompletionSnapshot::new(
+                    "done", None,
+                )),
                 None,
             )
             .expect("node completion should succeed");
