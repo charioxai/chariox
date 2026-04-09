@@ -53,6 +53,7 @@ impl ScreenshotCapabilityService {
         &self,
         request: CaptureScreenshotRequest,
     ) -> Result<CaptureScreenshotResult, DaemonError> {
+        let _guard = crate::env_lock::lock();
         if std::env::var("ARROBA_SCREENSHOT_DISABLE").as_deref() == Ok("1") {
             return Ok(CaptureScreenshotResult {
                 session_id: request.session_id,
@@ -149,6 +150,7 @@ mod tests {
 
     #[test]
     fn returns_unavailable_when_disabled() {
+        let _guard = crate::env_lock::lock();
         std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
         let result = ScreenshotCapabilityService::new()
             .capture(CaptureScreenshotRequest::new(

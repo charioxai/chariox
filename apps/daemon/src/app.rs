@@ -628,7 +628,8 @@ impl DaemonApp {
     pub fn pump_active_prompt_outputs(&mut self) {
         let sessions = self.sessions.list_sessions();
         for session in sessions {
-            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session.id());
+            let recipient_attachment_ids =
+                self.attachments.list_session_attachment_ids(session.id());
             for agent_id in session.prompt_states().keys() {
                 if session.active_prompt_for_agent(agent_id).is_none() {
                     continue;
@@ -813,11 +814,12 @@ impl DaemonApp {
         if exited {
             return Ok(records);
         }
-        let agent_id = provider_run
-            .agent_instance_id()
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: "provider run has no agent".to_string(),
-            })?;
+        let agent_id =
+            provider_run
+                .agent_instance_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "provider run has no agent".to_string(),
+                })?;
         let active_prompt_status = self
             .sessions
             .get_session(session_id)?
@@ -871,6 +873,38 @@ impl DaemonApp {
             self.config.host_machine_id,
             self.config.kernel_websocket_url()
         )
+    }
+
+    pub fn shutdown_cleanup(&mut self) -> Result<(), DaemonError> {
+        let session_ids = self
+            .sessions
+            .list_sessions()
+            .into_iter()
+            .map(|session| session.id().to_string())
+            .collect::<Vec<_>>();
+        let mut first_error = None;
+
+        for session_id in session_ids {
+            if let Err(error) = self.end_session(&session_id) {
+                crate::logging::error_with_fields(
+                    "daemon.shutdown",
+                    "failed to end session during daemon shutdown",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub async fn run(self) -> Result<(), DaemonError> {

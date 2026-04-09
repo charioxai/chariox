@@ -3,6 +3,7 @@ pub mod app;
 pub mod attachment;
 pub mod capability;
 pub mod config;
+pub(crate) mod env_lock;
 pub mod error;
 pub mod history;
 pub mod kernel_transport;
@@ -89,6 +90,46 @@ mod tests {
             .expect("session should end cleanly through the app");
 
         assert_eq!(ended.id(), session.id());
+        assert!(app.attachments().get_attachment(attachment.id()).is_err());
+    }
+
+    #[test]
+    fn shutdown_cleanup_ends_live_sessions_and_clears_managed_processes() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ))
+            .expect("provider run should launch");
+
+        assert_eq!(app.sessions().active_session_count(), 1);
+        assert!(app
+            .tracked_provider_processes
+            .values()
+            .any(|process| process.owner_provider_run_ids == vec![run.id().to_string()]));
+
+        app.shutdown_cleanup()
+            .expect("shutdown cleanup should end sessions");
+
+        assert_eq!(app.sessions().active_session_count(), 0);
+        assert!(app.tracked_provider_processes.is_empty());
+        assert!(app.tracked_provider_run_processes.is_empty());
         assert!(app.attachments().get_attachment(attachment.id()).is_err());
     }
 
@@ -727,6 +768,7 @@ mod tests {
 
     #[test]
     fn screenshot_capability_returns_structured_unavailable_result() {
+        let _guard = crate::env_lock::lock();
         std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

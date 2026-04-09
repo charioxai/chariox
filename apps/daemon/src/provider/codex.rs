@@ -16,6 +16,11 @@ const CODEX_ENDPOINT_OVERRIDE: &str = "ARROBA_CODEX_ENDPOINT";
 const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    resolve_codex_executable_unlocked()
+}
+
+fn resolve_codex_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(CODEX_ENV_OVERRIDE).map(PathBuf::from) {
         return resolve_candidate(path, true).ok_or_else(|| {
             DaemonError::ProviderExecutableNotFound {
@@ -36,6 +41,13 @@ pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
 pub fn plan_codex_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    plan_codex_launch_unlocked(request)
+}
+
+fn plan_codex_launch_unlocked(
+    request: Option<&LaunchProviderRequest>,
+) -> Result<ProviderLaunchResult, DaemonError> {
     if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -49,7 +61,7 @@ pub fn plan_codex_launch(
         return Ok(external_launch(endpoint));
     }
 
-    let executable = resolve_codex_executable()?;
+    let executable = resolve_codex_executable_unlocked()?;
     let (config_args, env) = runtime_mcp_config(request);
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
@@ -69,6 +81,11 @@ pub fn plan_codex_launch(
 }
 
 pub fn codex_catalog_endpoint() -> Result<String, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    codex_catalog_endpoint_unlocked()
+}
+
+fn codex_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
     if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -247,21 +264,13 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{logout_codex, plan_codex_launch, resolve_codex_executable};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn env_guard() -> MutexGuard<'static, ()> {
-        env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn env_guard() -> crate::env_lock::EnvGuard {
+        crate::env_lock::lock()
     }
 
     #[test]

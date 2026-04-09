@@ -206,6 +206,7 @@ mod tests {
 
     #[test]
     fn opencode_adapter_resolves_override_and_uses_working_directory() {
+        let _guard = crate::env_lock::lock();
         let executable = std::env::temp_dir().join(format!(
             "arroba-opencode-adapter-test-{}",
             std::process::id()

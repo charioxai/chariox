@@ -67,7 +67,11 @@ where
 
     let result = loop {
         tokio::select! {
-            _ = &mut shutdown => break Ok(()),
+            _ = &mut shutdown => {
+                let mut app = app.lock().await;
+                let _ = app.shutdown_cleanup();
+                break Ok(());
+            },
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
                     operation: "accept local socket connection",

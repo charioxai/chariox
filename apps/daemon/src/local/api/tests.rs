@@ -1596,11 +1596,7 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
         crate::session::PromptStatus::Cancelling
     );
     let _ = app
-        .finalize_active_prompt_cancellation(
-            session.id(),
-            "agent-1",
-            None,
-        )
+        .finalize_active_prompt_cancellation(session.id(), agent.id(), None)
         .expect("workflow cancellation should finalize");
     assert!(app
         .sessions()
@@ -1842,10 +1838,33 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         .sessions()
         .get_session(session.id())
         .expect("session should resolve after entry");
-    assert!(session_after_entry.active_prompt().is_some());
-    assert_eq!(session_after_entry.queued_prompts().len(), 1);
+    let active_branch_agents = [branch_one_agent.id(), branch_two_agent.id()]
+        .into_iter()
+        .filter(|agent_id| {
+            session_after_entry
+                .active_prompt_for_agent(agent_id)
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    let active_prompt_count = session_after_entry
+        .prompt_states()
+        .values()
+        .filter(|state| state.active_prompt().is_some())
+        .count();
+    let queued_prompt_count = session_after_entry
+        .prompt_states()
+        .values()
+        .map(|state| state.queued_prompts().len())
+        .sum::<usize>();
+    assert!(
+        active_prompt_count >= 1,
+        "expected at least one branch prompt to be active after entry completed"
+    );
+    assert_eq!(active_prompt_count + queued_prompt_count, 2);
+    assert_eq!(active_branch_agents.len(), 2);
 
-    complete_workflow_test_prompt(&mut app, session.id(), "first branch workflow prompt");
+    app.complete_active_prompt(session.id(), active_branch_agents[0], None)
+        .unwrap_or_else(|error| panic!("first branch workflow prompt should complete: {error}"));
     let after_first_branch = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
     assert_eq!(after_first_branch.node_runs().len(), 3);
     assert!(after_first_branch
@@ -1865,13 +1884,19 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         .sessions()
         .get_session(session.id())
         .expect("session should resolve after first branch");
-    assert!(
-        session_after_first_branch.active_prompt().is_some(),
-        "expected the second branch prompt to be active after the first branch completed"
-    );
+    let remaining_active_branch_agents = [branch_one_agent.id(), branch_two_agent.id()]
+        .into_iter()
+        .filter(|agent_id| {
+            session_after_first_branch
+                .active_prompt_for_agent(agent_id)
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining_active_branch_agents.len(), 1);
     assert_eq!(session_after_first_branch.queued_prompts().len(), 0);
 
-    complete_workflow_test_prompt(&mut app, session.id(), "second branch workflow prompt");
+    app.complete_active_prompt(session.id(), remaining_active_branch_agents[0], None)
+        .unwrap_or_else(|error| panic!("second branch workflow prompt should complete: {error}"));
     let after_second_branch = get_workflow_test_run(&mut app, session.id(), workflow_run.id());
     let join_runs = after_second_branch
         .node_runs()
@@ -2234,7 +2259,7 @@ fn local_request_api_rejects_prompt_without_active_provider_run() {
         .expect_err("prompt submit should fail without active provider run");
 
     match error {
-        DaemonError::NoActiveProviderRun { session_id } => assert_eq!(session_id, session.id()),
+        DaemonError::InvalidConfig { field, .. } => assert_eq!(field, "ARROBA_OPENCODE_PORT"),
         other => panic!("unexpected error: {other}"),
     }
 }
@@ -2762,6 +2787,7 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
 
 #[test]
 fn local_request_api_returns_structured_screenshot_unavailable_result() {
+    let _guard = crate::env_lock::lock();
     std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

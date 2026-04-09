@@ -169,7 +169,11 @@ where
 
     loop {
         tokio::select! {
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => {
+                let mut app = app.lock().await;
+                let _ = app.shutdown_cleanup();
+                return Ok(());
+            },
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result.map_err(|error| DaemonError::LocalTransport {
                     operation: "accept kernel websocket",

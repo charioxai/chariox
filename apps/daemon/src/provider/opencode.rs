@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::provider::{
@@ -12,6 +15,11 @@ const OPENCODE_PORT_OVERRIDE: &str = "ARROBA_OPENCODE_PORT";
 const OPENCODE_ENDPOINT_OVERRIDE: &str = "ARROBA_OPENCODE_ENDPOINT";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    resolve_opencode_executable_unlocked()
+}
+
+fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(OPENCODE_ENV_OVERRIDE).map(PathBuf::from) {
         return resolve_candidate(path, true).ok_or_else(|| {
             DaemonError::ProviderExecutableNotFound {
@@ -35,6 +43,13 @@ const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 pub fn plan_opencode_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    plan_opencode_launch_unlocked(request)
+}
+
+fn plan_opencode_launch_unlocked(
+    request: Option<&LaunchProviderRequest>,
+) -> Result<ProviderLaunchResult, DaemonError> {
     if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -48,7 +63,7 @@ pub fn plan_opencode_launch(
         return Ok(external_launch(base_url));
     }
 
-    let executable = resolve_opencode_executable()?;
+    let executable = resolve_opencode_executable_unlocked()?;
 
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
@@ -69,6 +84,11 @@ pub fn plan_opencode_launch(
 }
 
 pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
+    let _guard = crate::env_lock::lock();
+    opencode_catalog_endpoint_unlocked()
+}
+
+fn opencode_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
     if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -78,6 +98,78 @@ pub fn opencode_catalog_endpoint() -> Result<String, DaemonError> {
 
     let port = resolve_opencode_port()?;
     Ok(format!("http://127.0.0.1:{port}"))
+}
+
+pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
+    let launch = plan_opencode_launch(None)?;
+    let endpoint =
+        launch
+            .structured_endpoint
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "ensure_opencode_catalog_endpoint",
+                message: "opencode launch did not expose a structured endpoint".to_string(),
+            })?;
+    if endpoint_is_healthy(&endpoint) {
+        return Ok(endpoint);
+    }
+    if launch.endpoint_mode == AgentEndpointMode::External {
+        return Err(DaemonError::LocalTransport {
+            operation: "ensure_opencode_catalog_endpoint",
+            message: format!("configured OpenCode endpoint `{endpoint}` is not reachable"),
+        });
+    }
+
+    let program = launch
+        .pty_program
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "ensure_opencode_catalog_endpoint",
+            message: "opencode launch did not provide an executable".to_string(),
+        })?;
+    let mut command = Command::new(program);
+    command
+        .args(&launch.pty_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(working_directory) = launch.working_directory.as_ref() {
+        command.current_dir(working_directory);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "ensure_opencode_catalog_endpoint",
+            message: format!("failed to start OpenCode server: {error}"),
+        })?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if endpoint_is_healthy(&endpoint) {
+            return Ok(endpoint);
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "ensure_opencode_catalog_endpoint",
+                message: format!("failed to poll OpenCode server startup: {error}"),
+            })?
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "ensure_opencode_catalog_endpoint",
+                message: format!("OpenCode server exited before becoming healthy: {status}"),
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(DaemonError::LocalTransport {
+                operation: "ensure_opencode_catalog_endpoint",
+                message: format!(
+                    "timed out waiting for OpenCode server to become healthy at `{endpoint}`"
+                ),
+            });
+        }
+        sleep(Duration::from_millis(100));
+    }
 }
 
 fn external_launch(endpoint: String) -> ProviderLaunchResult {
@@ -161,24 +253,18 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::thread;
 
     use crate::DaemonError;
 
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
-    use super::{plan_opencode_launch, resolve_opencode_executable};
+    use super::{
+        ensure_opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable,
+    };
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn env_guard() -> MutexGuard<'static, ()> {
-        env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn env_guard() -> crate::env_lock::EnvGuard {
+        crate::env_lock::lock()
     }
 
     fn reserve_unused_port() -> u16 {
@@ -391,5 +477,22 @@ mod tests {
             launch.structured_endpoint.as_deref(),
             Some(endpoint.as_str())
         );
+    }
+
+    #[test]
+    fn ensures_healthy_external_opencode_endpoint_for_catalog_queries() {
+        let _guard = env_guard();
+        let (endpoint, server) = start_health_server();
+        std::env::set_var("ARROBA_OPENCODE_ENDPOINT", &endpoint);
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+
+        let resolved =
+            ensure_opencode_catalog_endpoint().expect("healthy external endpoint should resolve");
+
+        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
+        let _ = server.join();
+
+        assert_eq!(resolved, endpoint);
     }
 }

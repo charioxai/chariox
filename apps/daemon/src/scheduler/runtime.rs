@@ -162,6 +162,9 @@ pub fn schedule_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
+    let _ = app
+        .sessions_mut()
+        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
     let delivery_token = workflow_turn_delivery_token(workflow_node_run_id);
     let mailbox_content = workflow_node_control_contents(
         app,
@@ -303,6 +306,9 @@ fn resume_existing_workflow_node_prompt(
     target_agent_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
+    let _ = app
+        .sessions_mut()
+        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
     let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
         session_id,
         &workflow_prompt_source_attachment_id(workflow_run_id),
@@ -363,7 +369,11 @@ pub fn ensure_workflow_provider_run_for_agent(
     agent_id: &str,
 ) -> Result<String, DaemonError> {
     match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
-        Ok(provider_run_id) => Ok(provider_run_id),
+        Ok(provider_run_id) => {
+            app.sessions_mut()
+                .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
+            Ok(provider_run_id)
+        }
         Err(DaemonError::NoActiveProviderRun { .. }) => {
             let agent = app.agents().get_agent(agent_id)?;
             let adapter_key = match agent.provider() {
@@ -387,6 +397,8 @@ pub fn ensure_workflow_provider_run_for_agent(
                 request = request.with_working_directory(PathBuf::from(worktree_id));
             }
             let provider_run = app.launch_provider_detached(request)?;
+            app.sessions_mut()
+                .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
             Ok(provider_run.id().to_string())
         }
         Err(error) => Err(error),
