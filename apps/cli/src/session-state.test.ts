@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
+  agentHasPromptWork,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   buildDetachedSessionState,
@@ -98,6 +99,31 @@ test("deriveSessionTransitionState preserves active agent labels and clears idle
   assert.equal(transition.nextWorking, true)
   assert.equal(transition.previousAgentSignature, "agent-a,agent-b")
   assert.equal(transition.nextAgentSignature, "agent-a,agent-b")
+})
+
+test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across agents", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    active_prompt: null,
+    queued_prompts: [],
+    prompt_states: {
+      "agent-b": {
+        active_prompt: {
+          id: "prompt-2",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-b",
+          prompt: "review",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agents: [agent("agent-a"), agent("agent-b", { is_processing: true, state: "Working" })],
+  })
+
+  assert.equal(sessionHasPromptWork(nextSession), true)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
+  assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
 })
 
 test("deriveSessionTransitionState clears stale streaming state once prompt work ends", () => {

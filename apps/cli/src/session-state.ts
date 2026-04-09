@@ -1,6 +1,6 @@
 import process from "node:process"
 
-import type { CliOptions, RuntimeSession, SessionHistoryCursor, TranscriptEntry } from "./cli-types.js"
+import type { AgentPromptState, CliOptions, RuntimeSession, SessionHistoryCursor, TranscriptEntry } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room.js"
@@ -96,7 +96,40 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 }
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
+  if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
+    return Object.values(session.prompt_states).some((state) => {
+      return Boolean(state.active_prompt) || state.queued_prompts.length > 0
+    })
+  }
   return Boolean(session.active_prompt) || session.queued_prompts.length > 0
+}
+
+export function agentPromptState(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): AgentPromptState | null {
+  if (!agentId) {
+    return null
+  }
+  const promptState = session.prompt_states?.[agentId]
+  if (promptState) {
+    return promptState
+  }
+  if (session.active_prompt?.target_agent_id === agentId || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId)) {
+    return {
+      active_prompt: session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null,
+      queued_prompts: session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId),
+    }
+  }
+  return null
+}
+
+export function agentHasPromptWork(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): boolean {
+  const promptState = agentPromptState(session, agentId)
+  return Boolean(promptState?.active_prompt) || (promptState?.queued_prompts.length ?? 0) > 0
 }
 
 export function sessionResponseLayout(
@@ -130,7 +163,10 @@ export function deriveSessionTransitionState(
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
     nextAgentActivityLabels[agent.id] =
-      agent.is_processing || agent.state === "Working" || agent.id === nextStreamingAgentId
+      agent.is_processing
+        || agent.state === "Working"
+        || agent.id === nextStreamingAgentId
+        || agentHasPromptWork(options.nextSession, agent.id)
         ? (options.currentAgentActivityLabels[agent.id] ?? null)
         : null
   }

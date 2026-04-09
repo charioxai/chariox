@@ -102,6 +102,7 @@ export async function refreshAgentPaneState<
   applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
   reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
   formatPreview: (entries: TEntry[]) => string
+  preserveExpandedTurnIds?: boolean
 }): Promise<AgentPaneRefreshResult<TEntry, TCursor>> {
   const previews: Record<string, string> = {}
   const paneEntries: Record<string, TEntry[]> = {}
@@ -132,7 +133,9 @@ export async function refreshAgentPaneState<
         .map((entry) => entry.turnId)
         .filter((turnId): turnId is number => typeof turnId === "number"),
     )
-    const expandedTurnIds = (options.expandedTurnIdsByAgent[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
+    const expandedTurnIds = options.preserveExpandedTurnIds
+      ? [...new Set(options.expandedTurnIdsByAgent[agent.id] ?? [])]
+      : (options.expandedTurnIdsByAgent[agent.id] ?? []).filter((turnId) => availableTurnIds.has(turnId))
     if (expandedTurnIds.length > 0) {
       expandedTurnIdsByAgent[agent.id] = expandedTurnIds
     }

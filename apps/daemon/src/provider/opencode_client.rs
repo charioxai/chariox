@@ -283,15 +283,12 @@ pub struct OpenCodeProviderModelLimit {
     pub output: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OpenCodeAgentInfo {
     name: String,
     mode: String,
-    #[serde(default)]
     hidden: Option<bool>,
-    #[serde(default)]
     model: Option<OpenCodeSelectedModel>,
-    #[serde(default)]
     variant: Option<String>,
 }
 
@@ -403,8 +400,8 @@ impl OpenCodeClient {
             }
             Err(error) => return Err(error),
         };
-        let agents: Vec<OpenCodeAgentInfo> = match self.send_json_request("GET", "/agent", None) {
-            Ok(agents) => agents,
+        let agents = match self.send_json_request("GET", "/agent", None) {
+            Ok::<serde_json::Value, _>(value) => parse_agent_infos(value),
             Err(DaemonError::ProviderProtocol {
                 operation: "opencode_http",
                 message,
@@ -816,7 +813,7 @@ fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
             return Err("connection closed before response header".to_string());
         }
         buffer.extend_from_slice(&chunk[..size]);
-        if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+        if let Some(index) = find_double_crlf(&buffer) {
             let header_end = index + 4;
             let header_text = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
             let status_code = header_text
@@ -843,7 +840,7 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> 
             return Err("connection closed before response header".to_string());
         }
         buffer.extend_from_slice(&chunk[..size]);
-        if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+        if let Some(index) = find_double_crlf(&buffer) {
             header_end = index + 4;
             break;
         }
@@ -860,25 +857,104 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> 
         .ok_or_else(|| "missing HTTP status code".to_string())?
         .parse::<u16>()
         .map_err(|error| error.to_string())?;
-    let content_length = lines
-        .find_map(|line| {
-            let mut parts = line.splitn(2, ':');
-            let name = parts.next()?.trim();
-            let value = parts.next()?.trim();
-            (name.eq_ignore_ascii_case("content-length")).then_some(value)
-        })
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
+    let mut content_length = None;
+    let mut is_chunked = false;
+    for line in lines {
+        let mut parts = line.splitn(2, ':');
+        let Some(name) = parts.next().map(str::trim) else {
+            continue;
+        };
+        let Some(value) = parts.next().map(str::trim) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.parse::<usize>().ok();
+        } else if name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        {
+            is_chunked = true;
+        }
+    }
 
-    let mut body = buffer[header_end..].to_vec();
-    while body.len() < content_length {
-        let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+    let body = if is_chunked {
+        read_chunked_http_body(buffer[header_end..].to_vec(), stream)?
+    } else {
+        let mut body = buffer[header_end..].to_vec();
+        let content_length = content_length.unwrap_or(0);
+        while body.len() < content_length {
+            let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            if size == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..size]);
+        }
+        body
+    };
+    Ok((status_code, body))
+}
+
+fn find_double_crlf(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn read_chunked_http_body(
+    mut buffered: Vec<u8>,
+    stream: &mut TcpStream,
+) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    let mut chunk = [0_u8; 1024];
+
+    loop {
+        let header_end = loop {
+            if let Some(index) = buffered.windows(2).position(|window| window == b"\r\n") {
+                break index;
+            }
+            let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            if size == 0 {
+                return Err("unexpected EOF while reading chunk header".to_string());
+            }
+            buffered.extend_from_slice(&chunk[..size]);
+        };
+
+        let size_line = String::from_utf8_lossy(&buffered[..header_end]).into_owned();
+        let size_hex = size_line
+            .split(';')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "missing chunk size".to_string())?;
+        let size = usize::from_str_radix(size_hex, 16).map_err(|error| error.to_string())?;
+        buffered.drain(..header_end + 2);
+
         if size == 0 {
+            loop {
+                if buffered.len() >= 2 && &buffered[..2] == b"\r\n" {
+                    buffered.drain(..2);
+                    break;
+                }
+                let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+                if read == 0 {
+                    break;
+                }
+                buffered.extend_from_slice(&chunk[..read]);
+            }
             break;
         }
-        body.extend_from_slice(&chunk[..size]);
+
+        while buffered.len() < size + 2 {
+            let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+            if read == 0 {
+                return Err("unexpected EOF while reading chunk body".to_string());
+            }
+            buffered.extend_from_slice(&chunk[..read]);
+        }
+        decoded.extend_from_slice(&buffered[..size]);
+        buffered.drain(..size + 2);
     }
-    Ok((status_code, body))
+
+    Ok(decoded)
 }
 
 fn resolve_configured_defaults(
@@ -936,6 +1012,80 @@ fn resolve_configured_defaults(
     }
 }
 
+fn parse_agent_infos(value: serde_json::Value) -> Vec<OpenCodeAgentInfo> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(parse_agent_info)
+        .collect()
+}
+
+fn parse_agent_info(value: &serde_json::Value) -> Option<OpenCodeAgentInfo> {
+    let object = value.as_object()?;
+    let name = object.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let mode = object
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("primary")
+        .to_string();
+    let hidden = object.get("hidden").and_then(|value| value.as_bool());
+    let model = parse_agent_model(object.get("model"));
+    let variant = object
+        .get("variant")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    Some(OpenCodeAgentInfo {
+        name: name.to_string(),
+        mode,
+        hidden,
+        model,
+        variant,
+    })
+}
+
+fn parse_agent_model(value: Option<&serde_json::Value>) -> Option<OpenCodeSelectedModel> {
+    let value = value?;
+    if let Some(model) = value.as_object() {
+        let provider_id = model
+            .get("providerID")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let model_id = model
+            .get("modelID")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        return Some(OpenCodeSelectedModel {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+        });
+    }
+
+    let raw = value.as_str()?.trim();
+    let (provider_id, model_id) = raw.split_once('/')?;
+    let provider_id = provider_id.trim();
+    let model_id = model_id.trim();
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+
+    Some(OpenCodeSelectedModel {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+    })
+}
+
 fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
     let value = model?.trim();
     if value.is_empty() || value == "default" {
@@ -953,8 +1103,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        parse_model, resolve_configured_defaults, OpenCodeAgentInfo, OpenCodeClient,
-        OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
+        parse_agent_infos, parse_model, resolve_configured_defaults, OpenCodeAgentInfo,
+        OpenCodeClient, OpenCodeConfig, OpenCodeConfigAgent, OpenCodeEvent, OpenCodeMessageInfo,
         OpenCodeSelectedModel,
     };
 
@@ -1074,6 +1224,88 @@ mod tests {
         assert_eq!(defaults.model.as_deref(), Some("openai/gpt-5.4"));
         assert_eq!(defaults.variant.as_deref(), Some("low"));
         assert_eq!(defaults.selected_agent.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn parses_current_opencode_agent_payload_without_failing() {
+        let agents = parse_agent_infos(serde_json::json!([
+            {
+                "name": "build",
+                "description": "The default agent. Executes tools based on configured permissions.",
+                "options": {
+                    "timeout": 4000
+                },
+                "permission": [
+                    {
+                        "permission": "*",
+                        "action": "allow",
+                        "pattern": "*"
+                    }
+                ],
+                "prompt": "ignored by arroba"
+            },
+            {
+                "name": "plan",
+                "mode": "subagent",
+                "hidden": true,
+                "model": "openai/gpt-5.4",
+                "variant": "medium"
+            }
+        ]));
+
+        assert_eq!(
+            agents,
+            vec![
+                OpenCodeAgentInfo {
+                    name: "build".to_string(),
+                    mode: "primary".to_string(),
+                    hidden: None,
+                    model: None,
+                    variant: None,
+                },
+                OpenCodeAgentInfo {
+                    name: "plan".to_string(),
+                    mode: "subagent".to_string(),
+                    hidden: Some(true),
+                    model: Some(OpenCodeSelectedModel {
+                        provider_id: "openai".to_string(),
+                        model_id: "gpt-5.4".to_string(),
+                    }),
+                    variant: Some("medium".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn decodes_chunked_http_json_responses() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let body = r#"{"healthy":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write chunked response");
+        });
+
+        let client = OpenCodeClient::new("provider-run-test", format!("http://127.0.0.1:{port}"))
+            .expect("client should initialize");
+        client
+            .check_health()
+            .expect("client should decode chunked JSON");
+        server.join().expect("server thread should join");
     }
 
     #[test]

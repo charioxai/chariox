@@ -252,8 +252,11 @@ export function buildCommandCenterItems(input: string, context: CommandContext):
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
-  if (item.kind !== "command" || !item.value.endsWith(" ")) {
+  if (item.kind !== "command") {
     return false
+  }
+  if (!item.value.endsWith(" ")) {
+    return currentPrompt.trim() === item.value
   }
   return currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()
 }

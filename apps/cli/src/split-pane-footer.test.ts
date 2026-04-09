@@ -51,8 +51,15 @@ test("agentPaneStatusBadge reports error and streaming states", () => {
     label: "ERROR",
     tone: "error",
   })
-  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, true), {
-    label: "WORKING",
+  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, false, true), {
+    label: "THINKING",
+    tone: "working",
+  })
+})
+
+test("agentPaneStatusBadge stays working while the agent still has prompt work", () => {
+  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, true, false), {
+    label: "THINKING",
     tone: "working",
   })
 })
@@ -123,6 +130,10 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
     activityLabels: {
       "agent-a": null,
       "agent-b": "reading",
+    },
+    hasPromptWorkByAgent: {
+      "agent-a": false,
+      "agent-b": true,
     },
     catalog,
     activeRun: {

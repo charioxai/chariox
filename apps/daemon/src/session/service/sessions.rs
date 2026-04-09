@@ -265,12 +265,11 @@ impl SessionService {
         agent_id: &str,
     ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "cancel prompt")?;
-        let cancelled =
-            session
-                .cancel_active_prompt_only(agent_id)
-                .ok_or_else(|| DaemonError::NoActivePrompt {
-                    session_id: session_id.to_string(),
-                })?;
+        let cancelled = session.cancel_active_prompt_only(agent_id).ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            }
+        })?;
         Ok((session.clone(), cancelled))
     }
 
@@ -280,11 +279,11 @@ impl SessionService {
         agent_id: &str,
     ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "begin cancelling prompt")?;
-        let prompt = session.begin_cancelling_active_prompt(agent_id).ok_or_else(|| {
-            DaemonError::NoActivePrompt {
+        let prompt = session
+            .begin_cancelling_active_prompt(agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
-            }
-        })?;
+            })?;
         Ok((session.clone(), prompt))
     }
 
@@ -309,12 +308,11 @@ impl SessionService {
         agent_id: &str,
     ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
-        let completed =
-            session
-                .complete_active_prompt_only(agent_id)
-                .ok_or_else(|| DaemonError::NoActivePrompt {
-                    session_id: session_id.to_string(),
-                })?;
+        let completed = session
+            .complete_active_prompt_only(agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
         Ok((session.clone(), completed))
     }
 
@@ -324,12 +322,11 @@ impl SessionService {
         agent_id: &str,
     ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "complete prompt")?;
-        let completed =
-            session
-                .complete_active_prompt_only(agent_id)
-                .ok_or_else(|| DaemonError::NoActivePrompt {
-                    session_id: session_id.to_string(),
-                })?;
+        let completed = session
+            .complete_active_prompt_only(agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
         Ok((session.clone(), completed))
     }
 
@@ -348,7 +345,9 @@ impl SessionService {
         agent_id: &str,
     ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "activate next prompt")?;
-        let next = session.pop_next_queued_prompt(agent_id).map(|prompt| session.activate_prompt(prompt));
+        let next = session
+            .pop_next_queued_prompt(agent_id)
+            .map(|prompt| session.activate_prompt(prompt));
         Ok((session.clone(), next))
     }
 

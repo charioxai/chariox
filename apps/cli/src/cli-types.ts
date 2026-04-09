@@ -16,6 +16,7 @@ export type RuntimeSession = {
   attachment_ids: string[]
   active_prompt: PromptQueueItem | null
   queued_prompts: PromptQueueItem[]
+  prompt_states?: Record<string, AgentPromptState>
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -26,6 +27,11 @@ export type RuntimeSession = {
   queued_workflow_launches?: QueuedWorkflowLaunch[]
   workflow_watchdogs?: WorkflowWatchdogDefinition[]
   workflow_consoles?: WorkflowConsole[]
+}
+
+export type AgentPromptState = {
+  active_prompt: PromptQueueItem | null
+  queued_prompts: PromptQueueItem[]
 }
 
 export type SessionConfigState = {

@@ -127,12 +127,13 @@ export function deriveAttachedFooterSummary(options: {
   responseLayout: MultiAgentResponseLayout
   sessionStatusMode: SessionStatusMode
   hotkeyToggleLabel: string
+  focusedHasPromptWork?: boolean
 }): string {
   const focusedAgent = options.session.agents.find(
     (agent) => agent.id === options.session.focused_agent_id,
   )
   const agentInfo = focusedAgent
-    ? ` • Agent: ${formatAgentLabel(focusedAgent)}${focusedAgent.is_processing ? " [working]" : ""}`
+    ? ` • Agent: ${formatAgentLabel(focusedAgent)}${(focusedAgent.is_processing || options.focusedHasPromptWork) ? " [working]" : ""}`
     : ""
   const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
 

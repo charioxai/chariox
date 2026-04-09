@@ -12,6 +12,34 @@ use crate::provider::{
 };
 
 impl DaemonApp {
+    pub(crate) fn project_session_runtime_view(&self, session: &mut crate::session::RuntimeSession) {
+        let projected_run_id = session
+            .focused_agent_id()
+            .and_then(|agent_id| {
+                self.providers
+                    .get_run_for_agent(session.id(), agent_id)
+                    .or_else(|| self.providers.get_latest_run_for_agent(session.id(), agent_id))
+                    .map(|run| run.id().to_string())
+            });
+        session.set_active_provider_run(projected_run_id);
+    }
+
+    pub(crate) fn project_active_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let projected_run_id = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .or_else(|| self.providers.get_latest_run_for_agent(session_id, agent_id))
+            .map(|run| run.id().to_string());
+        let _ = self
+            .sessions
+            .set_active_provider_run(session_id, projected_run_id)?;
+        Ok(())
+    }
+
     fn register_managed_provider_process(
         &mut self,
         run: &RuntimeProviderRun,
@@ -534,6 +562,15 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<(), DaemonError> {
         let session = self.sessions.get_session(session_id)?;
+        if session.agents().len() > 1 {
+            let focused_agent_id = session.focused_agent_id().map(str::to_string);
+            if let Some(focused_agent_id) = focused_agent_id {
+                self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+            } else {
+                self.sessions.set_active_provider_run(session_id, None)?;
+            }
+            return Ok(());
+        }
         if session.active_prompt().is_some()
             || session.agents().iter().any(|agent| agent.is_processing())
         {

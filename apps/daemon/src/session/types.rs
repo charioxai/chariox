@@ -2134,9 +2134,9 @@ impl RuntimeSession {
             .any(|state| state.active_prompt().is_some())
     }
     pub fn has_any_prompt_work(&self) -> bool {
-        self.prompt_states.values().any(|state| {
-            state.active_prompt().is_some() || !state.queued_prompts().is_empty()
-        })
+        self.prompt_states
+            .values()
+            .any(|state| state.active_prompt().is_some() || !state.queued_prompts().is_empty())
     }
     pub fn scheduler_state(&self) -> SchedulerState {
         self.scheduler_state
@@ -2428,11 +2428,7 @@ impl RuntimeSession {
         &mut self,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        let active = self
-            .prompt_states
-            .get(agent_id)?
-            .active_prompt
-            .as_ref()?;
+        let active = self.prompt_states.get(agent_id)?.active_prompt.as_ref()?;
         if active.status() != PromptStatus::Cancelling {
             return None;
         }
@@ -2463,13 +2459,10 @@ impl RuntimeSession {
     }
 
     pub fn clear_active_prompt_if(&mut self, prompt_id: &str) -> bool {
-        let target_agent_id = self
-            .prompt_states
-            .iter()
-            .find_map(|(agent_id, state)| {
-                (state.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id))
-                    .then(|| agent_id.clone())
-            });
+        let target_agent_id = self.prompt_states.iter().find_map(|(agent_id, state)| {
+            (state.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id))
+                .then(|| agent_id.clone())
+        });
         if let Some(agent_id) = target_agent_id {
             if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
                 prompt_state.active_prompt = None;

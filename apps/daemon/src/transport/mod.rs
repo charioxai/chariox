@@ -27,7 +27,13 @@ impl TransportService {
         prompt: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<crate::session::PromptSubmissionOutcome, DaemonError> {
-        app.submit_prompt(session_id, attachment_id, target_agent_id, prompt, attachments)
+        app.submit_prompt(
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            attachments,
+        )
     }
 
     pub fn complete_active_prompt(
@@ -122,7 +128,10 @@ impl TransportService {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        match app.sessions_mut().cancel_active_prompt(session_id, agent_id) {
+        match app
+            .sessions_mut()
+            .cancel_active_prompt(session_id, agent_id)
+        {
             Ok((_, cancelled)) => {
                 if let Some(provider_run_id) = provider_run_id {
                     flow_control::clear_prompt_activity(app, provider_run_id);

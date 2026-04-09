@@ -266,7 +266,9 @@ impl DaemonApp {
         agent_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self.sessions.peek_next_queued_prompt(session_id, agent_id)?;
+            let next_candidate = self
+                .sessions
+                .peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
@@ -317,8 +319,9 @@ impl DaemonApp {
                 }
             };
 
-            let (_session, next_candidate) =
-                self.sessions.activate_next_queued_prompt(session_id, &target_agent_id)?;
+            let (_session, next_candidate) = self
+                .sessions
+                .activate_next_queued_prompt(session_id, &target_agent_id)?;
             let Some(next) = next_candidate else {
                 continue;
             };

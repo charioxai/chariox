@@ -1,9 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    default_provider_command_catalogs, ensure_codex_catalog_endpoint, logout_codex,
-    opencode_catalog_endpoint, CodexClient, LaunchProviderRequest, OpenCodeClient,
-    OpenCodeProviderCatalog,
+    default_provider_command_catalogs, ensure_codex_catalog_endpoint,
+    ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
+    OpenCodeClient, OpenCodeProviderCatalog,
 };
 
 use super::api::{
@@ -63,7 +63,7 @@ impl DaemonApp {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut catalogs = Vec::new();
 
-        if let Ok(endpoint) = opencode_catalog_endpoint() {
+        if let Ok(endpoint) = ensure_opencode_catalog_endpoint() {
             if let Ok(client) = OpenCodeClient::new("catalog", endpoint) {
                 if let Ok(catalog) = client.provider_catalog() {
                     catalogs.push(catalog);

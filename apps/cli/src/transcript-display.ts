@@ -44,7 +44,7 @@ export function applyTranscriptDisplayState(
     ...entry,
     hidden: false,
   }))
-  const expandedTurnIdSet = new Set(expandedTurnIds)
+  const collapsedTurnIdSet = new Set(expandedTurnIds)
   let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
 
@@ -52,7 +52,7 @@ export function applyTranscriptDisplayState(
     const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
     const finalSummary = [...turnEntries].reverse().find((entry) => entry.role === "assistant")
     const collapsibleTurn = Boolean(finalSummary) && turnId !== activeTurnId
-    const expanded = collapsibleTurn ? expandedTurnIdSet.has(turnId) : false
+    const expanded = collapsibleTurn ? !collapsedTurnIdSet.has(turnId) : false
 
     for (const entry of turnEntries) {
       const blobCollapsible = computeBlobCollapsible(entry, finalSummary?.id ?? null)
@@ -110,9 +110,9 @@ export function setTranscriptTurnExpanded(
 ) {
   const nextExpandedTurnIds = new Set(expandedTurnIds)
   if (expanded) {
-    nextExpandedTurnIds.add(turnId)
-  } else {
     nextExpandedTurnIds.delete(turnId)
+  } else {
+    nextExpandedTurnIds.add(turnId)
   }
   return applyTranscriptDisplayState(entries, [...nextExpandedTurnIds].sort((left, right) => left - right), activeTurnId)
 }
@@ -152,12 +152,9 @@ export function findVisibleTurnToggle(
   })
 }
 
-function computeBlobCollapsible(entry: TranscriptEntry, finalSummaryId: number | null) {
-  if (entry.role === "user" || entry.role === "reasoning" || entry.role === "turn_toggle") {
+function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number | null) {
+  if (entry.role === "user" || entry.role === "reasoning" || entry.role === "turn_toggle" || entry.role === "assistant") {
     return false
-  }
-  if (entry.role === "assistant") {
-    return finalSummaryId === null || entry.id !== finalSummaryId
   }
   return entry.role === "tool" || entry.role === "error" || entry.role === "status" || entry.role === "notice"
 }

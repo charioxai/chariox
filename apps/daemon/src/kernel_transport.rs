@@ -888,6 +888,7 @@ fn build_session_snapshot(
     let mut session = app.sessions().get_session(session_id)?;
     let agents = app.agents().get_session_agents(session_id);
     session.set_agents(agents);
+    app.project_session_runtime_view(&mut session);
     let provider_run = session
         .active_provider_run_id()
         .and_then(|provider_run_id| app.providers().get_run(provider_run_id).ok());

@@ -166,10 +166,11 @@ import {
   derivePromptMetaState,
   derivePromptUsageState,
   deriveSessionStatusMode,
-  deriveVisibleActivityLabel,
   type SessionStatusMode,
 } from "./session-chrome-state.js"
 import {
+  agentHasPromptWork,
+  agentPromptState,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
   derivePromptLifecycleTransition,
@@ -517,7 +518,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
   const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
-  const [working, setWorking] = createSignal(Boolean(initialSession.active_prompt) || initialSession.queued_prompts.length > 0)
+  const [working, setWorking] = createSignal(sessionHasPromptWork(initialSession))
   const [footerFlash, setFooterFlash] = createSignal<FooterFlash | null>(null)
   const [pendingAttachments, setPendingAttachments] = createSignal<PendingPromptAttachment[]>([])
   const [promptHistoryEntries, setPromptHistoryEntries] = createSignal<string[]>(initialPromptHistory)
@@ -645,6 +646,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     splitAgentResponseMode(),
     maxAgentsPerScreen(),
   )
+  const responsePaneAgentSignature = () => sessionState().agents.map((agent) => agent.id).join(",")
   const responsePrimaryAgent = () => workflowScreenActive() ? null : responsePaneSelection().primary
   const responseVisibleAgents = () => resolveWorkspaceVisibleAgents(workspaceScreenMode(), responsePaneSelection().visibleAgents)
   const visibleTranscriptAgentId = () => resolveWorkspaceVisibleTranscriptAgentId(
@@ -891,12 +893,48 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     : workflowInspectorMode() === "terminal"
       ? workflowTerminalInspector()
       : workflowRuntimeInspector()
+  const promptStateForAgent = (agentId: string | null | undefined) => agentPromptState(sessionState(), agentId)
+  const agentQueuedDepth = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.queued_prompts.length ?? 0
+  const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
+  const anyPromptWork = () => sessionHasPromptWork(sessionState())
+  const hasPromptWorkByAgent = () => {
+    const state: Record<string, boolean> = {}
+    for (const agent of sessionState().agents) {
+      state[agent.id] = agentHasPromptWork(sessionState(), agent.id)
+    }
+    return state
+  }
+  const focusedPromptState = () => promptStateForAgent(focusedAgentId())
+  const focusedQueueDepth = () => agentQueuedDepth(focusedAgentId())
+  const focusedActivePrompt = () => agentActivePrompt(focusedAgentId())
+  const activeToolLabelForAgent = (agentId: string | null | undefined) => {
+    if (!agentId) {
+      return null
+    }
+    if (agentId === visibleTranscriptAgentId()) {
+      return Array.from(activeToolLabels.values()).at(-1) ?? null
+    }
+    const toolState = agentPaneTools.get(agentId)
+    if (!toolState) {
+      return null
+    }
+    const labels = Array.from(toolState.values())
+      .filter((update) => update.status !== "completed" && update.status !== "error" && update.status !== "cancelled")
+      .map((update) => getToolActivityLabel(update.tool))
+      .filter((label): label is string => Boolean(label))
+    return labels.at(-1) ?? null
+  }
+  const focusedActivityLabel = () => {
+    const agentId = focusedAgentId()
+    const toolLabel = activeToolLabelForAgent(agentId)
+    return toolLabel ?? agentActivityLabel(agentId)
+  }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
       return false
     }
     return streamingAgentId() === agentId
-      || activePrompt()?.target_agent_id === agentId
+      || agentHasPromptWork(sessionState(), agentId)
       || sessionState().agents.some((agent) => agent.id === agentId && (agent.is_processing || agent.state === "Working"))
   }
   const setAgentActivityLabel = (agentId: string | null | undefined, nextLabel: string | null) => {
@@ -909,9 +947,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }))
   }
   const visibleTranscriptEntries = () => entries.filter((entry) => entry && !entry.hidden)
-  const queueDepth = () => sessionState().queued_prompts.length
+  const queueDepth = () => focusedQueueDepth()
   const connectedClientCount = () => sessionState().attachment_ids.length
-  const activePrompt = () => sessionState().active_prompt
+  const activePrompt = () => focusedActivePrompt()
   const resolveTerminalRecordAgentId = (record: TerminalOutputRecord) => {
     if (record.agent_id) {
       return record.agent_id
@@ -928,7 +966,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const focusedStatusBadge = () => deriveFocusedStatusBadge({
     attached: isAttached(),
     sessionStatusMode: sessionStatusMode(),
-    activeStatusLabel: activeStatusLabel(),
+    activeStatusLabel: focusedActivityLabel(),
   })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
@@ -1323,7 +1361,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     commandCenterBox.zIndex = 10
   }
   const selectCommandCenterItem = async (item: CommandCenterItem) => {
-    if (item.kind === "command" || item.kind === "group") {
+    if (item.kind === "command") {
+      try {
+        clearCommandCenter()
+        setPromptText("")
+        syncPromptTextSnapshot()
+        await executeCommandCenterCommand(item.value)
+      } catch (error) {
+        flashFooter(formatError(error), "error")
+      }
+      return
+    }
+    if (item.kind === "group") {
       if (!item.value.endsWith(" ")) {
         try {
           clearCommandCenter()
@@ -1656,16 +1705,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return deriveSessionStatusMode({
       daemonDisconnected: daemonDisconnected(),
       working: working(),
-      hasActivePrompt: Boolean(activePrompt()),
+      hasActivePrompt: anyPromptWork(),
       submitting: submitting(),
-      queueDepth: queueDepth(),
+      queueDepth: focusedQueueDepth(),
     })
   }
   const footerHint = () => {
     return deriveFooterHint({
       fatalError: fatalError(),
-      activePromptId: activePrompt()?.id ?? null,
-      queueDepth: queueDepth(),
+      activePromptId: focusedActivePrompt()?.id ?? null,
+      queueDepth: focusedQueueDepth(),
       statusLine: statusLine(),
     })
   }
@@ -2561,6 +2610,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setSubmitting(false)
       stopRequestInFlight = false
     }
+    syncVisibleActivityLabel()
     updateSessionChrome()
     if (
       transition.nextLayout === "split"
@@ -2611,10 +2661,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const syncVisibleActivityLabel = () => {
-    setActiveStatusLabel(deriveVisibleActivityLabel({
-      providerActivityLabel: providerActivityLabel(),
-      activeToolLabels: activeToolLabels.values(),
-    }))
+    setActiveStatusLabel(focusedActivityLabel())
   }
 
   const syncActiveToolLabel = (update: ToolTranscriptUpdate) => {
@@ -2921,6 +2968,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const badge = agentPaneStatusBadge(
         agent ?? null,
         agent ? agentActivityLabels()[agent.id] ?? null : null,
+        agent ? hasPromptWorkByAgent()[agent.id] ?? false : false,
         agent?.id === streamingAgentId(),
       )
       const focused = agent?.id === focusedAgentId()
@@ -3274,7 +3322,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     multiAgentResponseLayout()
     maxAgentsPerScreen()
     dimensions().width
-    sessionState().agents.length
+    responsePaneAgentSignature()
     focusedAgentId()
     applyResponseLayout()
   })
@@ -3295,13 +3343,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const refreshSplitPaneFocusRepaint = () => {
-    if (!splitAgentResponseMode()) {
-      return
-    }
-
     const refreshToken = ++pendingSplitPaneRefresh
     const refresh = () => {
-      if (refreshToken !== pendingSplitPaneRefresh || !splitAgentResponseMode()) {
+      if (refreshToken !== pendingSplitPaneRefresh) {
         return
       }
       applyResponseLayout()
@@ -3337,6 +3381,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             responseLayout: multiAgentResponseLayout(),
             sessionStatusMode: sessionStatusMode(),
             hotkeyToggleLabel: HOTKEY_TOGGLE_LABEL,
+            focusedHasPromptWork: agentHasPromptWork(sessionState(), focusedAgentId()),
           })
         : SESSION_NEW_FOOTER_HINT,
       theme.textMuted,
@@ -3831,6 +3876,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ?.map((entry) => ({ ...entry })) ?? [],
       nextPaneState.visibleAgentId,
     )
+    applyResponseLayout()
     if (splitAgentResponseMode()) {
       for (const agentId of splitPaneAuxiliaryAgentIds(
         session.agents,
@@ -4635,9 +4681,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           cycleAgentFocusRequest(sessionState().id),
         )
         const payload = expectVariant<{ agent: AgentInstance | null }>(response, "AgentFocusCycled")
+        const session = await getSessionState(client, sessionState().id)
+        if (session.active_provider_run_id) {
+          setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
+        } else {
+          setProviderRunState(null)
+        }
         return {
           agent: payload.agent,
-          session: await getSessionState(client, sessionState().id),
+          session,
         }
       })
     },
@@ -4675,9 +4727,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           focusAgentRequest(sessionState().id, agentId),
         )
         const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentFocused")
+        const session = await getSessionState(client, sessionState().id)
+        if (session.active_provider_run_id) {
+          setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
+        } else {
+          setProviderRunState(null)
+        }
         return {
           agent: payload.agent,
-          session: await getSessionState(client, sessionState().id),
+          session,
         }
       })
     },

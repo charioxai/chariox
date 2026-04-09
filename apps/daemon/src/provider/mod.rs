@@ -18,7 +18,10 @@ pub use codex_client::{
     ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
-pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
+pub use opencode::{
+    ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
+    resolve_opencode_executable,
+};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, OpenCodeSessionSnapshot,

@@ -55,6 +55,7 @@ export function reflectedDistance(index: number, length: number, frame: number):
 export function agentPaneStatusBadge(
   agent: SplitPaneFooterAgent | null,
   activeLabel: string | null,
+  hasPromptWork = false,
   isStreaming = false,
 ) {
   if (!agent) {
@@ -66,8 +67,8 @@ export function agentPaneStatusBadge(
   if (activeLabel) {
     return { label: getSessionStatusLabel("working", activeLabel), tone: "working" as const }
   }
-  if (agent.is_processing || agent.state === "Working" || isStreaming) {
-    return { label: "WORKING", tone: "working" as const }
+  if (hasPromptWork || agent.is_processing || agent.state === "Working" || isStreaming) {
+    return { label: getSessionStatusLabel("working", null), tone: "working" as const }
   }
   return { label: "IDLE", tone: "idle" as const }
 }
@@ -120,6 +121,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
   focusedAgentId: string | null
   streamingAgentId: string | null
   activityLabels: Record<string, string | null>
+  hasPromptWorkByAgent?: Record<string, boolean>
   catalog: ProviderCatalog
   activeRun?: SplitPaneFooterActiveRun | null
   fallbackModel?: string | null
@@ -131,6 +133,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
       : agentPaneStatusBadge(
         agent,
         agent ? options.activityLabels[agent.id] ?? null : null,
+        agent ? options.hasPromptWorkByAgent?.[agent.id] ?? false : false,
         agent?.id === options.streamingAgentId,
       )
     return {

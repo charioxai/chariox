@@ -33,6 +33,7 @@ impl DaemonApp {
         let mut session = self.sessions().get_session(session_id)?;
         let agents = self.agents().get_session_agents(session_id);
         session.set_agents(agents);
+        self.project_session_runtime_view(&mut session);
         Ok(session)
     }
 
@@ -102,10 +103,7 @@ impl DaemonApp {
                 Ok(LocalDaemonResponse::SessionResolved { session })
             }
             LocalDaemonRequest::GetSessionState(request) => {
-                let mut session = self.sessions().get_session(&request.session_id)?;
-                // Populate agents list from agent service
-                let agents = self.agents().get_session_agents(&request.session_id);
-                session.set_agents(agents);
+                let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::SessionState { session })
             }
             LocalDaemonRequest::GetProviderRun(request) => {
@@ -176,8 +174,7 @@ impl DaemonApp {
                         request.attachments,
                     )?
                 };
-                let mut session = self.sessions().get_session(&request.session_id)?;
-                session.set_agents(self.agents().get_session_agents(&request.session_id));
+                let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
             }
             LocalDaemonRequest::CompletePrompt(request) => {
@@ -205,8 +202,7 @@ impl DaemonApp {
                     request.values,
                     request.requires_idle,
                 )?;
-                let mut session = self.sessions().get_session(&session_id)?;
-                session.set_agents(self.agents().get_session_agents(&session_id));
+                let session = self.local_api_session_snapshot(&session_id)?;
                 Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
             }
             LocalDaemonRequest::ResizeTerminal(request) => {

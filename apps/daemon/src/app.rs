@@ -226,6 +226,10 @@ impl DaemonApp {
         let agent = self
             .agents
             .focus_agent(session_id, agent_id, &mut self.sessions)?;
+        if self.agents.get_session_agents(session_id).len() > 1 {
+            self.project_active_provider_run_for_agent(session_id, agent_id)?;
+            return Ok(agent);
+        }
         if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
             self.sync_active_provider_run_for_agent(session_id, agent_id)?;
         }
@@ -239,6 +243,10 @@ impl DaemonApp {
     ) -> Result<Option<AgentInstance>, DaemonError> {
         let agent = self.agents.cycle_focus(session_id, &mut self.sessions)?;
         if let Some(focused) = agent.as_ref() {
+            if self.agents.get_session_agents(session_id).len() > 1 {
+                self.project_active_provider_run_for_agent(session_id, focused.id())?;
+                return Ok(agent);
+            }
             if !self.should_defer_provider_run_sync_for_focus_change(session_id, focused.id())? {
                 self.sync_active_provider_run_for_agent(session_id, focused.id())?;
             }

@@ -228,4 +228,12 @@ test("shouldSubmitExactCommandCenterMatch submits leaf commands but not parent g
     kind: "group",
     value: "/workflow ",
   }, "/workflow"), false)
+
+  assert.equal(shouldSubmitExactCommandCenterMatch({
+    id: "agent-list",
+    label: "list",
+    description: "List all agents in the session",
+    kind: "command",
+    value: "/agent list",
+  }, "/agent list"), true)
 })

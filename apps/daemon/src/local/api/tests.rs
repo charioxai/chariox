@@ -9,6 +9,7 @@ use crate::session::{
     WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
 };
 use crate::terminal::TerminalOutputKind;
+use crate::transport::TransportService;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 
 use super::{
@@ -2015,7 +2016,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let default_run = match app
+    let _default_run = match app
         .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
             LaunchProviderRunRequest {
                 session_id: session.id().to_string(),
@@ -2115,7 +2116,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
     assert_eq!(
         session_state.active_provider_run_id(),
-        Some(default_run.id())
+        Some(focused_run.id())
     );
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2138,6 +2139,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let settle_deadline = Instant::now() + Duration::from_secs(2);
     loop {
+        TransportService::pump_active_prompts(&mut app);
         let _ = app
             .pump_terminal_output(session.id(), attachment.id())
             .expect("terminal output should keep pumping");
@@ -2145,7 +2147,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             .sessions()
             .get_session(session.id())
             .expect("session should still exist");
-        if session_state.active_prompt().is_none() {
+        if session_state.active_prompt_for_agent(default_agent.id()).is_none() {
             assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
             assert_eq!(
                 session_state.active_provider_run_id(),

@@ -262,7 +262,6 @@ function buildCollapsedTranscriptBlob(
   entry: TranscriptEntry,
   onToggleBlob: (entryId: number, collapsed: boolean) => void,
 ) {
-  body.gap = 1
   body.add(
     new TextRenderable(renderer, {
       content: [entry.blobTitle, entry.blobSummary].filter(Boolean).join("  "),
