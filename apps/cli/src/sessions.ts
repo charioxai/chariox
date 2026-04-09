@@ -22,6 +22,7 @@ export type SessionListEntry = {
   worktree_id: string
   status: string
   created_at_ms?: number
+  last_used_at_ms?: number | null
   attachment_ids: string[]
 }
 

@@ -243,6 +243,38 @@ export function setWorkflowNodeMaxTurnsRequest(
   }
 }
 
+export function setWorkflowNodeCanEmitIntermediateOutputRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  canEmitIntermediateWorkflowRunOutput: boolean,
+) {
+  return {
+    SetWorkflowNodeCanEmitIntermediateOutput: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      can_emit_intermediate_workflow_run_output: canEmitIntermediateWorkflowRunOutput,
+    },
+  }
+}
+
+export function setWorkflowNodeIntermediateOutputSchemaRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  intermediateOutputSchemaRef: string | null,
+) {
+  return {
+    SetWorkflowNodeIntermediateOutputSchema: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      intermediate_output_schema_ref: intermediateOutputSchemaRef,
+    },
+  }
+}
+
 export function addWorkflowEdgeRequest(
   sessionId: string,
   workflowRef: string,
@@ -332,6 +364,20 @@ export function setWorkflowRunOutputSchemaRequest(
       session_id: sessionId,
       workflow_ref: workflowRef,
       run_output_schema_ref: runOutputSchemaRef,
+    },
+  }
+}
+
+export function setWorkflowIntermediateOutputSchemaRequest(
+  sessionId: string,
+  workflowRef: string,
+  intermediateOutputSchemaRef: string | null,
+) {
+  return {
+    SetWorkflowIntermediateOutputSchema: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      intermediate_output_schema_ref: intermediateOutputSchemaRef,
     },
   }
 }

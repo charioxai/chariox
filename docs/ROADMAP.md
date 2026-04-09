@@ -232,6 +232,10 @@ Still pending in M4:
 - live-drill operational cleanup:
   - every reusable drill harness should own and stop the daemon it starts
   - reusable drill harnesses should end the sessions they create on exit
+- buffered endpoint-facing workflow outputs:
+  - intermediate workflow run outputs emitted by designated nodes
+  - workflow-level intermediate output schema with optional node-level override
+  - final and intermediate workflow outputs buffered at turn scope and only committed/forwarded when the turn completes
 - kernel/daemon naming cleanup:
   - evaluate renaming `scheduler` to `runtime` or equivalent so ownership boundaries read correctly
 

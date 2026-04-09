@@ -242,6 +242,16 @@ type CommandActionDeps = {
     nodeId: string,
     canCompleteWorkflowRun: boolean,
   ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeCanEmitIntermediateOutput?: (
+    workflowRef: string,
+    nodeId: string,
+    canEmitIntermediateWorkflowRunOutput: boolean,
+  ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeIntermediateOutputSchema?: (
+    workflowRef: string,
+    nodeId: string,
+    intermediateOutputSchemaRef: string | null,
+  ) => Promise<WorkflowNodePayload>
   setWorkflowNodeMaxTurns?: (
     workflowRef: string,
     nodeId: string,
@@ -250,6 +260,10 @@ type CommandActionDeps = {
   setWorkflowRunOutputSchema?: (
     workflowRef: string,
     runOutputSchemaRef: string | null,
+  ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
+  setWorkflowIntermediateOutputSchema?: (
+    workflowRef: string,
+    intermediateOutputSchemaRef: string | null,
   ) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
   openWorkflowNodeInstructionsEditor?: (workflowId: string, nodeId: string, draft: string) => void
   closeWorkflowNodeInstructionsEditor?: () => void
@@ -1006,6 +1020,37 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "intermediate-output-schema") {
+      const workflowRef = args[1]
+      const value = args[2]
+      if (!workflowRef) {
+        deps.flashFooter("usage: /workflow intermediate-output-schema <workflow-ref> [schema-ref|none]", "error")
+        return
+      }
+      const resolved = await deps.resolveWorkflow(workflowRef)
+      deps.upsertWorkflowDefinition(resolved.workflow)
+      if (value === undefined) {
+        deps.flashFooter(
+          `workflow ${resolved.workflow.id} intermediate-output-schema: ${resolved.workflow.intermediate_output_schema_ref ?? "none"}`,
+          "info",
+        )
+        return
+      }
+      if (!deps.setWorkflowIntermediateOutputSchema) {
+        deps.flashFooter("workflow runtime commands unavailable", "error")
+        return
+      }
+      const schemaRef = value.trim().toLowerCase() === "none" ? null : value
+      const payload = await deps.setWorkflowIntermediateOutputSchema(resolved.workflow.id, schemaRef)
+      deps.applySessionState(payload.session)
+      deps.upsertWorkflowDefinition(payload.workflow)
+      deps.flashFooter(
+        `workflow ${payload.workflow.id} intermediate-output-schema set to ${payload.workflow.intermediate_output_schema_ref ?? "none"}`,
+        "info",
+      )
+      return
+    }
+
     if (subcommand === "queue") {
       const action = args[1]?.trim().toLowerCase() ?? "list"
       if (action === "list") {
@@ -1298,6 +1343,47 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         )
         return
       }
+      if (action === "can-emit-intermediate-output") {
+        const nodeId = args[3]
+        const value = args[4]?.trim().toLowerCase()
+        if (!workflowRef || !nodeId || (value !== "true" && value !== "false")) {
+          deps.flashFooter("usage: /workflow node can-emit-intermediate-output <workflow-ref> <node-id> <true|false>", "error")
+          return
+        }
+        if (!deps.setWorkflowNodeCanEmitIntermediateOutput) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const payload = await deps.setWorkflowNodeCanEmitIntermediateOutput(workflowRef, nodeId, value === "true")
+        deps.applySessionState(payload.session)
+        deps.upsertWorkflowDefinition(payload.workflow)
+        deps.flashFooter(
+          `workflow node ${payload.node.id} can-emit-intermediate-output set to ${payload.node.can_emit_intermediate_run_output ? "true" : "false"}`,
+          "info",
+        )
+        return
+      }
+      if (action === "intermediate-output-schema") {
+        const nodeId = args[3]
+        const value = args[4]
+        if (!workflowRef || !nodeId || value === undefined) {
+          deps.flashFooter("usage: /workflow node intermediate-output-schema <workflow-ref> <node-id> <schema-ref|none>", "error")
+          return
+        }
+        if (!deps.setWorkflowNodeIntermediateOutputSchema) {
+          deps.flashFooter("workflow runtime commands unavailable", "error")
+          return
+        }
+        const schemaRef = value.trim().toLowerCase() === "none" ? null : value
+        const payload = await deps.setWorkflowNodeIntermediateOutputSchema(workflowRef, nodeId, schemaRef)
+        deps.applySessionState(payload.session)
+        deps.upsertWorkflowDefinition(payload.workflow)
+        deps.flashFooter(
+          `workflow node ${payload.node.id} intermediate-output-schema set to ${payload.node.intermediate_output_schema_ref ?? "none"}`,
+          "info",
+        )
+        return
+      }
       if (action === "max-turns") {
         const nodeId = args[3]
         const value = args[4]?.trim().toLowerCase()
@@ -1330,7 +1416,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow node add <workflow-ref> <agent-id> | remove <workflow-ref> <node-id> | instructions ... | can-complete-run <workflow-ref> <node-id> <true|false> | max-turns <workflow-ref> <node-id> <count|none>",
+        "usage: /workflow node add <workflow-ref> <agent-id> | remove <workflow-ref> <node-id> | instructions ... | can-complete-run <workflow-ref> <node-id> <true|false> | can-emit-intermediate-output <workflow-ref> <node-id> <true|false> | intermediate-output-schema <workflow-ref> <node-id> <schema-ref|none> | max-turns <workflow-ref> <node-id> <count|none>",
         "error",
       )
       return
@@ -1599,7 +1685,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow terminal [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema <workflow-ref> [schema-ref|none] | /workflow intermediate-output-schema <workflow-ref> [schema-ref|none] | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow terminal [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return

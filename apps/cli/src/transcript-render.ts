@@ -45,6 +45,12 @@ export function buildTranscriptEntryRenderable(
     marginBottom: 1,
     flexDirection: "column",
   })
+  let currentEntry = entry
+  let currentMode = transcriptRenderMode(entry)
+  let body: BoxRenderable | null = null
+  let border: BoxRenderable | null = null
+  let textRenderable: TextRenderable | null = null
+  let markdownRenderable: MarkdownRenderable | null = null
   let update: (nextEntry: TranscriptEntry) => void
 
   const render = (nextEntry: TranscriptEntry) => {
@@ -52,9 +58,13 @@ export function buildTranscriptEntryRenderable(
       wrapper.remove(child.id)
       child.destroyRecursively()
     }
+    body = null
+    border = null
+    textRenderable = null
+    markdownRenderable = null
 
     const bodyColor = transcriptBodyColor(nextEntry, surfaceTone)
-    const body = new BoxRenderable(renderer, {
+    body = new BoxRenderable(renderer, {
       paddingLeft: 1,
       paddingRight: 0,
       paddingTop: 1,
@@ -68,14 +78,22 @@ export function buildTranscriptEntryRenderable(
     } else if (nextEntry.role === "turn_toggle") {
       buildTurnToggleContent(renderer, body, nextEntry, onToggleTurn)
     } else {
-      buildExpandedTranscriptContent(renderer, body, nextEntry, transcriptSyntax, surfaceTone)
+      const expanded = buildExpandedTranscriptContent(
+        renderer,
+        body,
+        nextEntry,
+        transcriptSyntax,
+        surfaceTone,
+      )
+      textRenderable = expanded.textRenderable
+      markdownRenderable = expanded.markdownRenderable
       if (nextEntry.blobCollapsible) {
         body.add(buildBlobToggleLabel(renderer, "click to collapse", () => onToggleBlob(nextEntry.id, true)))
       }
     }
 
     if (transcriptUsesAccentBorder(nextEntry)) {
-      const border = new BoxRenderable(renderer, {
+      border = new BoxRenderable(renderer, {
         border: ["left"],
         customBorderChars: SplitBorder.customBorderChars,
         borderColor: transcriptAccent(nextEntry),
@@ -88,8 +106,43 @@ export function buildTranscriptEntryRenderable(
     wrapper.add(body)
   }
 
+  const fastUpdate = (nextEntry: TranscriptEntry) => {
+    if (currentMode === "text" && textRenderable) {
+      applyTranscriptTextContent(textRenderable, nextEntry)
+      textRenderable.fg = transcriptTextColor(nextEntry)
+      textRenderable.requestRender()
+      wrapper.requestRender()
+      return true
+    }
+
+    if (currentMode === "markdown" && markdownRenderable) {
+      markdownRenderable.content = normalizeMarkdownFenceInfoStrings(nextEntry.text)
+      markdownRenderable.requestRender()
+      wrapper.requestRender()
+      return true
+    }
+
+    return false
+  }
+
   render(entry)
-  update = render
+  update = (nextEntry: TranscriptEntry) => {
+    const nextMode = transcriptRenderMode(nextEntry)
+    const canFastUpdate =
+      nextMode === currentMode
+      && nextEntry.role === currentEntry.role
+      && nextEntry.emphasis === currentEntry.emphasis
+      && nextEntry.blobCollapsible === currentEntry.blobCollapsible
+      && nextEntry.blobCollapsed === currentEntry.blobCollapsed
+      && nextEntry.blobTitle === currentEntry.blobTitle
+      && nextEntry.blobSummary === currentEntry.blobSummary
+    currentEntry = nextEntry
+    if (canFastUpdate && fastUpdate(nextEntry)) {
+      return
+    }
+    currentMode = nextMode
+    render(nextEntry)
+  }
 
   return { entry, wrapper, update }
 }
@@ -155,7 +208,7 @@ function buildExpandedTranscriptContent(
   const patch = readTranscriptApplyPatch(entry)
   if (patch) {
     buildApplyPatchTranscriptContent(renderer, body, patch, transcriptSyntax, surfaceTone)
-    return
+    return { textRenderable: null, markdownRenderable: null }
   }
 
   if (shouldRenderTranscriptAsMarkdown(entry.role, entry.text)) {
@@ -168,7 +221,7 @@ function buildExpandedTranscriptContent(
     })
     body.add(markdown)
     markdown.requestRender()
-    return
+    return { textRenderable: null, markdownRenderable: markdown }
   }
 
   const text = new TextRenderable(renderer, {
@@ -177,6 +230,7 @@ function buildExpandedTranscriptContent(
   })
   applyTranscriptTextContent(text, entry)
   body.add(text)
+  return { textRenderable: text, markdownRenderable: null }
 }
 
 function buildTurnToggleContent(

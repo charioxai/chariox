@@ -19,6 +19,10 @@ fn default_workflow_node_can_complete_workflow_run() -> bool {
     false
 }
 
+fn default_workflow_node_can_emit_intermediate_run_output() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
     id: String,
@@ -302,6 +306,10 @@ pub struct WorkflowNodeDefinition {
     instructions: Option<String>,
     #[serde(default = "default_workflow_node_can_complete_workflow_run")]
     can_complete_workflow_run: bool,
+    #[serde(default = "default_workflow_node_can_emit_intermediate_run_output")]
+    can_emit_intermediate_run_output: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intermediate_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_turns: Option<u32>,
 }
@@ -313,6 +321,9 @@ impl WorkflowNodeDefinition {
             agent_id: agent_id.into(),
             instructions: None,
             can_complete_workflow_run: default_workflow_node_can_complete_workflow_run(),
+            can_emit_intermediate_run_output:
+                default_workflow_node_can_emit_intermediate_run_output(),
+            intermediate_output_schema_ref: None,
             max_turns: None,
         }
     }
@@ -339,6 +350,22 @@ impl WorkflowNodeDefinition {
 
     pub fn set_can_complete_workflow_run(&mut self, value: bool) {
         self.can_complete_workflow_run = value;
+    }
+
+    pub fn can_emit_intermediate_run_output(&self) -> bool {
+        self.can_emit_intermediate_run_output
+    }
+
+    pub fn set_can_emit_intermediate_run_output(&mut self, value: bool) {
+        self.can_emit_intermediate_run_output = value;
+    }
+
+    pub fn intermediate_output_schema_ref(&self) -> Option<&str> {
+        self.intermediate_output_schema_ref.as_deref()
+    }
+
+    pub fn set_intermediate_output_schema_ref(&mut self, value: Option<String>) {
+        self.intermediate_output_schema_ref = value;
     }
 
     pub fn max_turns(&self) -> Option<u32> {
@@ -586,6 +613,8 @@ pub struct WorkflowDefinition {
     flush_agent_context_before_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intermediate_output_schema_ref: Option<String>,
     nodes: Vec<WorkflowNodeDefinition>,
     edges: Vec<WorkflowEdgeDefinition>,
     endpoints: Vec<WorkflowEndpointDefinition>,
@@ -598,6 +627,7 @@ impl WorkflowDefinition {
             alias,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             run_output_schema_ref: None,
+            intermediate_output_schema_ref: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             endpoints: Vec::new(),
@@ -624,6 +654,10 @@ impl WorkflowDefinition {
         self.run_output_schema_ref.as_deref()
     }
 
+    pub fn intermediate_output_schema_ref(&self) -> Option<&str> {
+        self.intermediate_output_schema_ref.as_deref()
+    }
+
     pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
         &self.edges
     }
@@ -642,6 +676,10 @@ impl WorkflowDefinition {
 
     pub fn set_run_output_schema_ref(&mut self, value: Option<String>) {
         self.run_output_schema_ref = value;
+    }
+
+    pub fn set_intermediate_output_schema_ref(&mut self, value: Option<String>) {
+        self.intermediate_output_schema_ref = value;
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {
@@ -806,6 +844,10 @@ pub struct WorkflowTurnEnvelope {
     mailbox_content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff_payloads_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_intermediate_output: Option<WorkflowRunOutputSubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_final_output: Option<WorkflowRunOutputSubmission>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtime_tool_calls: Vec<WorkflowRuntimeToolCallEvent>,
     prepared_at_ms: u64,
@@ -830,6 +872,8 @@ impl WorkflowTurnEnvelope {
             rendered_prompt: Some(rendered_prompt),
             mailbox_content,
             handoff_payloads_json,
+            pending_intermediate_output: None,
+            pending_final_output: None,
             runtime_tool_calls: Vec::new(),
             prepared_at_ms: unix_epoch_ms(),
             dispatched_at_ms: None,
@@ -860,6 +904,25 @@ impl WorkflowTurnEnvelope {
 
     pub fn runtime_tool_calls(&self) -> &[WorkflowRuntimeToolCallEvent] {
         &self.runtime_tool_calls
+    }
+
+    pub fn pending_intermediate_output(&self) -> Option<&WorkflowRunOutputSubmission> {
+        self.pending_intermediate_output.as_ref()
+    }
+
+    pub fn pending_final_output(&self) -> Option<&WorkflowRunOutputSubmission> {
+        self.pending_final_output.as_ref()
+    }
+
+    pub fn set_pending_intermediate_output(
+        &mut self,
+        value: Option<WorkflowRunOutputSubmission>,
+    ) {
+        self.pending_intermediate_output = value;
+    }
+
+    pub fn set_pending_final_output(&mut self, value: Option<WorkflowRunOutputSubmission>) {
+        self.pending_final_output = value;
     }
 
     pub fn add_runtime_tool_call(&mut self, event: WorkflowRuntimeToolCallEvent) {
@@ -899,6 +962,96 @@ impl WorkflowTurnEnvelope {
         self.rendered_prompt = None;
         self.mailbox_content = None;
         self.handoff_payloads_json = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRunOutputSubmission {
+    output: WorkflowOutputPayload,
+    valid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    submitted_at_ms: u64,
+}
+
+impl WorkflowRunOutputSubmission {
+    pub fn new(output: WorkflowOutputPayload, valid: bool, warning: Option<String>) -> Self {
+        Self {
+            output,
+            valid,
+            warning,
+            submitted_at_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn output(&self) -> &WorkflowOutputPayload {
+        &self.output
+    }
+
+    pub fn valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
+
+    pub fn submitted_at_ms(&self) -> u64 {
+        self.submitted_at_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowIntermediateOutput {
+    id: String,
+    source_node_run_id: String,
+    output: WorkflowOutputPayload,
+    valid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    timestamp_ms: u64,
+}
+
+impl WorkflowIntermediateOutput {
+    pub fn new(
+        id: impl Into<String>,
+        source_node_run_id: impl Into<String>,
+        output: WorkflowOutputPayload,
+        valid: bool,
+        warning: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source_node_run_id: source_node_run_id.into(),
+            output,
+            valid,
+            warning,
+            timestamp_ms: unix_epoch_ms(),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn source_node_run_id(&self) -> &str {
+        &self.source_node_run_id
+    }
+
+    pub fn output(&self) -> &WorkflowOutputPayload {
+        &self.output
+    }
+
+    pub fn valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        self.timestamp_ms
     }
 }
 
@@ -1265,6 +1418,8 @@ pub struct WorkflowRun {
     messages: Vec<WorkflowMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     failure_events: Vec<WorkflowFailureEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    intermediate_outputs: Vec<WorkflowIntermediateOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     final_output: Option<WorkflowOutputPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1300,6 +1455,7 @@ impl WorkflowRun {
             node_runs,
             messages,
             failure_events: Vec::new(),
+            intermediate_outputs: Vec::new(),
             final_output: None,
             final_output_valid: None,
             final_output_warning: None,
@@ -1360,6 +1516,10 @@ impl WorkflowRun {
         &self.failure_events
     }
 
+    pub fn intermediate_outputs(&self) -> &[WorkflowIntermediateOutput] {
+        &self.intermediate_outputs
+    }
+
     pub fn final_output(&self) -> Option<&WorkflowOutputPayload> {
         self.final_output.as_ref()
     }
@@ -1414,6 +1574,14 @@ impl WorkflowRun {
     pub fn add_failure_event(&mut self, event: WorkflowFailureEvent) -> WorkflowFailureEvent {
         self.failure_events.push(event.clone());
         event
+    }
+
+    pub fn add_intermediate_output(
+        &mut self,
+        output: WorkflowIntermediateOutput,
+    ) -> WorkflowIntermediateOutput {
+        self.intermediate_outputs.push(output.clone());
+        output
     }
 
     pub fn retain_messages(&mut self, mut predicate: impl FnMut(&WorkflowMessage) -> bool) {

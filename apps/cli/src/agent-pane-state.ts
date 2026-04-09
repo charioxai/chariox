@@ -118,14 +118,7 @@ export async function refreshAgentPaneState<
     const historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     let nextResolvedCursor = historyPage.nextCursor
-    const desiredEntryCount = countRenderablePaneEntries(currentPaneEntries)
-    while (
-      (
-        (resolvedHistoryEntries.length > 0 && resolvedHistoryEntries[0]?.role !== "user")
-        || countRenderablePaneEntries(resolvedHistoryEntries) < desiredEntryCount
-      )
-      && nextResolvedCursor !== null
-    ) {
+    while (nextResolvedCursor !== null) {
       const olderPage = await options.loadHistoryPage(agent.id, nextResolvedCursor)
       resolvedHistoryEntries = options.stitchPrependedHistory(
         options.hydrateEntries(olderPage.entries),
@@ -162,7 +155,7 @@ export async function refreshAgentPaneState<
 
     if (agent.id === visibleAgentId) {
       visibleEntries = nextPaneEntries
-      visibleCursor = nextResolvedCursor
+      visibleCursor = null
     }
   }
 

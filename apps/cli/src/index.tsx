@@ -60,7 +60,7 @@ import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntr
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
-import { computeAnchoredScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { clampScrollTop, computeAnchoredScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
@@ -507,7 +507,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [submitting, setSubmitting] = createSignal(false)
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
-  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(initialBinding?.nextHistoryCursor ?? null)
+  const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(null)
   const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
   const [loadingHistory, setLoadingHistory] = createSignal(false)
@@ -2232,34 +2232,32 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!turnId) {
       return
     }
+    const currentEntries = entries.filter(Boolean)
     const toggleEntry = findVisibleTurnToggle(entries.filter(Boolean), turnId, toggleEntryId)
     if (toggleEntryId !== undefined && !toggleEntry) {
       return
     }
     const agentId = visibleTranscriptAgentId()
     const expanding = toggleEntry?.toggleMode === "expand"
-    const anchor = captureTranscriptScrollAnchor(transcriptScrollbox, transcriptRenderables, findTurnAnchorEntryId(turnId))
     setExpandedTurnState(agentId, turnId, expanding)
-    const nextEntries = applyTranscriptDisplayState(entries.filter(Boolean), expanding
+    const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
       ? [...expandedTurnIdsForAgent(agentId), turnId]
       : expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId))
     setEntries(reconcile(nextEntries))
     setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     persistVisibleTranscriptEntries(nextEntries)
-    rebuildTranscript()
-    restoreTranscriptScrollAnchor(anchor, transcriptRenderables)
+    reconcileMountedTranscript(currentEntries, nextEntries)
     retainPromptFocus()
   }
 
   const toggleBlob = (entryId: number, collapsed: boolean) => {
+    const currentEntries = entries.filter(Boolean)
     const agentId = visibleTranscriptAgentId()
-    const anchor = captureTranscriptScrollAnchor(transcriptScrollbox, transcriptRenderables, entryId)
-    const nextEntries = setTranscriptBlobCollapsed(entries.filter(Boolean), entryId, expandedTurnIdsForAgent(agentId), collapsed)
+    const nextEntries = setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed)
     setEntries(reconcile(nextEntries))
     setEntryCounter(nextEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     persistVisibleTranscriptEntries(nextEntries)
-    rebuildTranscript()
-    restoreTranscriptScrollAnchor(anchor, transcriptRenderables)
+    reconcileMountedTranscript(currentEntries, nextEntries)
     retainPromptFocus()
   }
 
@@ -2386,7 +2384,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       footerFlashTimeout = undefined
       setFooterFlash(null)
       updateSessionChrome()
-    }, 3_000)
+    }, 10_000)
   }
 
   const hotkeyDebug = (message: string) => {
@@ -2527,6 +2525,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setSubmitting(false)
     const nextEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
     let merged = false
+    let mergedEntryId: number | null = null
+    let mergedEntryText: string | null = null
+    let mergedEntrySourceText: string | undefined
 
     if (mergeKey) {
       for (let index = nextEntries.length - 1; index >= 0; index -= 1) {
@@ -2546,6 +2547,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           }
         }
         merged = true
+        mergedEntryId = candidate.id
+        mergedEntryText = candidate.text
+        mergedEntrySourceText = candidate.sourceText
         break
       }
     }
@@ -2555,7 +2559,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
         last.text += normalized
         merged = true
+        mergedEntryId = last.id
+        mergedEntryText = last.text
+        mergedEntrySourceText = last.sourceText
       }
+    }
+
+    if (merged && mergedEntryId !== null && mergedEntryText !== null) {
+      setEntries(reconcile(nextEntries))
+      persistVisibleTranscriptEntries(nextEntries)
+      updateTranscriptEntry(mergedEntryId, mergedEntryText, mergedEntrySourceText)
+      logVisibleTranscriptOutput(role, mergedEntryText, true, mergeKey)
+      enforceTranscriptRetention()
+      maybeScheduleConfirmedTurnCompletion()
+      return
     }
 
     if (!merged) {
@@ -3718,6 +3735,92 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const transcriptEntriesEqual = (left: TranscriptEntry, right: TranscriptEntry) => (
+    left.id === right.id
+    && left.role === right.role
+    && left.text === right.text
+    && left.sourceText === right.sourceText
+    && left.emphasis === right.emphasis
+    && left.hidden === right.hidden
+    && left.toggleMode === right.toggleMode
+    && left.blobCollapsible === right.blobCollapsible
+    && left.blobCollapsed === right.blobCollapsed
+    && left.blobTitle === right.blobTitle
+    && left.blobSummary === right.blobSummary
+  )
+
+  const transcriptEntriesShareMountedPrefix = (left: TranscriptEntry, right: TranscriptEntry) => {
+    if (left.role !== right.role) {
+      return false
+    }
+    if (left.role === "turn_toggle") {
+      return left.turnId === right.turnId
+        && left.toggleMode === right.toggleMode
+        && left.text === right.text
+    }
+    return transcriptEntriesEqual(left, right)
+  }
+
+  const reconcileMountedTranscript = (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => {
+    if (!transcriptScrollbox || workflowScreenActive() || nextEntries.length === 0) {
+      rebuildTranscript()
+      return
+    }
+
+    if (emptyTranscriptRenderable) {
+      transcriptScrollbox.remove(emptyTranscriptRenderable.id)
+      emptyTranscriptRenderable.destroyRecursively()
+      emptyTranscriptRenderable = undefined
+    }
+
+    const previousScrollTop = transcriptScrollbox.scrollTop
+    const previousVisibleEntries = currentEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
+    const nextVisibleEntries = nextEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
+
+    let preservedPrefixLength = 0
+    while (
+      preservedPrefixLength < previousVisibleEntries.length
+      && preservedPrefixLength < nextVisibleEntries.length
+      && transcriptEntriesShareMountedPrefix(
+        previousVisibleEntries[preservedPrefixLength]!,
+        nextVisibleEntries[preservedPrefixLength]!,
+      )
+    ) {
+      const previousEntry = previousVisibleEntries[preservedPrefixLength]!
+      const nextEntry = nextVisibleEntries[preservedPrefixLength]!
+      const renderable = transcriptRenderables.get(previousEntry.id)
+      if (renderable) {
+        if (previousEntry.id !== nextEntry.id) {
+          transcriptRenderables.delete(previousEntry.id)
+          transcriptRenderables.set(nextEntry.id, renderable)
+        }
+        renderable.entry = nextEntry
+      }
+      preservedPrefixLength += 1
+    }
+
+    for (const entry of previousVisibleEntries.slice(preservedPrefixLength)) {
+      const renderable = transcriptRenderables.get(entry.id)
+      if (!renderable) {
+        continue
+      }
+      transcriptScrollbox.remove(renderable.wrapper.id)
+      renderable.wrapper.destroyRecursively()
+      transcriptRenderables.delete(entry.id)
+    }
+
+    for (const entry of nextVisibleEntries.slice(preservedPrefixLength)) {
+      mountTranscriptEntry(entry, false)
+    }
+
+    transcriptScrollbox.scrollTo({
+      x: transcriptScrollbox.scrollLeft,
+      y: clampScrollTop(previousScrollTop, transcriptScrollbox.scrollHeight, transcriptScrollbox.height),
+    })
+    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
+    requestTranscriptRender()
+  }
+
   const updateTranscriptEntry = (entryId: number, text: string, sourceText?: string) => {
     const renderable = transcriptRenderables.get(entryId)
     if (!renderable) {
@@ -3785,17 +3888,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         pendingHistoryScrollRestore = 0
         return
       }
-      anchor.scrollbox.scrollTo({ x: anchor.scrollbox.scrollLeft, y: nextScrollTop })
-      anchor.scrollbox.requestRender()
-      if (anchor.scrollbox === transcriptScrollbox) {
-        lastTranscriptScrollTop = anchor.scrollbox.scrollTop
-      }
-      const closeEnough = Math.abs(anchor.scrollbox.scrollTop - nextScrollTop) <= 1
       const nextStableFrames = nextY === lastY ? stableFrames + 1 : 0
-      if ((closeEnough && nextStableFrames >= 1) || remainingAttempts <= 1) {
+      if (nextStableFrames >= 1 || remainingAttempts <= 1) {
+        anchor.scrollbox.scrollTo({ x: anchor.scrollbox.scrollLeft, y: nextScrollTop })
+        anchor.scrollbox.requestRender()
+        if (anchor.scrollbox === transcriptScrollbox) {
+          lastTranscriptScrollTop = anchor.scrollbox.scrollTop
+        }
         pendingHistoryScrollRestore = 0
         return
       }
+      anchor.scrollbox.requestRender()
       startTimeout(() => restoreScroll(remainingAttempts - 1, nextY, nextStableFrames), 16)
     }
 
@@ -4273,6 +4376,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowEdge,
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
     createWorkflowWatchdog,
@@ -4281,6 +4386,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowWatchdog,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
+    setWorkflowIntermediateOutputSchema,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,
@@ -4461,6 +4567,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowEdge,
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
     createWorkflowWatchdog,
@@ -4469,6 +4577,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     removeWorkflowWatchdog,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
+    setWorkflowIntermediateOutputSchema,
     listWorkflowRuns,
     cancelWorkflowRun,
     resumeWorkflowRun,

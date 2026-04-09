@@ -961,6 +961,14 @@ fn render_workflow_node_system_prompt(
 ) -> String {
     let turn_index_block =
         workflow_node_turn_index_block(app, session_id, workflow_run_id, node_id);
+    let intermediate_output_block = load_workflow_run_intermediate_output_prompt_template(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )
+    .filter(|_| workflow_node_can_emit_intermediate_output(app, session_id, workflow_run_id, node_id))
+    .unwrap_or_default();
     let completion_block = load_workflow_run_completion_prompt_template(
         app,
         session_id,
@@ -971,10 +979,14 @@ fn render_workflow_node_system_prompt(
     .unwrap_or_default();
     let last_turn_block =
         workflow_last_turn_notice_block(app, session_id, workflow_run_id, node_id);
-    if turn_index_block.is_empty() && completion_block.is_empty() && last_turn_block.is_empty() {
+    if turn_index_block.is_empty()
+        && intermediate_output_block.is_empty()
+        && completion_block.is_empty()
+        && last_turn_block.is_empty()
+    {
         return String::new();
     }
-    format!("{turn_index_block}{completion_block}{last_turn_block}")
+    format!("{turn_index_block}{intermediate_output_block}{completion_block}{last_turn_block}")
 }
 
 fn workflow_node_turn_index_block(
@@ -1055,6 +1067,50 @@ fn workflow_run_completion_prompt_template_path(
     )
 }
 
+fn load_workflow_run_intermediate_output_prompt_template(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<String> {
+    let path = workflow_run_intermediate_output_prompt_template_path(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    )?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(
+            &path,
+            default_workflow_run_intermediate_output_prompt_template(),
+        );
+    }
+    Some(
+        std::fs::read_to_string(&path).unwrap_or_else(|_| {
+            default_workflow_run_intermediate_output_prompt_template().to_string()
+        }),
+    )
+}
+
+fn workflow_run_intermediate_output_prompt_template_path(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<std::path::PathBuf> {
+    let base_directory =
+        workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
+    Some(
+        base_directory
+            .join(".arroba")
+            .join("system-prompts")
+            .join("workflow-run-intermediate-output.md"),
+    )
+}
+
 fn workflow_node_can_complete_workflow_run(
     app: &DaemonApp,
     session_id: &str,
@@ -1071,6 +1127,24 @@ fn workflow_node_can_complete_workflow_run(
         })
         .and_then(|workflow| workflow.node(node_id).cloned())
         .is_some_and(|node| node.can_complete_workflow_run())
+}
+
+fn workflow_node_can_emit_intermediate_output(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    node_id: &str,
+) -> bool {
+    app.sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .ok()
+        .and_then(|run| {
+            app.sessions()
+                .resolve_workflow_ref(session_id, run.workflow_id())
+                .ok()
+        })
+        .and_then(|workflow| workflow.node(node_id).cloned())
+        .is_some_and(|node| node.can_emit_intermediate_run_output())
 }
 
 fn workflow_last_turn_notice_block(
@@ -2047,6 +2121,10 @@ fn default_workflow_system_prompt_template() -> &'static str {
 
 fn default_workflow_run_completion_prompt_template() -> &'static str {
     "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_output`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n"
+}
+
+fn default_workflow_run_intermediate_output_prompt_template() -> &'static str {
+    "System node-level prompt:\nThis node is authorized to emit intermediate workflow run outputs.\nIf you want to send an intermediate output to the endpoint without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nIntermediate workflow run output does not terminate the workflow run. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream output validation rules still apply.\nDo not finalize the turn until `validate_and_submit_intermediate_workflow_run_output` returns `valid: true` with no warning.\n\n"
 }
 
 fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutputEnvelope> {

@@ -16,6 +16,7 @@ use super::{
     WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
+use super::types::{WorkflowIntermediateOutput, WorkflowRunOutputSubmission};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDispatch {
@@ -274,6 +275,33 @@ impl SessionService {
                     workflow_id: workflow_id.clone(),
                 })?;
         workflow.set_run_output_schema_ref(value);
+        Ok(workflow.clone())
+    }
+
+    pub fn set_workflow_intermediate_output_schema_ref(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        value: Option<String>,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        workflow.set_intermediate_output_schema_ref(value);
         Ok(workflow.clone())
     }
 
@@ -1008,13 +1036,66 @@ impl SessionService {
                 workflow_run_id: workflow_run_id.to_string(),
             }
         })?;
-        workflow_run.set_final_output(
-            Some(output),
-            Some(valid),
-            warning,
-            Some(workflow_node_run_id.to_string()),
-        );
-        workflow_run.set_status(WorkflowRunStatus::Completing);
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run.node_run_mut(workflow_node_run_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            }
+        })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.clone(),
+            reference: workflow_node_run_id.to_string(),
+            message: "workflow turn envelope was not prepared",
+        })?;
+        envelope.set_pending_final_output(Some(WorkflowRunOutputSubmission::new(
+            output, valid, warning,
+        )));
+        Ok(workflow_run.clone())
+    }
+
+    pub fn submit_workflow_run_intermediate_output(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        output: WorkflowOutputPayload,
+        valid: bool,
+        warning: Option<String>,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        let workflow_id = workflow_run.workflow_id().to_string();
+        let node_run = workflow_run.node_run_mut(workflow_node_run_id).ok_or_else(|| {
+            DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                reference: workflow_node_run_id.to_string(),
+                message: "workflow node run was not found",
+            }
+        })?;
+        let envelope = node_run.turn_envelope_mut().ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.clone(),
+            reference: workflow_node_run_id.to_string(),
+            message: "workflow turn envelope was not prepared",
+        })?;
+        envelope.set_pending_intermediate_output(Some(WorkflowRunOutputSubmission::new(
+            output, valid, warning,
+        )));
         Ok(workflow_run.clone())
     }
 
@@ -1303,7 +1384,6 @@ impl SessionService {
                 .collect::<Result<Vec<_>, DaemonError>>()?
         };
 
-        let next_workflow_node_run_number = &mut self.next_workflow_node_run_number;
         let session =
             self.store
                 .get_mut(session_id)
@@ -1327,6 +1407,12 @@ impl SessionService {
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
+        let pending_intermediate_output = node_run
+            .turn_envelope_mut()
+            .and_then(|envelope| envelope.pending_intermediate_output().cloned());
+        let pending_final_output = node_run
+            .turn_envelope_mut()
+            .and_then(|envelope| envelope.pending_final_output().cloned());
         node_run.set_status(WorkflowNodeRunStatus::Completed);
         node_run.set_summary(Some(
             completion
@@ -1335,7 +1421,33 @@ impl SessionService {
                 .unwrap_or_else(|| "completed".to_string()),
         ));
         node_run.set_completion(completion);
+        if let Some(envelope) = node_run.turn_envelope_mut() {
+            envelope.set_pending_intermediate_output(None);
+            envelope.set_pending_final_output(None);
+        }
         workflow_run.clear_active_node_run();
+        if let Some(submission) = pending_intermediate_output {
+            workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new(
+                format!(
+                    "workflow-intermediate-output-{}-{}",
+                    workflow_node_run_id,
+                    unix_epoch_ms()
+                ),
+                workflow_node_run_id.to_string(),
+                submission.output().clone(),
+                submission.valid(),
+                submission.warning().map(str::to_string),
+            ));
+        }
+        if let Some(submission) = pending_final_output {
+            workflow_run.set_final_output(
+                Some(submission.output().clone()),
+                Some(submission.valid()),
+                submission.warning().map(str::to_string),
+                Some(workflow_node_run_id.to_string()),
+            );
+            workflow_run.set_status(WorkflowRunStatus::Completing);
+        }
         for message in emitted_messages {
             workflow_run.add_message(message);
         }
@@ -1362,7 +1474,7 @@ impl SessionService {
         }
         let workflow_id = workflow_run.workflow_id().to_string();
         let dispatches = collect_ready_workflow_dispatches(
-            next_workflow_node_run_number,
+            &mut self.next_workflow_node_run_number,
             session_id,
             &workflow_id,
             &workflow,
@@ -1580,6 +1692,76 @@ impl SessionService {
                 node_id: node_id.to_string(),
             })?;
         node.set_can_complete_workflow_run(value);
+        Ok(node.clone())
+    }
+
+    pub fn set_workflow_node_can_emit_intermediate_output(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        node_id: &str,
+        value: bool,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        let node = workflow
+            .node_mut(node_id)
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                node_id: node_id.to_string(),
+            })?;
+        node.set_can_emit_intermediate_run_output(value);
+        Ok(node.clone())
+    }
+
+    pub fn set_workflow_node_intermediate_output_schema_ref(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        node_id: &str,
+        value: Option<String>,
+    ) -> Result<WorkflowNodeDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        let node = workflow
+            .node_mut(node_id)
+            .ok_or_else(|| DaemonError::WorkflowNodeNotFound {
+                session_id: session_id.to_string(),
+                workflow_id: workflow_id.clone(),
+                node_id: node_id.to_string(),
+            })?;
+        node.set_intermediate_output_schema_ref(value);
         Ok(node.clone())
     }
 
@@ -3527,11 +3709,43 @@ mod tests {
             updated_workflow.run_output_schema_ref(),
             Some("/tmp/workflow-run-output-schema.json")
         );
+        let updated_workflow = service
+            .set_workflow_intermediate_output_schema_ref(
+                session.id(),
+                workflow.id(),
+                Some("/tmp/workflow-intermediate-output-schema.json".to_string()),
+            )
+            .expect("workflow intermediate output schema should update");
+        assert_eq!(
+            updated_workflow.intermediate_output_schema_ref(),
+            Some("/tmp/workflow-intermediate-output-schema.json")
+        );
 
         let updated_node = service
             .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
             .expect("node completion setting should update");
         assert!(updated_node.can_complete_workflow_run());
+        let updated_node = service
+            .set_workflow_node_can_emit_intermediate_output(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                true,
+            )
+            .expect("node intermediate output capability should update");
+        assert!(updated_node.can_emit_intermediate_run_output());
+        let updated_node = service
+            .set_workflow_node_intermediate_output_schema_ref(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("/tmp/node-intermediate-output-schema.json".to_string()),
+            )
+            .expect("node intermediate output schema should update");
+        assert_eq!(
+            updated_node.intermediate_output_schema_ref(),
+            Some("/tmp/node-intermediate-output-schema.json")
+        );
 
         let updated_node = service
             .set_workflow_node_max_turns(session.id(), workflow.id(), node.id(), Some(3))

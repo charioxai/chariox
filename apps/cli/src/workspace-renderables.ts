@@ -233,20 +233,18 @@ export function buildNoSessionRenderable(
     )
   }
   content.add(menu)
-  content.add(
+  const helpTextContainer = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    marginLeft: menuAlignOffset + 1,
+  })
+  helpTextContainer.add(
     new TextRenderable(renderer, {
-      content: renderWaitingRoomKeys(state),
-      fg: theme.textMuted,
-      wrapMode: "none",
-    })
-  )
-  content.add(
-    new TextRenderable(renderer, {
-      content: `${SESSION_NEW_HELP_TEXT}\nUse ↑ ↓ to move through new-session options and saved sessions, ← → to adjust new-session choices, Enter to create or join.`,
+      content: SESSION_NEW_HELP_TEXT,
       fg: theme.textMuted,
       wrapMode: "word",
     })
   )
+  content.add(helpTextContainer)
   wrapper.add(content)
   return wrapper
 }
@@ -303,12 +301,4 @@ function centerTextToWidth(content: string, width: number) {
   const leftPadding = Math.floor(padding / 2)
   const rightPadding = padding - leftPadding
   return `${" ".repeat(leftPadding)}${content}${" ".repeat(rightPadding)}`
-}
-
-function renderWaitingRoomKeys(state: WaitingRoomState) {
-  const key = (label: string, pressed: boolean) => (pressed ? `[${label}]` : `<${label}>`)
-  return [
-    `        ${key("^", state.keyState.up)}`,
-    `${key("<", state.keyState.left)} ${key("v", state.keyState.down)} ${key(">", state.keyState.right)}`,
-  ].join("\n")
 }

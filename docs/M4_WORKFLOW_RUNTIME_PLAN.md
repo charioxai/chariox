@@ -274,6 +274,7 @@ Safety model:
 6. Add default-bounded `max_wakeups` to watchdogs, with explicit `null` for unbounded schedules.
 7. Add daemon-owned provider process inspection and safe teardown.
 8. Add cron syntax only after interval watchdogs are proven in live drills.
+9. Add buffered intermediate workflow outputs with workflow-level schema defaults and node-level schema overrides.
 
 ## Non-Goals For The First Slice
 

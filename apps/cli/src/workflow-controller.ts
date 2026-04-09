@@ -32,8 +32,11 @@ import {
   resumeWorkflowRunRequest,
   resolveWorkflowRequest,
   setWorkflowFlushContextRequest,
+  setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowLaunchPolicyRequest,
   setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowNodeCanEmitIntermediateOutputRequest,
+  setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
   setWorkflowRunOutputSchemaRequest,
   setWorkflowWatchdogEnabledRequest,
@@ -270,6 +273,44 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     )
   }
 
+  const setWorkflowNodeCanEmitIntermediateOutput = async (
+    workflowRef: string,
+    nodeId: string,
+    canEmitIntermediateWorkflowRunOutput: boolean,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowNodeCanEmitIntermediateOutputRequest(
+        deps.sessionState().id,
+        workflowRef,
+        nodeId,
+        canEmitIntermediateWorkflowRunOutput,
+      ),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeCanEmitIntermediateOutputUpdated",
+    )
+  }
+
+  const setWorkflowNodeIntermediateOutputSchema = async (
+    workflowRef: string,
+    nodeId: string,
+    intermediateOutputSchemaRef: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowNodeIntermediateOutputSchemaRequest(
+        deps.sessionState().id,
+        workflowRef,
+        nodeId,
+        intermediateOutputSchemaRef,
+      ),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeIntermediateOutputSchemaUpdated",
+    )
+  }
+
   const addWorkflowEdge = async (workflowRef: string, fromNodeId: string, toNodeId: string) => {
     const response = await deps.sendRequest(
       addWorkflowEdgeRequest(deps.sessionState().id, workflowRef, fromNodeId, toNodeId),
@@ -432,6 +473,27 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     return payload
   }
 
+  const setWorkflowIntermediateOutputSchema = async (
+    workflowRef: string,
+    intermediateOutputSchemaRef: string | null,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowIntermediateOutputSchemaRequest(
+        deps.sessionState().id,
+        workflowRef,
+        intermediateOutputSchemaRef,
+      ),
+    )
+    const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowIntermediateOutputSchemaUpdated",
+    )
+    deps.applySessionState(payload.session)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
   const listQueuedWorkflowLaunches = async () => {
     const response = await deps.sendRequest(
       listQueuedWorkflowLaunchesRequest(deps.sessionState().id),
@@ -526,6 +588,8 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     removeWorkflowNode,
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     addWorkflowEdge,
     removeWorkflowEdge,
@@ -536,6 +600,7 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
     removeWorkflowWatchdog,
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
+    setWorkflowIntermediateOutputSchema,
     setWorkflowLaunchPolicy,
     listQueuedWorkflowLaunches,
     removeQueuedWorkflowLaunch,

@@ -210,6 +210,7 @@ export type WorkflowDefinition = {
   alias: string | null
   flush_agent_context_before_run?: boolean
   run_output_schema_ref?: string | null
+  intermediate_output_schema_ref?: string | null
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]
   endpoints?: WorkflowEndpointDefinition[]
@@ -256,6 +257,8 @@ export type WorkflowNodeDefinition = {
   agent_id: string
   instructions?: string | null
   can_complete_workflow_run?: boolean
+  can_emit_intermediate_run_output?: boolean
+  intermediate_output_schema_ref?: string | null
   max_turns?: number | null
 }
 
@@ -331,6 +334,16 @@ export type WorkflowRun = {
   node_runs: WorkflowNodeRun[]
   messages: WorkflowMessage[]
   failure_events?: WorkflowFailureEvent[]
+  intermediate_outputs?: {
+    id: string
+    source_node_run_id: string
+    output: {
+      message: string
+    }
+    valid: boolean
+    warning?: string | null
+    timestamp_ms: number
+  }[]
   final_output?: {
     message: string
   } | null

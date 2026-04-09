@@ -13,6 +13,8 @@ pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
 pub const VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL: &str =
     "validate_and_submit_workflow_run_output";
+pub const VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL: &str =
+    "validate_and_submit_intermediate_workflow_run_output";
 pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
 pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
@@ -37,7 +39,9 @@ pub struct WorkflowRuntimeToolContext {
     pub delivery_token: Option<String>,
     pub allowed_output_schema_refs: Vec<String>,
     pub workflow_run_output_schema_ref: Option<String>,
+    pub workflow_intermediate_output_schema_ref: Option<String>,
     pub can_complete_workflow_run: bool,
+    pub can_emit_intermediate_workflow_run_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +82,13 @@ pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub delivery_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateAndSubmitIntermediateWorkflowRunOutputArgs {
+    pub workflow_output_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
 #[allow(dead_code)]
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
@@ -110,6 +121,19 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         RuntimeToolSpec {
             name: VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
             description: "Validate and submit the final workflow run output for the current workflow turn.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["workflow_output_json"],
+                "properties": {
+                    "workflow_output_json": {"type": "string"},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
+            description: "Validate and submit an intermediate workflow run output for the current workflow turn without terminating the run.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["workflow_output_json"],
@@ -277,6 +301,55 @@ pub fn dispatch_runtime_tool_call(
                 }),
             })
         }
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
+            if !call.context.can_emit_intermediate_workflow_run_output {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
+                    message: "current workflow node run is not allowed to emit intermediate workflow run output".to_string(),
+                });
+            }
+            let args = serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
+                call.arguments,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
+                message: format!("invalid tool arguments: {error}"),
+            })?;
+            let workflow_run_id = app
+                .sessions()
+                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
+                .id()
+                .to_string();
+            let warning = call
+                .context
+                .workflow_intermediate_output_schema_ref
+                .as_deref()
+                .and_then(|schema_ref| {
+                    validate_workflow_output_schema(schema_ref, &args.workflow_output_json).err()
+                });
+            let output = WorkflowOutputPayload::new(
+                args.workflow_output_json.clone(),
+                Vec::<WorkflowArtifactRef>::new(),
+            );
+            let workflow_run = app.sessions_mut().submit_workflow_run_intermediate_output(
+                &call.context.session_id,
+                &workflow_run_id,
+                &call.context.workflow_node_run_id,
+                output,
+                warning.is_none(),
+                warning.clone(),
+            )?;
+            Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "submitted": true,
+                    "valid": warning.is_none(),
+                    "warning": warning,
+                    "workflow_run_id": workflow_run.id(),
+                    "workflow_node_run_id": call.context.workflow_node_run_id,
+                }),
+            })
+        }
         WORKFLOW_CONSOLE_READ_TOOL => {
             let workflow_run = app.sessions().resolve_workflow_run_ref(
                 &call.context.session_id,
@@ -404,6 +477,13 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 .ok()
                 .and_then(|args| args.delivery_token)
         }
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
+            serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
+                arguments.clone(),
+            )
+            .ok()
+            .and_then(|args| args.delivery_token)
+        }
         WORKFLOW_CONSOLE_READ_TOOL | WORKFLOW_CONSOLE_WRITE_TOOL | WORKFLOW_CONSOLE_CLEAR_TOOL => {
             None
         }
@@ -421,7 +501,12 @@ pub fn dispatch_authenticated_runtime_tool_call(
         &workflow_run_ref,
         &workflow_node_run_id,
     )?;
-    let (workflow_run_output_schema_ref, can_complete_workflow_run) =
+    let (
+        workflow_run_output_schema_ref,
+        workflow_intermediate_output_schema_ref,
+        can_complete_workflow_run,
+        can_emit_intermediate_workflow_run_output,
+    ) =
         workflow_run_completion_context_for_active_workflow_turn(
             app,
             &session_id,
@@ -441,7 +526,9 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 delivery_token: None,
                 allowed_output_schema_refs,
                 workflow_run_output_schema_ref,
+                workflow_intermediate_output_schema_ref,
                 can_complete_workflow_run,
+                can_emit_intermediate_workflow_run_output,
             },
         },
     )
@@ -657,7 +744,7 @@ fn workflow_run_completion_context_for_active_workflow_turn(
     session_id: &str,
     workflow_run_ref: &str,
     workflow_node_run_id: &str,
-) -> Result<(Option<String>, bool), DaemonError> {
+) -> Result<(Option<String>, Option<String>, bool, bool), DaemonError> {
     let workflow_run = app
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
@@ -675,12 +762,18 @@ fn workflow_run_completion_context_for_active_workflow_turn(
             reference: workflow_node_run_id.to_string(),
             message: "workflow node run was not found while resolving completion scope",
         })?;
-    let can_complete = workflow
-        .node(node_id)
-        .is_some_and(|node| node.can_complete_workflow_run());
+    let node = workflow.node(node_id);
+    let can_complete = node.is_some_and(|node| node.can_complete_workflow_run());
+    let can_emit_intermediate = node.is_some_and(|node| node.can_emit_intermediate_run_output());
+    let intermediate_schema_ref = node
+        .and_then(|node| node.intermediate_output_schema_ref())
+        .map(str::to_string)
+        .or_else(|| workflow.intermediate_output_schema_ref().map(str::to_string));
     Ok((
         workflow.run_output_schema_ref().map(str::to_string),
+        intermediate_schema_ref,
         can_complete,
+        can_emit_intermediate,
     ))
 }
 
@@ -723,6 +816,7 @@ mod tests {
         dispatch_authenticated_runtime_tool_call, dispatch_runtime_tool_call,
         resolve_authenticated_workflow_turn, workflow_runtime_tool_specs, RuntimeToolCall,
         WorkflowRuntimeToolContext, ACK_WORKFLOW_TURN_TOOL,
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
         VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL, VALIDATE_WORKFLOW_OUTPUT_TOOL,
         WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
     };
@@ -730,13 +824,14 @@ mod tests {
     #[test]
     fn workflow_runtime_tool_specs_expose_ack_and_validation() {
         let specs = workflow_runtime_tool_specs();
-        assert_eq!(specs.len(), 6);
+        assert_eq!(specs.len(), 7);
         assert_eq!(specs[0].name, ACK_WORKFLOW_TURN_TOOL);
         assert_eq!(specs[1].name, VALIDATE_WORKFLOW_OUTPUT_TOOL);
         assert_eq!(specs[2].name, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL);
-        assert_eq!(specs[3].name, WORKFLOW_CONSOLE_READ_TOOL);
-        assert_eq!(specs[4].name, WORKFLOW_CONSOLE_WRITE_TOOL);
-        assert_eq!(specs[5].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
+        assert_eq!(specs[3].name, VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL);
+        assert_eq!(specs[4].name, WORKFLOW_CONSOLE_READ_TOOL);
+        assert_eq!(specs[5].name, WORKFLOW_CONSOLE_WRITE_TOOL);
+        assert_eq!(specs[6].name, WORKFLOW_CONSOLE_CLEAR_TOOL);
     }
 
     #[test]
@@ -767,7 +862,9 @@ mod tests {
                     delivery_token: None,
                     allowed_output_schema_refs: vec!["/not/allowed.json".to_string()],
                     workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: None,
                     can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: false,
                 },
             },
         )
@@ -901,7 +998,9 @@ mod tests {
                     delivery_token: Some(envelope.delivery_token().to_string()),
                     allowed_output_schema_refs: Vec::new(),
                     workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: None,
                     can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: false,
                 },
             },
         )
@@ -955,7 +1054,9 @@ mod tests {
                     delivery_token: None,
                     allowed_output_schema_refs: vec![schema_path.to_string_lossy().to_string()],
                     workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: None,
                     can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: false,
                 },
             },
         )
@@ -1097,7 +1198,9 @@ mod tests {
                     delivery_token: None,
                     allowed_output_schema_refs: Vec::new(),
                     workflow_run_output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
+                    workflow_intermediate_output_schema_ref: None,
                     can_complete_workflow_run: true,
+                    can_emit_intermediate_workflow_run_output: false,
                 },
             },
         )
@@ -1109,13 +1212,182 @@ mod tests {
             .sessions()
             .resolve_workflow_run_ref(session.id(), workflow_run.id())
             .expect("workflow run should still exist");
+        assert!(updated_run.final_output().is_none());
+        let updated_node_run = updated_run
+            .node_runs()
+            .iter()
+            .find(|candidate| candidate.id() == node_run.id())
+            .expect("updated node run should exist");
+        let pending = updated_node_run
+            .turn_envelope()
+            .and_then(|envelope| envelope.pending_final_output())
+            .expect("pending final output should exist");
+        assert_eq!(pending.output().message(), "{\"value\":\"bad\"}");
+        assert!(!pending.valid());
+        assert!(pending.warning().is_some());
+    }
+
+    #[test]
+    fn intermediate_workflow_run_output_is_buffered_until_turn_completion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "arroba-runtime-tools-intermediate-output-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&temp_dir);
+        let schema_path = temp_dir.join("workflow-intermediate-output-schema.json");
+        fs::write(
+            &schema_path,
+            r#"{"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}}"#,
+        )
+        .expect("schema fixture should be written");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = match app
+            .handle_local_request(LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new("workspace-intermediate-output", "worktree-intermediate-output"),
+            ))
+            .expect("session should exist")
+        {
+            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
+                (session, agent)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.attach(AttachRequest::new(
+            session.id(),
+            "client-intermediate-output",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+        let agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session.id().to_string(),
+                alias: Some("agent-intermediate-output".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("test-model".to_string()),
+                effort: None,
+                worktree_id: Some("worktree-intermediate-output".to_string()),
+            }))
+            .expect("agent should spawn")
+        {
+            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let workflow_id = match app
+            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some("wf-intermediate-output".to_string()),
+            }))
+            .expect("workflow should exist")
+        {
+            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
+                workflow.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_id = match app
+            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+                AddWorkflowNodeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    agent_id: agent_id.clone(),
+                },
+            ))
+            .expect("node should be added")
+        {
+            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
+                node.id().to_string()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
+        app.sessions_mut()
+            .set_workflow_node_can_emit_intermediate_output(session.id(), &workflow_id, &node_id, true)
+            .expect("node intermediate output capability should update");
+        app.sessions_mut()
+            .set_workflow_intermediate_output_schema_ref(
+                session.id(),
+                &workflow_id,
+                Some(schema_path.to_string_lossy().to_string()),
+            )
+            .expect("workflow intermediate output schema should update");
+        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
+            crate::local::SetWorkflowFlushContextRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                flush_agent_context_before_run: false,
+            },
+        ))
+        .expect("workflow flush context should update");
+        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
+                entry_node_id: node_id.clone(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("endpoint should be added");
+        let workflow_run = match app
+            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.clone(),
+                    endpoint_ref: "entry".to_string(),
+                    prompt: Some("start".to_string()),
+                },
+            ))
+            .expect("workflow should invoke")
+        {
+            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let node_run = workflow_run.node_runs().first().expect("node run should exist");
+
+        let result = dispatch_runtime_tool_call(
+            &mut app,
+            RuntimeToolCall {
+                tool_name: VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL.to_string(),
+                arguments: serde_json::json!({
+                    "workflow_output_json": "{\"value\":1842}"
+                }),
+                context: WorkflowRuntimeToolContext {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: workflow_run.id().to_string(),
+                    workflow_node_run_id: node_run.id().to_string(),
+                    delivery_token: None,
+                    allowed_output_schema_refs: Vec::new(),
+                    workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: Some(schema_path.to_string_lossy().to_string()),
+                    can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: true,
+                },
+            },
+        )
+        .expect("intermediate workflow run output submission should succeed");
+        assert_eq!(result.payload["submitted"], true);
+        let buffered_run = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should still exist");
+        assert!(buffered_run.intermediate_outputs().is_empty());
+
+        app.sessions_mut()
+            .complete_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                node_run.id(),
+                Some(crate::session::WorkflowCompletionSnapshot::new("done", None)),
+                None,
+            )
+            .expect("node completion should succeed");
+        let committed_run = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), workflow_run.id())
+            .expect("workflow run should still exist");
+        assert_eq!(committed_run.intermediate_outputs().len(), 1);
         assert_eq!(
-            updated_run.final_output().map(|output| output.message()),
-            Some("{\"value\":\"bad\"}")
+            committed_run.intermediate_outputs()[0].output().message(),
+            "{\"value\":1842}"
         );
-        assert_eq!(updated_run.final_output_valid(), Some(false));
-        assert!(updated_run.final_output_warning().is_some());
-        assert_eq!(updated_run.completed_by_node_run_id(), Some(node_run.id()));
     }
 
     #[test]

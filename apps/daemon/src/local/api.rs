@@ -336,6 +336,23 @@ pub struct SetWorkflowNodeCanCompleteRunRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeCanEmitIntermediateOutputRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub can_emit_intermediate_workflow_run_output: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeIntermediateOutputSchemaRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkflowNodeMaxTurnsRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -459,6 +476,14 @@ pub struct SetWorkflowRunOutputSchemaRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowIntermediateOutputSchemaRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkflowLaunchPolicyRequest {
     pub session_id: String,
     pub policy: WorkflowLaunchPolicy,
@@ -531,6 +556,8 @@ pub enum LocalDaemonRequest {
     RemoveWorkflowNode(RemoveWorkflowNodeRequest),
     UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest),
     SetWorkflowNodeCanCompleteRun(SetWorkflowNodeCanCompleteRunRequest),
+    SetWorkflowNodeCanEmitIntermediateOutput(SetWorkflowNodeCanEmitIntermediateOutputRequest),
+    SetWorkflowNodeIntermediateOutputSchema(SetWorkflowNodeIntermediateOutputSchemaRequest),
     SetWorkflowNodeMaxTurns(SetWorkflowNodeMaxTurnsRequest),
     AddWorkflowEdge(AddWorkflowEdgeRequest),
     RemoveWorkflowEdge(RemoveWorkflowEdgeRequest),
@@ -545,6 +572,7 @@ pub enum LocalDaemonRequest {
     RemoveWorkflowWatchdog(RemoveWorkflowWatchdogRequest),
     SetWorkflowFlushContext(SetWorkflowFlushContextRequest),
     SetWorkflowRunOutputSchema(SetWorkflowRunOutputSchemaRequest),
+    SetWorkflowIntermediateOutputSchema(SetWorkflowIntermediateOutputSchemaRequest),
     SetWorkflowLaunchPolicy(SetWorkflowLaunchPolicyRequest),
     ListQueuedWorkflowLaunches(ListQueuedWorkflowLaunchesRequest),
     RemoveQueuedWorkflowLaunch(RemoveQueuedWorkflowLaunchRequest),
@@ -724,6 +752,16 @@ pub enum LocalDaemonResponse {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
+    WorkflowNodeCanEmitIntermediateOutputUpdated {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeIntermediateOutputSchemaUpdated {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
     WorkflowNodeMaxTurnsUpdated {
         node: WorkflowNodeDefinition,
         workflow: WorkflowDefinition,
@@ -787,6 +825,10 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowRunOutputSchemaUpdated {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowIntermediateOutputSchemaUpdated {
         workflow: WorkflowDefinition,
         session: RuntimeSession,
     },
@@ -1271,6 +1313,44 @@ impl DaemonApp {
                     session,
                 })
             }
+            LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
+                let node = self
+                    .sessions_mut()
+                    .set_workflow_node_can_emit_intermediate_output(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.node_id,
+                        request.can_emit_intermediate_workflow_run_output,
+                    )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
+            LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
+                let node = self
+                    .sessions_mut()
+                    .set_workflow_node_intermediate_output_schema_ref(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.node_id,
+                        request.intermediate_output_schema_ref.clone(),
+                    )?;
+                let workflow = self
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                    node,
+                    workflow,
+                    session,
+                })
+            }
             LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
                 let node = self.sessions_mut().set_workflow_node_max_turns(
                     &request.session_id,
@@ -1480,6 +1560,20 @@ impl DaemonApp {
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
             }
+            LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
+                let workflow = self
+                    .sessions_mut()
+                    .set_workflow_intermediate_output_schema_ref(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        request.intermediate_output_schema_ref.clone(),
+                    )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated {
+                    workflow,
+                    session,
+                })
+            }
             LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
                 let session = self
                     .sessions_mut()
@@ -1532,7 +1626,9 @@ impl DaemonApp {
                             delivery_token: None,
                             allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
                             workflow_run_output_schema_ref: None,
+                            workflow_intermediate_output_schema_ref: None,
                             can_complete_workflow_run: false,
+                            can_emit_intermediate_workflow_run_output: false,
                         },
                     },
                 )?;
@@ -1560,7 +1656,9 @@ impl DaemonApp {
                             delivery_token: Some(request.delivery_token.clone()),
                             allowed_output_schema_refs: Vec::new(),
                             workflow_run_output_schema_ref: None,
+                            workflow_intermediate_output_schema_ref: None,
                             can_complete_workflow_run: false,
+                            can_emit_intermediate_workflow_run_output: false,
                         },
                     },
                 )?;
