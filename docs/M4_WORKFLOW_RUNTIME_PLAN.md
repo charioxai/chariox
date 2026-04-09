@@ -25,10 +25,14 @@ Already implemented:
 
 Not implemented yet:
 
+- daemon runtime internals have been modularized:
+  - `session/service` is split into focused modules
+  - `local/api` is split into module, types, and tests
+
 - explicit per-node policy overrides (`input_gate` / `output_release`)
 - richer run inspection/history UI beyond the current selected-workflow status view
 - full cron syntax for recurring schedules
-- daemon-owned provider process inspection/teardown
+- daemon-owned provider process inspection/teardown is landed
 
 ## Key Gaps To Resolve First
 

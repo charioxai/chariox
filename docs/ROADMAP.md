@@ -214,7 +214,7 @@ Still pending in M4:
   - file/workspace claim tracking
   - mergeability/integration validation
 - multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
-- daemon-owned provider runtime process ledger:
+- daemon-owned provider runtime process ledger is now landed:
   - tracked managed provider processes
   - tracked provider-native session ids per provider run
   - CLI `/provider processes` inspection
@@ -238,6 +238,9 @@ Still pending in M4:
   - final and intermediate workflow outputs buffered at turn scope and only committed/forwarded when the turn completes
 - kernel/daemon naming cleanup:
   - evaluate renaming `scheduler` to `runtime` or equivalent so ownership boundaries read correctly
+- daemon internal modularization is now landed:
+  - `SessionService` split into focused internal modules
+  - local API split into module + request/response type/test files
 
 The following workflow-runtime items are no longer pending in M4:
 
