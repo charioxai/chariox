@@ -22,9 +22,11 @@ export type UiPreferences = {
 
 export type SessionPreferences = {
   promptHistory?: string[]
+  promptDraft?: string
 }
 
 export const DEFAULT_MAX_AGENTS_PER_SCREEN = 6
+let preferencesSaveQueue: Promise<void> = Promise.resolve()
 
 export function resolveMaxAgentsPerScreen(value?: number | null) {
   if (!Number.isFinite(value)) {
@@ -63,11 +65,40 @@ export function mergeSessionPromptHistory(
   }
 }
 
+export function mergeSessionPromptState(
+  current: ArrobaPreferences,
+  sessionId: string,
+  next: {
+    promptHistory?: readonly string[]
+    promptDraft?: string | null
+  },
+): ArrobaPreferences {
+  const promptDraft = normalizePromptDraftEntry(next.promptDraft)
+  return {
+    ...current,
+    sessions: {
+      ...(current.sessions ?? {}),
+      [sessionId]: {
+        ...(current.sessions?.[sessionId] ?? {}),
+        ...(next.promptHistory ? { promptHistory: normalizePromptHistoryEntries(next.promptHistory) } : {}),
+        ...(next.promptDraft !== undefined ? { promptDraft: promptDraft ?? "" } : {}),
+      },
+    },
+  }
+}
+
 export function sessionPromptHistoryEntries(
   current: ArrobaPreferences,
   sessionId: string,
 ): string[] {
   return normalizePromptHistoryEntries(current.sessions?.[sessionId]?.promptHistory ?? [])
+}
+
+export function sessionPromptDraftEntry(
+  current: ArrobaPreferences,
+  sessionId: string,
+): string {
+  return normalizePromptDraftEntry(current.sessions?.[sessionId]?.promptDraft) ?? ""
 }
 
 export async function loadPreferences() {
@@ -101,6 +132,17 @@ export async function saveSessionPromptHistory(sessionId: string, entries: reado
   await savePreferences(mergeSessionPromptHistory(current, sessionId, entries))
 }
 
+export async function saveSessionPromptState(
+  sessionId: string,
+  next: {
+    promptHistory?: readonly string[]
+    promptDraft?: string | null
+  },
+) {
+  const current = await loadPreferences()
+  await savePreferences(mergeSessionPromptState(current, sessionId, next))
+}
+
 export function preferencesPath() {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) {
@@ -110,20 +152,27 @@ export function preferencesPath() {
 }
 
 async function savePreferences(next: ArrobaPreferences) {
-  const filePath = preferencesPath()
-  const current = await loadPreferences()
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(
-    filePath,
-    JSON.stringify(
-      {
-        ...current,
-        ...next,
-      } satisfies ArrobaPreferences,
-      null,
-      2,
-    ),
-  )
+  preferencesSaveQueue = preferencesSaveQueue
+    .catch(() => {
+      // Preserve the queue after prior save failures.
+    })
+    .then(async () => {
+      const filePath = preferencesPath()
+      const current = await loadPreferences()
+      await mkdir(path.dirname(filePath), { recursive: true })
+      await writeFile(
+        filePath,
+        JSON.stringify(
+          {
+            ...current,
+            ...next,
+          } satisfies ArrobaPreferences,
+          null,
+          2,
+        ),
+      )
+    })
+  await preferencesSaveQueue
 }
 
 function normalizePromptHistoryEntries(entries: readonly string[]) {
@@ -131,4 +180,13 @@ function normalizePromptHistoryEntries(entries: readonly string[]) {
     .filter((entry): entry is string => typeof entry === "string")
     .map((entry) => entry.trimEnd())
     .filter((entry) => entry.length > 0)
+}
+
+function normalizePromptDraftEntry(entry: unknown) {
+  if (typeof entry !== "string") {
+    return null
+  }
+  return entry
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
 }

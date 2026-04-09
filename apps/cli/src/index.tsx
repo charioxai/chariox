@@ -1726,6 +1726,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     pendingPromptDraftValue = ""
     await persistSessionPromptState(sessionId, { promptDraft })
   }
+  const persistablePromptDraft = () => {
+    if (promptHistoryDraft() !== null) {
+      return promptHistoryDraft() ?? ""
+    }
+    return promptInput?.plainText ?? promptTextSnapshot
+  }
   const schedulePromptDraftPersist = (sessionId: string, promptDraft: string) => {
     pendingPromptDraftSessionId = sessionId
     pendingPromptDraftValue = promptDraft
@@ -1830,6 +1836,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setPromptHistoryIndex(next.navigationIndex)
     setPromptHistoryDraft(next.navigationDraft)
     setPromptText(next.text)
+    const sessionId = attachmentState()?.session_id
+    if (sessionId) {
+      schedulePromptDraftPersist(sessionId, next.navigationDraft ?? next.text)
+    }
     retainPromptFocus()
     return true
   }
@@ -2219,7 +2229,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     if (promptHistoryIndex() !== null || promptHistoryDraft() !== null) {
       setPromptHistoryIndex(null)
-      setPromptHistoryDraft(null)
+      setPromptHistoryDraft(value)
     }
     const drop = extractDroppedPromptAttachments(promptTextSnapshot, value, process.cwd())
     if (!drop) {
@@ -3241,10 +3251,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (
       nextVisibleTranscriptAgentId
       && nextVisibleTranscriptAgentId !== mountedTranscriptAgentId
-      && agentPaneEntries()[nextVisibleTranscriptAgentId]
     ) {
       replaceTranscriptEntries(
-        agentPaneEntries()[nextVisibleTranscriptAgentId]!.map((entry) => ({ ...entry })),
+        (agentPaneEntries()[nextVisibleTranscriptAgentId] ?? []).map((entry) => ({ ...entry })),
         nextVisibleTranscriptAgentId,
       )
     }
@@ -4795,6 +4804,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           error: formatError(error),
         })
       })
+      const sessionId = attachmentState()?.session_id
+      if (sessionId) {
+        await persistSessionPromptState(sessionId, {
+          promptDraft: persistablePromptDraft(),
+        }).catch((error) => {
+          appLogger?.warn("failed to persist prompt draft during exit", {
+            session_id: sessionId,
+            error: formatError(error),
+          })
+        })
+      }
       const attachment = attachmentState()
       if (!attachment) {
         exitCleanupFailed = false
@@ -4836,6 +4856,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           error: formatError(error),
         })
       })
+      const sessionId = attachmentState()?.session_id
+      if (sessionId) {
+        await persistSessionPromptState(sessionId, {
+          promptDraft: persistablePromptDraft(),
+        }).catch((error) => {
+          appLogger?.warn("failed to persist prompt draft during waiting-room transition", {
+            session_id: sessionId,
+            error: formatError(error),
+          })
+        })
+      }
       const attachment = attachmentState()
       if (attachment) {
         if (shouldEndSessionOnCliExit(createdSessionState(), connectedClientCount())) {
@@ -5253,7 +5284,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!direction) {
       return false
     }
-    if (direction === "next" && promptHistoryIndex() === null) {
+    if (direction === "next" && promptHistoryIndex() === null && promptHistoryDraft() === null) {
       return false
     }
     const handled = navigatePromptHistoryInput(direction)

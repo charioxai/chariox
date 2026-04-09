@@ -94,6 +94,22 @@ test("navigatePromptHistory walks backward through prompt history and restores t
   })
 })
 
+test("navigatePromptHistory restores a saved draft even if navigation index was cleared", () => {
+  const restored = navigatePromptHistory({
+    entries: ["git status", "git diff"],
+    currentText: "git diff",
+    navigationIndex: null,
+    navigationDraft: "draft prompt",
+    direction: "next",
+  })
+
+  assert.deepEqual(restored, {
+    text: "draft prompt",
+    navigationIndex: null,
+    navigationDraft: null,
+  })
+})
+
 test("promptHistoryDirectionForKey yields to the command center and modifiers", () => {
   assert.equal(promptHistoryDirectionForKey({
     attached: true,

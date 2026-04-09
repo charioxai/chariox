@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  mergeSessionPromptState,
   mergeSessionPromptHistory,
   mergeUiPreferences,
+  sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
   type ArrobaPreferences,
 } from "./preferences.js"
@@ -86,4 +88,47 @@ test("sessionPromptHistoryEntries returns normalized prompt history for one sess
   assert.deepEqual(sessionPromptHistoryEntries(current, "session-1"), ["git status", "git diff"])
   assert.deepEqual(sessionPromptHistoryEntries(current, "session-2"), ["git log"])
   assert.deepEqual(sessionPromptHistoryEntries(current, "missing"), [])
+})
+
+test("mergeSessionPromptState stores prompt history and draft together", () => {
+  const current: ArrobaPreferences = {
+    sessions: {
+      "session-1": {
+        promptHistory: ["git status"],
+        promptDraft: "draft one",
+      },
+    },
+  }
+
+  assert.deepEqual(
+    mergeSessionPromptState(current, "session-1", {
+      promptHistory: ["git diff\n"],
+      promptDraft: "draft two",
+    }),
+    {
+      sessions: {
+        "session-1": {
+          promptHistory: ["git diff"],
+          promptDraft: "draft two",
+        },
+      },
+    } satisfies ArrobaPreferences,
+  )
+})
+
+test("sessionPromptDraftEntry returns normalized draft text for one session", () => {
+  const current: ArrobaPreferences = {
+    sessions: {
+      "session-1": {
+        promptDraft: "hello\r\nworld",
+      },
+      "session-2": {
+        promptDraft: "",
+      },
+    },
+  }
+
+  assert.equal(sessionPromptDraftEntry(current, "session-1"), "hello\nworld")
+  assert.equal(sessionPromptDraftEntry(current, "session-2"), "")
+  assert.equal(sessionPromptDraftEntry(current, "missing"), "")
 })

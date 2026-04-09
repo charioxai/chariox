@@ -91,6 +91,13 @@ export function navigatePromptHistory(
   }
 
   if (navigationIndex === null) {
+    if (navigationDraft !== null) {
+      return {
+        text: navigationDraft,
+        navigationIndex: null,
+        navigationDraft: null,
+      }
+    }
     return {
       text: currentText,
       navigationIndex,
