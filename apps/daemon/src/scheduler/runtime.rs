@@ -959,70 +959,107 @@ fn render_workflow_node_system_prompt(
     workflow_node_run_id: &str,
     node_id: &str,
 ) -> String {
-    let turn_index_block =
-        workflow_node_turn_index_block(app, session_id, workflow_run_id, node_id);
-    let intermediate_output_block = load_workflow_run_intermediate_output_prompt_template(
+    let context = workflow_node_prompt_context(app, session_id, workflow_run_id, node_id);
+    let fragments = workflow_node_prompt_fragments(
         app,
         session_id,
         workflow_run_id,
         workflow_node_run_id,
-    )
-    .filter(|_| {
-        workflow_node_can_emit_intermediate_output(app, session_id, workflow_run_id, node_id)
-    })
-    .unwrap_or_default();
-    let completion_block = load_workflow_run_completion_prompt_template(
-        app,
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-    )
-    .filter(|_| workflow_node_can_complete_workflow_run(app, session_id, workflow_run_id, node_id))
-    .unwrap_or_default();
-    let last_turn_block =
-        workflow_last_turn_notice_block(app, session_id, workflow_run_id, node_id);
-    if turn_index_block.is_empty()
-        && intermediate_output_block.is_empty()
-        && completion_block.is_empty()
-        && last_turn_block.is_empty()
-    {
+        &context,
+    );
+    if fragments.is_empty() {
         return String::new();
     }
-    format!("{turn_index_block}{intermediate_output_block}{completion_block}{last_turn_block}")
+    fragments.concat()
 }
 
-fn workflow_node_turn_index_block(
+#[derive(Debug, Clone)]
+struct WorkflowNodePromptContext {
+    turn_index: u32,
+    max_turns: Option<u32>,
+    can_complete_workflow_run: bool,
+    can_emit_intermediate_output: bool,
+}
+
+fn workflow_node_prompt_context(
     app: &DaemonApp,
     session_id: &str,
     workflow_run_id: &str,
     node_id: &str,
-) -> String {
+) -> Option<WorkflowNodePromptContext> {
     let Some(workflow_run) = app
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)
         .ok()
     else {
-        return String::new();
+        return None;
     };
     let Some(workflow) = app
         .sessions()
         .resolve_workflow_ref(session_id, workflow_run.workflow_id())
         .ok()
     else {
-        return String::new();
+        return None;
     };
     let Some(node) = workflow.node(node_id) else {
-        return String::new();
+        return None;
     };
     let turn_index = workflow_run
         .node_runs()
         .iter()
         .filter(|node_run| node_run.node_id() == node_id)
         .count() as u32;
+    Some(WorkflowNodePromptContext {
+        turn_index,
+        max_turns: node.max_turns(),
+        can_complete_workflow_run: node.can_complete_workflow_run(),
+        can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
+    })
+}
+
+fn workflow_node_prompt_fragments(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    context: &Option<WorkflowNodePromptContext>,
+) -> Vec<String> {
+    let mut fragments = Vec::new();
+    if let Some(context) = context {
+        fragments.push(workflow_node_turn_index_block(context));
+        if context.can_emit_intermediate_output {
+            if let Some(fragment) = load_workflow_run_intermediate_output_prompt_template(
+                app,
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            ) {
+                fragments.push(fragment);
+            }
+        }
+        if context.can_complete_workflow_run {
+            if let Some(fragment) = load_workflow_run_completion_prompt_template(
+                app,
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            ) {
+                fragments.push(fragment);
+            }
+        }
+        if let Some(fragment) = workflow_last_turn_notice_block(context) {
+            fragments.push(fragment);
+        }
+    }
+    fragments
+}
+
+fn workflow_node_turn_index_block(context: &WorkflowNodePromptContext) -> String {
     let mut block = format!(
-        "System node-level prompt:\nThis is turn {turn_index} for this node in the current workflow run.\n"
+        "System node-level prompt:\nThis is turn {} for this node in the current workflow run.\n",
+        context.turn_index
     );
-    if let Some(max_turns) = node.max_turns() {
+    if let Some(max_turns) = context.max_turns {
         block.push_str(&format!("- node max turns: {max_turns}\n"));
     }
     block.push('\n');
@@ -1113,79 +1150,14 @@ fn workflow_run_intermediate_output_prompt_template_path(
     )
 }
 
-fn workflow_node_can_complete_workflow_run(
-    app: &DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    node_id: &str,
-) -> bool {
-    app.sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-        .ok()
-        .and_then(|run| {
-            app.sessions()
-                .resolve_workflow_ref(session_id, run.workflow_id())
-                .ok()
-        })
-        .and_then(|workflow| workflow.node(node_id).cloned())
-        .is_some_and(|node| node.can_complete_workflow_run())
-}
-
-fn workflow_node_can_emit_intermediate_output(
-    app: &DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    node_id: &str,
-) -> bool {
-    app.sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-        .ok()
-        .and_then(|run| {
-            app.sessions()
-                .resolve_workflow_ref(session_id, run.workflow_id())
-                .ok()
-        })
-        .and_then(|workflow| workflow.node(node_id).cloned())
-        .is_some_and(|node| node.can_emit_intermediate_run_output())
-}
-
-fn workflow_last_turn_notice_block(
-    app: &DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    node_id: &str,
-) -> String {
-    let Some(workflow_run) = app
-        .sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run_id)
-        .ok()
-    else {
-        return String::new();
-    };
-    let Some(workflow) = app
-        .sessions()
-        .resolve_workflow_ref(session_id, workflow_run.workflow_id())
-        .ok()
-    else {
-        return String::new();
-    };
-    let Some(node) = workflow.node(node_id) else {
-        return String::new();
-    };
-    let Some(max_turns) = node.max_turns() else {
-        return String::new();
-    };
-    let turn_index = workflow_run
-        .node_runs()
-        .iter()
-        .filter(|node_run| node_run.node_id() == node_id)
-        .count() as u32;
-    if turn_index != max_turns {
-        return String::new();
+fn workflow_last_turn_notice_block(context: &WorkflowNodePromptContext) -> Option<String> {
+    let max_turns = context.max_turns?;
+    if context.turn_index != max_turns {
+        return None;
     }
-    format!(
+    Some(format!(
         "System node-level prompt:\nThis is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_output`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n"
-    )
+    , turn_index = context.turn_index))
 }
 
 fn workflow_outgoing_edge_contracts_block(
