@@ -206,7 +206,15 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         customBorderChars={PromptBorderChars}
       >
         <box
+          ref={props.onCommandCenterBoxRef}
+          position="absolute"
+          left={0}
+          right={0}
+          flexDirection="column"
           overflow="visible"
+        />
+        <box
+          overflow="hidden"
           paddingLeft={2}
           paddingRight={2}
           paddingTop={1}
@@ -215,27 +223,21 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           flexDirection="column"
           gap={1}
         >
-          <box
-            ref={props.onCommandCenterBoxRef}
-            position="absolute"
-            left={0}
-            right={0}
-            flexDirection="column"
-            overflow="visible"
-          />
-          <textarea
-            ref={props.onPromptInputRef}
-            placeholder={props.promptPlaceholder}
-            textColor={theme.text}
-            focusedTextColor={theme.text}
-            minHeight={1}
-            maxHeight={props.promptInputMaxHeight}
-            keyBindings={props.promptKeyBindings}
-            onKeyDown={props.onPromptKeyDown}
-            onContentChange={props.onPromptContentChange}
-            onSubmit={props.onPromptSubmit}
-          />
-          <box flexDirection="row">
+          <box overflow="hidden">
+            <textarea
+              ref={props.onPromptInputRef}
+              placeholder={props.promptPlaceholder}
+              textColor={theme.text}
+              focusedTextColor={theme.text}
+              minHeight={1}
+              maxHeight={props.promptInputMaxHeight}
+              keyBindings={props.promptKeyBindings}
+              onKeyDown={props.onPromptKeyDown}
+              onContentChange={props.onPromptContentChange}
+              onSubmit={props.onPromptSubmit}
+            />
+          </box>
+          <box flexDirection="row" overflow="hidden">
             <text ref={props.onPromptMetaProviderTextRef} fg={theme.textMuted}>{" "}</text>
             <text ref={props.onPromptMetaProviderDividerTextRef} fg={theme.textMuted}>{""}</text>
             <text ref={props.onPromptMetaModelTextRef} fg={theme.textMuted}>{""}</text>

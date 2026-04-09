@@ -3523,6 +3523,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const setAgentTranscriptEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
+    const previousPaneEntries = agentPaneEntries()[agentId] ?? []
     const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(agentId))
     setAgentPaneEntries((current) => ({
       ...current,
@@ -3538,7 +3539,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       true,
       maxAgentsPerScreen(),
     ).includes(agentId)) {
-      rebuildAuxiliaryAgentPane(agentId)
+      reconcileMountedAuxiliaryTranscript(agentId, previousPaneEntries, sanitizedEntries)
     }
     if (splitAgentResponseMode()) {
       scheduleResponsePaneRepaint()
@@ -3665,6 +3666,100 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       renderables.set(entry.id, renderable)
       scrollbox.add(renderable.wrapper)
     }
+    scrollbox.requestRender()
+  }
+
+  const mountAuxiliaryTranscriptEntry = (agentId: string, entry: TranscriptEntry, requestRender = true) => {
+    const scrollbox = agentTranscriptScrollboxes.get(agentId)
+    if (!scrollbox) {
+      return
+    }
+
+    const empty = agentEmptyTranscriptRenderables.get(agentId)
+    if (empty) {
+      scrollbox.remove(empty.id)
+      empty.destroyRecursively()
+      agentEmptyTranscriptRenderables.delete(agentId)
+    }
+
+    const renderable = buildTranscriptEntryRenderable(
+      renderer,
+      entry,
+      transcriptSyntax,
+      (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
+      (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
+      auxiliaryTranscriptSurfaceTone(agentId),
+    )
+    auxiliaryAgentPaneRenderables(agentId).set(entry.id, renderable)
+    scrollbox.add(renderable.wrapper)
+    if (requestRender) {
+      scrollbox.requestRender()
+    }
+  }
+
+  const reconcileMountedAuxiliaryTranscript = (
+    agentId: string,
+    currentEntries: TranscriptEntry[],
+    nextEntries: TranscriptEntry[],
+  ) => {
+    const scrollbox = agentTranscriptScrollboxes.get(agentId)
+    if (!scrollbox || nextEntries.length === 0) {
+      rebuildAuxiliaryAgentPane(agentId)
+      return
+    }
+
+    const empty = agentEmptyTranscriptRenderables.get(agentId)
+    if (empty) {
+      scrollbox.remove(empty.id)
+      empty.destroyRecursively()
+      agentEmptyTranscriptRenderables.delete(agentId)
+    }
+
+    const renderables = auxiliaryAgentPaneRenderables(agentId)
+    const previousScrollTop = scrollbox.scrollTop
+    const previousVisibleEntries = currentEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
+    const nextVisibleEntries = nextEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
+
+    let preservedPrefixLength = 0
+    while (
+      preservedPrefixLength < previousVisibleEntries.length
+      && preservedPrefixLength < nextVisibleEntries.length
+      && transcriptEntriesShareMountedPrefix(
+        previousVisibleEntries[preservedPrefixLength]!,
+        nextVisibleEntries[preservedPrefixLength]!,
+      )
+    ) {
+      const previousEntry = previousVisibleEntries[preservedPrefixLength]!
+      const nextEntry = nextVisibleEntries[preservedPrefixLength]!
+      const renderable = renderables.get(previousEntry.id)
+      if (renderable) {
+        if (previousEntry.id !== nextEntry.id) {
+          renderables.delete(previousEntry.id)
+          renderables.set(nextEntry.id, renderable)
+        }
+        renderable.entry = nextEntry
+      }
+      preservedPrefixLength += 1
+    }
+
+    for (const entry of previousVisibleEntries.slice(preservedPrefixLength)) {
+      const renderable = renderables.get(entry.id)
+      if (!renderable) {
+        continue
+      }
+      scrollbox.remove(renderable.wrapper.id)
+      renderable.wrapper.destroyRecursively()
+      renderables.delete(entry.id)
+    }
+
+    for (const entry of nextVisibleEntries.slice(preservedPrefixLength)) {
+      mountAuxiliaryTranscriptEntry(agentId, entry, false)
+    }
+
+    scrollbox.scrollTo({
+      x: scrollbox.scrollLeft,
+      y: clampScrollTop(previousScrollTop, scrollbox.scrollHeight, scrollbox.height),
+    })
     scrollbox.requestRender()
   }
 
