@@ -3163,15 +3163,14 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
     let records_after_tool_only_completion = app
         .pump_provider_output(session.id(), run.id(), recipients)
         .expect("pump before followup output should succeed");
+    let output_after_tool_only_completion =
+        render_terminal_output(&records_after_tool_only_completion);
     let session_after_tool_only_completion = app
         .sessions()
         .get_session(session.id())
         .expect("session should still exist after tool-only completion");
-    let saw_followup_output = records_after_tool_only_completion.iter().any(|record| {
-        record.kind == TerminalOutputKind::ProviderOutput
-            && String::from_utf8_lossy(&record.bytes)
-                .contains("fixture response: tool activity should keep prompt alive")
-    });
+    let saw_followup_output = output_after_tool_only_completion
+        .contains("fixture response: tool activity should keep prompt alive");
     if !saw_followup_output {
         assert!(
             session_after_tool_only_completion.active_prompt().is_some(),
@@ -3180,22 +3179,39 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
     }
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let output = collect_provider_output_until(
-        &mut app,
-        session.id(),
-        run.id(),
-        recipients,
-        |output, app| {
-            output.contains("fixture response: tool activity should keep prompt alive")
-                && app
-                    .sessions()
+    let output = if saw_followup_output {
+        collect_provider_output_until(
+            &mut app,
+            session.id(),
+            run.id(),
+            recipients,
+            |_output, app| {
+                app.sessions()
                     .get_session(session.id())
                     .expect("session should still exist")
                     .active_prompt()
                     .is_none()
-        },
-    );
-    assert!(output.contains("fixture response: tool activity should keep prompt alive"));
+            },
+        )
+    } else {
+        collect_provider_output_until(
+            &mut app,
+            session.id(),
+            run.id(),
+            recipients,
+            |output, app| {
+                output.contains("fixture response: tool activity should keep prompt alive")
+                    && app
+                        .sessions()
+                        .get_session(session.id())
+                        .expect("session should still exist")
+                        .active_prompt()
+                        .is_none()
+            },
+        )
+    };
+    let combined_output = format!("{output_after_tool_only_completion}{output}");
+    assert!(combined_output.contains("fixture response: tool activity should keep prompt alive"));
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);

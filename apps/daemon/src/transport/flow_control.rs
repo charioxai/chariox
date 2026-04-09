@@ -4,6 +4,12 @@ use crate::app::{ActivePromptState, DaemonApp};
 use crate::error::DaemonError;
 use crate::session::PromptStatus;
 
+enum PromptSettlementAction {
+    Complete,
+    FinalizeCancellation,
+    ClearActivityOnly,
+}
+
 pub(crate) fn note_prompt_started(app: &mut DaemonApp, session_id: &str) {
     app.prompt_activity.insert(
         session_id.to_string(),
@@ -79,26 +85,28 @@ pub(crate) fn maybe_complete_active_prompt(
         return Ok(());
     }
 
-    if app
-        .sessions()
-        .get_session(session_id)?
-        .active_prompt()
-        .is_none()
-    {
-        clear_prompt_activity(app, session_id);
-        return Ok(());
-    }
-
-    if app
-        .sessions()
-        .get_session(session_id)?
-        .active_prompt()
-        .map(|prompt| prompt.status())
-        == Some(PromptStatus::Cancelling)
-    {
-        let _ = app.finalize_active_prompt_cancellation(session_id)?;
-    } else {
-        let _ = app.complete_active_prompt(session_id)?;
+    match prompt_settlement_action(app, session_id)? {
+        PromptSettlementAction::ClearActivityOnly => clear_prompt_activity(app, session_id),
+        PromptSettlementAction::FinalizeCancellation => {
+            let _ = app.finalize_active_prompt_cancellation(session_id)?;
+        }
+        PromptSettlementAction::Complete => {
+            let _ = app.complete_active_prompt(session_id)?;
+        }
     }
     Ok(())
+}
+
+fn prompt_settlement_action(
+    app: &DaemonApp,
+    session_id: &str,
+) -> Result<PromptSettlementAction, DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    let Some(prompt) = session.active_prompt() else {
+        return Ok(PromptSettlementAction::ClearActivityOnly);
+    };
+    if prompt.status() == PromptStatus::Cancelling {
+        return Ok(PromptSettlementAction::FinalizeCancellation);
+    }
+    Ok(PromptSettlementAction::Complete)
 }
