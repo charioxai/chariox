@@ -82,11 +82,10 @@ pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub delivery_token: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ValidateAndSubmitIntermediateWorkflowRunOutputArgs {
-    pub workflow_output_json: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_token: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowRunOutputSubmissionToolKind {
+    Final,
+    Intermediate,
 }
 
 #[allow(dead_code)]
@@ -251,105 +250,17 @@ pub fn dispatch_runtime_tool_call(
                 }),
             }
         }
-        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => {
-            if !call.context.can_complete_workflow_run {
-                return Err(DaemonError::LocalTransport {
-                    operation: "runtime_tool_validate_and_submit_workflow_run_output",
-                    message:
-                        "current workflow node run is not allowed to complete the workflow run"
-                            .to_string(),
-                });
-            }
-            let args =
-                serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(call.arguments)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "runtime_tool_validate_and_submit_workflow_run_output",
-                        message: format!("invalid tool arguments: {error}"),
-                    })?;
-            let workflow_run_id = app
-                .sessions()
-                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
-                .id()
-                .to_string();
-            let warning = call
-                .context
-                .workflow_run_output_schema_ref
-                .as_deref()
-                .and_then(|schema_ref| {
-                    validate_workflow_output_schema(schema_ref, &args.workflow_output_json).err()
-                });
-            let output = WorkflowOutputPayload::new(
-                args.workflow_output_json.clone(),
-                Vec::<WorkflowArtifactRef>::new(),
-            );
-            let workflow_run = app.sessions_mut().submit_workflow_run_final_output(
-                &call.context.session_id,
-                &workflow_run_id,
-                &call.context.workflow_node_run_id,
-                output,
-                warning.is_none(),
-                warning.clone(),
-            )?;
-            Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "submitted": true,
-                    "valid": warning.is_none(),
-                    "warning": warning,
-                    "workflow_run_id": workflow_run.id(),
-                    "workflow_node_run_id": call.context.workflow_node_run_id,
-                }),
-            })
-        }
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL => dispatch_workflow_run_output_submission(
+            app,
+            &call,
+            WorkflowRunOutputSubmissionToolKind::Final,
+        ),
         VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
-            if !call.context.can_emit_intermediate_workflow_run_output {
-                return Err(DaemonError::LocalTransport {
-                    operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
-                    message: "current workflow node run is not allowed to emit intermediate workflow run output".to_string(),
-                });
-            }
-            let args =
-                serde_json::from_value::<ValidateAndSubmitIntermediateWorkflowRunOutputArgs>(
-                    call.arguments,
-                )
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-            let workflow_run_id = app
-                .sessions()
-                .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
-                .id()
-                .to_string();
-            let warning = call
-                .context
-                .workflow_intermediate_output_schema_ref
-                .as_deref()
-                .and_then(|schema_ref| {
-                    validate_workflow_output_schema(schema_ref, &args.workflow_output_json).err()
-                });
-            let output = WorkflowOutputPayload::new(
-                args.workflow_output_json.clone(),
-                Vec::<WorkflowArtifactRef>::new(),
-            );
-            let workflow_run = app.sessions_mut().submit_workflow_run_intermediate_output(
-                &call.context.session_id,
-                &workflow_run_id,
-                &call.context.workflow_node_run_id,
-                output,
-                warning.is_none(),
-                warning.clone(),
-            )?;
-            Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "submitted": true,
-                    "valid": warning.is_none(),
-                    "warning": warning,
-                    "workflow_run_id": workflow_run.id(),
-                    "workflow_node_run_id": call.context.workflow_node_run_id,
-                }),
-            })
+            dispatch_workflow_run_output_submission(
+                app,
+                &call,
+                WorkflowRunOutputSubmissionToolKind::Intermediate,
+            )
         }
         WORKFLOW_CONSOLE_READ_TOOL => {
             let workflow_run = app.sessions().resolve_workflow_run_ref(
@@ -443,6 +354,117 @@ pub fn dispatch_runtime_tool_call(
     result
 }
 
+fn dispatch_workflow_run_output_submission(
+    app: &mut DaemonApp,
+    call: &RuntimeToolCall,
+    kind: WorkflowRunOutputSubmissionToolKind,
+) -> Result<RuntimeToolResult, DaemonError> {
+    enforce_workflow_run_output_submission_permission(call, kind)?;
+    let args =
+        serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(call.arguments.clone())
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: workflow_run_output_submission_operation(kind),
+                message: format!("invalid tool arguments: {error}"),
+            })?;
+    let workflow_run_id = app
+        .sessions()
+        .resolve_workflow_run_ref(&call.context.session_id, &call.context.workflow_run_ref)?
+        .id()
+        .to_string();
+    let warning =
+        workflow_run_output_submission_schema_ref(&call.context, kind).and_then(|schema_ref| {
+            validate_workflow_output_schema(schema_ref, &args.workflow_output_json).err()
+        });
+    let output =
+        WorkflowOutputPayload::new(args.workflow_output_json, Vec::<WorkflowArtifactRef>::new());
+    let workflow_run = match kind {
+        WorkflowRunOutputSubmissionToolKind::Final => {
+            app.sessions_mut().submit_workflow_run_final_output(
+                &call.context.session_id,
+                &workflow_run_id,
+                &call.context.workflow_node_run_id,
+                output,
+                warning.is_none(),
+                warning.clone(),
+            )?
+        }
+        WorkflowRunOutputSubmissionToolKind::Intermediate => {
+            app.sessions_mut().submit_workflow_run_intermediate_output(
+                &call.context.session_id,
+                &workflow_run_id,
+                &call.context.workflow_node_run_id,
+                output,
+                warning.is_none(),
+                warning.clone(),
+            )?
+        }
+    };
+    Ok(RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "submitted": true,
+            "valid": warning.is_none(),
+            "warning": warning,
+            "workflow_run_id": workflow_run.id(),
+            "workflow_node_run_id": call.context.workflow_node_run_id,
+        }),
+    })
+}
+
+fn enforce_workflow_run_output_submission_permission(
+    call: &RuntimeToolCall,
+    kind: WorkflowRunOutputSubmissionToolKind,
+) -> Result<(), DaemonError> {
+    let allowed = match kind {
+        WorkflowRunOutputSubmissionToolKind::Final => call.context.can_complete_workflow_run,
+        WorkflowRunOutputSubmissionToolKind::Intermediate => {
+            call.context.can_emit_intermediate_workflow_run_output
+        }
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: workflow_run_output_submission_operation(kind),
+        message: match kind {
+            WorkflowRunOutputSubmissionToolKind::Final => {
+                "current workflow node run is not allowed to complete the workflow run".to_string()
+            }
+            WorkflowRunOutputSubmissionToolKind::Intermediate => {
+                "current workflow node run is not allowed to emit intermediate workflow run output"
+                    .to_string()
+            }
+        },
+    })
+}
+
+fn workflow_run_output_submission_schema_ref<'a>(
+    context: &'a WorkflowRuntimeToolContext,
+    kind: WorkflowRunOutputSubmissionToolKind,
+) -> Option<&'a str> {
+    match kind {
+        WorkflowRunOutputSubmissionToolKind::Final => {
+            context.workflow_run_output_schema_ref.as_deref()
+        }
+        WorkflowRunOutputSubmissionToolKind::Intermediate => {
+            context.workflow_intermediate_output_schema_ref.as_deref()
+        }
+    }
+}
+
+fn workflow_run_output_submission_operation(
+    kind: WorkflowRunOutputSubmissionToolKind,
+) -> &'static str {
+    match kind {
+        WorkflowRunOutputSubmissionToolKind::Final => {
+            "runtime_tool_validate_and_submit_workflow_run_output"
+        }
+        WorkflowRunOutputSubmissionToolKind::Intermediate => {
+            "runtime_tool_validate_and_submit_intermediate_workflow_run_output"
+        }
+    }
+}
+
 pub fn dispatch_authenticated_runtime_tool_call(
     app: &mut DaemonApp,
     auth_token: &str,
@@ -478,11 +500,11 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 .ok()
                 .and_then(|args| args.delivery_token)
         }
-        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => serde_json::from_value::<
-            ValidateAndSubmitIntermediateWorkflowRunOutputArgs,
-        >(arguments.clone())
-        .ok()
-        .and_then(|args| args.delivery_token),
+        VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
+            serde_json::from_value::<ValidateAndSubmitWorkflowRunOutputArgs>(arguments.clone())
+                .ok()
+                .and_then(|args| args.delivery_token)
+        }
         WORKFLOW_CONSOLE_READ_TOOL | WORKFLOW_CONSOLE_WRITE_TOOL | WORKFLOW_CONSOLE_CLEAR_TOOL => {
             None
         }
@@ -811,7 +833,9 @@ mod tests {
         InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
         UpdateWorkflowNodeInstructionsRequest,
     };
-    use crate::session::{CreateSessionRequest, WorkflowTurnRuntimeState};
+    use crate::session::{
+        CreateSessionRequest, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
+    };
     use crate::{DaemonApp, DaemonConfig};
 
     use super::{
@@ -1225,7 +1249,9 @@ mod tests {
             .expect("updated node run should exist");
         let pending = updated_node_run
             .turn_envelope()
-            .and_then(|envelope| envelope.pending_final_output())
+            .and_then(|envelope| {
+                envelope.pending_output_submission(WorkflowTurnSubmissionKind::Final)
+            })
             .expect("pending final output should exist");
         assert_eq!(pending.output().message(), "{\"value\":\"bad\"}");
         assert!(!pending.valid());

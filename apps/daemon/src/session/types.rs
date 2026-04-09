@@ -845,9 +845,7 @@ pub struct WorkflowTurnEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff_payloads_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_intermediate_output: Option<WorkflowRunOutputSubmission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_final_output: Option<WorkflowRunOutputSubmission>,
+    pending_output_submissions: Option<WorkflowTurnOutputSubmissions>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtime_tool_calls: Vec<WorkflowRuntimeToolCallEvent>,
     prepared_at_ms: u64,
@@ -872,8 +870,7 @@ impl WorkflowTurnEnvelope {
             rendered_prompt: Some(rendered_prompt),
             mailbox_content,
             handoff_payloads_json,
-            pending_intermediate_output: None,
-            pending_final_output: None,
+            pending_output_submissions: None,
             runtime_tool_calls: Vec::new(),
             prepared_at_ms: unix_epoch_ms(),
             dispatched_at_ms: None,
@@ -906,20 +903,37 @@ impl WorkflowTurnEnvelope {
         &self.runtime_tool_calls
     }
 
-    pub fn pending_intermediate_output(&self) -> Option<&WorkflowRunOutputSubmission> {
-        self.pending_intermediate_output.as_ref()
+    pub fn pending_output_submissions(&self) -> Option<&WorkflowTurnOutputSubmissions> {
+        self.pending_output_submissions.as_ref()
     }
 
-    pub fn pending_final_output(&self) -> Option<&WorkflowRunOutputSubmission> {
-        self.pending_final_output.as_ref()
+    pub fn pending_output_submission(
+        &self,
+        kind: WorkflowTurnSubmissionKind,
+    ) -> Option<&WorkflowRunOutputSubmission> {
+        self.pending_output_submissions
+            .as_ref()
+            .and_then(|submissions| match kind {
+                WorkflowTurnSubmissionKind::Intermediate => submissions.intermediate(),
+                WorkflowTurnSubmissionKind::Final => submissions.final_output(),
+            })
     }
 
-    pub fn set_pending_intermediate_output(&mut self, value: Option<WorkflowRunOutputSubmission>) {
-        self.pending_intermediate_output = value;
-    }
-
-    pub fn set_pending_final_output(&mut self, value: Option<WorkflowRunOutputSubmission>) {
-        self.pending_final_output = value;
+    pub fn set_pending_output_submission(
+        &mut self,
+        kind: WorkflowTurnSubmissionKind,
+        value: Option<WorkflowRunOutputSubmission>,
+    ) {
+        if self.pending_output_submissions.is_none() && value.is_none() {
+            return;
+        }
+        let submissions = self
+            .pending_output_submissions
+            .get_or_insert_with(WorkflowTurnOutputSubmissions::new);
+        submissions.set(kind, value);
+        if submissions.intermediate().is_none() && submissions.final_output().is_none() {
+            self.pending_output_submissions = None;
+        }
     }
 
     pub fn add_runtime_tool_call(&mut self, event: WorkflowRuntimeToolCallEvent) {
@@ -995,6 +1009,49 @@ impl WorkflowRunOutputSubmission {
 
     pub fn submitted_at_ms(&self) -> u64 {
         self.submitted_at_ms
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTurnSubmissionKind {
+    Intermediate,
+    Final,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowTurnOutputSubmissions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intermediate: Option<WorkflowRunOutputSubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    final_output: Option<WorkflowRunOutputSubmission>,
+}
+
+impl WorkflowTurnOutputSubmissions {
+    pub fn new() -> Self {
+        Self {
+            intermediate: None,
+            final_output: None,
+        }
+    }
+
+    pub fn intermediate(&self) -> Option<&WorkflowRunOutputSubmission> {
+        self.intermediate.as_ref()
+    }
+
+    pub fn final_output(&self) -> Option<&WorkflowRunOutputSubmission> {
+        self.final_output.as_ref()
+    }
+
+    pub fn set(
+        &mut self,
+        kind: WorkflowTurnSubmissionKind,
+        submission: Option<WorkflowRunOutputSubmission>,
+    ) {
+        match kind {
+            WorkflowTurnSubmissionKind::Intermediate => self.intermediate = submission,
+            WorkflowTurnSubmissionKind::Final => self.final_output = submission,
+        }
     }
 }
 

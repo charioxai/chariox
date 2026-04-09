@@ -5,7 +5,9 @@ use crate::error::DaemonError;
 use jsonschema::JSONSchema;
 use serde_json::Value;
 
-use super::types::{WorkflowIntermediateOutput, WorkflowRunOutputSubmission};
+use super::types::{
+    WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
+};
 use super::{
     unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
     PromptSubmissionOutcome, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession,
@@ -1037,39 +1039,15 @@ impl SessionService {
         valid: bool,
         warning: Option<String>,
     ) -> Result<WorkflowRun, DaemonError> {
-        let session =
-            self.store
-                .get_mut(session_id)
-                .ok_or_else(|| DaemonError::SessionNotFound {
-                    session_id: session_id.to_string(),
-                })?;
-        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
-            DaemonError::WorkflowRunNotFound {
-                session_id: session_id.to_string(),
-                workflow_run_id: workflow_run_id.to_string(),
-            }
-        })?;
-        let workflow_id = workflow_run.workflow_id().to_string();
-        let node_run = workflow_run
-            .node_run_mut(workflow_node_run_id)
-            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-                reference: workflow_node_run_id.to_string(),
-                message: "workflow node run was not found",
-            })?;
-        let envelope = node_run.turn_envelope_mut().ok_or_else(|| {
-            DaemonError::InvalidWorkflowGraphReference {
-                session_id: session_id.to_string(),
-                workflow_id: workflow_id.clone(),
-                reference: workflow_node_run_id.to_string(),
-                message: "workflow turn envelope was not prepared",
-            }
-        })?;
-        envelope.set_pending_final_output(Some(WorkflowRunOutputSubmission::new(
-            output, valid, warning,
-        )));
-        Ok(workflow_run.clone())
+        self.submit_workflow_run_output_submission(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            WorkflowTurnSubmissionKind::Final,
+            output,
+            valid,
+            warning,
+        )
     }
 
     pub fn submit_workflow_run_intermediate_output(
@@ -1077,6 +1055,27 @@ impl SessionService {
         session_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
+        output: WorkflowOutputPayload,
+        valid: bool,
+        warning: Option<String>,
+    ) -> Result<WorkflowRun, DaemonError> {
+        self.submit_workflow_run_output_submission(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            WorkflowTurnSubmissionKind::Intermediate,
+            output,
+            valid,
+            warning,
+        )
+    }
+
+    fn submit_workflow_run_output_submission(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        submission_kind: WorkflowTurnSubmissionKind,
         output: WorkflowOutputPayload,
         valid: bool,
         warning: Option<String>,
@@ -1110,9 +1109,10 @@ impl SessionService {
                 message: "workflow turn envelope was not prepared",
             }
         })?;
-        envelope.set_pending_intermediate_output(Some(WorkflowRunOutputSubmission::new(
-            output, valid, warning,
-        )));
+        envelope.set_pending_output_submission(
+            submission_kind,
+            Some(WorkflowRunOutputSubmission::new(output, valid, warning)),
+        );
         Ok(workflow_run.clone())
     }
 
@@ -1544,15 +1544,19 @@ impl SessionService {
     fn take_pending_workflow_turn_outputs(
         envelope: Option<&mut WorkflowTurnEnvelope>,
     ) -> PendingWorkflowTurnOutputs {
-        let intermediate = envelope
-            .as_ref()
-            .and_then(|envelope| envelope.pending_intermediate_output().cloned());
-        let final_output = envelope
-            .as_ref()
-            .and_then(|envelope| envelope.pending_final_output().cloned());
+        let intermediate = envelope.as_ref().and_then(|envelope| {
+            envelope
+                .pending_output_submission(WorkflowTurnSubmissionKind::Intermediate)
+                .cloned()
+        });
+        let final_output = envelope.as_ref().and_then(|envelope| {
+            envelope
+                .pending_output_submission(WorkflowTurnSubmissionKind::Final)
+                .cloned()
+        });
         if let Some(envelope) = envelope {
-            envelope.set_pending_intermediate_output(None);
-            envelope.set_pending_final_output(None);
+            envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Intermediate, None);
+            envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Final, None);
         }
         PendingWorkflowTurnOutputs {
             intermediate,
