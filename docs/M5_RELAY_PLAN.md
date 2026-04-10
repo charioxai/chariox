@@ -13,6 +13,16 @@ The relay is:
 
 The open-source implementation must support self-hosted relay usage without depending on any external managed identity/discovery service.
 
+Mandatory privacy rule:
+
+- all user-generated payloads that cross the relay path must be session-scoped end-to-end encrypted
+- this includes:
+  - prompts
+  - workflow inputs and outputs
+  - transferred or attached artifacts
+- the relay must only handle opaque ciphertext plus the minimum routing/liveness metadata
+- this rule applies equally to self-hosted and later managed relay deployments
+
 ## Core Decisions
 
 - the relay is a separate Rust app, not part of the daemon or CLI process
@@ -30,6 +40,7 @@ The open-source implementation must support self-hosted relay usage without depe
 - one daemon uses one active relay connection at a time in v1
 - multiple relay endpoints may be configurable later, but simultaneous multi-relay presence is out of scope for the first slice
 - self-hosted relay mode uses static/shared credentials
+- self-hosted relay mode still requires end-to-end encrypted user payloads; trusted deployment ownership does not change the transport model
 - any later managed identity/discovery service remains outside this repository and must integrate cleanly with the same transport boundaries
 
 ## Non-Goals
@@ -167,6 +178,7 @@ Required runtime properties:
 - pushed event ids preserved end to end
 - reconnect/resubscribe behavior
 - liveness/heartbeat
+- relay-visible payloads limited to routing/liveness metadata and opaque encrypted user-content envelopes
 
 ## Delivery Order
 

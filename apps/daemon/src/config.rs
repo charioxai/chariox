@@ -1,13 +1,17 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::DaemonError;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
     pub daemon_id: String,
     pub host_machine_id: String,
+    pub daemon_alias: Option<String>,
     pub os_user: String,
     pub local_socket_path: PathBuf,
     pub kernel_websocket_host: String,
@@ -21,7 +25,11 @@ pub struct DaemonConfig {
 
 impl DaemonConfig {
     pub fn load_from_env() -> Self {
-        let daemon_id = env::var("ARROBA_DAEMON_ID").unwrap_or_else(|_| "daemon-local".to_string());
+        let runtime_identity = load_or_create_runtime_identity();
+        let daemon_id = env::var("ARROBA_DAEMON_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| runtime_identity.daemon_id.clone());
         Self {
             local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
                 .map(PathBuf::from)
@@ -52,7 +60,14 @@ impl DaemonConfig {
                 .unwrap_or_else(Self::default_session_history_root),
             daemon_id,
             host_machine_id: env::var("ARROBA_MACHINE_ID")
-                .unwrap_or_else(|_| "machine-local".to_string()),
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| runtime_identity.machine_id.clone()),
+            daemon_alias: env::var("ARROBA_DAEMON_ALIAS")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .or(runtime_identity.daemon_alias),
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
@@ -76,6 +91,7 @@ impl DaemonConfig {
             session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
+            daemon_alias: None,
             os_user: os_user.into(),
         }
     }
@@ -130,6 +146,10 @@ impl DaemonConfig {
         default_state_dir().join("sessions")
     }
 
+    pub fn default_runtime_identity_path() -> PathBuf {
+        default_state_dir().join("daemon").join("identity.json")
+    }
+
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
@@ -168,6 +188,44 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RuntimeIdentity {
+    daemon_id: String,
+    machine_id: String,
+    #[serde(default)]
+    daemon_alias: Option<String>,
+}
+
+fn load_or_create_runtime_identity() -> RuntimeIdentity {
+    let path = DaemonConfig::default_runtime_identity_path();
+    if let Ok(contents) = fs::read_to_string(&path) {
+        if let Ok(identity) = serde_json::from_str::<RuntimeIdentity>(&contents) {
+            if !identity.daemon_id.trim().is_empty() && !identity.machine_id.trim().is_empty() {
+                return identity;
+            }
+        }
+    }
+
+    let identity = RuntimeIdentity {
+        daemon_id: format!("daemon-{}", generate_identity_suffix()),
+        machine_id: format!("machine-{}", generate_identity_suffix()),
+        daemon_alias: None,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(contents) = serde_json::to_string_pretty(&identity) {
+        let _ = fs::write(&path, contents);
+    }
+    identity
+}
+
+fn generate_identity_suffix() -> String {
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn default_state_dir() -> PathBuf {
@@ -215,4 +273,30 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DaemonErro
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_tests_uses_fixed_runtime_identity() {
+        let config = DaemonConfig::for_tests();
+        assert_eq!(config.daemon_id, "daemon-test");
+        assert_eq!(config.host_machine_id, "machine-test");
+        assert_eq!(config.daemon_alias, None);
+    }
+
+    #[test]
+    fn generated_runtime_identity_has_expected_prefixes() {
+        let identity = RuntimeIdentity {
+            daemon_id: format!("daemon-{}", generate_identity_suffix()),
+            machine_id: format!("machine-{}", generate_identity_suffix()),
+            daemon_alias: None,
+        };
+        assert!(identity.daemon_id.starts_with("daemon-"));
+        assert!(identity.machine_id.starts_with("machine-"));
+        assert!(identity.daemon_id.len() > "daemon-".len());
+        assert!(identity.machine_id.len() > "machine-".len());
+    }
 }

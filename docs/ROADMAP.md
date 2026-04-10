@@ -305,6 +305,8 @@ Outcomes:
 - self-hosted relay mode for the open-source project:
   - static/shared credential configuration
   - explicit daemon targeting by id or alias
+- mandatory session-scoped end-to-end encryption for all user-generated remote payloads, including prompts, workflow payloads, and transferred artifacts
+- self-hosted relay deployments do not relax the end-to-end encryption requirement
 - narrow roadmap note only:
   - a separate service may later integrate with the relay for managed identity/discovery, but that service remains outside this repository and roadmap scope
 

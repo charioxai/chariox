@@ -70,6 +70,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Local-first execution: workspaces run on the user's machine.
 - Relay is transport, not authority: relay infrastructure may forward connections but must not become the authority for session/runtime state.
 - Directory is discovery, not relay: directory/discovery and relay/transport are separate concerns.
+- All user-generated remote payloads must be end-to-end encrypted: prompts, workflow payloads, and transferred artifacts must remain opaque to relay infrastructure, including self-hosted relay deployments.
 - Graceful degradation: a provider without structured control support must still work through raw PTY passthrough.
 - Cross-platform consistency: terminal behavior should be consistent across web, CLI, desktop, and mobile clients by following a shared terminal protocol/conformance profile.
 - OpenCode-first sequencing: v1 should finish the full local development loop around `opencode` before broadening supported provider families.

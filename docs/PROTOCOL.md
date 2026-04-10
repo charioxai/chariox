@@ -35,7 +35,11 @@ Target direction:
 - reserve `/...` as the Arroba command namespace
 - keep structured control surface intentionally small
 - isolate capability/control errors from terminal stream
-- ensure user-generated in-transit payloads are session-E2E encrypted on remote transport
+- ensure all user-generated in-transit payloads are session-E2E encrypted on remote transport, including prompts, workflow inputs/outputs, and transferred/attached artifacts
+- this requirement applies equally to:
+  - self-hosted relay deployments
+  - any later managed relay deployment
+- relay must only ever see opaque encrypted payloads plus the minimum metadata required for routing and liveness
 
 Current sequencing note:
 

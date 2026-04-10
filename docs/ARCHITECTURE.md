@@ -330,6 +330,8 @@ Current architectural interpretation:
 - daemon connections should be outbound from daemon to relay so the model works cleanly through NAT/firewall boundaries
 - one daemon should use one active relay connection at a time in v1, even if multiple relay endpoints can be configured
 - self-hosted relay mode must work without any external managed identity/discovery service
+- all user-generated payloads that cross relay boundaries must be session-scoped end-to-end encrypted, including prompts, workflow payloads, and transferred artifacts
+- this encryption requirement applies equally to self-hosted relay deployments; self-hosting does not relax the transport privacy model
 - the same CLI should support both:
   - local direct daemon connection
   - relay-mediated remote daemon connection
