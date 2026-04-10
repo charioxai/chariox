@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -9,12 +8,20 @@ pub enum RelayConnectionRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedRelayPayload {
+    pub sender_public_key: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonRegistration {
     pub auth_token: String,
     pub daemon_id: String,
     pub machine_id: String,
     #[serde(default)]
     pub daemon_alias: Option<String>,
+    pub public_key: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
@@ -49,24 +56,25 @@ pub enum RelayEnvelope {
     },
     ClientConnected {
         target: ClientTarget,
+        daemon_public_key: String,
     },
     ClientRequest {
         request_id: String,
         target: ClientTarget,
-        request: Value,
+        encrypted_request: EncryptedRelayPayload,
     },
     DaemonRequest {
         relay_request_id: String,
-        request: Value,
+        encrypted_request: EncryptedRelayPayload,
     },
     DaemonResponse {
         relay_request_id: String,
-        response: Option<Value>,
+        encrypted_response: Option<EncryptedRelayPayload>,
         error: Option<RelayError>,
     },
     ClientResponse {
         request_id: String,
-        response: Option<Value>,
+        encrypted_response: Option<EncryptedRelayPayload>,
         error: Option<RelayError>,
     },
     ClientSubscribe {
@@ -82,7 +90,7 @@ pub enum RelayEnvelope {
     DaemonEvent {
         subscription_id: String,
         event_id: String,
-        event: Value,
+        encrypted_event: EncryptedRelayPayload,
     },
     Close {
         reason: String,
@@ -101,11 +109,13 @@ mod tests {
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 daemon_alias: Some("mbp".to_string()),
+                public_key: "public-key".to_string(),
                 capabilities: vec!["kernel_ws".to_string()],
             },
         };
         let json = serde_json::to_string(&envelope).expect("envelope should serialize");
         assert!(json.contains("\"kind\":\"daemon_register\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
+        assert!(json.contains("\"public_key\":\"public-key\""));
     }
 }

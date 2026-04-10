@@ -102,9 +102,7 @@ impl RelayServer {
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
-                _ = &mut shutdown => {
-                    break;
-                }
+                _ = &mut shutdown => break,
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
                     let registry = Arc::clone(&self.registry);
@@ -179,13 +177,21 @@ async fn handle_connection(
                     }
                     RelayEnvelope::ClientConnect { auth_token, target } => {
                         validate_shared_token(shared_token.as_deref(), &auth_token)?;
-                        if resolve_target_daemon_id(&registry, &target).await.is_none() {
+                        let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
+                        else {
                             send_close(
                                 &outgoing_tx,
                                 "target daemon is not connected to relay".to_string(),
                             );
                             break;
-                        }
+                        };
+                        let daemon_public_key = {
+                            let guard = registry.read().await;
+                            guard
+                                .daemons
+                                .get(&daemon_id)
+                                .map(|registration| registration.public_key.clone())
+                        };
                         let mut guard = registry.write().await;
                         guard.peers.insert(
                             peer_addr,
@@ -195,12 +201,18 @@ async fn handle_connection(
                                 daemon_registration: None,
                             },
                         );
-                        send_envelope(&outgoing_tx, &RelayEnvelope::ClientConnected { target })?;
+                        send_envelope(
+                            &outgoing_tx,
+                            &RelayEnvelope::ClientConnected {
+                                target,
+                                daemon_public_key: daemon_public_key.unwrap_or_default(),
+                            },
+                        )?;
                     }
                     RelayEnvelope::ClientRequest {
                         request_id,
                         target,
-                        request,
+                        encrypted_request,
                     } => {
                         let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
                         else {
@@ -208,7 +220,7 @@ async fn handle_connection(
                                 &outgoing_tx,
                                 &RelayEnvelope::ClientResponse {
                                     request_id,
-                                    response: None,
+                                    encrypted_response: None,
                                     error: Some(relay_error(
                                         "target_not_connected",
                                         "target daemon is not connected to relay",
@@ -244,7 +256,7 @@ async fn handle_connection(
                                 &outgoing_tx,
                                 &RelayEnvelope::ClientResponse {
                                     request_id,
-                                    response: None,
+                                    encrypted_response: None,
                                     error: Some(relay_error(
                                         "target_not_connected",
                                         "target daemon is not connected to relay",
@@ -258,13 +270,13 @@ async fn handle_connection(
                             &daemon_sender,
                             &RelayEnvelope::DaemonRequest {
                                 relay_request_id,
-                                request,
+                                encrypted_request,
                             },
                         )?;
                     }
                     RelayEnvelope::DaemonResponse {
                         relay_request_id,
-                        response,
+                        encrypted_response,
                         error,
                     } => {
                         let client_target = {
@@ -282,7 +294,7 @@ async fn handle_connection(
                                 &client_sender,
                                 &RelayEnvelope::ClientResponse {
                                     request_id: client_request_id,
-                                    response,
+                                    encrypted_response,
                                     error,
                                 },
                             )?;
@@ -312,7 +324,7 @@ async fn handle_connection(
             &sender,
             &RelayEnvelope::ClientResponse {
                 request_id,
-                response: None,
+                encrypted_response: None,
                 error: Some(relay_error(
                     "target_disconnected",
                     "target daemon disconnected from relay",
@@ -487,6 +499,7 @@ mod tests {
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 daemon_alias: Some("mbp".to_string()),
+                public_key: "public-key".to_string(),
                 capabilities: vec!["kernel_ws".to_string()],
             },
         };

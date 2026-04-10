@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::DaemonError;
+use crate::transport::relay_crypto;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,8 @@ pub struct DaemonConfig {
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
+    pub relay_public_key: String,
+    pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
     pub os_user: String,
     pub local_socket_path: PathBuf,
@@ -79,6 +82,8 @@ impl DaemonConfig {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            relay_public_key: runtime_identity.relay_public_key,
+            relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
@@ -96,6 +101,9 @@ impl DaemonConfig {
         os_user: impl Into<String>,
     ) -> Self {
         let daemon_id = daemon_id.into();
+        let relay_private_key = relay_crypto::generate_private_key_base64();
+        let relay_public_key = relay_crypto::public_key_from_private_key_base64(&relay_private_key)
+            .unwrap_or_default();
         Self {
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
@@ -110,6 +118,8 @@ impl DaemonConfig {
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
+            relay_public_key,
+            relay_private_key,
             relay_heartbeat_ms: 5_000,
             os_user: os_user.into(),
         }
@@ -217,6 +227,8 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        validate_non_empty("relay_public_key", &self.relay_public_key)?;
+        validate_non_empty("relay_private_key", &self.relay_private_key)?;
         if self.relay_heartbeat_ms == 0 {
             return Err(DaemonError::InvalidConfig {
                 field: "relay_heartbeat_ms",
@@ -233,22 +245,33 @@ struct RuntimeIdentity {
     machine_id: String,
     #[serde(default)]
     daemon_alias: Option<String>,
+    relay_public_key: String,
+    relay_private_key: String,
 }
 
 fn load_or_create_runtime_identity() -> RuntimeIdentity {
     let path = DaemonConfig::default_runtime_identity_path();
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(identity) = serde_json::from_str::<RuntimeIdentity>(&contents) {
-            if !identity.daemon_id.trim().is_empty() && !identity.machine_id.trim().is_empty() {
+            if !identity.daemon_id.trim().is_empty()
+                && !identity.machine_id.trim().is_empty()
+                && !identity.relay_public_key.trim().is_empty()
+                && !identity.relay_private_key.trim().is_empty()
+            {
                 return identity;
             }
         }
     }
 
+    let relay_private_key = relay_crypto::generate_private_key_base64();
+    let relay_public_key =
+        relay_crypto::public_key_from_private_key_base64(&relay_private_key).unwrap_or_default();
     let identity = RuntimeIdentity {
         daemon_id: format!("daemon-{}", generate_identity_suffix()),
         machine_id: format!("machine-{}", generate_identity_suffix()),
         daemon_alias: None,
+        relay_public_key,
+        relay_private_key,
     };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -326,10 +349,15 @@ mod tests {
 
     #[test]
     fn generated_runtime_identity_has_expected_prefixes() {
+        let relay_private_key = relay_crypto::generate_private_key_base64();
+        let relay_public_key = relay_crypto::public_key_from_private_key_base64(&relay_private_key)
+            .expect("relay public key should derive");
         let identity = RuntimeIdentity {
             daemon_id: format!("daemon-{}", generate_identity_suffix()),
             machine_id: format!("machine-{}", generate_identity_suffix()),
             daemon_alias: None,
+            relay_public_key,
+            relay_private_key,
         };
         assert!(identity.daemon_id.starts_with("daemon-"));
         assert!(identity.machine_id.starts_with("machine-"));

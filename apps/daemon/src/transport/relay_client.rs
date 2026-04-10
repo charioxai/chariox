@@ -2,17 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{RelayEnvelope, RelayError};
+use arroba_relay::protocol::{EncryptedRelayPayload, RelayEnvelope, RelayError};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::LocalDaemonRequest;
+use crate::transport::relay_crypto;
 
 #[derive(Debug, Clone, Default)]
 pub struct RelayClientState {
@@ -134,14 +133,14 @@ where
     match envelope {
         RelayEnvelope::DaemonRequest {
             relay_request_id,
-            request,
+            encrypted_request,
         } => {
-            let relay_response = handle_daemon_request(app, request).await;
+            let relay_response = handle_daemon_request(app, encrypted_request).await;
             send_envelope(
                 socket,
                 &RelayEnvelope::DaemonResponse {
                     relay_request_id,
-                    response: relay_response.response,
+                    encrypted_response: relay_response.encrypted_response,
                     error: relay_response.error,
                 },
             )
@@ -158,30 +157,54 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct RelayRequestOutcome {
-    response: Option<Value>,
+    encrypted_response: Option<EncryptedRelayPayload>,
     error: Option<RelayError>,
 }
 
-async fn handle_daemon_request(app: &Arc<Mutex<DaemonApp>>, request: Value) -> RelayRequestOutcome {
-    let request = match serde_json::from_value::<LocalDaemonRequest>(request) {
-        Ok(request) => request,
-        Err(error) => {
-            return RelayRequestOutcome {
-                response: None,
-                error: Some(relay_error(
-                    "invalid_request",
-                    &format!("invalid relay request payload: {error}"),
-                    false,
-                )),
-            };
-        }
+async fn handle_daemon_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    encrypted_request: EncryptedRelayPayload,
+) -> RelayRequestOutcome {
+    let (request, client_public_key, daemon_private_key) = {
+        let app = app.lock().await;
+        let daemon_private_key = app.config().relay_private_key.clone();
+        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
+            &daemon_private_key,
+            &encrypted_request,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        let request = match serde_json::from_slice::<LocalDaemonRequest>(&decrypted.plaintext) {
+            Ok(request) => request,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        (request, decrypted.sender_public_key, daemon_private_key)
     };
 
     if !is_supported_relay_request(&request) {
         return RelayRequestOutcome {
-            response: None,
+            encrypted_response: None,
             error: Some(relay_error(
                 "unsupported_request",
                 "relay transport does not yet support this request type",
@@ -195,12 +218,41 @@ async fn handle_daemon_request(app: &Arc<Mutex<DaemonApp>>, request: Value) -> R
         app.handle_local_request(request)
     };
     match result {
-        Ok(response) => RelayRequestOutcome {
-            response: Some(serialize_local_response(response)),
-            error: None,
-        },
+        Ok(response) => {
+            let plaintext = match serde_json::to_vec(&response) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "relay_request_failed",
+                            &format!("failed to serialize relay response: {error}"),
+                            false,
+                        )),
+                    };
+                }
+            };
+            match relay_crypto::encrypt_payload_for_peer(
+                &daemon_private_key,
+                &client_public_key,
+                &plaintext,
+            ) {
+                Ok(encrypted_response) => RelayRequestOutcome {
+                    encrypted_response: Some(encrypted_response),
+                    error: None,
+                },
+                Err(error) => RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "relay_request_failed",
+                        &format!("failed to encrypt relay response: {error}"),
+                        false,
+                    )),
+                },
+            }
+        }
         Err(error) => RelayRequestOutcome {
-            response: None,
+            encrypted_response: None,
             error: Some(map_relay_error(&error)),
         },
     }
@@ -220,10 +272,6 @@ fn is_supported_relay_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetSessionState(_)
             | LocalDaemonRequest::AttachToSession(_)
     )
-}
-
-fn serialize_local_response(response: LocalDaemonResponse) -> Value {
-    serde_json::to_value(response).unwrap_or(Value::Null)
 }
 
 fn map_relay_error(error: &DaemonError) -> RelayError {
@@ -286,8 +334,11 @@ mod tests {
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::config::DaemonConfig;
-    use crate::local::{AttachToSessionRequest, GetSessionStateRequest, ListSessionsRequest};
+    use crate::local::{
+        AttachToSessionRequest, GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse,
+    };
     use crate::session::CreateSessionRequest;
+    use crate::transport::relay_crypto;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_connector_registers_with_relay() {
@@ -435,40 +486,45 @@ mod tests {
             },
         )
         .await;
-        expect_client_connected(&mut client_socket).await;
+        let daemon_public_key = expect_client_connected(&mut client_socket).await;
 
-        send_client_request(
+        let list_request_private_key = send_client_request(
             &mut client_socket,
             "list-1",
             &config.daemon_id,
+            &daemon_public_key,
             LocalDaemonRequest::ListSessions(ListSessionsRequest),
         )
         .await;
-        let list_response = expect_client_response(&mut client_socket, "list-1").await;
+        let list_response =
+            expect_client_response(&mut client_socket, "list-1", &list_request_private_key).await;
         assert!(matches!(
             list_response,
             LocalDaemonResponse::SessionsListed { sessions } if sessions.iter().any(|session| session.id() == created_session_id)
         ));
 
-        send_client_request(
+        let state_request_private_key = send_client_request(
             &mut client_socket,
             "state-1",
             &config.daemon_id,
+            &daemon_public_key,
             LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
                 session_id: created_session_id.clone(),
             }),
         )
         .await;
-        let state_response = expect_client_response(&mut client_socket, "state-1").await;
+        let state_response =
+            expect_client_response(&mut client_socket, "state-1", &state_request_private_key).await;
         assert!(matches!(
             state_response,
             LocalDaemonResponse::SessionState { session } if session.id() == created_session_id
         ));
 
-        send_client_request(
+        let attach_request_private_key = send_client_request(
             &mut client_socket,
             "attach-1",
             &config.daemon_id,
+            &daemon_public_key,
             LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
                 session_id: created_session_id.clone(),
                 client_id: "relay-client".to_string(),
@@ -476,7 +532,9 @@ mod tests {
             }),
         )
         .await;
-        let attach_response = expect_client_response(&mut client_socket, "attach-1").await;
+        let attach_response =
+            expect_client_response(&mut client_socket, "attach-1", &attach_request_private_key)
+                .await;
         assert!(matches!(
             attach_response,
             LocalDaemonResponse::SessionAttached { attachment } if attachment.session_id() == created_session_id
@@ -521,10 +579,20 @@ mod tests {
         socket: &mut tokio_tungstenite::WebSocketStream<S>,
         request_id: &str,
         daemon_id: &str,
+        daemon_public_key: &str,
         request: LocalDaemonRequest,
-    ) where
+    ) -> String
+    where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
+        let client_private_key = relay_crypto::generate_private_key_base64();
+        let plaintext = serde_json::to_vec(&request).expect("request should serialize");
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            &client_private_key,
+            daemon_public_key,
+            &plaintext,
+        )
+        .expect("request should encrypt");
         send_client_envelope(
             socket,
             &RelayEnvelope::ClientRequest {
@@ -533,13 +601,16 @@ mod tests {
                     daemon_id: Some(daemon_id.to_string()),
                     daemon_alias: None,
                 },
-                request: serde_json::to_value(request).expect("request should serialize"),
+                encrypted_request,
             },
         )
         .await;
+        client_private_key
     }
 
-    async fn expect_client_connected<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
+    async fn expect_client_connected<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    ) -> String
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
@@ -548,7 +619,9 @@ mod tests {
                 match serde_json::from_str::<RelayEnvelope>(&payload)
                     .expect("relay envelope should parse")
                 {
-                    RelayEnvelope::ClientConnected { .. } => {}
+                    RelayEnvelope::ClientConnected {
+                        daemon_public_key, ..
+                    } => daemon_public_key,
                     other => panic!("unexpected envelope: {other:?}"),
                 }
             }
@@ -559,6 +632,7 @@ mod tests {
     async fn expect_client_response<S>(
         socket: &mut tokio_tungstenite::WebSocketStream<S>,
         request_id: &str,
+        client_private_key: &str,
     ) -> LocalDaemonResponse
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -570,12 +644,19 @@ mod tests {
                 {
                     RelayEnvelope::ClientResponse {
                         request_id: response_request_id,
-                        response,
+                        encrypted_response,
                         error,
                     } => {
                         assert_eq!(response_request_id, request_id);
                         assert!(error.is_none(), "unexpected relay error: {error:?}");
-                        serde_json::from_value(response.expect("response payload should exist"))
+                        let encrypted_response =
+                            encrypted_response.expect("response payload should exist");
+                        let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                            client_private_key,
+                            &encrypted_response,
+                        )
+                        .expect("response should decrypt");
+                        serde_json::from_slice(&decrypted.plaintext)
                             .expect("local response should deserialize")
                     }
                     other => panic!("unexpected envelope: {other:?}"),

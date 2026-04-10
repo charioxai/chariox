@@ -1,5 +1,12 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import {
+  createCipheriv,
+  createDecipheriv,
+  createECDH,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto"
 import type { AddressInfo } from "node:net"
 import { once } from "node:events"
 
@@ -247,18 +254,28 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
       receivedFrames.push(frame)
 
       if (frame.kind === "client_connect") {
+        const daemon = createECDH("prime256v1")
+        const daemonPublicKey = daemon.generateKeys().toString("base64")
+        ;(socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon = daemon
         socket.send(JSON.stringify({
           kind: "client_connected",
           target: frame.target,
+          daemon_public_key: daemonPublicKey,
         }))
         return
       }
 
       if (frame.kind === "client_request") {
+        const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
+        const request = JSON.parse(decryptRelayPayload(daemon, frame.encrypted_request))
         socket.send(JSON.stringify({
           kind: "client_response",
           request_id: frame.request_id,
-          response: { ok: true, echoed: frame.request },
+          encrypted_response: encryptRelayPayload(
+            daemon,
+            frame.encrypted_request.sender_public_key,
+            Buffer.from(JSON.stringify({ ok: true, echoed: request }), "utf8"),
+          ),
           error: null,
         }))
       }
@@ -286,4 +303,44 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
   assert.equal(receivedFrames[1]?.kind, "client_request")
   assert.equal(receivedFrames[0]?.auth_token, "secret")
   assert.deepEqual(receivedFrames[0]?.target, { daemon_id: "daemon-1", daemon_alias: null })
+  assert.equal(typeof receivedFrames[1]?.encrypted_request?.ciphertext, "string")
+  assert.equal(receivedFrames[1]?.request, undefined)
 })
+
+const RELAY_NONCE_LEN = 12
+const RELAY_TAG_LEN = 16
+const RELAY_INFO = Buffer.from("arroba-relay-v1", "utf8")
+
+function encryptRelayPayload(
+  sender: ReturnType<typeof createECDH>,
+  peerPublicKeyBase64: string,
+  plaintext: Buffer,
+) {
+  const sharedSecret = sender.computeSecret(Buffer.from(peerPublicKeyBase64, "base64"))
+  const key = Buffer.from(hkdfSync("sha256", sharedSecret, Buffer.alloc(0), RELAY_INFO, 32))
+  const nonce = randomBytes(RELAY_NONCE_LEN)
+  const cipher = createCipheriv("aes-256-gcm", key, nonce)
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
+  return {
+    sender_public_key: sender.getPublicKey().toString("base64"),
+    nonce: nonce.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+  }
+}
+
+function decryptRelayPayload(
+  receiver: ReturnType<typeof createECDH>,
+  payload: { sender_public_key: string; nonce: string; ciphertext: string },
+) {
+  const sharedSecret = receiver.computeSecret(Buffer.from(payload.sender_public_key, "base64"))
+  const key = Buffer.from(hkdfSync("sha256", sharedSecret, Buffer.alloc(0), RELAY_INFO, 32))
+  const nonce = Buffer.from(payload.nonce, "base64")
+  assert.equal(nonce.length, RELAY_NONCE_LEN)
+  const ciphertext = Buffer.from(payload.ciphertext, "base64")
+  assert.equal(ciphertext.length >= RELAY_TAG_LEN, true)
+  const body = ciphertext.subarray(0, ciphertext.length - RELAY_TAG_LEN)
+  const tag = ciphertext.subarray(ciphertext.length - RELAY_TAG_LEN)
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce)
+  decipher.setAuthTag(tag)
+  return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8")
+}

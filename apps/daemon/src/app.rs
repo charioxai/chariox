@@ -889,6 +889,7 @@ impl DaemonApp {
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
             daemon_alias: self.config.daemon_alias.clone(),
+            public_key: self.config.relay_public_key.clone(),
             capabilities: vec![
                 "kernel_websocket".to_string(),
                 "relay_request_proxy".to_string(),
