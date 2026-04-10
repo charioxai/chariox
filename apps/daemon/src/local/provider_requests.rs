@@ -5,6 +5,7 @@ use crate::provider::{
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
     OpenCodeClient, OpenCodeProviderCatalog,
 };
+use arroba_relay::protocol::RelayMachinePresence;
 use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
 
@@ -81,11 +82,25 @@ impl DaemonApp {
             }
         }
 
-        let catalog =
+        let mut catalog =
             merge_provider_catalogs(catalogs).ok_or_else(|| DaemonError::LocalTransport {
                 operation: "get_provider_catalog",
                 message: "no provider catalog sources were reachable".to_string(),
             })?;
+        let remote_machines =
+            if self.config().relay_url.is_some() && self.config().relay_token.is_some() {
+                block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+                    self.config(),
+                ))
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        annotate_remote_machine_providers(
+            &mut catalog,
+            &remote_machines,
+            &self.config().host_machine_id,
+        );
         crate::logging::info_with_fields(
             "daemon.local",
             "Retrieved merged provider catalog",
@@ -94,6 +109,7 @@ impl DaemonApp {
                 "providers": catalog.all.iter().map(|p| serde_json::json!({
                     "id": &p.id,
                     "name": &p.name,
+                    "remote_machine_aliases": &p.remote_machine_aliases,
                     "model_count": p.models.len(),
                     "models": p.models.keys().collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
@@ -115,9 +131,9 @@ impl DaemonApp {
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let config = self.config().clone();
-        let machines = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))?;
+        let machines = block_on_relay_query(
+            crate::transport::relay_discovery::list_live_machines(&config),
+        )?;
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
 
@@ -235,4 +251,114 @@ fn merge_provider_catalogs(
         .all
         .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     Some(merged)
+}
+
+fn annotate_remote_machine_providers(
+    catalog: &mut OpenCodeProviderCatalog,
+    live_machines: &[RelayMachinePresence],
+    local_machine_id: &str,
+) {
+    for provider in &mut catalog.all {
+        provider.remote_machine_aliases =
+            remote_machine_aliases_for_provider(&provider.id, live_machines, local_machine_id);
+    }
+}
+
+fn remote_machine_aliases_for_provider(
+    provider_id: &str,
+    live_machines: &[RelayMachinePresence],
+    local_machine_id: &str,
+) -> Vec<String> {
+    let mut aliases = live_machines
+        .iter()
+        .filter(|machine| machine.machine_id != local_machine_id)
+        .filter(|machine| {
+            machine
+                .available_providers
+                .iter()
+                .any(|provider| provider == provider_id)
+        })
+        .map(|machine| {
+            machine
+                .machine_alias
+                .as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty())
+                .unwrap_or(machine.machine_id.as_str())
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::OpenCodeProviderInfo;
+
+    #[test]
+    fn annotates_remote_machine_provider_aliases_without_including_local_machine() {
+        let mut catalog = OpenCodeProviderCatalog {
+            all: vec![
+                OpenCodeProviderInfo {
+                    id: "codex".to_string(),
+                    name: "Codex".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: Default::default(),
+                },
+                OpenCodeProviderInfo {
+                    id: "opencode".to_string(),
+                    name: "OpenCode".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: Default::default(),
+                },
+            ],
+            default: Default::default(),
+            connected: vec!["codex".to_string(), "opencode".to_string()],
+        };
+        let live_machines = vec![
+            RelayMachinePresence {
+                machine_id: "machine-local".to_string(),
+                machine_alias: Some("home".to_string()),
+                kernel_count: 1,
+                available_providers: vec!["codex".to_string()],
+            },
+            RelayMachinePresence {
+                machine_id: "machine-remote-a".to_string(),
+                machine_alias: Some("builder-west".to_string()),
+                kernel_count: 1,
+                available_providers: vec!["codex".to_string(), "opencode".to_string()],
+            },
+            RelayMachinePresence {
+                machine_id: "machine-remote-b".to_string(),
+                machine_alias: None,
+                kernel_count: 1,
+                available_providers: vec!["codex".to_string()],
+            },
+        ];
+
+        annotate_remote_machine_providers(&mut catalog, &live_machines, "machine-local");
+
+        let codex = catalog
+            .all
+            .iter()
+            .find(|provider| provider.id == "codex")
+            .unwrap();
+        let opencode = catalog
+            .all
+            .iter()
+            .find(|provider| provider.id == "opencode")
+            .unwrap();
+
+        assert_eq!(
+            codex.remote_machine_aliases,
+            vec!["builder-west".to_string(), "machine-remote-b".to_string()]
+        );
+        assert_eq!(
+            opencode.remote_machine_aliases,
+            vec!["builder-west".to_string()]
+        );
+    }
 }

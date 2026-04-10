@@ -723,6 +723,7 @@ fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProviderCatalog
         all: vec![crate::provider::OpenCodeProviderInfo {
             id: "codex".to_string(),
             name: "Codex".to_string(),
+            remote_machine_aliases: Vec::new(),
             models: catalog_models,
         }],
         default,

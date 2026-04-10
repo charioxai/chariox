@@ -7,6 +7,7 @@ export type ProviderCatalog = {
 export type ProviderInfo = {
   id: string
   name: string
+  remote_machine_aliases?: string[]
   models: Record<string, ProviderModel>
 }
 
@@ -38,6 +39,7 @@ export function fallbackProviderCatalog() {
       {
         id: "codex",
         name: "Codex",
+        remote_machine_aliases: [],
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
@@ -55,6 +57,7 @@ export function fallbackProviderCatalog() {
       {
         id: "openai",
         name: "OpenAI",
+        remote_machine_aliases: [],
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
@@ -90,7 +93,7 @@ export function catalogModelOptions(catalog: ProviderCatalog, backendProviderId?
         .map((model) => ({
           id: `${provider.id}/${model.id}`,
           providerId: provider.id,
-          providerName: provider.name,
+          providerName: providerDisplayName(provider),
           label: model.name || model.id,
           variants: Object.keys(model.variants ?? {}),
         })),
@@ -101,6 +104,16 @@ export function catalogModelOptions(catalog: ProviderCatalog, backendProviderId?
       }
       return left.providerName.localeCompare(right.providerName)
     })
+}
+
+export function providerDisplayName(provider: ProviderInfo) {
+  const remoteAliases = (provider.remote_machine_aliases ?? [])
+    .map((alias) => alias.trim())
+    .filter(Boolean)
+  if (remoteAliases.length === 0) {
+    return provider.name
+  }
+  return `${provider.name} (${remoteAliases.join(", ")})`
 }
 
 export function selectConfiguredModel(

@@ -135,6 +135,14 @@ Responsibilities:
 - host workspace runtime files
 - later participate in registration and reachability metadata
 
+Remote-machine note:
+
+- a machine is a user-facing placement target
+- users choose a machine when spawning a remote agent; they do not need to choose a kernel in the common path
+- once spawned, a remote agent is bound to one selected worker kernel for its lifetime
+- provider availability is advertised from the worker kernel back through relay metadata
+- provider login remains local to the worker kernel; the home kernel consumes provider availability but does not proxy provider auth flows
+
 ### 3.3 Arroba Kernel
 
 The Arroba Kernel is the runtime authority for live workspace state on one machine/user context.
@@ -152,6 +160,12 @@ Responsibilities:
 - extension/MCP/runtime ownership
 - logging/root correlation metadata
 - workspace coordination to reduce edit/integration conflicts across top-level agents in the same workspace
+
+Remote-agent note:
+
+- a home kernel remains the only session authority even when some agents execute on remote machines
+- worker kernels host leased execution for those remote agents but do not become session authorities
+- from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
 
 ### 3.3.1 Internal Kernel Subsystems
 

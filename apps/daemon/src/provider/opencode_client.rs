@@ -259,6 +259,8 @@ pub struct OpenCodeProviderInfo {
     pub id: String,
     pub name: String,
     #[serde(default)]
+    pub remote_machine_aliases: Vec<String>,
+    #[serde(default)]
     pub models: BTreeMap<String, OpenCodeProviderModel>,
 }
 

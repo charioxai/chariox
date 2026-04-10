@@ -328,12 +328,16 @@ Outcomes:
 - remote agent routing and lifecycle ownership
 - provider-run ownership and state reporting for remote nodes
 - remote member resume/reassignment semantics
+- worker-kernel provider availability is advertised back to the home kernel and surfaced in the CLI as machine-qualified provider availability
+- remote agents are placed by machine, then bound to one selected worker kernel for their lifetime
+- provider login remains local to the worker kernel; the home kernel only consumes advertised provider availability
 
 Exit criteria:
 
 - a session can include remote machine-hosted agents without creating a second session authority
 - daemon and machine identity are strong enough for remote resume/reassignment
 - remote agent lifecycle is observable and debuggable through the same kernel-owned model
+- remote agents feel the same as local agents in the CLI once spawned, aside from explicit machine placement metadata
 
 ## M7 - Additional Clients
 
