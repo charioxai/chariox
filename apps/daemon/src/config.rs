@@ -19,6 +19,7 @@ pub struct DaemonConfig {
     pub relay_public_key: String,
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
+    pub accept_remote_leases: bool,
     pub os_user: String,
     pub local_socket_path: PathBuf,
     pub kernel_websocket_host: String,
@@ -95,6 +96,15 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(5_000),
+            accept_remote_leases: env::var("ARROBA_ACCEPT_REMOTE_LEASES")
+                .ok()
+                .map(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
@@ -128,6 +138,7 @@ impl DaemonConfig {
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: 5_000,
+            accept_remote_leases: false,
             os_user: os_user.into(),
         }
     }

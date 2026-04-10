@@ -5,6 +5,7 @@ pub mod capability;
 pub mod config;
 pub(crate) mod env_lock;
 pub mod error;
+pub mod execution_lease;
 pub mod history;
 pub mod kernel_transport;
 pub mod local;
@@ -133,6 +134,35 @@ mod tests {
         assert!(app.attachments().get_attachment(attachment.id()).is_err());
     }
 
+    #[test]
+    fn execution_leases_require_opt_in_and_can_be_destroyed() {
+        let mut disabled = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let error = disabled
+            .create_execution_lease("home-kernel", "session-1", "agent-1")
+            .expect_err("remote leases should require opt-in");
+        match error {
+            DaemonError::RemoteLeasesDisabled { .. } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+        let lease = app
+            .create_execution_lease("home-kernel", "session-1", "agent-1")
+            .expect("execution lease should be created");
+        assert_eq!(lease.worker_kernel_id, config.daemon_id);
+        assert_eq!(lease.machine_id, config.host_machine_id);
+        assert_eq!(app.execution_lease_count(), 1);
+
+        let removed = app
+            .destroy_execution_lease(&lease.id)
+            .expect("execution lease should be removed");
+        assert_eq!(removed.id, lease.id);
+        assert_eq!(app.execution_lease_count(), 0);
+    }
     #[test]
     fn launching_provider_via_app_marks_session_active() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())

@@ -23,6 +23,7 @@ use crate::capability::{
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::execution_lease::ExecutionLease;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::local::LocalDaemonResponse;
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};
@@ -56,6 +57,8 @@ pub struct DaemonApp {
     sessions: SessionService,
     history: SessionHistoryStore,
     terminal: TerminalStreamService,
+    execution_leases: BTreeMap<String, ExecutionLease>,
+    next_execution_lease_number: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +131,8 @@ impl DaemonApp {
             sessions: SessionService::new(&config),
             history: SessionHistoryStore::new(config.session_history_root.clone())?,
             terminal: TerminalStreamService::new(),
+            execution_leases: BTreeMap::new(),
+            next_execution_lease_number: 0,
             config,
         })
     }
@@ -863,6 +868,49 @@ impl DaemonApp {
         Ok(records)
     }
 
+    pub fn create_execution_lease(
+        &mut self,
+        home_kernel_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+    ) -> Result<ExecutionLease, DaemonError> {
+        if !self.config.accept_remote_leases {
+            return Err(DaemonError::RemoteLeasesDisabled {
+                machine_id: self.config.host_machine_id.clone(),
+            });
+        }
+        self.next_execution_lease_number = self.next_execution_lease_number.wrapping_add(1);
+        let lease_id = format!(
+            "lease-{:016x}",
+            crate::session::unix_epoch_ms() ^ self.next_execution_lease_number.rotate_left(11)
+        );
+        let lease = ExecutionLease::new(
+            lease_id.clone(),
+            home_kernel_id.to_string(),
+            home_session_id.to_string(),
+            home_agent_id.to_string(),
+            self.config.daemon_id.clone(),
+            self.config.host_machine_id.clone(),
+        );
+        self.execution_leases.insert(lease_id, lease.clone());
+        Ok(lease)
+    }
+
+    pub fn destroy_execution_lease(
+        &mut self,
+        lease_id: &str,
+    ) -> Result<ExecutionLease, DaemonError> {
+        self.execution_leases
+            .remove(lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
+    }
+
+    pub fn execution_lease_count(&self) -> usize {
+        self.execution_leases.len()
+    }
+
     fn ensure_attachment_can_run_capability(
         &self,
         session_id: &str,
@@ -910,10 +958,12 @@ impl DaemonApp {
             capabilities: vec![
                 "kernel_websocket".to_string(),
                 "relay_request_proxy".to_string(),
+                "relay_peer_transport".to_string(),
+                "execution_lease_management".to_string(),
             ],
             available_providers,
-            accepting_remote_leases: false,
-            leased_agent_count: 0,
+            accepting_remote_leases: self.config.accept_remote_leases,
+            leased_agent_count: self.execution_lease_count() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
         }
     }

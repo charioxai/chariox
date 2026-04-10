@@ -138,6 +138,10 @@ pub enum DaemonError {
         from: SessionStatus,
         to: SessionStatus,
     },
+    #[error("machine `{machine_id}` is not accepting remote execution leases")]
+    RemoteLeasesDisabled { machine_id: String },
+    #[error("execution lease `{lease_id}` was not found")]
+    ExecutionLeaseNotFound { lease_id: String },
     #[error("attachment `{attachment_id}` was not found")]
     AttachmentNotFound { attachment_id: String },
     #[error("attachment `{attachment_id}` does not belong to session `{session_id}`")]
