@@ -24,7 +24,7 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(app, async {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
             let _ = shutdown_rx.await;
         })
         .await
@@ -119,7 +119,7 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(app, async {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
             let _ = shutdown_rx.await;
         })
         .await

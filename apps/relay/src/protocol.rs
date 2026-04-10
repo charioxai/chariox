@@ -28,6 +28,13 @@ pub struct ClientTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayEnvelope {
     DaemonRegister {
@@ -40,14 +47,27 @@ pub enum RelayEnvelope {
         auth_token: String,
         target: ClientTarget,
     },
+    ClientConnected {
+        target: ClientTarget,
+    },
     ClientRequest {
         request_id: String,
         target: ClientTarget,
         request: Value,
     },
+    DaemonRequest {
+        relay_request_id: String,
+        request: Value,
+    },
     DaemonResponse {
+        relay_request_id: String,
+        response: Option<Value>,
+        error: Option<RelayError>,
+    },
+    ClientResponse {
         request_id: String,
-        response: Value,
+        response: Option<Value>,
+        error: Option<RelayError>,
     },
     ClientSubscribe {
         subscription_id: String,

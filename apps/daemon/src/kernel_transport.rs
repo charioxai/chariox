@@ -134,19 +134,26 @@ struct ConnectionCloseCommand {
     reason: String,
 }
 
-pub async fn run_kernel_websocket_server<F>(app: DaemonApp, shutdown: F) -> Result<(), DaemonError>
+pub async fn run_kernel_websocket_server<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    shutdown: F,
+) -> Result<(), DaemonError>
 where
     F: Future<Output = ()>,
 {
-    let bind_host = app.config().kernel_websocket_host.clone();
-    let bind_port = app.config().kernel_websocket_port;
+    let (bind_host, bind_port) = {
+        let app = app.lock().await;
+        (
+            app.config().kernel_websocket_host.clone(),
+            app.config().kernel_websocket_port,
+        )
+    };
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "bind kernel websocket",
             message: error.to_string(),
         })?;
-    let app = Arc::new(Mutex::new(app));
     let pump_app = Arc::clone(&app);
     let runtime = Arc::new(KernelTransportRuntime::default());
 

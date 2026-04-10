@@ -923,22 +923,23 @@ impl DaemonApp {
     }
 
     pub async fn run(self) -> Result<(), DaemonError> {
-        let config = self.config.clone();
+        let app = Arc::new(tokio::sync::Mutex::new(self));
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let relay_state = Arc::new(tokio::sync::RwLock::new(
             crate::transport::relay_client::RelayClientState::default(),
         ));
         let relay_task = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
-            config,
+            Arc::clone(&app),
             relay_state,
             shutdown_rx,
         ));
 
-        let result = crate::kernel_transport::run_kernel_websocket_server(self, async {
-            let _ = tokio::signal::ctrl_c().await;
-            let _ = shutdown_tx.send(true);
-        })
-        .await;
+        let result =
+            crate::kernel_transport::run_kernel_websocket_server(Arc::clone(&app), async {
+                let _ = tokio::signal::ctrl_c().await;
+                let _ = shutdown_tx.send(true);
+            })
+            .await;
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
