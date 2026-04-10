@@ -569,6 +569,21 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
+            let cancellation = {
+                let mut app = app.lock().await;
+                app.cancel_leased_prompt(&leased_agent_id)
+            };
+            match cancellation {
+                Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
     };
     let plaintext = match serde_json::to_vec(&response) {
         Ok(bytes) => bytes,
@@ -2186,6 +2201,138 @@ mod tests {
         assert_eq!(
             completion.completed.prompt(),
             "remote prompt over home session\n"
+        );
+
+        let _ = shutdown_worker_tx.send(true);
+        connector_worker
+            .await
+            .expect("worker connector should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config_home = DaemonConfig::for_tests();
+        config_home.daemon_id = "daemon-home".to_string();
+        config_home.daemon_alias = Some("home".to_string());
+        config_home.host_machine_id = "machine-home".to_string();
+        config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_home.relay_token = Some("secret".to_string());
+        config_home.relay_heartbeat_ms = 50;
+        let mut config_worker = DaemonConfig::for_tests();
+        config_worker.daemon_id = "daemon-worker".to_string();
+        config_worker.daemon_alias = Some("worker".to_string());
+        config_worker.host_machine_id = "machine-worker".to_string();
+        config_worker.host_machine_alias = Some("builder-west".to_string());
+        config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_worker.relay_token = Some("secret".to_string());
+        config_worker.relay_heartbeat_ms = 50;
+        config_worker.accept_remote_leases = true;
+        let app_worker = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
+        ));
+        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+        let connector_worker = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_worker),
+            Arc::clone(&state_worker),
+            shutdown_worker_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
+
+        let provider = relay_discovery::list_live_kernels_for_machine(&config_home, "builder-west")
+            .await
+            .expect("worker kernels should be discoverable")
+            .first()
+            .and_then(|kernel| {
+                kernel
+                    .available_providers
+                    .iter()
+                    .find(|provider| provider.as_str() == "dev-stub")
+            })
+            .cloned()
+            .expect("worker should advertise dev-stub");
+
+        let mut app_home =
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
+        let (session_id, attachment_id) = {
+            let (session, _) = app_home
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("home session should be created");
+            let attachment = app_home
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "home-client",
+                    ClientCapabilityLevel::InteractiveStructured,
+                ))
+                .expect("home attachment should attach");
+            (session.id().to_string(), attachment.id().to_string())
+        };
+        let remote_agent_id = app_home
+            .spawn_agent(
+                CreateAgentRequest::new(&session_id, &provider)
+                    .with_alias("remote-reviewer")
+                    .with_model("default")
+                    .with_machine("builder-west"),
+            )
+            .expect("remote agent should spawn")
+            .id()
+            .to_string();
+
+        let outcome = app_home
+            .submit_prompt(
+                &session_id,
+                &attachment_id,
+                Some(&remote_agent_id),
+                "cancel this remote prompt\n",
+                Vec::new(),
+            )
+            .expect("remote prompt should submit");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let cancellation = app_home
+            .cancel_active_prompt(&session_id, &attachment_id)
+            .expect("remote prompt should cancel");
+        assert_eq!(cancellation.prompt.target_agent_id(), remote_agent_id);
+        assert_eq!(
+            cancellation.prompt.status(),
+            crate::session::PromptStatus::Cancelling
         );
 
         let _ = shutdown_worker_tx.send(true);

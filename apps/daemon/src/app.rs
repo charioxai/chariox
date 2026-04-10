@@ -1099,6 +1099,24 @@ impl DaemonApp {
         )
     }
 
+    pub fn cancel_leased_prompt(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<crate::session::PromptCancellation, DaemonError> {
+        let leased_agent = self
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        self.cancel_active_prompt_internal(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            None,
+        )
+    }
+
     pub fn leased_agent_provider_run_id(
         &self,
         leased_agent_id: &str,

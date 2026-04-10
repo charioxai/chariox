@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::execution_lease::{ExecutionLease, LeasedAgent};
-use crate::session::{PromptCompletion, PromptSubmissionOutcome};
+use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,9 @@ pub enum RelayPeerRequest {
     CompleteLeasedPrompt {
         leased_agent_id: String,
     },
+    CancelLeasedPrompt {
+        leased_agent_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +65,9 @@ pub enum RelayPeerResponse {
     LeasedPromptCompleted {
         provider_run_id: Option<String>,
         completion: PromptCompletion,
+    },
+    LeasedPromptCancelled {
+        cancellation: PromptCancellation,
     },
 }
 

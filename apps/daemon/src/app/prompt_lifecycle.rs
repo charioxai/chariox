@@ -312,7 +312,7 @@ impl DaemonApp {
         self.cancel_active_prompt_internal(session_id, &target_agent_id, None)
     }
 
-    fn cancel_active_prompt_internal(
+    pub(crate) fn cancel_active_prompt_internal(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -329,6 +329,53 @@ impl DaemonApp {
         if active_prompt.status() == PromptStatus::Cancelling {
             return Ok(PromptCancellation {
                 prompt: active_prompt,
+                started_next: None,
+            });
+        }
+        let target_agent = self.agents.get_agent(agent_id)?;
+        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                &self.config,
+                ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::CancelLeasedPrompt {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                },
+            ))? {
+                RelayPeerResponse::LeasedPromptCancelled { .. } => {}
+                other => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "cancel remote prompt",
+                        message: format!(
+                            "unexpected remote prompt cancellation response: {other:?}"
+                        ),
+                    });
+                }
+            }
+            let (_session, prompt) = self
+                .sessions
+                .begin_cancelling_active_prompt(session_id, agent_id)?;
+            let recipients = match attachment_id {
+                Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
+                None => self.attachments.list_session_attachment_ids(session_id),
+            };
+            let message = match attachment_id {
+                Some(attachment_id) => format!(
+                    "Attachment `{attachment_id}` requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                    active_prompt.id(),
+                    remote_execution.worker_kernel_id
+                ),
+                None => format!(
+                    "Arroba requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                    active_prompt.id(),
+                    remote_execution.worker_kernel_id
+                ),
+            };
+            self.record_notice(session_id, None, recipients, message);
+            return Ok(PromptCancellation {
+                prompt,
                 started_next: None,
             });
         }
