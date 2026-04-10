@@ -1,0 +1,419 @@
+import { spawn } from 'node:child_process'
+import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const cliRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+
+async function loadCliModules(runtimeDir) {
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
+    const sourcePath = path.join(cliRoot, rel)
+    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
+    const code = await (await import('node:fs/promises')).readFile(sourcePath, 'utf8')
+    const transformed = await transformAsync(code, {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await (await import('node:fs/promises')).writeFile(outPath, transformed?.code ?? '', 'utf8')
+  }
+  const ipcUrl = pathToFileURL(path.join(runtimeDir, 'ipc.js')).href
+  const requestsUrl = pathToFileURL(path.join(runtimeDir, 'ipc-requests.js')).href
+  const { LocalIpcClient } = await import(ipcUrl)
+  const requests = await import(requestsUrl)
+  return { LocalIpcClient, requests }
+}
+
+let LocalIpcClient
+let createSessionRequest
+let attachToSessionRequest
+let getSessionStateRequest
+let listSessionsRequest
+let endSessionRequest
+let submitPromptRequest
+
+const DEFAULT_MODEL = 'default'
+const DEFAULT_PROVIDER = 'dev-stub'
+const DEFAULT_WORKSPACE = repoRoot
+const DEFAULT_WORKTREE = repoRoot
+const DEFAULT_TIMEOUT_MS = 180_000
+const DEFAULT_POLL_MS = 1_000
+
+function parseArgs(argv) {
+  const options = {
+    model: DEFAULT_MODEL,
+    provider: DEFAULT_PROVIDER,
+    workspace: DEFAULT_WORKSPACE,
+    worktree: DEFAULT_WORKTREE,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    pollMs: DEFAULT_POLL_MS,
+  }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider') options.provider = argv[++i]
+    else if (arg === '--workspace') options.workspace = argv[++i]
+    else if (arg === '--worktree') options.worktree = argv[++i]
+    else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
+    else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
+    else if (arg === '--help') options.help = true
+    else throw new Error(`unknown argument: ${arg}`)
+  }
+  return options
+}
+
+function makePorts() {
+  const base = 47000 + Math.floor(Math.random() * 1000)
+  return {
+    relayPort: base,
+    homeKernelPort: base + 1000,
+    workerKernelPort: base + 1001,
+    homeMcpPort: base + 2000,
+    workerMcpPort: base + 2001,
+    homeOpenCodePort: base + 3000,
+    workerOpenCodePort: base + 3001,
+  }
+}
+
+function makeDaemonEnv({ ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, socketName, kernelPort, mcpPort, opencodePort }) {
+  return {
+    ...process.env,
+    ARROBA_KERNEL_PORT: String(kernelPort),
+    ARROBA_MCP_PORT: String(mcpPort),
+    ARROBA_OPENCODE_PORT: String(opencodePort),
+    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    ARROBA_RELAY_TOKEN: relayToken,
+    ARROBA_DAEMON_ID: daemonId,
+    ARROBA_DAEMON_ALIAS: daemonAlias,
+    ARROBA_MACHINE_ID: machineId,
+    ARROBA_MACHINE_ALIAS: machineAlias,
+    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
+    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const unwrap = (resp, key) => resp?.[key] ?? resp
+const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((v) => v != null) ?? resp
+
+function spawnProcess(command, args, options) {
+  return spawn(command, args, { ...options, stdio: ['ignore', 'ignore', 'inherit'] })
+}
+
+async function resolveBinary(binaryPath, manifestPath, binName) {
+  try {
+    await access(binaryPath)
+    return binaryPath
+  } catch {
+    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
+  }
+}
+
+async function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode != null) return
+  child.kill(signal)
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(5_000),
+  ])
+  if (child.exitCode == null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      sleep(2_000),
+    ])
+  }
+}
+
+async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const probe = new LocalIpcClient(kernelUrl)
+    try {
+      const session = unwrap(await probe.send(createSessionRequest(workspace, worktree)), 'SessionCreated').session
+      await probe.send(endSessionRequest(session.id)).catch(() => {})
+      await probe.close()
+      return
+    } catch {
+      await probe.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error('local daemon did not become ready')
+}
+
+async function waitForRemoteMachine(localClient, machineRef) {
+  let lastError = null
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await localClient.send({ ListRemoteMachineKernels: { machine_ref: machineRef } })
+      const payload = unwrapVariant(response, 'RemoteMachineKernelsListed')
+      if ((payload.kernels || []).length > 0) return payload.kernels
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not become reachable: ${lastError ?? 'unknown error'}`)
+}
+
+async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const client = new LocalIpcClient(relayUrl, { relayAuthToken: relayToken, targetDaemonAlias })
+    try {
+      await Promise.race([
+        client.send(listSessionsRequest()),
+        sleep(2_000).then(() => { throw new Error('probe timeout') }),
+      ])
+      await client.close()
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      await client.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? 'unknown error'}`)
+}
+
+async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const completions = eventLog.filter((event) => event.event === 'assistant_message_completed')
+    if (completions.length > baselineCount) return completions[completions.length - 1]
+    await sleep(100)
+  }
+  throw new Error('timed out waiting for assistant completion')
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    console.log('Usage: node apps/cli/scripts/live-remote-machine-runtime-drill.mjs [options]')
+    return
+  }
+
+  const ports = makePorts()
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-machine-drill-${process.pid}-${Date.now()}`)
+  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-machine-runtime-drill')
+  await mkdir(rootDir, { recursive: true })
+  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+  await mkdir(cliRuntimeDir, { recursive: true })
+
+  ;({ LocalIpcClient, requests: {
+    createSessionRequest,
+    attachToSessionRequest,
+    getSessionStateRequest,
+    listSessionsRequest,
+    endSessionRequest,
+    submitPromptRequest,
+  } } = await loadCliModules(cliRuntimeDir))
+
+  const relayToken = `relay-token-${process.pid}-${Date.now()}`
+  const relayEnv = {
+    ...process.env,
+    ARROBA_RELAY_HOST: '127.0.0.1',
+    ARROBA_RELAY_PORT: String(ports.relayPort),
+    ARROBA_RELAY_TOKEN: relayToken,
+  }
+  const homeDaemonId = `remote-machine-home-${process.pid}-${Date.now()}`
+  const workerDaemonId = `remote-machine-worker-${process.pid}-${Date.now()}`
+  const workerMachineAlias = `builder-west-${process.pid}`
+
+  const homeEnv = makeDaemonEnv({
+    ports,
+    rootDir,
+    relayToken,
+    daemonId: homeDaemonId,
+    daemonAlias: 'home',
+    machineId: `machine-home-${process.pid}`,
+    machineAlias: `home-machine-${process.pid}`,
+    acceptRemoteLeases: false,
+    socketName: 'home-daemon.sock',
+    kernelPort: ports.homeKernelPort,
+    mcpPort: ports.homeMcpPort,
+    opencodePort: ports.homeOpenCodePort,
+  })
+  const workerEnv = makeDaemonEnv({
+    ports,
+    rootDir,
+    relayToken,
+    daemonId: workerDaemonId,
+    daemonAlias: 'worker',
+    machineId: `machine-worker-${process.pid}`,
+    machineAlias: workerMachineAlias,
+    acceptRemoteLeases: true,
+    socketName: 'worker-daemon.sock',
+    kernelPort: ports.workerKernelPort,
+    mcpPort: ports.workerMcpPort,
+    opencodePort: ports.workerOpenCodePort,
+  })
+
+  const relayBinary = await resolveBinary(
+    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+    path.join(repoRoot, 'apps/relay/Cargo.toml'),
+    'arroba-relay',
+  )
+  const daemonBinary = await resolveBinary(
+    path.join(repoRoot, 'apps/daemon/target/debug/arroba-daemon'),
+    path.join(repoRoot, 'apps/daemon/Cargo.toml'),
+    'arroba-daemon',
+  )
+
+  const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
+  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
+  let relayChild = null
+  let homeChild = null
+  let workerChild = null
+  let client = null
+  let sessionId = null
+  let eventLog = []
+
+  try {
+    relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
+    homeChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: homeEnv })
+    workerChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: workerEnv })
+
+    await waitForLocalDaemon(homeKernelUrl, options.workspace, options.worktree)
+    await waitForRelayTarget(relayUrl, relayToken, 'home')
+    await waitForRelayTarget(relayUrl, relayToken, 'worker')
+    client = new LocalIpcClient(homeKernelUrl)
+    await waitForRemoteMachine(client, workerMachineAlias)
+
+    const created = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated')
+    sessionId = created.session.id
+    const defaultAgentId = created.agent.id
+    const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, `remote-machine-drill-${Date.now()}`)), 'SessionAttached').attachment
+    client.onKernelEvent((event) => {
+      eventLog.push({ ...event, observed_at_ms: Date.now() })
+    })
+    await client.subscribeToKernelEvents(sessionId, attachment.id)
+
+    const machineList = unwrapVariant(await client.send({ ListRemoteMachines: {} }), 'RemoteMachinesListed')
+    const remoteMachines = machineList.machines || []
+    if (!remoteMachines.some((machine) => machine.machine_alias === workerMachineAlias)) {
+      throw new Error(`machine ${workerMachineAlias} not visible through home kernel`)
+    }
+
+    const kernelList = unwrapVariant(
+      await client.send({ ListRemoteMachineKernels: { machine_ref: workerMachineAlias } }),
+      'RemoteMachineKernelsListed',
+    )
+    const kernels = kernelList.kernels || []
+    const selectedKernel = kernels.find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers || []).includes(options.provider))
+    if (!selectedKernel) {
+      throw new Error(`no worker kernel on ${workerMachineAlias} advertises provider ${options.provider}`)
+    }
+
+    const spawned = unwrapVariant(await client.send({
+      SpawnAgent: {
+        session_id: sessionId,
+        alias: 'remote-reviewer',
+        provider: options.provider,
+        model: options.model,
+        effort: 'medium',
+        worktree_id: null,
+        machine_ref: workerMachineAlias,
+      },
+    }), 'AgentSpawned')
+    const remoteAgent = spawned.agent
+
+    const sourceAttachmentPath = path.join(rootDir, 'remote-attachment.txt')
+    await writeFile(sourceAttachmentPath, 'relay remote attachment\n', 'utf8')
+
+    await client.send(submitPromptRequest(
+      sessionId,
+      attachment.id,
+      remoteAgent.id,
+      'Read the attached file and reply with exactly REMOTE_MACHINE_OK.',
+      [{
+        url: pathToFileURL(sourceAttachmentPath).href,
+        mime: 'text/plain',
+        filename: 'remote-attachment.txt',
+      }],
+    ))
+
+    const started = Date.now()
+    while (Date.now() - started < options.timeoutMs / 3) {
+      if ((eventLog.filter((event) => event.event === 'terminal_output')).length > 0) break
+      await sleep(options.pollMs)
+    }
+
+    let completeResponse = null
+    try {
+      completeResponse = unwrapVariant(
+        await client.send({ CompletePrompt: { session_id: sessionId } }),
+        'PromptCompleted',
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('has no active prompt')) throw error
+    }
+    const firstCompletionEvent = await waitForCompletion(eventLog, options.timeoutMs, 0)
+
+    await client.send(submitPromptRequest(
+      sessionId,
+      attachment.id,
+      remoteAgent.id,
+      'Start another remote prompt that will be cancelled.',
+      [],
+    ))
+    const cancelled = unwrapVariant(
+      await client.send({ CancelActivePrompt: { session_id: sessionId, attachment_id: attachment.id } }),
+      'PromptCancelled',
+    )
+
+    const finalState = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+
+    console.log(JSON.stringify({
+      status: 'ok',
+      relayUrl: `ws://127.0.0.1:${ports.relayPort}`,
+      homeKernelUrl,
+      sessionId,
+      workerMachineAlias,
+      remoteAgentId: remoteAgent.id,
+      remoteExecution: remoteAgent.remote_execution ?? null,
+      selectedKernel: {
+        kernelId: selectedKernel.kernel_id,
+        machineId: selectedKernel.machine_id,
+        providers: selectedKernel.available_providers,
+      },
+      firstPrompt: {
+        completePromptResponse: completeResponse.completion?.completed?.id ?? null,
+        completionEventMessageId: firstCompletionEvent.message_id ?? null,
+        terminalOutputEvents: eventLog.filter((event) => event.event === 'terminal_output').length,
+        pumpedOutputRecords: 0,
+      },
+      secondPrompt: {
+        cancelledPromptId: cancelled.cancellation?.prompt?.id ?? cancelled.prompt?.id ?? null,
+        cancelledStatus: cancelled.cancellation?.prompt?.status ?? cancelled.prompt?.status ?? null,
+      },
+      machinesVisible: remoteMachines.map((machine) => ({
+        machineId: machine.machine_id,
+        machineAlias: machine.machine_alias,
+        providers: machine.available_providers,
+      })),
+      finalFocusedAgentId: finalState.session?.focused_agent_id ?? null,
+    }, null, 2))
+  } finally {
+    if (client) {
+      if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
+      await client.close().catch(() => {})
+    }
+    await terminateChild(homeChild)
+    await terminateChild(workerChild)
+    await terminateChild(relayChild)
+    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+await main()
