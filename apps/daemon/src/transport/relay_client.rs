@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +14,8 @@ use arroba_relay::protocol::{EncryptedRelayPayload, RelayEnvelope, RelayError};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel_transport::{
-    watch_subscription_state, KernelEvent, WatchResult, WATCH_INTERVAL_MS,
+    event_is_relevant_to_attachment, event_session_id, watch_subscription_state, KernelEvent,
+    WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
 };
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
@@ -28,11 +29,24 @@ const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 
 type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, JoinHandle<()>>>>;
 
+#[derive(Debug, Clone)]
+struct PersistedRelayEvent {
+    event_id: u64,
+    event: KernelEvent,
+}
+
+#[derive(Debug, Default)]
+struct RelayEventRuntime {
+    event_counter: AtomicU64,
+    recent_events: Mutex<BTreeMap<String, VecDeque<PersistedRelayEvent>>>,
+}
+
 pub async fn run_daemon_relay_connector(
     app: Arc<Mutex<DaemonApp>>,
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let event_runtime = Arc::new(RelayEventRuntime::default());
     let (relay_url, heartbeat) = {
         let app = app.lock().await;
         let config = app.config();
@@ -68,7 +82,6 @@ pub async fn run_daemon_relay_connector(
                 });
                 let subscription_tasks: RelaySubscriptionTasks =
                     Arc::new(Mutex::new(BTreeMap::new()));
-                let event_counter = Arc::new(AtomicU64::new(0));
                 let daemon_id = {
                     let app = app.lock().await;
                     app.config().daemon_id.clone()
@@ -108,7 +121,7 @@ pub async fn run_daemon_relay_connector(
                                         &app,
                                         &outgoing_tx,
                                         &subscription_tasks,
-                                        &event_counter,
+                                        &event_runtime,
                                         &payload,
                                     )
                                     .await
@@ -170,7 +183,7 @@ async fn handle_incoming_envelope(
     app: &Arc<Mutex<DaemonApp>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_tasks: &RelaySubscriptionTasks,
-    event_counter: &Arc<AtomicU64>,
+    event_runtime: &Arc<RelayEventRuntime>,
     payload: &str,
 ) -> Result<(), DaemonError> {
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
@@ -222,19 +235,6 @@ async fn handle_incoming_envelope(
                 }),
             )
             .await?;
-            let task = tokio::spawn(run_relay_subscription_loop(
-                Arc::clone(app),
-                outgoing_tx.clone(),
-                relay_subscription_id.clone(),
-                client_public_key,
-                session_id,
-                attachment_id,
-                Arc::clone(event_counter),
-            ));
-            subscription_tasks
-                .lock()
-                .await
-                .insert(relay_subscription_id, task);
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -243,6 +243,30 @@ async fn handle_incoming_envelope(
                     error: None,
                 },
             )?;
+            replay_recent_relay_events(
+                event_runtime,
+                app,
+                outgoing_tx,
+                &relay_subscription_id,
+                &client_public_key,
+                &session_id,
+                &attachment_id,
+                resume_from_event_id,
+            )
+            .await?;
+            let task = tokio::spawn(run_relay_subscription_loop(
+                Arc::clone(app),
+                outgoing_tx.clone(),
+                relay_subscription_id.clone(),
+                client_public_key.clone(),
+                session_id.clone(),
+                attachment_id.clone(),
+                Arc::clone(event_runtime),
+            ));
+            subscription_tasks
+                .lock()
+                .await
+                .insert(relay_subscription_id.clone(), task);
         }
         RelayEnvelope::DaemonUnsubscribe {
             relay_request_id,
@@ -480,7 +504,7 @@ async fn run_relay_subscription_loop(
     client_public_key: String,
     session_id: String,
     attachment_id: String,
-    event_counter: Arc<AtomicU64>,
+    event_runtime: Arc<RelayEventRuntime>,
 ) {
     let mut previous_snapshot = None;
     let mut tick: u64 = 0;
@@ -510,7 +534,7 @@ async fn run_relay_subscription_loop(
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
-                        &event_counter,
+                        &event_runtime,
                         KernelEvent::TerminalOutput { records },
                     )
                     .await
@@ -524,7 +548,7 @@ async fn run_relay_subscription_loop(
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
-                        &event_counter,
+                        &event_runtime,
                         KernelEvent::RuntimeNotices { notices },
                     )
                     .await
@@ -538,7 +562,7 @@ async fn run_relay_subscription_loop(
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
-                        &event_counter,
+                        &event_runtime,
                         KernelEvent::AssistantMessageCompleted {
                             session_id: completion.session_id,
                             provider_run_id: completion.provider_run_id,
@@ -561,7 +585,7 @@ async fn run_relay_subscription_loop(
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
-                        &event_counter,
+                        &event_runtime,
                         KernelEvent::SessionSnapshot {
                             session: Box::new(snapshot.0),
                             provider_run: Box::new(snapshot.1),
@@ -579,7 +603,7 @@ async fn run_relay_subscription_loop(
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
-                        &event_counter,
+                        &event_runtime,
                         KernelEvent::Heartbeat {
                             session_id: session_id.clone(),
                         },
@@ -596,7 +620,7 @@ async fn run_relay_subscription_loop(
                     &outgoing_tx,
                     &subscription_id,
                     &client_public_key,
-                    &event_counter,
+                    &event_runtime,
                     KernelEvent::SessionUnavailable {
                         session_id: session_id.clone(),
                         message,
@@ -617,7 +641,7 @@ async fn emit_relay_event(
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
     client_public_key: &str,
-    event_counter: &Arc<AtomicU64>,
+    event_runtime: &Arc<RelayEventRuntime>,
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
     let daemon_private_key = {
@@ -630,11 +654,93 @@ async fn emit_relay_event(
     })?;
     let encrypted_event =
         relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)?;
+    let event_id = event_runtime.event_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Some(session_id) = event_session_id(&event) {
+        let mut recent_events = event_runtime.recent_events.lock().await;
+        let entry = recent_events.entry(session_id.to_string()).or_default();
+        entry.push_back(PersistedRelayEvent {
+            event_id,
+            event: event.clone(),
+        });
+        while entry.len() > RECENT_EVENT_LIMIT {
+            entry.pop_front();
+        }
+    }
+    send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
+}
+
+async fn replay_recent_relay_events(
+    event_runtime: &Arc<RelayEventRuntime>,
+    app: &Arc<Mutex<DaemonApp>>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    subscription_id: &str,
+    client_public_key: &str,
+    session_id: &str,
+    attachment_id: &str,
+    resume_from_event_id: Option<u64>,
+) -> Result<(), DaemonError> {
+    let Some(cursor) = resume_from_event_id else {
+        return Ok(());
+    };
+    let recent_events = event_runtime.recent_events.lock().await;
+    let events = recent_events
+        .get(session_id)
+        .map(|events| events.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    drop(recent_events);
+    for persisted in events {
+        if persisted.event_id <= cursor {
+            continue;
+        }
+        if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
+            continue;
+        }
+        let daemon_private_key = {
+            let app = app.lock().await;
+            app.config().relay_private_key.clone()
+        };
+        let plaintext =
+            serde_json::to_vec(&persisted.event).map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize relay event",
+                message: error.to_string(),
+            })?;
+        let encrypted_event = relay_crypto::encrypt_payload_for_peer(
+            &daemon_private_key,
+            client_public_key,
+            &plaintext,
+        )?;
+        send_relay_event_frame(
+            outgoing_tx,
+            subscription_id,
+            persisted.event_id,
+            encrypted_event,
+        )?;
+    }
+    emit_relay_event(
+        app,
+        outgoing_tx,
+        subscription_id,
+        client_public_key,
+        event_runtime,
+        KernelEvent::TransportResumed {
+            session_id: session_id.to_string(),
+            resumed_from_event_id: Some(cursor),
+        },
+    )
+    .await
+}
+
+fn send_relay_event_frame(
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    subscription_id: &str,
+    event_id: u64,
+    encrypted_event: EncryptedRelayPayload,
+) -> Result<(), DaemonError> {
     send_outgoing_envelope(
         outgoing_tx,
         RelayEnvelope::DaemonEvent {
             subscription_id: subscription_id.to_string(),
-            event_id: event_counter.fetch_add(1, Ordering::Relaxed) + 1,
+            event_id,
             encrypted_event,
         },
     )
@@ -994,6 +1100,183 @@ mod tests {
         assert_eq!(
             event["session"]["id"],
             serde_json::json!(created_session_id)
+        );
+
+        let _ = shutdown_tx.send(true);
+        connector_task.await.expect("connector task should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relay_subscription_replays_recent_events_after_resume_cursor() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config.relay_token = Some("secret".to_string());
+        config.relay_heartbeat_ms = 50;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+        ));
+        let created_session_id = {
+            let mut app = app.lock().await;
+            let response = app
+                .handle_local_request(LocalDaemonRequest::CreateSession(
+                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
+                ))
+                .expect("session should be created");
+            match response {
+                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+        let attachment_id = {
+            let mut app = app.lock().await;
+            let response = app
+                .handle_local_request(LocalDaemonRequest::AttachToSession(
+                    AttachToSessionRequest {
+                        session_id: created_session_id.clone(),
+                        client_id: "relay-client".to_string(),
+                        capability_level: ClientCapabilityLevel::MessageTransport,
+                    },
+                ))
+                .expect("session should attach");
+            match response {
+                LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let connector_task = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app),
+            Arc::clone(&state),
+            shutdown_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut client_socket, _) = connect_async(&url)
+            .await
+            .expect("client should connect to relay");
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientConnect {
+                auth_token: "secret".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+            },
+        )
+        .await;
+        let _daemon_public_key = expect_client_connected(&mut client_socket).await;
+
+        let subscription_private_key = relay_crypto::generate_private_key_base64();
+        let subscription_public_key =
+            relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
+                .expect("subscription public key should derive");
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientSubscribe {
+                request_id: "sub-1".to_string(),
+                subscription_id: "subscription-1".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+                session_id: created_session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                client_public_key: subscription_public_key.clone(),
+                resume_from_event_id: None,
+            },
+        )
+        .await;
+        let _ = expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key)
+            .await;
+        let first_event =
+            expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+        assert_eq!(
+            first_event.1["event"],
+            serde_json::json!("session_snapshot")
+        );
+
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientUnsubscribe {
+                request_id: "unsub-1".to_string(),
+                subscription_id: "subscription-1".to_string(),
+                client_public_key: subscription_public_key.clone(),
+            },
+        )
+        .await;
+        let _ =
+            expect_json_client_response(&mut client_socket, "unsub-1", &subscription_private_key)
+                .await;
+
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientSubscribe {
+                request_id: "sub-2".to_string(),
+                subscription_id: "subscription-1".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+                session_id: created_session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                client_public_key: subscription_public_key,
+                resume_from_event_id: Some(first_event.0),
+            },
+        )
+        .await;
+        let resume_response =
+            expect_json_client_response(&mut client_socket, "sub-2", &subscription_private_key)
+                .await;
+        assert_eq!(
+            resume_response["resumed_from_event_id"],
+            serde_json::json!(first_event.0)
+        );
+        let resumed_event = expect_named_client_event(
+            &mut client_socket,
+            &subscription_private_key,
+            "transport_resumed",
+        )
+        .await;
+        assert_eq!(
+            resumed_event.1["resumed_from_event_id"],
+            serde_json::json!(first_event.0)
         );
 
         let _ = shutdown_tx.send(true);
@@ -1372,32 +1655,35 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        match socket.next().await {
-            Some(Ok(Message::Text(payload))) => {
-                match serde_json::from_str::<RelayEnvelope>(&payload)
-                    .expect("relay envelope should parse")
-                {
-                    RelayEnvelope::ClientResponse {
-                        request_id: response_request_id,
-                        encrypted_response,
-                        error,
-                    } => {
-                        assert_eq!(response_request_id, request_id);
-                        assert!(error.is_none(), "unexpected relay error: {error:?}");
-                        let encrypted_response =
-                            encrypted_response.expect("response payload should exist");
-                        let decrypted = relay_crypto::decrypt_payload_for_private_key(
-                            client_private_key,
-                            &encrypted_response,
-                        )
-                        .expect("response should decrypt");
-                        serde_json::from_slice(&decrypted.plaintext)
-                            .expect("local response should deserialize")
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(payload))) => {
+                    match serde_json::from_str::<RelayEnvelope>(&payload)
+                        .expect("relay envelope should parse")
+                    {
+                        RelayEnvelope::ClientResponse {
+                            request_id: response_request_id,
+                            encrypted_response,
+                            error,
+                        } => {
+                            assert_eq!(response_request_id, request_id);
+                            assert!(error.is_none(), "unexpected relay error: {error:?}");
+                            let encrypted_response =
+                                encrypted_response.expect("response payload should exist");
+                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                client_private_key,
+                                &encrypted_response,
+                            )
+                            .expect("response should decrypt");
+                            return serde_json::from_slice(&decrypted.plaintext)
+                                .expect("local response should deserialize");
+                        }
+                        RelayEnvelope::ClientEvent { .. } => {}
+                        other => panic!("unexpected envelope: {other:?}"),
                     }
-                    other => panic!("unexpected envelope: {other:?}"),
                 }
+                other => panic!("unexpected relay message: {other:?}"),
             }
-            other => panic!("unexpected relay message: {other:?}"),
         }
     }
 
@@ -1409,32 +1695,35 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        match socket.next().await {
-            Some(Ok(Message::Text(payload))) => {
-                match serde_json::from_str::<RelayEnvelope>(&payload)
-                    .expect("relay envelope should parse")
-                {
-                    RelayEnvelope::ClientResponse {
-                        request_id: response_request_id,
-                        encrypted_response,
-                        error,
-                    } => {
-                        assert_eq!(response_request_id, request_id);
-                        assert!(error.is_none(), "unexpected relay error: {error:?}");
-                        let encrypted_response =
-                            encrypted_response.expect("response payload should exist");
-                        let decrypted = relay_crypto::decrypt_payload_for_private_key(
-                            client_private_key,
-                            &encrypted_response,
-                        )
-                        .expect("response should decrypt");
-                        serde_json::from_slice(&decrypted.plaintext)
-                            .expect("json response should deserialize")
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(payload))) => {
+                    match serde_json::from_str::<RelayEnvelope>(&payload)
+                        .expect("relay envelope should parse")
+                    {
+                        RelayEnvelope::ClientResponse {
+                            request_id: response_request_id,
+                            encrypted_response,
+                            error,
+                        } => {
+                            assert_eq!(response_request_id, request_id);
+                            assert!(error.is_none(), "unexpected relay error: {error:?}");
+                            let encrypted_response =
+                                encrypted_response.expect("response payload should exist");
+                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                client_private_key,
+                                &encrypted_response,
+                            )
+                            .expect("response should decrypt");
+                            return serde_json::from_slice(&decrypted.plaintext)
+                                .expect("json response should deserialize");
+                        }
+                        RelayEnvelope::ClientEvent { .. } => {}
+                        other => panic!("unexpected envelope: {other:?}"),
                     }
-                    other => panic!("unexpected envelope: {other:?}"),
                 }
+                other => panic!("unexpected relay message: {other:?}"),
             }
-            other => panic!("unexpected relay message: {other:?}"),
         }
     }
 
@@ -1467,6 +1756,60 @@ mod tests {
                     }
                 }
                 other => panic!("unexpected relay message: {other:?}"),
+            }
+        }
+    }
+
+    async fn expect_client_event_envelope<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+        client_private_key: &str,
+    ) -> (u64, serde_json::Value)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(payload))) => {
+                    match serde_json::from_str::<RelayEnvelope>(&payload)
+                        .expect("relay envelope should parse")
+                    {
+                        RelayEnvelope::ClientEvent {
+                            event_id,
+                            encrypted_event,
+                            ..
+                        } => {
+                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                client_private_key,
+                                &encrypted_event,
+                            )
+                            .expect("event should decrypt");
+                            return (
+                                event_id,
+                                serde_json::from_slice(&decrypted.plaintext)
+                                    .expect("event should deserialize"),
+                            );
+                        }
+                        RelayEnvelope::ClientResponse { .. } => continue,
+                        other => panic!("unexpected envelope: {other:?}"),
+                    }
+                }
+                other => panic!("unexpected relay message: {other:?}"),
+            }
+        }
+    }
+
+    async fn expect_named_client_event<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+        client_private_key: &str,
+        expected_event: &str,
+    ) -> (u64, serde_json::Value)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let envelope = expect_client_event_envelope(socket, client_private_key).await;
+            if envelope.1["event"] == serde_json::json!(expected_event) {
+                return envelope;
             }
         }
     }

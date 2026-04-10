@@ -28,7 +28,7 @@ use crate::terminal::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
-const RECENT_EVENT_LIMIT: usize = 256;
+pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -806,7 +806,7 @@ fn try_send_outgoing_frame(
     }
 }
 
-fn event_session_id(event: &KernelEvent) -> Option<&str> {
+pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
     match event {
         KernelEvent::TerminalOutput { records } => {
             records.first().map(|record| record.session_id.as_str())
@@ -822,7 +822,7 @@ fn event_session_id(event: &KernelEvent) -> Option<&str> {
     }
 }
 
-fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
+pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
     match event {
         KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
             record

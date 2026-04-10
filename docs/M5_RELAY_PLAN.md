@@ -259,6 +259,9 @@ The relay path now also supports the narrow interactive session request surface 
 
 Keep durable reconnect/resume semantics and broader terminal transport hardening for the next slice.
 
+Relay-backed kernel event subscriptions now support reconnect/resubscribe with `resume_from_event_id`
+and replay of recent encrypted events from the daemon-side relay event cache.
+
 ### Slice 6. Remote Terminal Flow
 
 Add:

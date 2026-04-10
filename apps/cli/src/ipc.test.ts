@@ -407,6 +407,101 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
   }])
 })
 
+test("LocalIpcClient reconnects and resubscribes to relay events with the last received event id", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  const subscribeFrames: Array<Record<string, unknown>> = []
+  let connectionCount = 0
+  server.on("connection", (socket) => {
+    connectionCount += 1
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      if (frame.kind === "client_connect") {
+        const daemon = createECDH("prime256v1")
+        const daemonPublicKey = daemon.generateKeys().toString("base64")
+        ;(socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon = daemon
+        socket.send(JSON.stringify({
+          kind: "client_connected",
+          target: frame.target,
+          daemon_public_key: daemonPublicKey,
+        }))
+        return
+      }
+      if (frame.kind === "client_subscribe") {
+        subscribeFrames.push(frame)
+        const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          encrypted_response: encryptRelayPayload(
+            daemon,
+            frame.client_public_key,
+            Buffer.from(JSON.stringify({ ok: true, resumed_from_event_id: frame.resume_from_event_id }), "utf8"),
+          ),
+          error: null,
+        }))
+        if (connectionCount === 1) {
+          socket.send(JSON.stringify({
+            kind: "client_event",
+            subscription_id: frame.subscription_id,
+            event_id: 1,
+            encrypted_event: encryptRelayPayload(
+              daemon,
+              frame.client_public_key,
+              Buffer.from(JSON.stringify({ event: "heartbeat", session_id: frame.session_id }), "utf8"),
+            ),
+          }))
+          setTimeout(() => socket.close(), 10)
+        } else {
+          socket.send(JSON.stringify({
+            kind: "client_event",
+            subscription_id: frame.subscription_id,
+            event_id: 2,
+            encrypted_event: encryptRelayPayload(
+              daemon,
+              frame.client_public_key,
+              Buffer.from(JSON.stringify({
+                event: "transport_resumed",
+                session_id: frame.session_id,
+                resumed_from_event_id: frame.resume_from_event_id,
+              }), "utf8"),
+            ),
+          }))
+        }
+      }
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint, {
+    relayAuthToken: "secret",
+    targetDaemonId: "daemon-1",
+  })
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => {
+    events.push(event)
+  })
+  t.after(() => dispose())
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  await client.subscribeToKernelEvents("session-1", "attachment-1")
+  await new Promise((resolve) => setTimeout(resolve, 650))
+
+  assert.equal(subscribeFrames.length >= 2, true)
+  assert.equal(subscribeFrames[0]?.resume_from_event_id, null)
+  assert.equal(subscribeFrames[1]?.resume_from_event_id, 1)
+  assert.equal(events.some((event) => event.event === "transport_closed"), true)
+  assert.equal(events.some((event) => event.event === "transport_resumed"), true)
+})
+
 const RELAY_NONCE_LEN = 12
 const RELAY_TAG_LEN = 16
 const RELAY_INFO = Buffer.from("arroba-relay-v1", "utf8")
