@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
+use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -69,6 +70,14 @@ pub struct GetProviderCatalogRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderCommandCatalogsRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListRemoteMachinesRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListRemoteMachineKernelsRequest {
+    pub machine_ref: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderAuthStatusRequest {
@@ -497,6 +506,8 @@ pub enum LocalDaemonRequest {
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
+    ListRemoteMachines(ListRemoteMachinesRequest),
+    ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
@@ -593,6 +604,13 @@ pub enum LocalDaemonResponse {
     },
     ProviderCommandCatalogs {
         catalogs: BTreeMap<String, ProviderCommandCatalog>,
+    },
+    RemoteMachinesListed {
+        machines: Vec<RelayMachinePresence>,
+    },
+    RemoteMachineKernelsListed {
+        machine_ref: String,
+        kernels: Vec<RelayKernelPresence>,
     },
     ProviderAuthStatus {
         status: ProviderAuthStatus,

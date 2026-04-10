@@ -89,7 +89,7 @@ pub async fn run_daemon_relay_connector(
                     app.config().daemon_id.clone()
                 };
                 let register = {
-                    let app = app.lock().await;
+                    let mut app = app.lock().await;
                     RelayEnvelope::DaemonRegister {
                         registration: app.relay_registration(),
                     }
@@ -1471,7 +1471,6 @@ mod tests {
         let _ = server_shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }
-
 
     #[tokio::test(flavor = "multi_thread")]
     async fn terminal_resize_errors_are_returned_through_relay() {

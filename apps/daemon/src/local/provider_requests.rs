@@ -5,10 +5,13 @@ use crate::provider::{
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
     OpenCodeClient, OpenCodeProviderCatalog,
 };
+use tokio::runtime::Handle;
+use tokio::runtime::Runtime;
 
 use super::api::{
     GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
-    LocalDaemonResponse, LogoutProviderRequest, StartProviderLoginRequest,
+    ListRemoteMachineKernelsRequest, LocalDaemonResponse, LogoutProviderRequest,
+    StartProviderLoginRequest,
 };
 
 impl DaemonApp {
@@ -58,7 +61,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::ProviderRun { provider_run })
     }
 
-    pub(super) fn handle_get_provider_catalog_request(
+    pub(crate) fn handle_get_provider_catalog_request(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut catalogs = Vec::new();
@@ -105,6 +108,31 @@ impl DaemonApp {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::ProviderCommandCatalogs {
             catalogs: default_provider_command_catalogs(),
+        })
+    }
+
+    pub(super) fn handle_list_remote_machines_request(
+        &mut self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config().clone();
+        let machines = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+            &config,
+        ))?;
+        Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+    }
+
+    pub(super) fn handle_list_remote_machine_kernels_request(
+        &mut self,
+        request: ListRemoteMachineKernelsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config().clone();
+        let machine_ref = request.machine_ref;
+        let kernels = block_on_relay_query(
+            crate::transport::relay_discovery::list_live_kernels_for_machine(&config, &machine_ref),
+        )?;
+        Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
+            machine_ref,
+            kernels,
         })
     }
 
@@ -162,6 +190,22 @@ impl DaemonApp {
                 message: format!("provider `{provider}` does not expose a logout API"),
             }),
         }
+    }
+}
+
+fn block_on_relay_query<F, T>(future: F) -> Result<T, DaemonError>
+where
+    F: std::future::Future<Output = Result<T, DaemonError>>,
+{
+    if let Ok(handle) = Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        Runtime::new()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "create relay discovery runtime",
+                message: error.to_string(),
+            })?
+            .block_on(future)
     }
 }
 

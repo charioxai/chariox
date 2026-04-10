@@ -12,6 +12,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use crate::config::RelayConfig;
 use crate::protocol::{
     ClientTarget, DaemonRegistration, RelayConnectionRole, RelayEnvelope, RelayError,
+    RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
 };
 
 #[derive(Debug, Clone)]
@@ -82,6 +83,60 @@ impl RelayRegistry {
             role: peer.role.clone(),
             daemon_registration: peer.daemon_registration.clone(),
         })
+    }
+
+    pub fn live_machines(&self) -> Vec<RelayMachinePresence> {
+        let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
+        for registration in self.daemons.values() {
+            grouped
+                .entry(registration.machine_id.clone())
+                .or_default()
+                .push(registration);
+        }
+        grouped
+            .into_iter()
+            .map(|(machine_id, registrations)| {
+                let machine_alias = registrations
+                    .iter()
+                    .find_map(|registration| registration.machine_alias.clone());
+                let mut available_providers = registrations
+                    .iter()
+                    .flat_map(|registration| registration.available_providers.iter().cloned())
+                    .collect::<Vec<_>>();
+                available_providers.sort();
+                available_providers.dedup();
+                RelayMachinePresence {
+                    machine_id,
+                    machine_alias,
+                    kernel_count: registrations.len(),
+                    available_providers,
+                }
+            })
+            .collect()
+    }
+
+    pub fn live_kernels_for_machine(&self, machine_ref: &str) -> Vec<RelayKernelPresence> {
+        self.daemons
+            .values()
+            .filter(|registration| {
+                registration.machine_id == machine_ref
+                    || registration.machine_alias.as_deref() == Some(machine_ref)
+            })
+            .map(|registration| RelayKernelPresence {
+                kernel_id: registration.daemon_id.clone(),
+                machine_id: registration.machine_id.clone(),
+                machine_alias: registration.machine_alias.clone(),
+                kernel_alias: registration
+                    .kernel_alias
+                    .clone()
+                    .or_else(|| registration.daemon_alias.clone()),
+                available_providers: registration.available_providers.clone(),
+                capabilities: registration.capabilities.clone(),
+                accepting_remote_leases: registration.accepting_remote_leases,
+                leased_agent_count: registration.leased_agent_count,
+                local_session_count: registration.local_session_count,
+            })
+            .collect()
     }
 }
 
@@ -225,6 +280,31 @@ async fn handle_connection(
                             &RelayEnvelope::ClientConnected {
                                 target,
                                 daemon_public_key: daemon_public_key.unwrap_or_default(),
+                            },
+                        )?;
+                    }
+                    RelayEnvelope::ClientMetadataRequest {
+                        request_id,
+                        auth_token,
+                        query,
+                    } => {
+                        validate_shared_token(shared_token.as_deref(), &auth_token)?;
+                        let guard = registry.read().await;
+                        let (machines, kernels) = match query {
+                            RelayMetadataQuery::ListLiveMachines => {
+                                (Some(guard.live_machines()), None)
+                            }
+                            RelayMetadataQuery::ListLiveKernelsForMachine { machine_ref } => {
+                                (None, Some(guard.live_kernels_for_machine(&machine_ref)))
+                            }
+                        };
+                        send_envelope(
+                            &outgoing_tx,
+                            &RelayEnvelope::ClientMetadataResponse {
+                                request_id,
+                                machines,
+                                kernels,
+                                error: None,
                             },
                         )?;
                     }
@@ -512,6 +592,7 @@ async fn handle_connection(
                         break;
                     }
                     RelayEnvelope::ClientConnected { .. }
+                    | RelayEnvelope::ClientMetadataResponse { .. }
                     | RelayEnvelope::ClientResponse { .. }
                     | RelayEnvelope::DaemonRequest { .. }
                     | RelayEnvelope::DaemonSubscribe { .. }
@@ -723,9 +804,15 @@ mod tests {
                 auth_token: "secret".to_string(),
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
                 daemon_alias: Some("mbp".to_string()),
+                kernel_alias: Some("default".to_string()),
                 public_key: "public-key".to_string(),
                 capabilities: vec!["kernel_ws".to_string()],
+                available_providers: vec!["opencode".to_string()],
+                accepting_remote_leases: false,
+                leased_agent_count: 0,
+                local_session_count: 1,
             },
         };
         socket
@@ -750,6 +837,146 @@ mod tests {
         {
             let guard = registry.read().await;
             assert_eq!(guard.daemon_count(), 0);
+        }
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn metadata_queries_return_live_machines_and_kernels() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async(&url)
+            .await
+            .expect("daemon should connect to relay");
+        let register = RelayEnvelope::DaemonRegister {
+            registration: DaemonRegistration {
+                auth_token: "secret".to_string(),
+                daemon_id: "daemon-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
+                daemon_alias: Some("mbp".to_string()),
+                kernel_alias: Some("default".to_string()),
+                public_key: "public-key".to_string(),
+                capabilities: vec!["kernel_ws".to_string()],
+                available_providers: vec!["opencode".to_string(), "codex".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 2,
+                local_session_count: 3,
+            },
+        };
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&register)
+                    .expect("register envelope should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("register frame should send");
+
+        let (mut client_socket, _) = connect_async(&url)
+            .await
+            .expect("client should connect to relay");
+        let machines_request = RelayEnvelope::ClientMetadataRequest {
+            request_id: "machines-1".to_string(),
+            auth_token: "secret".to_string(),
+            query: RelayMetadataQuery::ListLiveMachines,
+        };
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&machines_request)
+                    .expect("machines request should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("machines request should send");
+        let machines_payload = match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected machines response: {other:?}"),
+        };
+        let machines_response: RelayEnvelope =
+            serde_json::from_str(&machines_payload).expect("machines response should decode");
+        match machines_response {
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: Some(machines),
+                kernels: None,
+                error: None,
+            } => {
+                assert_eq!(request_id, "machines-1");
+                assert_eq!(machines.len(), 1);
+                assert_eq!(machines[0].machine_id, "machine-1");
+                assert_eq!(machines[0].machine_alias.as_deref(), Some("workstation"));
+                assert_eq!(machines[0].available_providers, vec!["codex", "opencode"]);
+            }
+            other => panic!("unexpected machines response envelope: {other:?}"),
+        }
+
+        let kernels_request = RelayEnvelope::ClientMetadataRequest {
+            request_id: "kernels-1".to_string(),
+            auth_token: "secret".to_string(),
+            query: RelayMetadataQuery::ListLiveKernelsForMachine {
+                machine_ref: "workstation".to_string(),
+            },
+        };
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&kernels_request)
+                    .expect("kernels request should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("kernels request should send");
+        let kernels_payload = match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected kernels response: {other:?}"),
+        };
+        let kernels_response: RelayEnvelope =
+            serde_json::from_str(&kernels_payload).expect("kernels response should decode");
+        match kernels_response {
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: Some(kernels),
+                error: None,
+            } => {
+                assert_eq!(request_id, "kernels-1");
+                assert_eq!(kernels.len(), 1);
+                assert_eq!(kernels[0].kernel_id, "daemon-1");
+                assert_eq!(kernels[0].machine_alias.as_deref(), Some("workstation"));
+                assert_eq!(kernels[0].available_providers, vec!["opencode", "codex"]);
+                assert!(kernels[0].accepting_remote_leases);
+                assert_eq!(kernels[0].leased_agent_count, 2);
+                assert_eq!(kernels[0].local_session_count, 3);
+            }
+            other => panic!("unexpected kernels response envelope: {other:?}"),
         }
 
         let _ = shutdown_tx.send(());

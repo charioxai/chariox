@@ -24,6 +24,7 @@ use crate::capability::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::local::LocalDaemonResponse;
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::pty::PtyManager;
 use crate::session::{
@@ -883,17 +884,37 @@ impl DaemonApp {
         }
     }
 
-    pub fn relay_registration(&self) -> DaemonRegistration {
+    pub fn relay_registration(&mut self) -> DaemonRegistration {
+        let available_providers = self
+            .handle_get_provider_catalog_request()
+            .ok()
+            .and_then(|response| match response {
+                LocalDaemonResponse::ProviderCatalog { catalog } => Some(
+                    catalog
+                        .all
+                        .into_iter()
+                        .map(|provider| provider.id)
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
         DaemonRegistration {
             auth_token: self.config.relay_token.clone().unwrap_or_default(),
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
+            machine_alias: self.config.host_machine_alias.clone(),
             daemon_alias: self.config.daemon_alias.clone(),
+            kernel_alias: self.config.daemon_alias.clone(),
             public_key: self.config.relay_public_key.clone(),
             capabilities: vec![
                 "kernel_websocket".to_string(),
                 "relay_request_proxy".to_string(),
             ],
+            available_providers,
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: self.sessions().list_sessions().len() as u32,
         }
     }
 

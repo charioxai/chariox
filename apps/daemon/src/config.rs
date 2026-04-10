@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct DaemonConfig {
     pub daemon_id: String,
     pub host_machine_id: String,
+    pub host_machine_alias: Option<String>,
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
@@ -69,6 +70,11 @@ impl DaemonConfig {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| runtime_identity.machine_id.clone()),
+            host_machine_alias: env::var("ARROBA_MACHINE_ALIAS")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .or(runtime_identity.machine_alias),
             daemon_alias: env::var("ARROBA_DAEMON_ALIAS")
                 .ok()
                 .map(|value| value.trim().to_string())
@@ -115,6 +121,7 @@ impl DaemonConfig {
             session_history_root: Self::default_session_history_root(),
             daemon_id,
             host_machine_id: host_machine_id.into(),
+            host_machine_alias: None,
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
@@ -244,6 +251,8 @@ struct RuntimeIdentity {
     daemon_id: String,
     machine_id: String,
     #[serde(default)]
+    machine_alias: Option<String>,
+    #[serde(default)]
     daemon_alias: Option<String>,
     relay_public_key: String,
     relay_private_key: String,
@@ -269,6 +278,7 @@ fn load_or_create_runtime_identity() -> RuntimeIdentity {
     let identity = RuntimeIdentity {
         daemon_id: format!("daemon-{}", generate_identity_suffix()),
         machine_id: format!("machine-{}", generate_identity_suffix()),
+        machine_alias: None,
         daemon_alias: None,
         relay_public_key,
         relay_private_key,
@@ -344,6 +354,7 @@ mod tests {
         let config = DaemonConfig::for_tests();
         assert_eq!(config.daemon_id, "daemon-test");
         assert_eq!(config.host_machine_id, "machine-test");
+        assert_eq!(config.host_machine_alias, None);
         assert_eq!(config.daemon_alias, None);
     }
 
@@ -355,6 +366,7 @@ mod tests {
         let identity = RuntimeIdentity {
             daemon_id: format!("daemon-{}", generate_identity_suffix()),
             machine_id: format!("machine-{}", generate_identity_suffix()),
+            machine_alias: None,
             daemon_alias: None,
             relay_public_key,
             relay_private_key,

@@ -87,6 +87,8 @@ import {
   getSessionStateRequest,
   launchProviderRunRequest,
   listProviderProcessesRequest,
+  listRemoteMachineKernelsRequest,
+  listRemoteMachinesRequest,
   logoutProviderRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
@@ -4941,6 +4943,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleMachineCommand,
     handleWorkflowCommand,
   } = createCommandActionHandlers({
     workspace: options.workspace ?? process.cwd(),
@@ -4972,6 +4975,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
     startProviderLogin: (provider) => startProviderLogin(client, provider),
     logoutProvider: (provider) => logoutProvider(client, provider),
+    listRemoteMachines: () => listRemoteMachines(client),
+    listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     listProviderProcesses: async (provider) => {
       const response = await client.send<Record<string, unknown>>(
         listProviderProcessesRequest(provider),
@@ -5177,6 +5182,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onAgent: async (command) => {
         try {
           await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onMachine: async (command) => {
+        try {
+          await handleMachineCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -6811,6 +6823,52 @@ async function getProviderCommandCatalogs(
   }
 }
 
+async function listRemoteMachines(client: LocalIpcClient): Promise<Array<{
+  machine_id: string
+  machine_alias?: string | null
+  kernel_count: number
+  available_providers?: string[]
+}>> {
+  const response = await client.send<Record<string, unknown>>(listRemoteMachinesRequest())
+  const payload = expectVariant<{
+    machines: Array<{
+      machine_id: string
+      machine_alias?: string | null
+      kernel_count: number
+      available_providers?: string[]
+    }>
+  }>(response, "RemoteMachinesListed")
+  return payload.machines
+}
+
+async function listRemoteMachineKernels(client: LocalIpcClient, machineRef: string): Promise<Array<{
+  kernel_id: string
+  machine_id: string
+  machine_alias?: string | null
+  kernel_alias?: string | null
+  available_providers?: string[]
+  capabilities?: string[]
+  accepting_remote_leases?: boolean
+  leased_agent_count?: number
+  local_session_count?: number
+}>> {
+  const response = await client.send<Record<string, unknown>>(listRemoteMachineKernelsRequest(machineRef))
+  const payload = expectVariant<{
+    kernels: Array<{
+      kernel_id: string
+      machine_id: string
+      machine_alias?: string | null
+      kernel_alias?: string | null
+      available_providers?: string[]
+      capabilities?: string[]
+      accepting_remote_leases?: boolean
+      leased_agent_count?: number
+      local_session_count?: number
+    }>
+  }>(response, "RemoteMachineKernelsListed")
+  return payload.kernels
+}
+
 async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
@@ -7022,7 +7080,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /machine list         list live remote machines visible through the relay\n  /machine kernels <m>  list live kernels for a remote machine\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 

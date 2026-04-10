@@ -20,10 +20,59 @@ pub struct DaemonRegistration {
     pub daemon_id: String,
     pub machine_id: String,
     #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
     pub daemon_alias: Option<String>,
+    #[serde(default)]
+    pub kernel_alias: Option<String>,
     pub public_key: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub accepting_remote_leases: bool,
+    #[serde(default)]
+    pub leased_agent_count: u32,
+    #[serde(default)]
+    pub local_session_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayMachinePresence {
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    pub kernel_count: usize,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayKernelPresence {
+    pub kernel_id: String,
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub kernel_alias: Option<String>,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub accepting_remote_leases: bool,
+    #[serde(default)]
+    pub leased_agent_count: u32,
+    #[serde(default)]
+    pub local_session_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayMetadataQuery {
+    ListLiveMachines,
+    ListLiveKernelsForMachine { machine_ref: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +106,17 @@ pub enum RelayEnvelope {
     ClientConnected {
         target: ClientTarget,
         daemon_public_key: String,
+    },
+    ClientMetadataRequest {
+        request_id: String,
+        auth_token: String,
+        query: RelayMetadataQuery,
+    },
+    ClientMetadataResponse {
+        request_id: String,
+        machines: Option<Vec<RelayMachinePresence>>,
+        kernels: Option<Vec<RelayKernelPresence>>,
+        error: Option<RelayError>,
     },
     ClientRequest {
         request_id: String,
@@ -132,9 +192,15 @@ mod tests {
                 auth_token: "secret".to_string(),
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
                 daemon_alias: Some("mbp".to_string()),
+                kernel_alias: Some("default".to_string()),
                 public_key: "public-key".to_string(),
                 capabilities: vec!["kernel_ws".to_string()],
+                available_providers: vec!["opencode".to_string()],
+                accepting_remote_leases: false,
+                leased_agent_count: 0,
+                local_session_count: 1,
             },
         };
         let json = serde_json::to_string(&envelope).expect("envelope should serialize");

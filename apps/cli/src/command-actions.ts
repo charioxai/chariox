@@ -139,6 +139,23 @@ type CommandActionDeps = {
   getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
   logoutProvider?: (provider: string) => Promise<{ provider: string }>
+  listRemoteMachines?: () => Promise<Array<{
+    machine_id: string
+    machine_alias?: string | null
+    kernel_count: number
+    available_providers?: string[]
+  }>>
+  listRemoteMachineKernels?: (machineRef: string) => Promise<Array<{
+    kernel_id: string
+    machine_id: string
+    machine_alias?: string | null
+    kernel_alias?: string | null
+    available_providers?: string[]
+    capabilities?: string[]
+    accepting_remote_leases?: boolean
+    leased_agent_count?: number
+    local_session_count?: number
+  }>>
   listProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   logViewCommand?: (fields: Record<string, unknown>) => void
@@ -877,6 +894,59 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           "error",
         )
     }
+  }
+
+  const handleMachineCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "machine" }>,
+  ): Promise<void> => {
+    const args = command.args
+    const subcommand = args[0]
+    if (subcommand === "list") {
+      if (!deps.listRemoteMachines) {
+        deps.flashFooter("remote machine discovery is unavailable in this build", "error")
+        return
+      }
+      const machines = await deps.listRemoteMachines()
+      if (machines.length === 0) {
+        deps.flashFooter("no live remote machines available through relay", "info")
+        return
+      }
+      deps.appendNotice(
+        machines
+          .map((machine) =>
+            `${machine.machine_alias ?? "-"} id=${machine.machine_id} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}`
+          )
+          .join("\n"),
+      )
+      deps.flashFooter(`listed ${machines.length} live remote machine(s)`, "info")
+      return
+    }
+    if (subcommand === "kernels") {
+      if (!deps.listRemoteMachineKernels) {
+        deps.flashFooter("remote machine discovery is unavailable in this build", "error")
+        return
+      }
+      const machineRef = args[1]
+      if (!machineRef) {
+        deps.flashFooter("usage: /machine kernels <machine-ref>", "error")
+        return
+      }
+      const kernels = await deps.listRemoteMachineKernels(machineRef)
+      if (kernels.length === 0) {
+        deps.flashFooter(`no live kernels found for machine ${machineRef}`, "info")
+        return
+      }
+      deps.appendNotice(
+        kernels
+          .map((kernel) =>
+            `${kernel.kernel_alias ?? "-"} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
+          )
+          .join("\n"),
+      )
+      deps.flashFooter(`listed ${kernels.length} live kernel(s) for ${machineRef}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /machine list | /machine kernels <machine-ref>", "error")
   }
 
   const handleWorkflowCommand = async (
@@ -1768,6 +1838,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleMachineCommand,
     handleWorkflowCommand,
   }
 }

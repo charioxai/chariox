@@ -515,6 +515,18 @@ export function getProviderCatalogRequest() {
   return { GetProviderCatalog: null }
 }
 
+export function listRemoteMachinesRequest() {
+  return { ListRemoteMachines: null }
+}
+
+export function listRemoteMachineKernelsRequest(machineRef: string) {
+  return {
+    ListRemoteMachineKernels: {
+      machine_ref: machineRef,
+    },
+  }
+}
+
 export function getProviderCommandCatalogsRequest() {
   return { GetProviderCommandCatalogs: null }
 }
