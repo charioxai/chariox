@@ -62,6 +62,7 @@ Current implementation mapping:
 - the current OpenCode adapter talks to a local OpenCode HTTP + SSE endpoint
 - the current daemon-client transport is still local Unix-socket IPC
 - relay, directory, and unified node transport are later implementation work, not current code
+- the relay is planned as an independent app, separate from both daemon and CLI
 
 ## 2.1 Architectural Rules
 
@@ -70,6 +71,7 @@ Current implementation mapping:
 - Transport and discovery are separate concerns.
 - Relay forwards traffic; it does not own rendezvous/discovery.
 - Directory provides identity/discovery/reachability metadata; it does not own workspace state.
+- Managed identity/discovery service, if introduced later, should remain outside this repository and consume the same relay/directory boundaries rather than becoming a dependency of core runtime code.
 - New features should land in kernel/protocol layers first, not UI-specific code.
 
 ## 2.2 Connectivity Model
@@ -315,14 +317,26 @@ The relay server is a lightweight transport-forwarding layer.
 Responsibilities:
 
 - websocket relay
-- presence plus queue/config/session metadata as needed
-- schedule metadata and operational metadata
+- daemon connection registry and liveness
+- client-to-daemon request/response/event forwarding
+- minimal routing metadata needed to target a connected daemon
 
 Current architectural interpretation:
 
 - the relay should forward transport, not own discovery/rendezvous
 - local and remote connections should ideally share one daemon-owned application protocol even if they arrive through different physical paths
 - the relay must not become the workspace or workflow authority
+- the relay should be implemented as an independent Rust app
+- daemon connections should be outbound from daemon to relay so the model works cleanly through NAT/firewall boundaries
+- one daemon should use one active relay connection at a time in v1, even if multiple relay endpoints can be configured
+- self-hosted relay mode must work without any external managed identity/discovery service
+- the same CLI should support both:
+  - local direct daemon connection
+  - relay-mediated remote daemon connection
+- connection-mode choice should be explicit in v1:
+  - `local`
+  - `relay`
+  - possible `auto` only after the transport model is stable
 
 ### 3.5 Directory Service
 
@@ -337,6 +351,7 @@ It is distinct from relay:
 
 - directory answers where/how a kernel or published endpoint can be reached
 - relay forwards traffic after that decision is made
+- a later managed service may provide identity/discovery on top of these boundaries, but that service remains outside this repository
 
 ### 3.6 Agent Endpoints
 
@@ -737,11 +752,14 @@ Mandatory behavior:
 - workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
 - unsupported provider versions emit compatibility warnings but retain best-effort `/<provider> ...` completions
 - provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Arroba to take ownership of provider credentials
+- relay-mediated remote attachment must not change daemon authority over sessions, provider runs, or workflow state
 
 ## 9. Deployment and Evolution Notes
 
 v1 is local-first and single-active-host-per-session. Architecture should remain forward-compatible with:
 
+- relay-backed remote terminal/client attachment
+- daemon identity and machine identity for remote registration
 - richer multi-machine scheduling/migration
 - expanded provider adapter capabilities
 - optional content persistence policies
@@ -776,6 +794,12 @@ This section captures current implementation choices for v1 so engineering work 
 ### 10.4 Backend Stack
 
 - Fastify
+
+### 10.4.1 Relay Stack
+
+- Rust for the relay implementation baseline
+- independent app/process, separate from both daemon and CLI
+- shared protocol/domain model should be reused where practical, while keeping relay transport-only
 
 ### 10.5 Data Layer
 

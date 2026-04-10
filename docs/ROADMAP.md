@@ -10,7 +10,8 @@ Current milestone status:
 - M1 completed on 2026-03-17
 - M2 completed on 2026-03-18
 - M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
-- M4 is now the OpenCode-first multi-agent and node-connectivity phase: the first manual multi-agent runtime slice has landed, while stabilization, same-node remote connectivity, and multi-machine session behavior remain open
+- M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization and workflow polish remain open
+- M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
 
 ## 1. Roadmap Goals
 
@@ -30,10 +31,13 @@ Current milestone status:
 - M1: Core Session Runtime
 - M2: End-to-End Local OpenCode Baseline
 - M3: OpenCode Completion and Local Capability Hardening
-- M4: OpenCode Agent Harnessing and Node Connectivity
-- M5: CLI Polish and Multi-Platform Clients
-- M6: Multi-Provider Expansion and Adapter Generalization
-- M7: v1 Stabilization and Launch
+- M4: OpenCode Local Runtime Completion
+- M5: Relay and Remote Transport
+- M6: Remote Agents and Machine Membership
+- M7: Additional Clients
+- M8: Workflow Interconnection
+- M9: Multi-Provider Expansion and Adapter Generalization
+- M10: v1 Stabilization and Launch
 
 ## 2.1 Delivery Sequence Within v1
 
@@ -42,9 +46,11 @@ Multi-agent workflow execution remains part of v1, but it is no longer the immed
 Rollout priority:
 
 - first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
-- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, same-node remote connectivity, and multi-machine session support
-- then polish the TypeScript CLI as the reference client
-- then add multi-platform clients on the same daemon/protocol model
+- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, workflow runtime behavior, and local hardening
+- then add relay-backed remote transport
+- then add remote agents and machine membership on top of relay
+- then add additional clients on the same daemon/protocol model
+- then add workflow interconnection on top of remote agent connectivity
 - then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
 - workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/node-connectivity completion and fit inside the same long-term daemon architecture
 - the workflow model is now explicitly multi-definition per workspace and multi-endpoint per workflow; the first implementation slice should start with kernel-backed workflow definitions/endpoints before graph scheduling
@@ -142,14 +148,14 @@ Exit criteria:
 - OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
 - detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
 
-## M4 - OpenCode Agent Harnessing and Node Connectivity
+## M4 - OpenCode Local Runtime Completion
 
 Status:
 
-- in progress as of 2026-03-31
+- in progress as of 2026-04-10
 - the first manual multi-agent runtime slice is now in the codebase: top-level session agents are real execution targets, direct prompts route to the focused agent, provider runs are tracked per agent, agent-scoped history/output are recorded, and the TypeScript CLI supports `individual` and `split` multi-agent response modes
 - the current TypeScript CLI split view is still an initial slice, centered on the primary transcript plus up to two auxiliary panes
-- same-node remote connectivity for terminals and agents is still pending as part of this same OpenCode-first completion phase
+- relay-backed remote connectivity has been moved out of this milestone and is now the primary goal of M5
 - the first transport/alignment slice has now landed:
   - kernel-facing WebSocket transport for the TypeScript CLI
   - managed vs external OpenCode endpoint binding
@@ -179,7 +185,6 @@ Status:
 - recent OpenCode multi-agent stabilization now covers:
   - queued prompts preserving their target agent run even while another agent is actively working
   - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
-- multi-machine session behavior is still pending after that, on the same node-oriented architecture
 - OpenCode-backed multi-agent runtime stabilization is still needed
 
 Outcomes:
@@ -202,18 +207,15 @@ Still pending in M4:
 
 - OpenCode-path multi-agent stabilization
 - broader agent interactions for harnessing on top of the current focused-agent runtime
-- same-kernel remote terminal connectivity on top of the hardened kernel-CLI WebSocket transport
 - workflow runnable validation and preflight diagnostics (missing endpoints/nodes/agents, invalid graphs)
 - broader automated interaction coverage:
   - deterministic kernel/CLI transcript-flow integration tests
   - PTY-driven terminal smoke tests for visible CLI behavior
-- relay-backed same-kernel remote member support for terminals and agents
 - generic agent transport remains deferred until after additional agent integrations beyond OpenCode
 - workspace coordination baseline:
   - per-agent worktree or branch allocation
   - file/workspace claim tracking
   - mergeability/integration validation
-- multi-machine session ownership, reassignment, and resume semantics on the same node-oriented one-provider baseline
 - daemon-owned provider runtime process ledger is now landed:
   - tracked managed provider processes
   - tracked provider-native session ids per provider run
@@ -241,6 +243,10 @@ Still pending in M4:
 - daemon internal modularization is now landed:
   - `SessionService` split into focused internal modules
   - local API split into module + request/response type/test files
+- local completion still pending:
+  - richer workflow inspection/history UI
+  - watchdog cron syntax
+  - current CLI syntax/structure stabilization where needed
 
 The following workflow-runtime items are no longer pending in M4:
 
@@ -268,32 +274,97 @@ Additional M4 workflow-runtime item now planned:
 Exit criteria:
 
 - manual multi-agent session execution works through the daemon node, with visible per-agent panes/history and correct focused-agent prompt routing, and the OpenCode-backed runtime path is stable under integration coverage
-- same-node local and relayed terminals/agents can attach through one daemon-owned protocol model without changing session authority
 - workspace coordination prevents or explicitly surfaces conflicting edits before shared integration
-- multi-machine session reassignment/resume behavior is coherent on the same OpenCode-first node model
 - the one-provider development cycle can be considered closed without depending on a second provider for validation
 - the primary kernel/CLI path has transport-contract, daemon-integration, and live smoke coverage strong enough that transport refactors do not depend on compile-only verification
+- local workflow runtime behavior is stable enough that remote transport work does not need to also solve local runtime ambiguity
 
-## M5 - CLI Polish and Multi-Platform Clients
+## M5 - Relay and Remote Transport
+
+Planning reference:
+
+- `docs/M5_RELAY_PLAN.md`
 
 Outcomes:
 
-- polished TypeScript CLI as the reference Arroba client
-- refined split-pane and multi-agent transcript UX
-- UX and interaction cleanup on the OpenCode-first path before surface expansion
-- server relay and discovery flows
-- machine registry and presence
-- session-scoped E2E encryption for user-generated in-transit payloads
-- operational metadata storage boundaries enforced
-- web client and relay-backed remote attachment path
-- iOS and Android clients on the same daemon/protocol model
+- standalone relay service as an independent Rust app
+- daemon-owned stable identity for remote registration:
+  - persisted `daemon_id`
+  - persisted `machine_id`
+  - optional human-friendly daemon alias
+- daemon outbound registration to one active relay endpoint at a time
+- same CLI supports both:
+  - local direct connection
+  - relay-mediated remote connection
+- explicit connection-mode selection in the CLI:
+  - `local`
+  - `relay`
+  - possible `auto` only after the model is stable
+- remote terminal attachment through relay using the same daemon-owned request/event semantics
+- remote event subscription, heartbeat, reconnect, and resume behavior
+- self-hosted relay mode for the open-source project:
+  - static/shared credential configuration
+  - explicit daemon targeting by id or alias
+- narrow roadmap note only:
+  - a separate service may later integrate with the relay for managed identity/discovery, but that service remains outside this repository and roadmap scope
 
 Exit criteria:
 
-- the TypeScript CLI is the polished reference client for the local/runtime model
-- web and mobile surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
+- a daemon can register to a relay and remain connected through an outbound connection
+- a CLI can connect through the relay to a selected daemon by id or alias
+- remote prompt submission and output streaming work without changing daemon session authority
+- the relay remains a transport broker, not a workspace/workflow authority
+- open-source self-hosted relay usage does not depend on any external managed service
 
-## M6 - Multi-Provider Expansion and Adapter Generalization
+## M6 - Remote Agents and Machine Membership
+
+Outcomes:
+
+- remote machine registration on top of relay connectivity
+- remote daemons can host top-level Arroba-managed agents for the same logical collaboration model
+- session membership spanning multiple machines
+- remote agent routing and lifecycle ownership
+- provider-run ownership and state reporting for remote nodes
+- remote member resume/reassignment semantics
+
+Exit criteria:
+
+- a session can include remote machine-hosted agents without creating a second session authority
+- daemon and machine identity are strong enough for remote resume/reassignment
+- remote agent lifecycle is observable and debuggable through the same kernel-owned model
+
+## M7 - Additional Clients
+
+Outcomes:
+
+- polished TypeScript CLI as the reference Arroba client for both local and relay-backed use
+- refined split-pane and multi-agent transcript UX
+- session-scoped E2E encryption for user-generated in-transit payloads
+- operational metadata storage boundaries enforced
+- iOS terminal client on the same daemon/protocol model
+- later web and Android clients if still in v1 scope
+
+Exit criteria:
+
+- the TypeScript CLI is the polished reference client for the local and relay-backed runtime model
+- additional client surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
+
+## M8 - Workflow Interconnection
+
+Outcomes:
+
+- workflow nodes bound to remote agents and machines
+- remote workflow message routing and handoff delivery
+- cross-machine workflow-run progression on the same logical runtime model
+- remote workflow failure/cancellation semantics
+- endpoint-facing workflow outputs preserved across inter-machine execution
+
+Exit criteria:
+
+- workflow runs can cross machine boundaries without moving workflow authority out of the daemon/kernel model
+- routing, failure, and output delivery semantics remain machine-parseable and observable
+
+## M9 - Multi-Provider Expansion and Adapter Generalization
 
 Outcomes:
 
@@ -321,7 +392,7 @@ Exit criteria:
 - provider switching works without depending on provider-private hidden state
 - extension binding and MCP visibility are enforced per top-level agent
 
-## M7 - v1 Stabilization and Launch
+## M10 - v1 Stabilization and Launch
 
 Outcomes:
 
