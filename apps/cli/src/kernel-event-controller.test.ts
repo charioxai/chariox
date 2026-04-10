@@ -14,6 +14,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
     recordTurnActivity: (source: string) => calls.push(`turn-activity:${source}`),
     resolveTerminalRecordAgentId: (record: TerminalOutputRecord) => record.agent_id ?? null,
     setStreamingAgentId: (agentId: string) => calls.push(`streaming:${agentId}`),
+    markAgentBusy: (agentId: string | null | undefined) => calls.push(`busy:${agentId ?? "null"}`),
     splitAgentResponseMode: () => false,
     visibleTranscriptAgentId: () => "agent-a",
     focusedAgentId: () => "agent-a",
@@ -89,6 +90,7 @@ test("off-focus agent output updates the agent pane and preview without mutating
     "activity:terminal_record",
     "turn-activity:terminal_record",
     "streaming:agent-b",
+    "busy:agent-b",
     "pane-chunk:agent-b:assistant:hello from b\n:reply-1",
     "preview:agent-b:provider_output:hello from b",
   ])
@@ -110,6 +112,7 @@ test("visible provider status updates activity and appends renderable status chu
     "activity:terminal_record",
     "turn-activity:terminal_record",
     "streaming:agent-a",
+    "busy:agent-a",
     "agent-activity:agent-a:Thinking",
     "provider-activity:Thinking",
     "provider-active:true",

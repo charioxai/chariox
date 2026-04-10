@@ -11,6 +11,10 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { batch, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 
+import {
+  normalizeRuntimeSession,
+  normalizeRuntimeSessions,
+} from "./cli-types.js"
 import type {
   AgentInstance,
   BootstrapState,
@@ -257,6 +261,7 @@ import {
 } from "./transcript-render.js"
 import {
   buildEmptyTranscriptRenderable,
+  buildLoadingTranscriptRenderable,
   buildNoSessionRenderable,
   buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
@@ -516,6 +521,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [nextHistoryCursor, setNextHistoryCursor] = createSignal<SessionHistoryCursor | null>(null)
   const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
+  const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
+  const [sessionHydrating, setSessionHydrating] = createSignal(false)
   const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)
   const [working, setWorking] = createSignal(sessionHasPromptWork(initialSession))
@@ -627,6 +634,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingPromptDraftPersist: ReturnType<typeof startTimeout> | undefined
   let pendingPromptDraftSessionId: string | null = null
   let pendingPromptDraftValue = ""
+  let submittingAgentId: string | null = null
 
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
@@ -901,6 +909,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptStateForAgent = (agentId: string | null | undefined) => agentPromptState(sessionState(), agentId)
   const agentQueuedDepth = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.queued_prompts.length ?? 0
   const agentActivePrompt = (agentId: string | null | undefined) => promptStateForAgent(agentId)?.active_prompt ?? null
+  const agentBusyLatch = (agentId: string | null | undefined) => agentId ? (agentBusyLatches()[agentId] ?? false) : false
   const anyPromptWork = () => sessionHasPromptWork(sessionState())
   const hasPromptWorkByAgent = () => {
     const state: Record<string, boolean> = {}
@@ -934,18 +943,43 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const toolLabel = activeToolLabelForAgent(agentId)
     return toolLabel ?? agentActivityLabel(agentId)
   }
+  const setAgentBusyLatch = (agentId: string | null | undefined, busy: boolean) => {
+    if (!agentId) {
+      return
+    }
+    setAgentBusyLatches((current) => {
+      if ((current[agentId] ?? false) === busy) {
+        return current
+      }
+      if (busy) {
+        return {
+          ...current,
+          [agentId]: true,
+        }
+      }
+      const next = { ...current }
+      delete next[agentId]
+      return next
+    })
+  }
+  const markAgentBusy = (agentId: string | null | undefined) => {
+    setAgentBusyLatch(agentId, true)
+  }
+  const clearAgentBusy = (agentId: string | null | undefined) => {
+    setAgentBusyLatch(agentId, false)
+  }
   const focusedAgentBusy = () => {
     const agentId = focusedAgentId()
     if (!agentId) {
       return false
     }
     const focused = sessionState().agents.find((agent) => agent.id === agentId) ?? null
-    return submitting()
+    return (submitting() && submittingAgentId === agentId)
       || agentHasPromptWork(sessionState(), agentId)
       || streamingAgentId() === agentId
       || Boolean(focusedActivityLabel())
+      || agentBusyLatch(agentId)
       || Boolean(focused && (focused.is_processing || focused.state === "Working"))
-      || (sessionState().agents.length <= 1 && working())
   }
   const shouldPreserveAgentActivityLabel = (agentId: string | null | undefined) => {
     if (!agentId) {
@@ -985,11 +1019,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     attached: isAttached(),
     daemonDisconnected: daemonDisconnected(),
     activeStatusLabel: focusedActivityLabel(),
-    focusedHasPromptWork: agentHasPromptWork(sessionState(), focusedAgentId()),
-    focusedIsProcessing: Boolean(focusedAgent() && (focusedAgent()!.is_processing || focusedAgent()!.state === "Working")),
-    focusedIsStreaming: streamingAgentId() === focusedAgentId(),
-    submitting: submitting(),
-    singleAgentWorkingLatch: sessionState().agents.length <= 1 && working(),
+    focusedBusy: focusedAgentBusy(),
   })
   const logProviderRunDebug = (message: string, run: RuntimeProviderRun | null, fields: Record<string, unknown> = {}) => {
     appLogger?.debug(message, {
@@ -1705,6 +1735,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setAgentActivityLabels({})
       setStreamingAgentId(null)
       setSubmitting(false)
+      submittingAgentId = null
+      setAgentBusyLatches({})
       setProviderActivityLabel(null)
       setActiveStatusLabel(null)
       if (!activePrompt() && statusLine() === "Cancellation requested.") {
@@ -1713,7 +1745,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       setWorking(false)
     })
     turnCompletionConfirmed = false
-    updateSessionChrome()
+    renderSessionChromeBoundary()
   }
   const scheduleTurnCompletion = () => {
     cancelPendingTurnCompletion()
@@ -1932,6 +1964,61 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     refreshPromptAttachmentHighlights()
     updateSessionChrome()
     ;(renderer as { requestRender?: () => void }).requestRender?.()
+  }
+
+  type SubmittedPromptUiSnapshot = {
+    rawPrompt: string
+    attachments: PendingPromptAttachment[]
+    sessionId: string | null
+  }
+
+  const beginSubmittedPromptUi = (rawPrompt: string): SubmittedPromptUiSnapshot => {
+    const snapshot: SubmittedPromptUiSnapshot = {
+      rawPrompt,
+      attachments: pendingAttachments().map((file) => ({ ...file })),
+      sessionId: attachmentState()?.session_id ?? null,
+    }
+    setPromptHistoryIndex(null)
+    setPromptHistoryDraft(null)
+    pendingPromptDraftSessionId = null
+    pendingPromptDraftValue = ""
+    clearPendingPromptDraftPersist()
+    if (promptInput) {
+      promptTextMuting = true
+      promptInput.clear()
+      promptInput.cursorOffset = 0
+      promptTextSnapshot = ""
+      promptTextMuting = false
+    } else {
+      setPromptText("")
+    }
+    syncPromptTextSnapshot()
+    clearPendingPromptAttachments()
+    syncCommandCenter("")
+    retainPromptFocus()
+    clearCommandCenter()
+    if (snapshot.sessionId) {
+      schedulePromptDraftPersist(snapshot.sessionId, "")
+    }
+    return snapshot
+  }
+
+  const restoreFailedPromptUi = (snapshot: SubmittedPromptUiSnapshot | null | undefined) => {
+    if (!snapshot) {
+      return
+    }
+    setPromptHistoryIndex(null)
+    setPromptHistoryDraft(null)
+    setPendingAttachments(snapshot.attachments.map((file) => ({ ...file })))
+    setPromptText(snapshot.rawPrompt)
+    syncPromptTextSnapshot()
+    refreshPromptAttachmentHighlights()
+    syncCommandCenter(snapshot.rawPrompt)
+    retainPromptFocus()
+    if (snapshot.sessionId) {
+      schedulePromptDraftPersist(snapshot.sessionId, snapshot.rawPrompt)
+    }
+    updateSessionChrome()
   }
   createEffect(() => {
     const attachedSessionId = attachmentState()?.session_id ?? null
@@ -2463,6 +2550,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     recordTurnActivity("prompt_submit")
     turnCompletionConfirmed = false
     const targetAgentId = agentId ?? focusedAgentId()
+    markAgentBusy(targetAgentId)
     clearExpandedTurnsForAgent(targetAgentId)
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
       const paneEntries = agentPaneEntries()[targetAgentId] ?? []
@@ -2473,7 +2561,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       setSubmitting(true)
       setWorking(true)
-      updateSessionChrome()
+      renderSessionChromeBoundary()
       return
     }
     const turnId = nextTurnId
@@ -2483,8 +2571,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     syncVisibleTranscriptPreview()
     setSubmitting(true)
     setWorking(true)
-    updateSessionChrome()
+    renderSessionChromeBoundary()
     scrollTranscriptToBottom()
+  }
+
+  const beginPromptSubmission = (agentId?: string | null) => {
+    recordTurnActivity("prompt_submit")
+    turnCompletionConfirmed = false
+    cancelPendingTurnCompletion()
+    const targetAgentId = agentId ?? focusedAgentId()
+    submittingAgentId = targetAgentId
+    markAgentBusy(targetAgentId)
+    setStreamingAgentId(targetAgentId)
+    setSubmitting(true)
+    setWorking(true)
+    renderSessionChromeBoundary()
   }
 
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
@@ -2501,9 +2602,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     cancelPendingTurnCompletion()
     setWorking(false)
     setSubmitting(false)
+    clearAgentBusy(visibleTranscriptAgentId())
+    submittingAgentId = null
     appendEntry({ role: "error", text: normalized, emphasis: "error" })
     syncVisibleTranscriptPreview()
-    updateSessionChrome()
+    renderSessionChromeBoundary()
     scrollTranscriptToBottom()
   }
 
@@ -2586,6 +2689,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const applySessionState = (nextSession: RuntimeSession) => {
+    nextSession = normalizeRuntimeSession(nextSession)
     const previousFocusedAgentId = focusedAgentId()
     const previousLayout = multiAgentResponseLayout()
     const promptLifecycle = derivePromptLifecycleTransition(sessionState(), nextSession)
@@ -2614,7 +2718,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setActiveStatusLabel(transition.nextFocusedActivityLabel)
     if (promptLifecycle.activePromptChanged) {
       setSubmitting(false)
+      submittingAgentId = null
       stopRequestInFlight = false
+    }
+    for (const settledAgentId of promptLifecycle.settledAgentIds) {
+      clearAgentBusy(settledAgentId)
     }
     if (promptLifecycle.cancelledPromptSettled) {
       activeToolLabels.clear()
@@ -2681,9 +2789,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         setAgentTranscriptEntries(completionAgentId, currentAgentPaneEntries(completionAgentId))
       }
     }
+    clearAgentBusy(completionAgentId)
     turnCompletionConfirmed = true
     maybeScheduleConfirmedTurnCompletion()
-    updateSessionChrome()
   }
 
   const syncVisibleActivityLabel = () => {
@@ -2989,6 +3097,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         agent ? agentActivityLabels()[agent.id] ?? null : null,
         agent ? hasPromptWorkByAgent()[agent.id] ?? false : false,
         agent?.id === streamingAgentId(),
+        agent ? agentBusyLatch(agent.id) : false,
       )
       const focused = agent?.id === focusedAgentId()
       renderStatusBadgeTexts(badgeTexts, badge.label, badge.tone)
@@ -3115,6 +3224,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     renderHistoryLoadingIndicator()
   }
 
+  const setSessionHydratingState = (next: boolean) => {
+    if (sessionHydrating() === next) {
+      return
+    }
+    setSessionHydrating(next)
+    if (isAttached() && visibleTranscriptEntries().length === 0 && !workflowScreenActive()) {
+      rebuildTranscript()
+      return
+    }
+    requestTranscriptRender()
+  }
+
   const requestTranscriptRender = () => {
     if (uiBatchDepth > 0) {
       pendingTranscriptRender = true
@@ -3133,6 +3254,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingSessionChromeFlush = undefined
     }
     applySessionChromeUpdate()
+  }
+
+  const renderSessionChromeBoundary = () => {
+    flushScheduledSessionChromeUpdate()
   }
 
   const flushDeferredUiUpdates = () => {
@@ -3353,12 +3478,21 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   createEffect(() => {
+    if (isAttached()) {
+      return
+    }
+    submittingAgentId = null
+    setAgentBusyLatches({})
+  })
+
+  createEffect(() => {
     providerRunState()?.model
     providerRunState()?.variant
     working()
     activeStatusLabel()
     providerActivityLabel()
     streamingAgentId()
+    agentBusyLatches()
     for (const agent of sessionState().agents) {
       agent.is_processing
       agent.state
@@ -4240,7 +4374,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
     } else if (visibleEntries.length === 0) {
       emptyTranscriptRenderable = isAttached()
-        ? buildEmptyTranscriptRenderable(renderer)
+        ? (sessionHydrating()
+            ? buildLoadingTranscriptRenderable(renderer)
+            : buildEmptyTranscriptRenderable(renderer))
         : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
@@ -4495,6 +4631,38 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     responseAuxiliaryAgentIds.length = 0
   }
 
+  const primeAttachedSessionBinding = async (session: RuntimeSession) => {
+    const visibleAgentId = selectResponsePaneAgents(
+      session.agents,
+      session.focused_agent_id,
+      splitAgentResponseMode(),
+      maxAgentsPerScreen(),
+    ).visibleTranscriptAgentId
+
+    if (!visibleAgentId) {
+      replaceTranscriptEntries([], null)
+      setNextHistoryCursor(null)
+      return
+    }
+
+    const historyPage = await getSessionHistory(client, session.id, null, visibleAgentId)
+    const preparedEntries = reindexTranscriptEntries(
+      hydrateTranscriptEntries(historyPage.entries),
+      0,
+    )
+
+    setAgentPaneEntries((current) => ({
+      ...current,
+      [visibleAgentId]: preparedEntries.map((entry) => ({ ...entry })),
+    }))
+    setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
+    replaceTranscriptEntries(
+      preparedEntries.map((entry) => ({ ...entry })),
+      visibleAgentId,
+    )
+    setNextHistoryCursor(historyPage.next_cursor)
+  }
+
   const {
     hydrateCurrentAttachedSession,
     finalizeAttachedSessionBinding,
@@ -4575,6 +4743,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setFatalError,
     setDaemonDisconnected,
     setNextHistoryCursor,
+    setSessionHydratingState,
     setHistoryLoadingState,
     setStatusLine,
     updateSessionChrome,
@@ -4597,6 +4766,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         effort,
       })
     },
+    primeAttachedSessionBinding,
     hydrateAttachedSessionBinding: (sessionId, attachmentId, session) =>
       finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
     setAvailableSessions,
@@ -5224,6 +5394,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
 
+      let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await waitForPendingAgentFocusTransition()
         const targetAgentId = focusedAgentId()
@@ -5237,6 +5408,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           syncPromptTextSnapshot()
           return
         }
+        submissionUi = beginSubmittedPromptUi(rawPrompt)
+        beginPromptSubmission(targetAgentId)
         const forwardedPrompt = `${providerNamespaceCommand.forwardedCommand}\n`
         const response = await submitPromptWithRecovery(
           client,
@@ -5249,6 +5422,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           appLogger,
         )
         const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+        payload.session = normalizeRuntimeSession(payload.session)
         const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
         applySessionState(payload.session)
         setStreamingAgentId(submittedTargetAgentId)
@@ -5256,15 +5430,17 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         setWorking(true)
         updateSessionChrome()
         recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearPendingPromptAttachments()
         clearCommandCenter()
       } catch (error) {
         appLogger?.error("provider namespace command failed", {
           command: providerNamespaceCommand.raw,
           error: formatError(error),
         })
+        restoreFailedPromptUi(submissionUi)
+        clearAgentBusy(submittingAgentId)
+        submittingAgentId = null
+        setSubmitting(false)
+        setWorking(false)
         setFatalError(formatError(error))
         updateSessionChrome()
       }
@@ -5293,7 +5469,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }
       const workflowInvocationPrompt = rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`
 
+      let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
+        submissionUi = beginSubmittedPromptUi(rawPrompt)
         const payload = await invokeWorkflowEndpoint(
           workflowPrompt.workflow.id,
           workflowPrompt.endpoint.id,
@@ -5308,11 +5486,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           flashFooter(`queued workflow launch ${payload.queued_launch.id}`, "info")
         }
         recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-        promptInput.clear()
-        syncPromptTextSnapshot()
-        clearPendingPromptAttachments()
         return
       } catch (error) {
+        restoreFailedPromptUi(submissionUi)
         flashFooter(formatError(error), "error")
         return
       }
@@ -5324,6 +5500,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       mime: file.mime,
       filename: file.filename,
     }))
+    let submissionUi: SubmittedPromptUiSnapshot | null = null
     try {
       await waitForPendingAgentFocusTransition()
       const targetAgentId = focusedAgentId()
@@ -5341,6 +5518,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         syncPromptTextSnapshot()
         return
       }
+      submissionUi = beginSubmittedPromptUi(rawPrompt)
+      beginPromptSubmission(targetAgentId)
       const response = await submitPromptWithRecovery(
         client,
         sessionState().id,
@@ -5352,6 +5531,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         appLogger,
       )
       const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
+      payload.session = normalizeRuntimeSession(payload.session)
       const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
       applySessionState(payload.session)
       setStreamingAgentId(submittedTargetAgentId)
@@ -5371,13 +5551,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
       updateSessionChrome()
       recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
-      promptInput.clear()
-      syncPromptTextSnapshot()
-      clearPendingPromptAttachments()
     } catch (error) {
       appLogger?.error("prompt submission failed", {
         error: formatError(error),
       })
+      restoreFailedPromptUi(submissionUi)
+      clearAgentBusy(submittingAgentId)
+      submittingAgentId = null
+      setSubmitting(false)
+      setWorking(false)
       setFatalError(formatError(error))
       updateSessionChrome()
     }
@@ -5697,6 +5879,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     recordTurnActivity,
     resolveTerminalRecordAgentId,
     setStreamingAgentId,
+    markAgentBusy,
     splitAgentResponseMode,
     visibleTranscriptAgentId,
     focusedAgentId,
@@ -5780,7 +5963,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       case "session_snapshot":
         recordDaemonActivity("kernel_session_snapshot")
         await applyKernelSessionSnapshot(
-          event.session as RuntimeSession,
+          normalizeRuntimeSession(event.session as RuntimeSession),
           (event.provider_run as RuntimeProviderRun | null) ?? null,
         )
         return
@@ -6017,6 +6200,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionState().id))
       recordDaemonActivity("session_state_poll")
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
+      payload.session = normalizeRuntimeSession(payload.session)
       const shouldRefreshPanes = shouldRefreshAgentPanesForSessionChange(payload.session)
       const promptJustCompleted = sessionHasPromptWork(previousSession) && !sessionHasPromptWork(payload.session)
       applySessionState(payload.session)
@@ -6503,7 +6687,7 @@ function parseArgs(args: string[]): CliOptions {
 async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())
   const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
-  return payload.sessions.sort((left, right) => right.created_at_ms - left.created_at_ms)
+  return normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms)
 }
 
 async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger | null): Promise<ProviderCatalog> {
@@ -6551,13 +6735,13 @@ async function getProviderCommandCatalogs(
 async function createSession(client: LocalIpcClient, workspace: string, worktree: string, alias?: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(createSessionRequest(workspace, worktree, alias))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
-  return payload.session
+  return normalizeRuntimeSession(payload.session)
 }
 
 async function resolveSession(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved")
-  return payload.session
+  return normalizeRuntimeSession(payload.session)
 }
 
 async function aliasSession(
@@ -6567,13 +6751,13 @@ async function aliasSession(
 ): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(aliasSessionRequest(sessionId, alias))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionAliased")
-  return payload.session
+  return normalizeRuntimeSession(payload.session)
 }
 
 async function deleteSessionByRef(client: LocalIpcClient, sessionRef: string, workspace: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
-  return payload.session
+  return normalizeRuntimeSession(payload.session)
 }
 
 async function attachToSession(
@@ -6614,7 +6798,7 @@ async function tryGetProviderRun(
 async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
-  return payload.session
+  return normalizeRuntimeSession(payload.session)
 }
 
 async function updateSessionConfig(
@@ -6627,7 +6811,11 @@ async function updateSessionConfig(
   const response = await client.send<Record<string, unknown>>(
     updateSessionConfigRequest(sessionId, attachmentId, values, requiresIdle),
   )
-  return expectVariant<{ session: RuntimeSession, config: SessionConfigState }>(response, "SessionConfigUpdated")
+  const payload = expectVariant<{ session: RuntimeSession, config: SessionConfigState }>(response, "SessionConfigUpdated")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
 }
 
 async function getSessionHistory(

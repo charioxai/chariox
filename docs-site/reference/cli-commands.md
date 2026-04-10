@@ -95,7 +95,7 @@ Delete the current session, or the referenced session if a ref is provided.
 
 ### `/agent spawn <number_of_agents>`
 
-Spawn a new agent in the current session.
+Spawn a new agent in the current session. Appending `<number_of_agents>` spawns that many agents.
 
 ### `/agent delete [ref]`
 

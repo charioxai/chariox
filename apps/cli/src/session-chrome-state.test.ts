@@ -185,10 +185,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       attached: false,
       daemonDisconnected: false,
       activeStatusLabel: null,
-      focusedHasPromptWork: false,
-      focusedIsProcessing: false,
-      focusedIsStreaming: false,
-      submitting: false,
+      focusedBusy: false,
     }),
     { label: "", tone: "idle" },
   )
@@ -198,10 +195,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       attached: true,
       daemonDisconnected: true,
       activeStatusLabel: "reading",
-      focusedHasPromptWork: false,
-      focusedIsProcessing: false,
-      focusedIsStreaming: false,
-      submitting: false,
+      focusedBusy: true,
     }),
     { label: "DISCONNECTED", tone: "disconnected" },
   )
@@ -211,10 +205,7 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       attached: true,
       daemonDisconnected: false,
       activeStatusLabel: null,
-      focusedHasPromptWork: true,
-      focusedIsProcessing: false,
-      focusedIsStreaming: false,
-      submitting: false,
+      focusedBusy: true,
     }),
     { label: "THINKING", tone: "working" },
   )
@@ -224,10 +215,17 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       attached: true,
       daemonDisconnected: false,
       activeStatusLabel: null,
-      focusedHasPromptWork: false,
-      focusedIsProcessing: false,
-      focusedIsStreaming: false,
-      submitting: false,
+      focusedBusy: true,
+    }),
+    { label: "THINKING", tone: "working" },
+  )
+
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: false,
     }),
     { label: "IDLE", tone: "idle" },
   )
@@ -237,12 +235,21 @@ test("deriveFocusedStatusBadge follows session-level working state", () => {
       attached: true,
       daemonDisconnected: false,
       activeStatusLabel: "reading",
-      focusedHasPromptWork: false,
-      focusedIsProcessing: false,
-      focusedIsStreaming: false,
-      submitting: false,
+      focusedBusy: true,
     }),
     { label: "READING", tone: "working" },
+  )
+})
+
+test("deriveFocusedStatusBadge stays working while the focused agent is busy", () => {
+  assert.deepEqual(
+    deriveFocusedStatusBadge({
+      attached: true,
+      daemonDisconnected: false,
+      activeStatusLabel: null,
+      focusedBusy: true,
+    }),
+    { label: "THINKING", tone: "working" },
   )
 })
 

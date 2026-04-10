@@ -169,8 +169,9 @@ test("streaming agent resolution prefers active processing and clears stale runs
     { id: "agent-b", is_processing: true, state: "Working" },
   ]
 
-  assert.equal(resolveStreamingAgentId(agents, "agent-a", true, "agent-a"), "agent-b")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], "agent-a", true, null), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, true, "agent-a"), "agent-a")
-  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, "agent-a"), null)
+  assert.equal(resolveStreamingAgentId(agents, "agent-a", true, true, "agent-a"), "agent-b")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], "agent-a", true, false, null), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, true, false, "agent-a"), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, true, "agent-a"), "agent-a")
+  assert.equal(resolveStreamingAgentId([{ id: "agent-a", is_processing: false, state: "Idle" }], null, false, false, "agent-a"), null)
 })

@@ -413,3 +413,33 @@ export type BootstrapState = {
   options: CliOptions
   preferences: ArrobaPreferences
 }
+
+export function normalizeAgentPromptState(
+  state: Partial<AgentPromptState> | null | undefined,
+): AgentPromptState {
+  return {
+    active_prompt: state?.active_prompt ?? null,
+    queued_prompts: Array.isArray(state?.queued_prompts) ? state.queued_prompts : [],
+  }
+}
+
+export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
+  const promptStates = session.prompt_states
+    ? Object.fromEntries(
+      Object.entries(session.prompt_states).map(([agentId, state]) => [
+        agentId,
+        normalizeAgentPromptState(state),
+      ]),
+    )
+    : undefined
+
+  return {
+    ...session,
+    queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
+    prompt_states: promptStates,
+  }
+}
+
+export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
+  return sessions.map((session) => normalizeRuntimeSession(session))
+}

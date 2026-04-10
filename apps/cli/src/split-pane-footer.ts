@@ -57,6 +57,7 @@ export function agentPaneStatusBadge(
   activeLabel: string | null,
   hasPromptWork = false,
   isStreaming = false,
+  busyLatch = false,
 ) {
   if (!agent) {
     return { label: "", tone: "idle" as const }
@@ -67,7 +68,7 @@ export function agentPaneStatusBadge(
   if (activeLabel) {
     return { label: getSessionStatusLabel("working", activeLabel), tone: "working" as const }
   }
-  if (hasPromptWork || agent.is_processing || agent.state === "Working" || isStreaming) {
+  if (hasPromptWork || agent.is_processing || agent.state === "Working" || isStreaming || busyLatch) {
     return { label: getSessionStatusLabel("working", null), tone: "working" as const }
   }
   return { label: "IDLE", tone: "idle" as const }
@@ -122,6 +123,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
   streamingAgentId: string | null
   activityLabels: Record<string, string | null>
   hasPromptWorkByAgent?: Record<string, boolean>
+  busyLatchesByAgent?: Record<string, boolean>
   catalog: ProviderCatalog
   activeRun?: SplitPaneFooterActiveRun | null
   fallbackModel?: string | null
@@ -135,6 +137,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
         agent ? options.activityLabels[agent.id] ?? null : null,
         agent ? options.hasPromptWorkByAgent?.[agent.id] ?? false : false,
         agent?.id === options.streamingAgentId,
+        agent ? options.busyLatchesByAgent?.[agent.id] ?? false : false,
       )
     return {
       badge,

@@ -1,6 +1,13 @@
 import process from "node:process"
 
-import type { AgentPromptState, CliOptions, RuntimeSession, SessionHistoryCursor, TranscriptEntry } from "./cli-types.js"
+import {
+  normalizeAgentPromptState,
+  type AgentPromptState,
+  type CliOptions,
+  type RuntimeSession,
+  type SessionHistoryCursor,
+  type TranscriptEntry,
+} from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import { reconcileWorkingStateFromSession, resolveStreamingAgentId } from "./runtime.js"
 import type { WaitingRoomState } from "./waiting-room.js"
@@ -32,6 +39,7 @@ export type SessionTransitionState = {
 export type PromptLifecycleTransition = {
   activePromptChanged: boolean
   cancelledPromptSettled: boolean
+  settledAgentIds: string[]
 }
 
 export type DetachedCliTransitionState = {
@@ -113,7 +121,7 @@ export function agentPromptState(
   }
   const promptState = session.prompt_states?.[agentId]
   if (promptState) {
-    return promptState
+    return normalizeAgentPromptState(promptState)
   }
   if (session.active_prompt?.target_agent_id === agentId || session.queued_prompts.some((prompt) => prompt.target_agent_id === agentId)) {
     return {
@@ -157,6 +165,7 @@ export function deriveSessionTransitionState(
     options.nextSession.agents,
     options.nextSession.active_prompt?.target_agent_id ?? null,
     nextHasPromptWork,
+    options.currentWorking,
     options.currentStreamingAgentId,
   )
   const nextStreamingAgentId = resolvedStreamingAgentId
@@ -201,6 +210,10 @@ export function derivePromptLifecycleTransition(
     activePromptChanged:
       previousPromptIds.length !== nextPromptIds.length
       || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
+    settledAgentIds: collectActivePromptRecords(currentSession)
+      .filter((prompt) => !nextPromptIdSet.has(prompt.id))
+      .map((prompt) => prompt.target_agent_id)
+      .filter((agentId): agentId is string => Boolean(agentId)),
     cancelledPromptSettled:
       collectActivePromptRecords(currentSession)
         .some((prompt) => prompt.status === "cancelling" && !nextPromptIdSet.has(prompt.id)),

@@ -126,6 +126,7 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     setFatalError: () => calls.push("setFatalError"),
     setDaemonDisconnected: () => calls.push("setDaemonDisconnected"),
     setNextHistoryCursor: () => calls.push("setNextHistoryCursor"),
+    setSessionHydratingState: () => calls.push("setSessionHydratingState"),
     setHistoryLoadingState: () => calls.push("setHistoryLoadingState"),
     setStatusLine: () => calls.push("setStatusLine"),
     updateSessionChrome: () => calls.push("updateSessionChrome"),
@@ -151,6 +152,9 @@ function createBaseDeps(overrides: Record<string, unknown> = {}) {
     getProviderCatalog: async () => {
       calls.push("getProviderCatalog")
       return {}
+    },
+    primeAttachedSessionBinding: async () => {
+      calls.push("primeAttachedSessionBinding")
     },
     hydrateAttachedSessionBinding: async () => {
       calls.push("hydrateAttachedSessionBinding")
@@ -213,6 +217,7 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
     "setFatalError",
     "setDaemonDisconnected",
     "setNextHistoryCursor",
+    "setSessionHydratingState",
     "setHistoryLoadingState",
     "setStatusLine",
     "updateSessionChrome",
@@ -280,6 +285,9 @@ test("attachBinding reattaches and hydrates the attached session before restorin
       events.push("getProviderCatalog")
       return {}
     },
+    primeAttachedSessionBinding: async () => {
+      events.push("primeAttachedSessionBinding")
+    },
     reconcileWaitingRoom: () => events.push("reconcileWaitingRoom"),
     hydrateAttachedSessionBinding: async () => {
       events.push("hydrateAttachedSessionBinding")
@@ -317,12 +325,9 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   assert.deepEqual(events, [
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
+    "setSessionHydratingState",
     "attachToSession",
     "getSessionState",
-    "tryGetProviderRun",
-    "logAttachedProviderRun",
-    "setProviderRunState",
-    "syncCliProviderSelection",
     "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
@@ -341,7 +346,13 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "setStatusLine",
     "updateSessionChrome",
     "focusPromptInput",
+    "primeAttachedSessionBinding",
+    "setSessionHydratingState",
     "syncKernelEventSubscription",
+    "tryGetProviderRun",
+    "logAttachedProviderRun",
+    "setProviderRunState",
+    "syncCliProviderSelection",
     "getProviderCatalog",
     "setProviderCatalogState",
     "reconcileWaitingRoom",

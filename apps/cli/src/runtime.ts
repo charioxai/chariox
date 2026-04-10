@@ -105,6 +105,7 @@ export function resolveStreamingAgentId(
   agents: ReadonlyArray<{ id: string; is_processing: boolean; state: string }>,
   activePromptTargetAgentId: string | null,
   sessionHasPromptWork: boolean,
+  currentWorking: boolean,
   previousStreamingAgentId: string | null,
 ) {
   const processingAgentId = agents.find((agent) => agent.is_processing || agent.state === "Working")?.id ?? null
@@ -114,7 +115,11 @@ export function resolveStreamingAgentId(
   if (activePromptTargetAgentId && agents.some((agent) => agent.id === activePromptTargetAgentId)) {
     return activePromptTargetAgentId
   }
-  if (sessionHasPromptWork && previousStreamingAgentId && agents.some((agent) => agent.id === previousStreamingAgentId)) {
+  if (
+    (sessionHasPromptWork || currentWorking)
+    && previousStreamingAgentId
+    && agents.some((agent) => agent.id === previousStreamingAgentId)
+  ) {
     return previousStreamingAgentId
   }
   return null

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
+  agentPromptState,
   agentHasPromptWork,
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
@@ -126,6 +127,34 @@ test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across age
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
 })
 
+test("agentPromptState tolerates daemon payloads that omit empty queued prompts", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "prompt-1",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "hello",
+          status: "running",
+        },
+      } as RuntimeSession["prompt_states"][string],
+    },
+  })
+
+  assert.deepEqual(agentPromptState(nextSession, "agent-a"), {
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "hello",
+      status: "running",
+    },
+    queued_prompts: [],
+  })
+})
+
 test("deriveSessionTransitionState clears stale streaming state once prompt work ends", () => {
   const currentSession = session({
     focused_agent_id: "agent-a",
@@ -155,10 +184,10 @@ test("deriveSessionTransitionState clears stale streaming state once prompt work
     layoutPreference: "split",
   })
 
-  assert.equal(transition.nextStreamingAgentId, null)
-  assert.equal(transition.nextFocusedActivityLabel, null)
+  assert.equal(transition.nextStreamingAgentId, "agent-a")
+  assert.equal(transition.nextFocusedActivityLabel, "thinking")
   assert.deepEqual(transition.nextAgentActivityLabels, {
-    "agent-a": null,
+    "agent-a": "thinking",
     "agent-b": null,
   })
   assert.equal(transition.nextWorking, true)
@@ -180,6 +209,7 @@ test("derivePromptLifecycleTransition detects when a cancelling prompt settles",
 
   assert.equal(transition.activePromptChanged, true)
   assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
 })
 
 test("derivePromptLifecycleTransition ignores normal prompt replacement", () => {
@@ -206,6 +236,7 @@ test("derivePromptLifecycleTransition ignores normal prompt replacement", () => 
 
   assert.equal(transition.activePromptChanged, true)
   assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
 })
 
 test("deriveDetachedCliTransitionState resets waiting room and clears session-bound state", () => {

@@ -72,6 +72,7 @@ type SessionLifecycleDeps = {
   setFatalError: (value: string | null) => void
   setDaemonDisconnected: (value: boolean) => void
   setNextHistoryCursor: (value: SessionHistoryCursor | null) => void
+  setSessionHydratingState: (value: boolean) => void
   setHistoryLoadingState: (value: boolean) => void
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
@@ -92,6 +93,7 @@ type SessionLifecycleDeps = {
   setProviderCatalogState: (catalog: ProviderCatalog) => void
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
   getProviderCatalog: () => Promise<ProviderCatalog>
+  primeAttachedSessionBinding?: (session: RuntimeSession) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
     attachmentId: string,
@@ -173,6 +175,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setFatalError(nextDetachedState.fatalError)
     deps.setDaemonDisconnected(nextDetachedState.daemonDisconnected)
     deps.setNextHistoryCursor(nextDetachedState.nextHistoryCursor)
+    deps.setSessionHydratingState(false)
     deps.setHistoryLoadingState(false)
     deps.setStatusLine(nextDetachedState.statusLine)
     deps.updateSessionChrome()
@@ -194,7 +197,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   const attachBinding = async (
-    session: Pick<RuntimeSession, "id">,
+    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
     launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
   ) => {
@@ -207,98 +210,131 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
-    const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
-    const attachedSession = await deps.getSessionState(session.id)
-    if (!attachedSession.active_provider_run_id) {
-      const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, launch, createdSession)
-      deps.cliOptions.provider = resolvedLaunch.provider
-      deps.cliOptions.model = resolvedLaunch.model
-      deps.cliOptions.effort = resolvedLaunch.effort
-      const run = await deps.launchProviderRun(
-        session.id,
-        resolvedLaunch.provider,
-        deps.cliOptions.accountProfile,
-        resolvedLaunch.model,
-        resolvedLaunch.effort,
-        attachedSession.focused_agent_id,
-      )
-      deps.logAttachedProviderRun?.("launched", run, {
-        session_id: session.id,
-        requested_model: resolvedLaunch.model,
-        requested_variant: resolvedLaunch.effort,
-      })
-      deps.setProviderRunState(run)
-      deps.syncCliProviderSelection({
-        provider: run.provider,
-        model: run.model,
-        effort: run.variant ?? resolvedLaunch.effort,
-      })
-    } else {
-      const run = await deps.tryGetProviderRun(attachedSession.active_provider_run_id)
-      deps.logAttachedProviderRun?.("loaded", run, {
-        session_id: session.id,
-        requested_model: deps.cliOptions.model,
-      })
-      deps.setProviderRunState(run)
-      if (run) {
+    let sessionHydratingCleared = false
+    const clearSessionHydrating = () => {
+      if (sessionHydratingCleared) {
+        return
+      }
+      sessionHydratingCleared = true
+      deps.setSessionHydratingState(false)
+    }
+    deps.setSessionHydratingState(true)
+    try {
+      const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
+
+      const provisionalSession = isCompleteSessionSnapshot(session)
+        ? session
+        : null
+      if (provisionalSession) {
+        applyAttachedState(provisionalSession, attachment, createdSession)
+      }
+
+      const attachedSession = await deps.getSessionState(session.id)
+
+      applyAttachedState(attachedSession, attachment, createdSession)
+
+      try {
+        await deps.primeAttachedSessionBinding?.(attachedSession)
+      } catch (error) {
+        deps.logWarning?.("failed to prime attached session view", {
+          session_id: session.id,
+          attachment_id: attachment.id,
+          error: formatError(error),
+        })
+      }
+      clearSessionHydrating()
+
+      try {
+        await deps.syncKernelEventSubscription?.()
+      } catch (error) {
+        deps.logWarning?.("failed to synchronize kernel event subscription after attach", {
+          session_id: session.id,
+          attachment_id: attachment.id,
+          error: formatError(error),
+        })
+      }
+
+      if (!attachedSession.active_provider_run_id) {
+        const resolvedLaunch = resolveStoredAgentLaunch(attachedSession, launch, createdSession)
+        deps.cliOptions.provider = resolvedLaunch.provider
+        deps.cliOptions.model = resolvedLaunch.model
+        deps.cliOptions.effort = resolvedLaunch.effort
+        const run = await deps.launchProviderRun(
+          session.id,
+          resolvedLaunch.provider,
+          deps.cliOptions.accountProfile,
+          resolvedLaunch.model,
+          resolvedLaunch.effort,
+          attachedSession.focused_agent_id,
+        )
+        deps.logAttachedProviderRun?.("launched", run, {
+          session_id: session.id,
+          requested_model: resolvedLaunch.model,
+          requested_variant: resolvedLaunch.effort,
+        })
+        deps.setProviderRunState(run)
         deps.syncCliProviderSelection({
           provider: run.provider,
           model: run.model,
-          effort: run.variant ?? deps.cliOptions.effort,
+          effort: run.variant ?? resolvedLaunch.effort,
+        })
+      } else {
+        const run = await deps.tryGetProviderRun(attachedSession.active_provider_run_id)
+        deps.logAttachedProviderRun?.("loaded", run, {
+          session_id: session.id,
+          requested_model: deps.cliOptions.model,
+        })
+        deps.setProviderRunState(run)
+        if (run) {
+          deps.syncCliProviderSelection({
+            provider: run.provider,
+            model: run.model,
+            effort: run.variant ?? deps.cliOptions.effort,
+          })
+        }
+      }
+
+      try {
+        deps.setProviderCatalogState(await deps.getProviderCatalog())
+      } catch (error) {
+        deps.logWarning?.("failed to refresh provider catalog after attach", {
+          session_id: session.id,
+          error: formatError(error),
         })
       }
+
+      deps.reconcileWaitingRoom(deps.waitingRoomState())
+
+      let hydratedSession = attachedSession
+      try {
+        hydratedSession = await deps.hydrateAttachedSessionBinding(
+          session.id,
+          attachment.id,
+          attachedSession,
+        )
+      } catch (error) {
+        deps.logWarning?.("failed to hydrate attached session after attach", {
+          session_id: session.id,
+          attachment_id: attachment.id,
+          error: formatError(error),
+        })
+      }
+
+      applyAttachedState(hydratedSession, attachment, createdSession)
+
+      try {
+        deps.setAvailableSessions(await deps.listSessions())
+      } catch (error) {
+        deps.logWarning?.("failed to refresh session list after attach", {
+          session_id: session.id,
+          error: formatError(error),
+        })
+      }
+
+      deps.scheduleShortViewportHistoryCheck()
+    } finally {
+      clearSessionHydrating()
     }
-
-    applyAttachedState(attachedSession, attachment, createdSession)
-
-    try {
-      await deps.syncKernelEventSubscription?.()
-    } catch (error) {
-      deps.logWarning?.("failed to synchronize kernel event subscription after attach", {
-        session_id: session.id,
-        attachment_id: attachment.id,
-        error: formatError(error),
-      })
-    }
-
-    try {
-      deps.setProviderCatalogState(await deps.getProviderCatalog())
-    } catch (error) {
-      deps.logWarning?.("failed to refresh provider catalog after attach", {
-        session_id: session.id,
-        error: formatError(error),
-      })
-    }
-
-    deps.reconcileWaitingRoom(deps.waitingRoomState())
-
-    let hydratedSession = attachedSession
-    try {
-      hydratedSession = await deps.hydrateAttachedSessionBinding(
-        session.id,
-        attachment.id,
-        attachedSession,
-      )
-    } catch (error) {
-      deps.logWarning?.("failed to hydrate attached session after attach", {
-        session_id: session.id,
-        attachment_id: attachment.id,
-        error: formatError(error),
-      })
-    }
-
-    applyAttachedState(hydratedSession, attachment, createdSession)
-
-    try {
-      deps.setAvailableSessions(await deps.listSessions())
-    } catch (error) {
-      deps.logWarning?.("failed to refresh session list after attach", {
-        session_id: session.id,
-        error: formatError(error),
-      })
-    }
-
-    deps.scheduleShortViewportHistoryCheck()
   }
 
   return {
@@ -306,6 +342,25 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     detachCurrentAttachment,
     attachBinding,
   }
+}
+
+function isCompleteSessionSnapshot(
+  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+): session is RuntimeSession {
+  return typeof session.workspace_id === "string"
+    && typeof session.worktree_id === "string"
+    && typeof session.created_at_ms === "number"
+    && typeof session.status === "string"
+    && Array.isArray(session.attachment_ids)
+    && Array.isArray(session.queued_prompts)
+    && Array.isArray(session.agents)
+    && Array.isArray(session.workflows)
+    && Array.isArray(session.workflow_runs)
+    && Array.isArray(session.workflow_watchdogs)
+    && Array.isArray(session.workflow_consoles)
+    && typeof session.max_agents === "number"
+    && typeof session.config_state === "object"
+    && session.config_state !== null
 }
 
 function resolveStoredAgentLaunch(

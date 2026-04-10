@@ -64,6 +64,13 @@ test("agentPaneStatusBadge stays working while the agent still has prompt work",
   })
 })
 
+test("agentPaneStatusBadge stays working while the local busy latch is active", () => {
+  assert.deepEqual(agentPaneStatusBadge(primaryAgent, null, false, false, true), {
+    label: "THINKING",
+    tone: "working",
+  })
+})
+
 test("formatSplitPaneFooter uses alias and catalog model name", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, catalog, null, null),
@@ -147,4 +154,33 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
   assert.deepEqual(state.secondary.badge, { label: "READING", tone: "working" })
   assert.equal(state.primary.focused, true)
   assert.equal(state.primary.info, "Planner • GPT-5.4")
+})
+
+test("buildSplitPaneFooterState keeps a pane working while its busy latch is set", () => {
+  const state = buildSplitPaneFooterState({
+    mode: "working",
+    selection: {
+      primary: primaryAgent,
+      secondary: secondaryAgent,
+      tertiary: null,
+    },
+    focusedAgentId: "agent-a",
+    streamingAgentId: null,
+    activityLabels: {
+      "agent-a": null,
+      "agent-b": null,
+    },
+    hasPromptWorkByAgent: {
+      "agent-a": false,
+      "agent-b": false,
+    },
+    busyLatchesByAgent: {
+      "agent-a": true,
+    },
+    catalog,
+    activeRun: null,
+    fallbackModel: "gpt-5.4",
+  })
+
+  assert.deepEqual(state.primary.badge, { label: "THINKING", tone: "working" })
 })

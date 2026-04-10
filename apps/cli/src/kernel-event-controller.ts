@@ -6,6 +6,7 @@ type KernelEventControllerDeps = {
   recordTurnActivity: (source: string) => void
   resolveTerminalRecordAgentId: (record: TerminalOutputRecord) => string | null
   setStreamingAgentId: (agentId: string) => void
+  markAgentBusy: (agentId: string | null | undefined) => void
   splitAgentResponseMode: () => boolean
   visibleTranscriptAgentId: () => string | null
   focusedAgentId: () => string | null
@@ -57,6 +58,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const recordAgentId = deps.resolveTerminalRecordAgentId(record)
     if (recordAgentId && record.kind !== "prompt_echo") {
       deps.setStreamingAgentId(recordAgentId)
+      if (record.kind !== "provider_status" || !isProviderIdleStatus(text)) {
+        deps.markAgentBusy(recordAgentId)
+      }
     }
     if (deps.splitAgentResponseMode() && recordAgentId) {
       if (record.kind === "provider_status") {

@@ -115,11 +115,7 @@ export function deriveFocusedStatusBadge(options: {
   attached: boolean
   daemonDisconnected: boolean
   activeStatusLabel: string | null
-  focusedHasPromptWork: boolean
-  focusedIsProcessing: boolean
-  focusedIsStreaming: boolean
-  submitting: boolean
-  singleAgentWorkingLatch?: boolean
+  focusedBusy: boolean
 }): FocusedStatusBadge {
   if (!options.attached) {
     return { label: "", tone: "idle" }
@@ -127,14 +123,7 @@ export function deriveFocusedStatusBadge(options: {
   if (options.daemonDisconnected) {
     return { label: "DISCONNECTED", tone: "disconnected" }
   }
-  if (
-    !options.submitting
-    && !options.focusedHasPromptWork
-    && !options.focusedIsProcessing
-    && !options.focusedIsStreaming
-    && !options.activeStatusLabel
-    && !options.singleAgentWorkingLatch
-  ) {
+  if (!options.focusedBusy) {
     return { label: "IDLE", tone: "idle" }
   }
   return {
