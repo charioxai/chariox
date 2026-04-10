@@ -187,6 +187,56 @@ mod tests {
         assert_eq!(app.leased_agent_count(), 0);
     }
     #[test]
+    fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = app
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1")
+            .expect("execution lease should be created");
+        let leased_agent = app
+            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None)
+            .expect("leased agent should be created");
+
+        let hidden_backing_session = app
+            .sessions()
+            .get_session(&leased_agent.backing_session_id)
+            .expect("backing session should exist");
+        assert!(hidden_backing_session.is_hidden());
+        assert!(app
+            .sessions()
+            .list_sessions()
+            .into_iter()
+            .all(|session| session.id() != leased_agent.backing_session_id));
+
+        let (provider_run_id, outcome) = app
+            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n")
+            .expect("leased prompt should submit");
+        match outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            other => panic!("unexpected prompt submission outcome: {other:?}"),
+        }
+
+        let provider_run = app
+            .providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should exist");
+        assert_eq!(provider_run.session_id(), leased_agent.backing_session_id);
+        assert_eq!(
+            provider_run.agent_instance_id(),
+            Some(leased_agent.backing_agent_id.as_str())
+        );
+
+        let completion = app
+            .complete_leased_prompt(&leased_agent.id)
+            .expect("leased prompt should complete");
+        assert_eq!(
+            completion.completed.target_agent_id(),
+            leased_agent.backing_agent_id
+        );
+    }
+
+    #[test]
     fn launching_provider_via_app_marks_session_active() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

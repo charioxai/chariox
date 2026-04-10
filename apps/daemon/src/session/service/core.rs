@@ -27,7 +27,7 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let session = RuntimeSession::new(
+        let mut session = RuntimeSession::new(
             self.store.next_session_id(),
             alias,
             request.workspace_id,
@@ -35,6 +35,7 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
+        session.set_hidden(request.hidden);
 
         Ok(self.store.insert(session))
     }
@@ -49,7 +50,7 @@ impl SessionService {
     }
 
     pub fn list_sessions(&self) -> Vec<RuntimeSession> {
-        self.store.non_ended_sessions().cloned().collect()
+        self.store.visible_non_ended_sessions().cloned().collect()
     }
 
     pub fn list_workflows(&self, session_id: &str) -> Result<Vec<WorkflowDefinition>, DaemonError> {

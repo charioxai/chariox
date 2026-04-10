@@ -14,7 +14,11 @@ impl SessionService {
             });
         }
 
-        let all_sessions = self.store.non_ended_sessions().cloned().collect::<Vec<_>>();
+        let all_sessions = self
+            .store
+            .visible_non_ended_sessions()
+            .cloned()
+            .collect::<Vec<_>>();
         let workspace_sessions = all_sessions
             .iter()
             .filter(|session| {
@@ -412,7 +416,7 @@ impl SessionService {
     ) -> Result<(), DaemonError> {
         if self
             .store
-            .non_ended_sessions()
+            .visible_non_ended_sessions()
             .any(|session| session.workspace_id() == workspace_id && session.alias() == Some(alias))
         {
             return Err(DaemonError::SessionAliasConflict {
@@ -468,7 +472,7 @@ impl SessionService {
         session_id: &str,
         alias: &str,
     ) -> Result<(), DaemonError> {
-        if self.store.non_ended_sessions().any(|session| {
+        if self.store.visible_non_ended_sessions().any(|session| {
             session.id() != session_id
                 && session.workspace_id() == workspace_id
                 && session.alias() == Some(alias)

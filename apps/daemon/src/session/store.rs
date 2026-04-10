@@ -60,15 +60,17 @@ impl SessionStore {
     }
 
     pub fn active_session_count(&self) -> usize {
-        self.sessions
-            .values()
-            .filter(|session| session.status() != SessionStatus::Ended)
-            .count()
+        self.visible_non_ended_sessions().count()
     }
 
     pub fn non_ended_sessions(&self) -> impl Iterator<Item = &RuntimeSession> {
         self.sessions
             .values()
             .filter(|session| session.status() != SessionStatus::Ended)
+    }
+
+    pub fn visible_non_ended_sessions(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.non_ended_sessions()
+            .filter(|session| !session.is_hidden())
     }
 }

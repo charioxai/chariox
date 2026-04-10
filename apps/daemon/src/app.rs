@@ -12,7 +12,9 @@ pub(crate) mod workflow_runtime;
 use arroba_relay::protocol::DaemonRegistration;
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest};
-use crate::attachment::{AttachmentService, RuntimeAttachment};
+use crate::attachment::{
+    AttachRequest, AttachmentService, ClientCapabilityLevel, RuntimeAttachment,
+};
 use crate::capability::{
     CaptureScreenshotRequest, CaptureScreenshotResult, DirectoryTreeService, EditFileRequest,
     EditFileResult, FileCapabilityService, FileTransferService, GitCapabilityService,
@@ -26,7 +28,7 @@ use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::local::LocalDaemonResponse;
-use crate::provider::{ProviderProcessService, RuntimeProviderRun};
+use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
 use crate::pty::PtyManager;
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptStatus, RuntimeSession, SessionConfigState,
@@ -932,6 +934,32 @@ impl DaemonApp {
                 adapter_key: provider.to_string(),
             });
         }
+        let worktree = std::env::current_dir()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: error.to_string(),
+            })?
+            .display()
+            .to_string();
+        let session = self.sessions.create_session(
+            CreateSessionRequest::new(format!("remote-lease:{}", lease.home_session_id), worktree)
+                .with_hidden(true),
+        )?;
+        let attachment = self.attachments.attach(
+            &mut self.sessions,
+            AttachRequest::new(
+                session.id(),
+                format!("leased-agent:{}", lease.home_agent_id),
+                ClientCapabilityLevel::MessageTransport,
+            ),
+        )?;
+        let backing_agent = self.agents.create_agent(
+            CreateAgentRequest::new(session.id(), provider)
+                .with_worktree(session.worktree_id())
+                .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
+                .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string())),
+            &mut self.sessions,
+        )?;
         self.next_leased_agent_number = self.next_leased_agent_number.wrapping_add(1);
         let agent_id = format!(
             "leased-agent-{:016x}",
@@ -944,6 +972,9 @@ impl DaemonApp {
             provider.to_string(),
             model,
             effort,
+            session.id().to_string(),
+            backing_agent.id().to_string(),
+            attachment.id().to_string(),
         );
         self.leased_agents.insert(agent_id, agent.clone());
         Ok(agent)
@@ -953,11 +984,88 @@ impl DaemonApp {
         &mut self,
         leased_agent_id: &str,
     ) -> Result<LeasedAgent, DaemonError> {
-        self.leased_agents
-            .remove(leased_agent_id)
+        let agent = self.leased_agents.remove(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let _ = self
+            .attachments
+            .detach(&mut self.sessions, &agent.backing_attachment_id);
+        let _ = self
+            .agents
+            .destroy_agent(&agent.backing_agent_id, &mut self.sessions);
+        let _ = self.sessions.end_session(&agent.backing_session_id);
+        let _ = self.sessions.delete_session(&agent.backing_session_id);
+        Ok(agent)
+    }
+
+    pub fn submit_leased_prompt(
+        &mut self,
+        leased_agent_id: &str,
+        prompt: &str,
+    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
+        let leased_agent = self
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
-            })
+            })?;
+        let provider_run_id = if let Some(run) = self.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        ) {
+            run.id().to_string()
+        } else {
+            let run = self.launch_provider(
+                LaunchProviderRequest::new(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.provider,
+                    &leased_agent.provider,
+                    "default",
+                    leased_agent
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                )
+                .with_agent_id(&leased_agent.backing_agent_id),
+            )?;
+            run.id().to_string()
+        };
+        let outcome = self.submit_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_attachment_id,
+            Some(&leased_agent.backing_agent_id),
+            prompt,
+            Vec::new(),
+        )?;
+        Ok((provider_run_id, outcome))
+    }
+
+    pub fn complete_leased_prompt(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let leased_agent = self
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let provider_run_id = self
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .map(|run| run.id().to_string());
+        self.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            provider_run_id.as_deref(),
+        )
     }
 
     pub fn execution_lease_count(&self) -> usize {

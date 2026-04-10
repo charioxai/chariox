@@ -1666,6 +1666,8 @@ pub struct CreateSessionRequest {
     pub workspace_id: String,
     pub worktree_id: String,
     pub alias: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl CreateSessionRequest {
@@ -1674,11 +1676,17 @@ impl CreateSessionRequest {
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.into(),
             alias: None,
+            hidden: false,
         }
     }
 
     pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
         self.alias = Some(alias.into());
+        self
+    }
+
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
         self
     }
 }
@@ -1982,6 +1990,8 @@ pub struct RuntimeSession {
     last_used_at_ms: Option<u64>,
     execution_mode: SessionExecutionMode,
     status: SessionStatus,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    hidden: bool,
     active_provider_run_id: Option<String>,
     focused_agent_id: Option<String>,
     max_agents: i32,
@@ -2030,6 +2040,7 @@ impl RuntimeSession {
             last_used_at_ms: Some(now),
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
+            hidden: false,
             active_provider_run_id: None,
             focused_agent_id: None,
             max_agents: DEFAULT_SESSION_MAX_AGENTS,
@@ -2084,6 +2095,12 @@ impl RuntimeSession {
     }
     pub fn status(&self) -> SessionStatus {
         self.status
+    }
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
     }
     pub fn execution_mode(&self) -> SessionExecutionMode {
         self.execution_mode

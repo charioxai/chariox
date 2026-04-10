@@ -45,10 +45,14 @@ pub struct LeasedAgent {
     pub provider: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub backing_session_id: String,
+    pub backing_agent_id: String,
+    pub backing_attachment_id: String,
     pub created_at_ms: u64,
 }
 
 impl LeasedAgent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         lease_id: String,
@@ -56,6 +60,9 @@ impl LeasedAgent {
         provider: String,
         model: Option<String>,
         effort: Option<String>,
+        backing_session_id: String,
+        backing_agent_id: String,
+        backing_attachment_id: String,
     ) -> Self {
         Self {
             id,
@@ -64,6 +71,9 @@ impl LeasedAgent {
             provider,
             model,
             effort,
+            backing_session_id,
+            backing_agent_id,
+            backing_attachment_id,
             created_at_ms: unix_epoch_ms(),
         }
     }
