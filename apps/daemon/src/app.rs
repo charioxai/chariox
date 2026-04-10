@@ -9,6 +9,8 @@ mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod workflow_runtime;
 
+use arroba_relay::protocol::DaemonRegistration;
+
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest};
 use crate::attachment::{AttachmentService, RuntimeAttachment};
 use crate::capability::{
@@ -878,6 +880,19 @@ impl DaemonApp {
                 attachment_id: attachment.id().to_string(),
                 capability,
             })
+        }
+    }
+
+    pub fn relay_registration(&self) -> DaemonRegistration {
+        DaemonRegistration {
+            auth_token: self.config.relay_token.clone().unwrap_or_default(),
+            daemon_id: self.config.daemon_id.clone(),
+            machine_id: self.config.host_machine_id.clone(),
+            daemon_alias: self.config.daemon_alias.clone(),
+            capabilities: vec![
+                "kernel_websocket".to_string(),
+                "relay_request_proxy".to_string(),
+            ],
         }
     }
 

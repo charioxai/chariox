@@ -8,7 +8,7 @@ use tokio::sync::{watch, Mutex, RwLock};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{DaemonRegistration, RelayEnvelope, RelayError};
+use arroba_relay::protocol::{RelayEnvelope, RelayError};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -24,29 +24,16 @@ pub async fn run_daemon_relay_connector(
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let (relay_url, heartbeat, registration) = {
+    let (relay_url, heartbeat) = {
         let app = app.lock().await;
         let config = app.config();
         let Some(relay_url) = config.relay_url.clone() else {
             return;
         };
-        let Some(relay_token) = config.relay_token.clone() else {
+        if config.relay_token.is_none() {
             return;
-        };
-        (
-            relay_url,
-            Duration::from_millis(config.relay_heartbeat_ms),
-            DaemonRegistration {
-                auth_token: relay_token,
-                daemon_id: config.daemon_id.clone(),
-                machine_id: config.host_machine_id.clone(),
-                daemon_alias: config.daemon_alias.clone(),
-                capabilities: vec![
-                    "kernel_websocket".to_string(),
-                    "relay_request_proxy".to_string(),
-                ],
-            },
-        )
+        }
+        (relay_url, Duration::from_millis(config.relay_heartbeat_ms))
     };
 
     loop {
@@ -57,8 +44,11 @@ pub async fn run_daemon_relay_connector(
 
         match connect_async(&relay_url).await {
             Ok((mut socket, _)) => {
-                let register = RelayEnvelope::DaemonRegister {
-                    registration: registration.clone(),
+                let register = {
+                    let app = app.lock().await;
+                    RelayEnvelope::DaemonRegister {
+                        registration: app.relay_registration(),
+                    }
                 };
                 if send_envelope(&mut socket, &register).await.is_err() {
                     set_connected(&state, false).await;
@@ -100,7 +90,7 @@ pub async fn run_daemon_relay_connector(
                         }
                         _ = sleep(heartbeat) => {
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
-                                daemon_id: registration.daemon_id.clone(),
+                                daemon_id: register_daemon_id(&register).to_string(),
                             };
                             if send_envelope(&mut socket, &heartbeat_frame).await.is_err() {
                                 set_connected(&state, false).await;
@@ -213,6 +203,13 @@ async fn handle_daemon_request(app: &Arc<Mutex<DaemonApp>>, request: Value) -> R
             response: None,
             error: Some(map_relay_error(&error)),
         },
+    }
+}
+
+fn register_daemon_id(register: &RelayEnvelope) -> &str {
+    match register {
+        RelayEnvelope::DaemonRegister { registration } => registration.daemon_id.as_str(),
+        _ => unreachable!("relay register envelope expected"),
     }
 }
 
