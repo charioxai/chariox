@@ -20,7 +20,7 @@ use crate::kernel_transport::{
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use crate::transport::relay_peer::{RelayPeerEvent, RelayPeerRequest, RelayPeerResponse};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -240,7 +240,8 @@ async fn handle_incoming_envelope(
             from_daemon_id: _,
             encrypted_request,
         } => {
-            let relay_response = handle_daemon_peer_request(app, encrypted_request).await;
+            let relay_response =
+                handle_daemon_peer_request(app, outgoing_tx, encrypted_request).await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonIncomingPeerResponse {
@@ -266,6 +267,12 @@ async fn handle_incoming_envelope(
                 },
             )
             .await;
+        }
+        RelayEnvelope::DaemonIncomingPeerEvent {
+            from_daemon_id: _,
+            encrypted_event,
+        } => {
+            handle_daemon_peer_event(app, encrypted_event).await?;
         }
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
@@ -379,6 +386,7 @@ struct RelayPeerResponseEnvelope {
 
 async fn handle_daemon_peer_request(
     app: &Arc<Mutex<DaemonApp>>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, requester_public_key, daemon_private_key, daemon_id) = {
@@ -502,10 +510,30 @@ async fn handle_daemon_peer_request(
                 app.submit_leased_prompt(&leased_agent_id, &prompt)
             };
             match submitted {
-                Ok((provider_run_id, outcome)) => RelayPeerResponse::LeasedPromptSubmitted {
-                    provider_run_id,
-                    outcome,
-                },
+                Ok((provider_run_id, outcome)) => {
+                    if let Err(error) = emit_leased_projection_event(
+                        app,
+                        outgoing_tx,
+                        &leased_agent_id,
+                        &provider_run_id,
+                    )
+                    .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.relay",
+                            "failed to emit leased runtime projection after submit",
+                            serde_json::json!({
+                                "leased_agent_id": leased_agent_id,
+                                "provider_run_id": provider_run_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id,
+                        outcome,
+                    }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -520,7 +548,35 @@ async fn handle_daemon_peer_request(
                 app.complete_leased_prompt(&leased_agent_id)
             };
             match completion {
-                Ok(completion) => RelayPeerResponse::LeasedPromptCompleted { completion },
+                Ok(completion) => {
+                    if let Some(provider_run_id) = app
+                        .lock()
+                        .await
+                        .leased_agent_provider_run_id(&leased_agent_id)
+                        .ok()
+                        .flatten()
+                    {
+                        if let Err(error) = emit_leased_projection_event(
+                            app,
+                            outgoing_tx,
+                            &leased_agent_id,
+                            &provider_run_id,
+                        )
+                        .await
+                        {
+                            crate::logging::warn_with_fields(
+                                "daemon.relay",
+                                "failed to emit leased runtime projection after completion",
+                                serde_json::json!({
+                                    "leased_agent_id": leased_agent_id,
+                                    "provider_run_id": provider_run_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                    RelayPeerResponse::LeasedPromptCompleted { completion }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -561,6 +617,77 @@ async fn handle_daemon_peer_request(
             )),
         },
     }
+}
+
+async fn handle_daemon_peer_event(
+    app: &Arc<Mutex<DaemonApp>>,
+    encrypted_event: EncryptedRelayPayload,
+) -> Result<(), DaemonError> {
+    let daemon_private_key = {
+        let app = app.lock().await;
+        app.config().relay_private_key.clone()
+    };
+    let decrypted =
+        relay_crypto::decrypt_payload_for_private_key(&daemon_private_key, &encrypted_event)?;
+    let event =
+        serde_json::from_slice::<RelayPeerEvent>(&decrypted.plaintext).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "decode relay peer event",
+                message: error.to_string(),
+            }
+        })?;
+    match event {
+        RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run_id,
+            output_chunks,
+            notices,
+            completions,
+        } => {
+            let mut app = app.lock().await;
+            app.project_remote_runtime_projection(
+                &home_session_id,
+                &home_agent_id,
+                &provider_run_id,
+                output_chunks,
+                notices,
+                completions,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+async fn emit_leased_projection_event(
+    app: &Arc<Mutex<DaemonApp>>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    let (config, target_daemon_id, event) = {
+        let mut app = app.lock().await;
+        let config = app.config().clone();
+        let Some((target_daemon_id, event)) =
+            app.drain_leased_runtime_projection(leased_agent_id, provider_run_id)?
+        else {
+            return Ok(());
+        };
+        (config, target_daemon_id, event)
+    };
+    let target_kernel = relay_discovery::get_live_kernel(&config, &target_daemon_id).await?;
+    let encrypted_event =
+        encrypt_peer_payload(&config.relay_private_key, &target_kernel.public_key, &event)?;
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonPeerEvent {
+            target: ClientTarget {
+                daemon_id: Some(target_daemon_id),
+                daemon_alias: None,
+            },
+            encrypted_event,
+        },
+    )
 }
 
 #[allow(dead_code)]
@@ -845,6 +972,18 @@ async fn encrypt_json_response(
         message: error.to_string(),
     })?;
     relay_crypto::encrypt_payload_for_peer(&daemon_private_key, client_public_key, &plaintext)
+}
+
+fn encrypt_peer_payload<T: serde::Serialize>(
+    sender_private_key: &str,
+    peer_public_key: &str,
+    value: &T,
+) -> Result<EncryptedRelayPayload, DaemonError> {
+    let plaintext = serde_json::to_vec(value).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize relay peer payload",
+        message: error.to_string(),
+    })?;
+    relay_crypto::encrypt_payload_for_peer(sender_private_key, peer_public_key, &plaintext)
 }
 
 fn send_outgoing_envelope(
@@ -1153,14 +1292,14 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration};
 
-    use crate::attachment::ClientCapabilityLevel;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
     use crate::local::{
         AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest,
         GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse, ResizeTerminalRequest,
         ResolveSessionRequest, UpdateSessionConfigRequest,
     };
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use crate::session::CreateSessionRequest;
     use crate::transport::relay_crypto;
     use crate::transport::relay_discovery;
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -1514,6 +1653,13 @@ mod tests {
         let app_a = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config_a.clone()).expect("home daemon should bootstrap"),
         ));
+        let (home_session_id, home_agent_id) = {
+            let mut app = app_a.lock().await;
+            let (session, agent) = app
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("home session should be created");
+            (session.id().to_string(), agent.id().to_string())
+        };
         let state_a = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
         let connector_a = tokio::spawn(run_daemon_relay_connector(
@@ -1553,8 +1699,8 @@ mod tests {
             },
             RelayPeerRequest::CreateExecutionLease {
                 home_kernel_id: config_a.daemon_id.clone(),
-                home_session_id: "session-remote-1".to_string(),
-                home_agent_id: "agent-home-1".to_string(),
+                home_session_id: home_session_id.clone(),
+                home_agent_id: home_agent_id.clone(),
             },
         )
         .await
@@ -1618,179 +1764,76 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn leased_agent_prompts_are_executed_through_peer_transport() {
-        let server = RelayServer::new(RelayConfig {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-            shared_token: Some("secret".to_string()),
-        });
-        let listener = server
-            .bind_listener()
+    async fn incoming_peer_events_project_runtime_to_the_home_session() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap"),
+        ));
+        let (session_id, agent_id, attachment_id, daemon_public_key) = {
+            let mut app = app.lock().await;
+            let (session, agent) = app
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("session should be created");
+            let attachment = app
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "home-client",
+                    ClientCapabilityLevel::InteractiveStructured,
+                ))
+                .expect("attachment should attach");
+            (
+                session.id().to_string(),
+                agent.id().to_string(),
+                attachment.id().to_string(),
+                relay_crypto::public_key_from_private_key_base64(&app.config().relay_private_key)
+                    .expect("daemon public key should derive"),
+            )
+        };
+        let sender_private_key = relay_crypto::generate_private_key_base64();
+        let plaintext = serde_json::to_vec(&RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: session_id.clone(),
+            home_agent_id: agent_id.clone(),
+            provider_run_id: "remote:worker:provider-run-1".to_string(),
+            output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assistant-1".to_string()),
+                bytes: b"remote output".to_vec(),
+            }],
+            notices: vec!["remote notice".to_string()],
+            completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: 1234,
+            }],
+        })
+        .expect("peer event should serialize");
+        let encrypted_event = relay_crypto::encrypt_payload_for_peer(
+            &sender_private_key,
+            &daemon_public_key,
+            &plaintext,
+        )
+        .expect("peer event should encrypt");
+
+        handle_daemon_peer_event(&app, encrypted_event)
             .await
-            .expect("relay listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        drop(listener);
+            .expect("peer event should project");
 
-        let server = Arc::new(RelayServer::new(RelayConfig {
-            host: addr.ip().to_string(),
-            port: addr.port(),
-            shared_token: Some("secret".to_string()),
-        }));
-        let registry = server.registry();
-        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
-        let server_task = {
-            let server = Arc::clone(&server);
-            tokio::spawn(async move {
-                server
-                    .run_until(async {
-                        let _ = server_shutdown_rx.await;
-                    })
-                    .await
-                    .expect("relay server should run");
-            })
-        };
+        let mut app = app.lock().await;
+        let outputs = app
+            .terminal_mut()
+            .drain_output_records(&session_id, &attachment_id);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].agent_id.as_deref(), Some(agent_id.as_str()));
 
-        let mut config_a = DaemonConfig::for_tests();
-        config_a.daemon_id = "daemon-home".to_string();
-        config_a.daemon_alias = Some("home".to_string());
-        config_a.host_machine_id = "machine-home".to_string();
-        config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
-        config_a.relay_token = Some("secret".to_string());
-        config_a.relay_heartbeat_ms = 50;
-        let app_a = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config_a.clone()).expect("home daemon should bootstrap"),
-        ));
-        let state_a = Arc::new(RwLock::new(RelayClientState::default()));
-        let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
-        let connector_a = tokio::spawn(run_daemon_relay_connector(
-            Arc::clone(&app_a),
-            Arc::clone(&state_a),
-            shutdown_a_rx,
-        ));
+        let notices = app
+            .terminal_mut()
+            .drain_notice_records(&session_id, &attachment_id);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].agent_id.as_deref(), Some(agent_id.as_str()));
 
-        let mut config_b = DaemonConfig::for_tests();
-        config_b.daemon_id = "daemon-worker".to_string();
-        config_b.daemon_alias = Some("worker".to_string());
-        config_b.host_machine_id = "machine-worker".to_string();
-        config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
-        config_b.relay_token = Some("secret".to_string());
-        config_b.relay_heartbeat_ms = 50;
-        config_b.accept_remote_leases = true;
-        let app_b = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config_b.clone()).expect("worker daemon should bootstrap"),
-        ));
-        let state_b = Arc::new(RwLock::new(RelayClientState::default()));
-        let (shutdown_b_tx, shutdown_b_rx) = watch::channel(false);
-        let connector_b = tokio::spawn(run_daemon_relay_connector(
-            Arc::clone(&app_b),
-            Arc::clone(&state_b),
-            shutdown_b_rx,
-        ));
-
-        wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
-        wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
-
-        let lease = match send_peer_request_via_relay(
-            &app_a,
-            &state_a,
-            ClientTarget {
-                daemon_id: Some(config_b.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::CreateExecutionLease {
-                home_kernel_id: config_a.daemon_id.clone(),
-                home_session_id: "session-remote-1".to_string(),
-                home_agent_id: "agent-home-1".to_string(),
-            },
-        )
-        .await
-        .expect("execution lease should be created remotely")
-        {
-            RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
-            other => panic!("unexpected peer response: {other:?}"),
-        };
-
-        let leased_agent = match send_peer_request_via_relay(
-            &app_a,
-            &state_a,
-            ClientTarget {
-                daemon_id: Some(config_b.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::SpawnLeasedAgent {
-                lease_id: lease.id.clone(),
-                provider: "dev-stub".to_string(),
-                model: Some("sonnet".to_string()),
-                effort: Some("medium".to_string()),
-            },
-        )
-        .await
-        .expect("leased agent should be spawned remotely")
-        {
-            RelayPeerResponse::LeasedAgentSpawned { leased_agent } => leased_agent,
-            other => panic!("unexpected peer response: {other:?}"),
-        };
-
-        let submitted = send_peer_request_via_relay(
-            &app_a,
-            &state_a,
-            ClientTarget {
-                daemon_id: Some(config_b.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::SubmitLeasedPrompt {
-                leased_agent_id: leased_agent.id.clone(),
-                prompt: "remote leased prompt\n".to_string(),
-            },
-        )
-        .await
-        .expect("leased prompt should submit remotely");
-        let provider_run_id = match submitted {
-            RelayPeerResponse::LeasedPromptSubmitted {
-                provider_run_id,
-                outcome,
-            } => {
-                assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
-                provider_run_id
-            }
-            other => panic!("unexpected peer response: {other:?}"),
-        };
-        assert!(app_b
-            .lock()
-            .await
-            .providers()
-            .get_run(&provider_run_id)
-            .is_ok());
-
-        let completed = send_peer_request_via_relay(
-            &app_a,
-            &state_a,
-            ClientTarget {
-                daemon_id: Some(config_b.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::CompleteLeasedPrompt {
-                leased_agent_id: leased_agent.id.clone(),
-            },
-        )
-        .await
-        .expect("leased prompt should complete remotely");
-        match completed {
-            RelayPeerResponse::LeasedPromptCompleted { completion } => {
-                assert_eq!(
-                    completion.completed.target_agent_id(),
-                    leased_agent.backing_agent_id
-                );
-            }
-            other => panic!("unexpected peer response: {other:?}"),
-        }
-
-        let _ = shutdown_a_tx.send(true);
-        let _ = shutdown_b_tx.send(true);
-        connector_a.await.expect("connector A should join");
-        connector_b.await.expect("connector B should join");
-        let _ = server_shutdown_tx.send(());
-        server_task.await.expect("server task should join");
+        let completions = app
+            .terminal_mut()
+            .drain_completion_records(&session_id, &attachment_id);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
     }
 
     #[tokio::test(flavor = "multi_thread")]

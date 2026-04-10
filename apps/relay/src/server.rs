@@ -424,6 +424,36 @@ async fn handle_connection(
                             },
                         )?;
                     }
+                    RelayEnvelope::DaemonPeerEvent {
+                        target,
+                        encrypted_event,
+                    } => {
+                        let Some(requester_daemon_id) = registered_daemon_id.clone() else {
+                            send_close(
+                                &outgoing_tx,
+                                "daemon must register before sending peer events".to_string(),
+                            );
+                            break;
+                        };
+                        let Some(target_daemon_id) =
+                            resolve_target_daemon_id(&registry, &target).await
+                        else {
+                            continue;
+                        };
+                        let daemon_sender = {
+                            let guard = registry.read().await;
+                            resolve_daemon_sender_locked(&guard, &target_daemon_id)
+                        };
+                        if let Some(daemon_sender) = daemon_sender {
+                            send_envelope(
+                                &daemon_sender,
+                                &RelayEnvelope::DaemonIncomingPeerEvent {
+                                    from_daemon_id: requester_daemon_id,
+                                    encrypted_event,
+                                },
+                            )?;
+                        }
+                    }
                     RelayEnvelope::ClientRequest {
                         request_id,
                         target,
@@ -745,6 +775,7 @@ async fn handle_connection(
                     | RelayEnvelope::ClientMetadataResponse { .. }
                     | RelayEnvelope::DaemonPeerResponse { .. }
                     | RelayEnvelope::DaemonIncomingPeerRequest { .. }
+                    | RelayEnvelope::DaemonIncomingPeerEvent { .. }
                     | RelayEnvelope::ClientResponse { .. }
                     | RelayEnvelope::DaemonRequest { .. }
                     | RelayEnvelope::DaemonSubscribe { .. }
@@ -1361,6 +1392,8 @@ mod tests {
             other => panic!("unexpected routed peer response envelope: {other:?}"),
         }
 
+        let _ = daemon_a.close(None).await;
+        let _ = daemon_b.close(None).await;
         let _ = shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }

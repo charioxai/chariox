@@ -33,6 +33,8 @@ mod tests {
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
     use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use super::terminal::TerminalOutputKind;
+    use super::transport::relay_peer::{RelayProjectedCompletion, RelayProjectedOutputChunk};
     use super::{DaemonApp, DaemonConfig, DaemonError};
 
     #[test]
@@ -234,6 +236,60 @@ mod tests {
             completion.completed.target_agent_id(),
             leased_agent.backing_agent_id
         );
+    }
+
+    #[test]
+    fn remote_runtime_projection_records_output_and_completion_on_home_session() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("attachment should attach");
+
+        app.project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            vec![RelayProjectedOutputChunk {
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assistant-1".to_string()),
+                bytes: b"remote output".to_vec(),
+            }],
+            vec!["remote notice".to_string()],
+            vec![RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: 1234,
+            }],
+        )
+        .expect("projection should succeed");
+
+        let outputs = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].agent_id.as_deref(), Some(agent.id()));
+        assert_eq!(outputs[0].bytes, b"remote output".to_vec());
+
+        let notices = app
+            .terminal_mut()
+            .drain_notice_records(session.id(), attachment.id());
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].agent_id.as_deref(), Some(agent.id()));
+        assert_eq!(notices[0].message, "remote notice");
+
+        let completions = app
+            .terminal_mut()
+            .drain_completion_records(session.id(), attachment.id());
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].agent_id.as_deref(), Some(agent.id()));
+        assert_eq!(completions[0].message_id, "assistant-msg-1");
     }
 
     #[test]

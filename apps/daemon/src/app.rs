@@ -39,6 +39,9 @@ pub use crate::session_history_page::{
     SessionHistoryCursor, SessionHistoryPage, SessionHistoryPageEntry,
 };
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
+use crate::transport::relay_peer::{
+    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
+};
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -1066,6 +1069,165 @@ impl DaemonApp {
             &leased_agent.backing_agent_id,
             provider_run_id.as_deref(),
         )
+    }
+
+    pub fn leased_agent_provider_run_id(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let leased_agent = self
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        Ok(self
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .map(|run| run.id().to_string()))
+    }
+
+    pub fn drain_leased_runtime_projection(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        let leased_agent = self
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let lease = self
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased_agent.lease_id.clone(),
+            })?;
+        let _ = self.pump_terminal_output(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_attachment_id,
+        )?;
+        let output_chunks = self
+            .terminal
+            .drain_output_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            )
+            .into_iter()
+            .map(|record| RelayProjectedOutputChunk {
+                kind: record.kind,
+                merge_key: record.merge_key,
+                bytes: record.bytes,
+            })
+            .collect::<Vec<_>>();
+        let notices = self
+            .terminal
+            .drain_notice_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            )
+            .into_iter()
+            .map(|record| record.message)
+            .collect::<Vec<_>>();
+        let completions = self
+            .terminal
+            .drain_completion_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            )
+            .into_iter()
+            .map(|record| RelayProjectedCompletion {
+                message_id: record.message_id,
+                completed_at_ms: record.completed_at_ms,
+            })
+            .collect::<Vec<_>>();
+        if output_chunks.is_empty() && notices.is_empty() && completions.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((
+            lease.home_kernel_id,
+            RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: lease.home_session_id,
+                home_agent_id: lease.home_agent_id,
+                provider_run_id: provider_run_id.to_string(),
+                output_chunks,
+                notices,
+                completions,
+            },
+        )))
+    }
+
+    pub fn project_remote_runtime_projection(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        output_chunks: Vec<RelayProjectedOutputChunk>,
+        notices: Vec<String>,
+        completions: Vec<RelayProjectedCompletion>,
+    ) -> Result<(), DaemonError> {
+        let _ = self.sessions.get_session(session_id)?;
+        let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+        for chunk in output_chunks {
+            self.terminal.fan_out_output(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                chunk.kind.clone(),
+                chunk.merge_key.clone(),
+                recipient_attachment_ids.clone(),
+                &chunk.bytes,
+            );
+            if chunk.kind != TerminalOutputKind::PromptEcho {
+                self.append_history_entry(
+                    session_id,
+                    SessionHistoryEntry::provider_output(
+                        session_id,
+                        provider_run_id,
+                        Some(agent_id),
+                        chunk.kind,
+                        chunk.merge_key,
+                        String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                    ),
+                );
+            }
+        }
+        for notice in notices {
+            self.terminal.record_notice(
+                session_id,
+                Some(provider_run_id),
+                Some(agent_id),
+                recipient_attachment_ids.clone(),
+                notice.clone(),
+            );
+            self.append_history_entry(
+                session_id,
+                SessionHistoryEntry::notice(
+                    session_id,
+                    Some(provider_run_id),
+                    Some(agent_id),
+                    notice,
+                ),
+            );
+        }
+        for completion in completions {
+            self.terminal.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+        }
+        Ok(())
     }
 
     pub fn execution_lease_count(&self) -> usize {

@@ -142,6 +142,14 @@ pub enum RelayEnvelope {
         encrypted_response: Option<EncryptedRelayPayload>,
         error: Option<RelayError>,
     },
+    DaemonPeerEvent {
+        target: ClientTarget,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerEvent {
+        from_daemon_id: String,
+        encrypted_event: EncryptedRelayPayload,
+    },
     ClientRequest {
         request_id: String,
         target: ClientTarget,
