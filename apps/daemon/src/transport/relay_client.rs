@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -69,6 +69,7 @@ pub async fn run_daemon_relay_connector(
             Ok((socket, _)) => {
                 let (mut writer, mut reader) = socket.split();
                 let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<RelayEnvelope>();
+                let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
                     while let Some(envelope) = outgoing_rx.recv().await {
                         let payload = match serde_json::to_string(&envelope) {
@@ -79,6 +80,7 @@ pub async fn run_daemon_relay_connector(
                             break;
                         }
                     }
+                    let _ = writer_done_tx.send(());
                 });
                 let subscription_tasks: RelaySubscriptionTasks =
                     Arc::new(Mutex::new(BTreeMap::new()));
@@ -147,6 +149,13 @@ pub async fn run_daemon_relay_connector(
                                     break;
                                 }
                             }
+                        }
+                        writer_done = &mut writer_done_rx => {
+                            let _ = writer_done;
+                            abort_subscription_tasks(&subscription_tasks).await;
+                            writer_task.abort();
+                            set_connected(&state, false).await;
+                            break;
                         }
                         _ = sleep(heartbeat) => {
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
@@ -1462,6 +1471,7 @@ mod tests {
         let _ = server_shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }
+
 
     #[tokio::test(flavor = "multi_thread")]
     async fn terminal_resize_errors_are_returned_through_relay() {
