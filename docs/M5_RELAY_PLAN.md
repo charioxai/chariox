@@ -249,7 +249,15 @@ Support a narrow first surface:
 This slice is now implemented end to end through relay.
 
 Encrypted event subscription forwarding is also now implemented for the relay path.
-Keep remote terminal input/resize/output transport and durable resume semantics for the next slice.
+The relay path now also supports the narrow interactive session request surface needed for remote terminal use:
+
+- submit/cancel/complete prompt requests
+- resize requests
+- focus/cycle/list agents
+- session config updates
+- provider metadata/status/login requests
+
+Keep durable reconnect/resume semantics and broader terminal transport hardening for the next slice.
 
 ### Slice 6. Remote Terminal Flow
 

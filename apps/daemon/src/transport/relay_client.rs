@@ -386,6 +386,25 @@ fn is_supported_relay_request(request: &LocalDaemonRequest) -> bool {
         LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::GetSessionState(_)
             | LocalDaemonRequest::AttachToSession(_)
+            | LocalDaemonRequest::ResolveSession(_)
+            | LocalDaemonRequest::DetachFromSession(_)
+            | LocalDaemonRequest::GetProviderRun(_)
+            | LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+            | LocalDaemonRequest::GetProviderAuthStatus(_)
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::LogoutProvider(_)
+            | LocalDaemonRequest::SubmitPrompt(_)
+            | LocalDaemonRequest::CompletePrompt(_)
+            | LocalDaemonRequest::CancelActivePrompt(_)
+            | LocalDaemonRequest::UpdateSessionConfig(_)
+            | LocalDaemonRequest::ResizeTerminal(_)
+            | LocalDaemonRequest::PumpTerminalOutput(_)
+            | LocalDaemonRequest::LaunchProviderRun(_)
+            | LocalDaemonRequest::FocusAgent(_)
+            | LocalDaemonRequest::CycleAgentFocus(_)
+            | LocalDaemonRequest::ListAgents(_)
+            | LocalDaemonRequest::EndSession(_)
     )
 }
 
@@ -399,6 +418,9 @@ fn map_relay_error(error: &DaemonError) -> RelayError {
         }
         DaemonError::AttachmentNotInSession { .. } => {
             relay_error("attachment_not_in_session", &error.to_string(), false)
+        }
+        DaemonError::NoActiveProviderRun { .. } => {
+            relay_error("no_active_provider_run", &error.to_string(), false)
         }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
@@ -633,10 +655,13 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::config::DaemonConfig;
     use crate::local::{
-        AttachToSessionRequest, GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse,
+        AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest,
+        GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse, ResizeTerminalRequest,
+        ResolveSessionRequest, UpdateSessionConfigRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_crypto;
+    use std::collections::BTreeMap;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_connector_registers_with_relay() {
@@ -977,6 +1002,285 @@ mod tests {
         server_task.await.expect("server task should join");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interactive_session_requests_are_handled_through_relay() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config.relay_token = Some("secret".to_string());
+        config.relay_heartbeat_ms = 50;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+        ));
+        let (created_session_id, default_agent_id) = {
+            let mut app = app.lock().await;
+            let response = app
+                .handle_local_request(LocalDaemonRequest::CreateSession(
+                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test")
+                        .with_alias("main"),
+                ))
+                .expect("session should be created");
+            match response {
+                LocalDaemonResponse::SessionCreated { session, agent } => {
+                    (session.id().to_string(), agent.id().to_string())
+                }
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+        let attachment_id = {
+            let mut app = app.lock().await;
+            let response = app
+                .handle_local_request(LocalDaemonRequest::AttachToSession(
+                    AttachToSessionRequest {
+                        session_id: created_session_id.clone(),
+                        client_id: "relay-client".to_string(),
+                        capability_level: ClientCapabilityLevel::MessageTransport,
+                    },
+                ))
+                .expect("session should attach");
+            match response {
+                LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let connector_task = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app),
+            Arc::clone(&state),
+            shutdown_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut client_socket, _) = connect_async(&url)
+            .await
+            .expect("client should connect to relay");
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientConnect {
+                auth_token: "secret".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+            },
+        )
+        .await;
+        let daemon_public_key = expect_client_connected(&mut client_socket).await;
+
+        let resolve_private_key = send_client_request(
+            &mut client_socket,
+            "resolve-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+                session_ref: "main".to_string(),
+                workspace_id: Some("workspace-relay-test".to_string()),
+            }),
+        )
+        .await;
+        let resolve_response =
+            expect_client_response(&mut client_socket, "resolve-1", &resolve_private_key).await;
+        assert!(matches!(
+            resolve_response,
+            LocalDaemonResponse::SessionResolved { session } if session.id() == created_session_id
+        ));
+
+        let focus_private_key = send_client_request(
+            &mut client_socket,
+            "focus-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: created_session_id.clone(),
+                agent_id: default_agent_id.clone(),
+            }),
+        )
+        .await;
+        let focus_response =
+            expect_client_response(&mut client_socket, "focus-1", &focus_private_key).await;
+        assert!(matches!(
+            focus_response,
+            LocalDaemonResponse::AgentFocused { agent } if agent.id() == default_agent_id
+        ));
+
+        let config_private_key = send_client_request(
+            &mut client_socket,
+            "config-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+                session_id: created_session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                values: BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                requires_idle: false,
+            }),
+        )
+        .await;
+        let config_response =
+            expect_client_response(&mut client_socket, "config-1", &config_private_key).await;
+        assert!(matches!(
+            config_response,
+            LocalDaemonResponse::SessionConfigUpdated { config, .. }
+                if config.values().get("theme").map(String::as_str) == Some("compact")
+        ));
+
+        let detach_private_key = send_client_request(
+            &mut client_socket,
+            "detach-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::DetachFromSession(DetachFromSessionRequest {
+                attachment_id: attachment_id.clone(),
+            }),
+        )
+        .await;
+        let detach_response =
+            expect_client_response(&mut client_socket, "detach-1", &detach_private_key).await;
+        assert!(matches!(
+            detach_response,
+            LocalDaemonResponse::SessionDetached { attachment } if attachment.id() == attachment_id
+        ));
+
+        let _ = shutdown_tx.send(true);
+        connector_task.await.expect("connector task should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_resize_errors_are_returned_through_relay() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config.relay_token = Some("secret".to_string());
+        config.relay_heartbeat_ms = 50;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+        ));
+        let created_session_id = {
+            let mut app = app.lock().await;
+            let response = app
+                .handle_local_request(LocalDaemonRequest::CreateSession(
+                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
+                ))
+                .expect("session should be created");
+            match response {
+                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let connector_task = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app),
+            Arc::clone(&state),
+            shutdown_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut client_socket, _) = connect_async(&url)
+            .await
+            .expect("client should connect to relay");
+        send_client_envelope(
+            &mut client_socket,
+            &RelayEnvelope::ClientConnect {
+                auth_token: "secret".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some(config.daemon_id.clone()),
+                    daemon_alias: None,
+                },
+            },
+        )
+        .await;
+        let daemon_public_key = expect_client_connected(&mut client_socket).await;
+
+        let resize_private_key = send_client_request(
+            &mut client_socket,
+            "resize-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+                session_id: created_session_id,
+                cols: 120,
+                rows: 40,
+            }),
+        )
+        .await;
+        let resize_error =
+            expect_client_error(&mut client_socket, "resize-1", &resize_private_key).await;
+        assert_eq!(resize_error.code, "no_active_provider_run");
+
+        let _ = shutdown_tx.send(true);
+        connector_task.await.expect("connector task should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
     async fn wait_for_daemon_registration(
         registry: Arc<RwLock<arroba_relay::server::RelayRegistry>>,
         daemon_id: &str,
@@ -1164,6 +1468,35 @@ mod tests {
                 }
                 other => panic!("unexpected relay message: {other:?}"),
             }
+        }
+    }
+
+    async fn expect_client_error<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+        request_id: &str,
+        _client_private_key: &str,
+    ) -> RelayError
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        match socket.next().await {
+            Some(Ok(Message::Text(payload))) => {
+                match serde_json::from_str::<RelayEnvelope>(&payload)
+                    .expect("relay envelope should parse")
+                {
+                    RelayEnvelope::ClientResponse {
+                        request_id: response_request_id,
+                        encrypted_response,
+                        error,
+                    } => {
+                        assert_eq!(response_request_id, request_id);
+                        assert!(encrypted_response.is_none());
+                        error.expect("relay error should exist")
+                    }
+                    other => panic!("unexpected envelope: {other:?}"),
+                }
+            }
+            other => panic!("unexpected relay message: {other:?}"),
         }
     }
 }
