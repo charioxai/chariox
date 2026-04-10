@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::execution_lease::ExecutionLease;
+use crate::execution_lease::{ExecutionLease, LeasedAgent};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -16,6 +16,15 @@ pub enum RelayPeerRequest {
     DestroyExecutionLease {
         lease_id: String,
     },
+    SpawnLeasedAgent {
+        lease_id: String,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    DestroyLeasedAgent {
+        leased_agent_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,4 +33,6 @@ pub enum RelayPeerResponse {
     Pong { value: String, daemon_id: String },
     ExecutionLeaseCreated { lease: ExecutionLease },
     ExecutionLeaseDestroyed { lease_id: String },
+    LeasedAgentSpawned { leased_agent: LeasedAgent },
+    LeasedAgentDestroyed { leased_agent_id: String },
 }

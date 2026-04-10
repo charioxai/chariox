@@ -142,6 +142,8 @@ pub enum DaemonError {
     RemoteLeasesDisabled { machine_id: String },
     #[error("execution lease `{lease_id}` was not found")]
     ExecutionLeaseNotFound { lease_id: String },
+    #[error("leased agent `{leased_agent_id}` was not found")]
+    LeasedAgentNotFound { leased_agent_id: String },
     #[error("attachment `{attachment_id}` was not found")]
     AttachmentNotFound { attachment_id: String },
     #[error("attachment `{attachment_id}` does not belong to session `{session_id}`")]

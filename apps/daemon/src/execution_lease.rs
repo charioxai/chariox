@@ -36,3 +36,35 @@ impl ExecutionLease {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedAgent {
+    pub id: String,
+    pub lease_id: String,
+    pub home_agent_id: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub created_at_ms: u64,
+}
+
+impl LeasedAgent {
+    pub fn new(
+        id: String,
+        lease_id: String,
+        home_agent_id: String,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            lease_id,
+            home_agent_id,
+            provider,
+            model,
+            effort,
+            created_at_ms: unix_epoch_ms(),
+        }
+    }
+}

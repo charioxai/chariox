@@ -163,6 +163,29 @@ mod tests {
         assert_eq!(removed.id, lease.id);
         assert_eq!(app.execution_lease_count(), 0);
     }
+
+    #[test]
+    fn leased_agents_require_existing_lease_and_can_be_destroyed() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = app
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1")
+            .expect("execution lease should be created");
+        let leased_agent = app
+            .create_leased_agent(&lease.id, "opencode", Some("kimi2.5".to_string()), None)
+            .expect("leased agent should be created");
+        assert_eq!(leased_agent.lease_id, lease.id);
+        assert_eq!(leased_agent.home_agent_id, "agent-home-1");
+        assert_eq!(leased_agent.provider, "opencode");
+        assert_eq!(app.leased_agent_count(), 1);
+
+        let removed = app
+            .destroy_leased_agent(&leased_agent.id)
+            .expect("leased agent should be removed");
+        assert_eq!(removed.id, leased_agent.id);
+        assert_eq!(app.leased_agent_count(), 0);
+    }
     #[test]
     fn launching_provider_via_app_marks_session_active() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())

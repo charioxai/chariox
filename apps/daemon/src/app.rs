@@ -23,7 +23,7 @@ use crate::capability::{
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::execution_lease::ExecutionLease;
+use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::local::LocalDaemonResponse;
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};
@@ -58,7 +58,9 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
+    leased_agents: BTreeMap<String, LeasedAgent>,
     next_execution_lease_number: u64,
+    next_leased_agent_number: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +134,9 @@ impl DaemonApp {
             history: SessionHistoryStore::new(config.session_history_root.clone())?,
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
+            leased_agents: BTreeMap::new(),
             next_execution_lease_number: 0,
+            next_leased_agent_number: 0,
             config,
         })
     }
@@ -900,6 +904,8 @@ impl DaemonApp {
         &mut self,
         lease_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
+        self.leased_agents
+            .retain(|_, agent| agent.lease_id != lease_id);
         self.execution_leases
             .remove(lease_id)
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
@@ -907,8 +913,59 @@ impl DaemonApp {
             })
     }
 
+    pub fn create_leased_agent(
+        &mut self,
+        lease_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let lease = self
+            .execution_leases
+            .get(lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })?;
+        if self.providers.registry().resolve(provider).is_none() {
+            return Err(DaemonError::ProviderAdapterNotFound {
+                adapter_key: provider.to_string(),
+            });
+        }
+        self.next_leased_agent_number = self.next_leased_agent_number.wrapping_add(1);
+        let agent_id = format!(
+            "leased-agent-{:016x}",
+            crate::session::unix_epoch_ms() ^ self.next_leased_agent_number.rotate_left(13)
+        );
+        let agent = LeasedAgent::new(
+            agent_id.clone(),
+            lease_id.to_string(),
+            lease.home_agent_id.clone(),
+            provider.to_string(),
+            model,
+            effort,
+        );
+        self.leased_agents.insert(agent_id, agent.clone());
+        Ok(agent)
+    }
+
+    pub fn destroy_leased_agent(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<LeasedAgent, DaemonError> {
+        self.leased_agents
+            .remove(leased_agent_id)
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })
+    }
+
     pub fn execution_lease_count(&self) -> usize {
         self.execution_leases.len()
+    }
+
+    pub fn leased_agent_count(&self) -> usize {
+        self.leased_agents.len()
     }
 
     fn ensure_attachment_can_run_capability(
@@ -963,7 +1020,7 @@ impl DaemonApp {
             ],
             available_providers,
             accepting_remote_leases: self.config.accept_remote_leases,
-            leased_agent_count: self.execution_lease_count() as u32,
+            leased_agent_count: self.leased_agent_count() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
         }
     }
