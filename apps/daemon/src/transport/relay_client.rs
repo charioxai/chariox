@@ -782,6 +782,161 @@ pub async fn send_peer_request_via_relay(
     })
 }
 
+pub async fn send_peer_request_via_temporary_connection(
+    config: &crate::config::DaemonConfig,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+) -> Result<RelayPeerResponse, DaemonError> {
+    let target_ref = target
+        .daemon_id
+        .as_deref()
+        .or(target.daemon_alias.as_deref())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "peer target must include daemon id or alias".to_string(),
+        })?;
+    let relay_url = config
+        .relay_url
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "relay_url is not configured".to_string(),
+        })?;
+    let relay_token = config
+        .relay_token
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "relay_token is not configured".to_string(),
+        })?;
+    let kernel = relay_discovery::get_live_kernel(config, target_ref).await?;
+    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize relay peer request",
+        message: error.to_string(),
+    })?;
+    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+        &config.relay_private_key,
+        &kernel.public_key,
+        &plaintext,
+    )?;
+    let (mut socket, _) =
+        connect_async(&relay_url)
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "connect temporary relay peer socket",
+                message: error.to_string(),
+            })?;
+    let request_id = format!(
+        "daemon-peer-tmp-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    );
+    let register = RelayEnvelope::DaemonRegister {
+        registration: arroba_relay::protocol::DaemonRegistration {
+            auth_token: relay_token,
+            daemon_id: format!("{}:peer-tmp:{}", config.daemon_id, request_id),
+            machine_id: config.host_machine_id.clone(),
+            machine_alias: config.host_machine_alias.clone(),
+            daemon_alias: config.daemon_alias.clone(),
+            kernel_alias: config.daemon_alias.clone(),
+            public_key: config.relay_public_key.clone(),
+            capabilities: vec!["relay_peer_transport".to_string()],
+            available_providers: Vec::new(),
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 0,
+        },
+    };
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&register)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "serialize temporary relay register",
+                    message: error.to_string(),
+                })?
+                .into(),
+        ))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "write temporary relay register",
+            message: error.to_string(),
+        })?;
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+                request_id: request_id.clone(),
+                target,
+                encrypted_request,
+            })
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize temporary relay peer request",
+                message: error.to_string(),
+            })?
+            .into(),
+        ))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "write temporary relay peer request",
+            message: error.to_string(),
+        })?;
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Text(text))) => {
+                let envelope = serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "decode temporary relay peer response",
+                        message: error.to_string(),
+                    }
+                })?;
+                if let RelayEnvelope::DaemonPeerResponse {
+                    request_id: response_request_id,
+                    from_daemon_id: _,
+                    encrypted_response,
+                    error,
+                } = envelope
+                {
+                    if response_request_id != request_id {
+                        continue;
+                    }
+                    if let Some(error) = error {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "read temporary relay peer response",
+                            message: error.message,
+                        });
+                    }
+                    let encrypted_response =
+                        encrypted_response.ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "read temporary relay peer response",
+                            message: "peer returned no response payload".to_string(),
+                        })?;
+                    let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                        &config.relay_private_key,
+                        &encrypted_response,
+                    )?;
+                    return serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext)
+                        .map_err(|error| DaemonError::LocalTransport {
+                            operation: "decode temporary relay peer response",
+                            message: error.to_string(),
+                        });
+                }
+            }
+            Some(Ok(Message::Close(_))) | None => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "read temporary relay peer response",
+                    message: "relay closed temporary peer connection".to_string(),
+                });
+            }
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "read temporary relay peer response",
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+}
+
 async fn resolve_pending_peer_response(
     state: &Arc<RwLock<RelayClientState>>,
     request_id: String,
@@ -1292,6 +1447,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration};
 
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
     use crate::local::{
@@ -1759,6 +1915,150 @@ mod tests {
         let _ = shutdown_b_tx.send(true);
         connector_a.await.expect("connector A should join");
         connector_b.await.expect("connector B should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config_home = DaemonConfig::for_tests();
+        config_home.daemon_id = "daemon-home".to_string();
+        config_home.daemon_alias = Some("home".to_string());
+        config_home.host_machine_id = "machine-home".to_string();
+        config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_home.relay_token = Some("secret".to_string());
+        config_home.relay_heartbeat_ms = 50;
+        let app_home = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+        ));
+        let state_home = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+        let connector_home = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_home),
+            Arc::clone(&state_home),
+            shutdown_home_rx,
+        ));
+
+        let mut config_worker = DaemonConfig::for_tests();
+        config_worker.daemon_id = "daemon-worker".to_string();
+        config_worker.daemon_alias = Some("worker".to_string());
+        config_worker.host_machine_id = "machine-worker".to_string();
+        config_worker.host_machine_alias = Some("builder-west".to_string());
+        config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_worker.relay_token = Some("secret".to_string());
+        config_worker.relay_heartbeat_ms = 50;
+        config_worker.accept_remote_leases = true;
+        let app_worker = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
+        ));
+        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+        let connector_worker = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_worker),
+            Arc::clone(&state_worker),
+            shutdown_worker_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+        wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
+
+        let worker_kernels =
+            relay_discovery::list_live_kernels_for_machine(&config_home, "builder-west")
+                .await
+                .expect("worker kernels should be discoverable");
+        let provider = worker_kernels
+            .first()
+            .and_then(|kernel| kernel.available_providers.first())
+            .cloned()
+            .expect("worker should advertise at least one provider");
+
+        let session_id = {
+            let mut app = app_home.lock().await;
+            let (session, _) = app
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("home session should be created");
+            session.id().to_string()
+        };
+
+        let remote_agent = {
+            let mut app = app_home.lock().await;
+            app.spawn_agent(
+                CreateAgentRequest::new(&session_id, &provider)
+                    .with_alias("remote-reviewer")
+                    .with_model("default")
+                    .with_effort("medium")
+                    .with_machine("builder-west"),
+            )
+            .expect("remote agent should spawn")
+        };
+
+        let remote_execution = remote_agent
+            .remote_execution()
+            .cloned()
+            .expect("remote binding should be present");
+        assert_eq!(remote_execution.worker_kernel_id, config_worker.daemon_id);
+        assert_eq!(
+            remote_execution.worker_machine_id,
+            config_worker.host_machine_id
+        );
+
+        {
+            let app = app_worker.lock().await;
+            assert_eq!(app.execution_lease_count(), 1);
+            assert_eq!(app.leased_agent_count(), 1);
+        }
+
+        {
+            let mut app = app_home.lock().await;
+            let destroyed = app
+                .destroy_agent(remote_agent.id())
+                .expect("remote agent should destroy");
+            assert_eq!(destroyed.id(), remote_agent.id());
+        }
+
+        {
+            let app = app_worker.lock().await;
+            assert_eq!(app.execution_lease_count(), 0);
+            assert_eq!(app.leased_agent_count(), 0);
+        }
+
+        let _ = shutdown_home_tx.send(true);
+        let _ = shutdown_worker_tx.send(true);
+        connector_home.await.expect("home connector should join");
+        connector_worker
+            .await
+            .expect("worker connector should join");
         let _ = server_shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }

@@ -43,6 +43,22 @@ impl ProviderRegistry {
             _ => None,
         }
     }
+
+    pub fn registered_adapter_keys(&self) -> Vec<String> {
+        let keys = vec![
+            DevStubAdapter::KEY.to_string(),
+            CodexAdapter::KEY.to_string(),
+            OpenCodeAdapter::KEY.to_string(),
+        ];
+        #[cfg(not(test))]
+        return keys;
+        #[cfg(test)]
+        {
+            let mut keys = keys;
+            keys.push(FailingPtyAdapter::KEY.to_string());
+            keys
+        }
+    }
 }
 
 #[derive(Debug, Default)]

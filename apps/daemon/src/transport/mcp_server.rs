@@ -407,6 +407,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-1".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {

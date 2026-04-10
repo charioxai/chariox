@@ -221,6 +221,8 @@ pub struct SpawnAgentRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub worktree_id: Option<String>,
+    #[serde(default)]
+    pub machine_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderResumeState;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAgentBinding {
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     Idle,
@@ -39,6 +47,8 @@ pub struct AgentInstance {
     model: Option<String>,
     effort: Option<String>,
     worktree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_execution: Option<RemoteAgentBinding>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
     state: AgentState,
@@ -71,6 +81,7 @@ impl AgentInstance {
             model,
             effort,
             worktree_id,
+            remote_execution: None,
             provider_resume_state: ProviderResumeState::default(),
             state: AgentState::Idle,
             is_processing: false,
@@ -110,6 +121,10 @@ impl AgentInstance {
 
     pub fn worktree_id(&self) -> Option<&str> {
         self.worktree_id.as_deref()
+    }
+
+    pub fn remote_execution(&self) -> Option<&RemoteAgentBinding> {
+        self.remote_execution.as_ref()
     }
 
     pub fn provider_resume_state(&self) -> &ProviderResumeState {
@@ -169,6 +184,10 @@ impl AgentInstance {
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {
         self.provider_resume_state = resume_state;
     }
+
+    pub fn set_remote_execution(&mut self, remote_execution: Option<RemoteAgentBinding>) {
+        self.remote_execution = remote_execution;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +198,7 @@ pub struct CreateAgentRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub worktree_id: Option<String>,
+    pub machine_ref: Option<String>,
 }
 
 impl CreateAgentRequest {
@@ -190,6 +210,7 @@ impl CreateAgentRequest {
             model: None,
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }
     }
 
@@ -210,6 +231,11 @@ impl CreateAgentRequest {
 
     pub fn with_worktree(mut self, worktree_id: impl Into<String>) -> Self {
         self.worktree_id = Some(worktree_id.into());
+        self
+    }
+
+    pub fn with_machine(mut self, machine_ref: impl Into<String>) -> Self {
+        self.machine_ref = Some(machine_ref.into());
         self
     }
 }

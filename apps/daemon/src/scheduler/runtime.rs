@@ -1655,6 +1655,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-scheduler".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1827,6 +1828,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-scheduler".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1952,6 +1954,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-scheduler".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {

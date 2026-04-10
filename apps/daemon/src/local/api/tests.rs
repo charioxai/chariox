@@ -3,7 +3,6 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arroba_relay::{protocol::DaemonRegistration, RelayConfig, RelayServer};
 use crate::attachment::ClientCapabilityLevel;
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload,
@@ -12,6 +11,7 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 use crate::transport::TransportService;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
+use arroba_relay::{protocol::DaemonRegistration, RelayConfig, RelayServer};
 
 use super::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
@@ -21,8 +21,8 @@ use super::{
     CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
     EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetSessionStateRequest,
     GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    LaunchProviderRunRequest, ListAgentsRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListWorkflowsRequest,
+    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
+    ListRemoteMachinesRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
     LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
     ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
     RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
@@ -146,11 +146,9 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
         };
         socket
             .send(Message::Text(
-                serde_json::to_string(
-                    &arroba_relay::protocol::RelayEnvelope::DaemonRegister {
-                        registration: register.clone(),
-                    },
-                )
+                serde_json::to_string(&arroba_relay::protocol::RelayEnvelope::DaemonRegister {
+                    registration: register.clone(),
+                })
                 .unwrap()
                 .into(),
             ))
@@ -315,6 +313,7 @@ fn local_request_api_spawns_and_focuses_agents() {
             model: Some("openai/gpt-5.4".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("spawn should succeed")
     {
@@ -439,6 +438,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("workflow agent should spawn")
     {
@@ -535,6 +535,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
             model: None,
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("spawn should succeed")
     {
@@ -669,6 +670,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("workflow agent should spawn")
     {
@@ -855,6 +857,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("first workflow agent should spawn")
     {
@@ -870,6 +873,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("second workflow agent should spawn")
     {
@@ -1795,6 +1799,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("agent spawn should succeed")
     {
@@ -2154,6 +2159,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             model: None,
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("spawn should succeed")
     {
@@ -3074,6 +3080,7 @@ fn spawn_workflow_test_agent(
             model: Some("default".to_string()),
             effort: None,
             worktree_id: None,
+            machine_ref: None,
         }))
         .expect("workflow test agent should spawn")
     {

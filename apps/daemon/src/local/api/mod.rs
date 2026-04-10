@@ -322,6 +322,11 @@ impl DaemonApp {
                 } else {
                     create_request
                 };
+                let create_request = if let Some(machine_ref) = request.machine_ref {
+                    create_request.with_machine(machine_ref)
+                } else {
+                    create_request
+                };
                 let agent = self.spawn_agent(create_request)?;
                 Ok(LocalDaemonResponse::AgentSpawned { agent })
             }

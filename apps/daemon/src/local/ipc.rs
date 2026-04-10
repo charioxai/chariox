@@ -586,6 +586,7 @@ mod tests {
                 model: Some("default".to_string()),
                 effort: None,
                 worktree_id: None,
+                machine_ref: None,
             }))
             .expect("workflow agent should spawn")
         {
@@ -789,6 +790,7 @@ mod tests {
                 model: Some("default".to_string()),
                 effort: None,
                 worktree_id: None,
+                machine_ref: None,
             }))
             .expect("first workflow agent should spawn")
         {
@@ -804,6 +806,7 @@ mod tests {
                 model: Some("default".to_string()),
                 effort: None,
                 worktree_id: None,
+                machine_ref: None,
             }))
             .expect("second workflow agent should spawn")
         {

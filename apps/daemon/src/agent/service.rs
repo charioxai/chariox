@@ -4,7 +4,7 @@ use crate::session::{SessionService, SessionStatus};
 
 use super::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
-    AgentStore, CreateAgentRequest, GridPosition,
+    AgentStore, CreateAgentRequest, GridPosition, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -310,6 +310,21 @@ impl AgentService {
         agent.set_model(model);
         agent.set_effort(effort);
         agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
+    pub fn bind_remote_execution(
+        &mut self,
+        agent_id: &str,
+        remote_execution: RemoteAgentBinding,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_remote_execution(Some(remote_execution));
         Ok(agent.clone())
     }
 

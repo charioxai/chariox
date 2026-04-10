@@ -932,6 +932,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-1".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1132,6 +1133,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-run-output".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1300,6 +1302,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-intermediate-output".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1466,6 +1469,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-auth".to_string()),
+                machine_ref: None,
             }))
             .expect("agent should spawn")
         {
@@ -1584,6 +1588,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-auth-shared".to_string()),
+                machine_ref: None,
             }))
             .expect("active agent should spawn")
         {
@@ -1598,6 +1603,7 @@ mod tests {
                 model: Some("test-model".to_string()),
                 effort: None,
                 worktree_id: Some("worktree-auth-shared".to_string()),
+                machine_ref: None,
             }))
             .expect("inactive agent should spawn")
         {
