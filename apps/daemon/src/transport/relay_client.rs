@@ -516,6 +516,7 @@ async fn handle_daemon_peer_request(
                         outgoing_tx,
                         &leased_agent_id,
                         &provider_run_id,
+                        true,
                     )
                     .await
                     {
@@ -549,33 +550,16 @@ async fn handle_daemon_peer_request(
             };
             match completion {
                 Ok(completion) => {
-                    if let Some(provider_run_id) = app
+                    let provider_run_id = app
                         .lock()
                         .await
                         .leased_agent_provider_run_id(&leased_agent_id)
                         .ok()
-                        .flatten()
-                    {
-                        if let Err(error) = emit_leased_projection_event(
-                            app,
-                            outgoing_tx,
-                            &leased_agent_id,
-                            &provider_run_id,
-                        )
-                        .await
-                        {
-                            crate::logging::warn_with_fields(
-                                "daemon.relay",
-                                "failed to emit leased runtime projection after completion",
-                                serde_json::json!({
-                                    "leased_agent_id": leased_agent_id,
-                                    "provider_run_id": provider_run_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
+                        .flatten();
+                    RelayPeerResponse::LeasedPromptCompleted {
+                        provider_run_id,
+                        completion,
                     }
-                    RelayPeerResponse::LeasedPromptCompleted { completion }
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
@@ -664,18 +648,27 @@ async fn emit_leased_projection_event(
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     leased_agent_id: &str,
     provider_run_id: &str,
+    pump_output: bool,
 ) -> Result<(), DaemonError> {
     let (config, target_daemon_id, event) = {
         let mut app = app.lock().await;
         let config = app.config().clone();
         let Some((target_daemon_id, event)) =
-            app.drain_leased_runtime_projection(leased_agent_id, provider_run_id)?
+            app.drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)?
         else {
             return Ok(());
         };
         (config, target_daemon_id, event)
     };
-    let target_kernel = relay_discovery::get_live_kernel(&config, &target_daemon_id).await?;
+    let target_kernel = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        relay_discovery::get_live_kernel(&config, &target_daemon_id),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "resolve relay peer event target",
+        message: format!("timed out resolving relay target kernel `{target_daemon_id}`"),
+    })??;
     let encrypted_event =
         encrypt_peer_payload(&config.relay_private_key, &target_kernel.public_key, &event)?;
     send_outgoing_envelope(
@@ -1969,7 +1962,6 @@ mod tests {
             Arc::clone(&state_home),
             shutdown_home_rx,
         ));
-
         let mut config_worker = DaemonConfig::for_tests();
         config_worker.daemon_id = "daemon-worker".to_string();
         config_worker.daemon_alias = Some("worker".to_string());
@@ -1990,7 +1982,6 @@ mod tests {
             shutdown_worker_rx,
         ));
 
-        wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
         wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
         let worker_kernels =
@@ -1999,9 +1990,14 @@ mod tests {
                 .expect("worker kernels should be discoverable");
         let provider = worker_kernels
             .first()
-            .and_then(|kernel| kernel.available_providers.first())
+            .and_then(|kernel| {
+                kernel
+                    .available_providers
+                    .iter()
+                    .find(|provider| provider.as_str() == "dev-stub")
+            })
             .cloned()
-            .expect("worker should advertise at least one provider");
+            .expect("worker should advertise dev-stub");
 
         let session_id = {
             let mut app = app_home.lock().await;
@@ -2056,6 +2052,143 @@ mod tests {
         let _ = shutdown_home_tx.send(true);
         let _ = shutdown_worker_tx.send(true);
         connector_home.await.expect("home connector should join");
+        connector_worker
+            .await
+            .expect("worker connector should join");
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remote_machine_agents_execute_prompts_through_the_home_session() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config_home = DaemonConfig::for_tests();
+        config_home.daemon_id = "daemon-home".to_string();
+        config_home.daemon_alias = Some("home".to_string());
+        config_home.host_machine_id = "machine-home".to_string();
+        config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_home.relay_token = Some("secret".to_string());
+        config_home.relay_heartbeat_ms = 50;
+        let mut config_worker = DaemonConfig::for_tests();
+        config_worker.daemon_id = "daemon-worker".to_string();
+        config_worker.daemon_alias = Some("worker".to_string());
+        config_worker.host_machine_id = "machine-worker".to_string();
+        config_worker.host_machine_alias = Some("builder-west".to_string());
+        config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_worker.relay_token = Some("secret".to_string());
+        config_worker.relay_heartbeat_ms = 50;
+        config_worker.accept_remote_leases = true;
+        let app_worker = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
+        ));
+        let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+        let connector_worker = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_worker),
+            Arc::clone(&state_worker),
+            shutdown_worker_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
+
+        let provider = relay_discovery::list_live_kernels_for_machine(&config_home, "builder-west")
+            .await
+            .expect("worker kernels should be discoverable")
+            .first()
+            .and_then(|kernel| {
+                kernel
+                    .available_providers
+                    .iter()
+                    .find(|provider| provider.as_str() == "dev-stub")
+            })
+            .cloned()
+            .expect("worker should advertise dev-stub");
+
+        let mut app_home =
+            DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
+
+        let (session_id, attachment_id) = {
+            let (session, _) = app_home
+                .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+                .expect("home session should be created");
+            let attachment = app_home
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "home-client",
+                    ClientCapabilityLevel::InteractiveStructured,
+                ))
+                .expect("home attachment should attach");
+            (session.id().to_string(), attachment.id().to_string())
+        };
+
+        let remote_agent_id = {
+            app_home
+                .spawn_agent(
+                    CreateAgentRequest::new(&session_id, &provider)
+                        .with_alias("remote-reviewer")
+                        .with_model("default")
+                        .with_effort("medium")
+                        .with_machine("builder-west"),
+                )
+                .expect("remote agent should spawn")
+                .id()
+                .to_string()
+        };
+
+        let outcome = app_home
+            .submit_prompt(
+                &session_id,
+                &attachment_id,
+                Some(&remote_agent_id),
+                "remote prompt over home session\n",
+                Vec::new(),
+            )
+            .expect("remote prompt should submit");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let completion = app_home
+            .complete_active_prompt(&session_id, &remote_agent_id, None)
+            .expect("remote prompt should complete");
+        assert_eq!(completion.completed.target_agent_id(), remote_agent_id);
+        assert_eq!(
+            completion.completed.prompt(),
+            "remote prompt over home session\n"
+        );
+
+        let _ = shutdown_worker_tx.send(true);
         connector_worker
             .await
             .expect("worker connector should join");

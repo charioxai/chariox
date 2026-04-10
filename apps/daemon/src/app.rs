@@ -1123,6 +1123,7 @@ impl DaemonApp {
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
+        pump_output: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent = self
             .leased_agents
@@ -1138,10 +1139,12 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
-        let _ = self.pump_terminal_output(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_attachment_id,
-        )?;
+        if pump_output {
+            let _ = self.pump_terminal_output(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            )?;
+        }
         let output_chunks = self
             .terminal
             .drain_output_records(

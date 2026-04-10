@@ -60,6 +60,7 @@ pub enum RelayPeerResponse {
         outcome: PromptSubmissionOutcome,
     },
     LeasedPromptCompleted {
+        provider_run_id: Option<String>,
         completion: PromptCompletion,
     },
 }

@@ -3,6 +3,9 @@ use crate::error::DaemonError;
 use crate::pty::PtyProcessState;
 use crate::session::{PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome};
 use crate::transport::flow_control;
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use arroba_relay::protocol::ClientTarget;
 
 impl DaemonApp {
     pub fn submit_prompt(
@@ -22,10 +25,14 @@ impl DaemonApp {
                 agent_id: "no focused agent".to_string(),
             })?
             .to_string();
+        let target_agent = self.agents.get_agent(&target_agent_id)?;
+        let remote_execution = target_agent.remote_execution().cloned();
         let queued_while_active = session_before
             .active_prompt_for_agent(&target_agent_id)
             .is_some();
-        let provider_run_id = if queued_while_active {
+        let provider_run_id = if remote_execution.is_some() {
+            None
+        } else if queued_while_active {
             self.providers
                 .get_run_for_agent(session_id, &target_agent_id)
                 .map(|run| run.id().to_string())
@@ -51,6 +58,57 @@ impl DaemonApp {
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
+                if let Some(remote_execution) = remote_execution.as_ref() {
+                    if !prompt.attachments().is_empty() {
+                        let _ = self
+                            .sessions
+                            .cancel_active_prompt(session_id, &target_agent_id);
+                        return Err(DaemonError::LocalTransport {
+                            operation: "submit remote prompt",
+                            message: "remote prompt attachments are not supported yet".to_string(),
+                        });
+                    }
+                    let response =
+                        self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                            &self.config,
+                            ClientTarget {
+                                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                daemon_alias: None,
+                            },
+                            RelayPeerRequest::SubmitLeasedPrompt {
+                                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                prompt: prompt.prompt().to_string(),
+                            },
+                        ));
+                    let remote_provider_run_id = match response {
+                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                            provider_run_id, ..
+                        }) => provider_run_id,
+                        Ok(other) => {
+                            let _ = self
+                                .sessions
+                                .cancel_active_prompt(session_id, &target_agent_id);
+                            return Err(DaemonError::LocalTransport {
+                                operation: "submit remote prompt",
+                                message: format!("unexpected remote prompt response: {other:?}"),
+                            });
+                        }
+                        Err(error) => {
+                            let _ = self
+                                .sessions
+                                .cancel_active_prompt(session_id, &target_agent_id);
+                            return Err(error);
+                        }
+                    };
+                    self.echo_prompt_to_other_attachments(
+                        session_id,
+                        &remote_provider_run_id,
+                        prompt.source_attachment_id(),
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    );
+                    return Ok(outcome);
+                }
                 let provider_run_id =
                     provider_run_id
                         .as_deref()
@@ -118,6 +176,66 @@ impl DaemonApp {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCompletion, DaemonError> {
+        let target_agent = self.agents.get_agent(agent_id)?;
+        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            let remote_provider_run_id = match self.block_on_relay_future(
+                send_peer_request_via_temporary_connection(
+                    &self.config,
+                    ClientTarget {
+                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::CompleteLeasedPrompt {
+                        leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    },
+                ),
+            )? {
+                RelayPeerResponse::LeasedPromptCompleted {
+                    provider_run_id, ..
+                } => provider_run_id,
+                other => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: format!("unexpected remote prompt completion response: {other:?}"),
+                    });
+                }
+            };
+            let (_session, completed) = self
+                .sessions
+                .complete_active_prompt_only(session_id, agent_id)?;
+            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+            self.record_assistant_message_completion(
+                session_id,
+                remote_provider_run_id
+                    .as_deref()
+                    .unwrap_or("remote-provider-run-completed"),
+                recipient_attachment_ids,
+                &format!("prompt-complete:{}", completed.id()),
+                crate::session::unix_epoch_ms(),
+            );
+            let started_next = if self
+                .sessions
+                .get_session(session_id)?
+                .active_prompt_for_agent(agent_id)
+                .is_none()
+            {
+                self.advance_next_queued_prompt_remote(
+                    session_id,
+                    agent_id,
+                    &remote_execution.worker_kernel_id,
+                    &remote_execution.leased_agent_id,
+                )?
+            } else {
+                None
+            };
+            if started_next.is_none() {
+                self.sync_focused_provider_run_if_idle(session_id)?;
+            }
+            return Ok(PromptCompletion {
+                completed,
+                started_next,
+            });
+        }
         let (_session, completed) = self
             .sessions
             .complete_active_prompt_only(session_id, agent_id)?;
@@ -408,6 +526,105 @@ impl DaemonApp {
             }
             crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
             flow_control::note_prompt_started(self, &provider_run_id);
+            return Ok(Some(active));
+        }
+    }
+
+    pub(crate) fn advance_next_queued_prompt_remote(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        loop {
+            let next_candidate = self
+                .sessions
+                .peek_next_queued_prompt(session_id, agent_id)?;
+            let Some(peeked) = next_candidate else {
+                return Ok(None);
+            };
+            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
+                peeked.source_attachment_id(),
+            );
+            if !peeked.attachments().is_empty() {
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Deferred queued prompt `{}` because remote prompt attachments are not supported yet.",
+                        peeked.id()
+                    ),
+                );
+                return Ok(None);
+            }
+            if let Err(error) =
+                self.ensure_attachment_in_session(session_id, peeked.source_attachment_id())
+            {
+                if !is_workflow_prompt {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachments.list_session_attachment_ids(session_id),
+                        format!(
+                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                            peeked.id(),
+                            error
+                        ),
+                    );
+                    let _ = self
+                        .sessions
+                        .activate_next_queued_prompt(session_id, agent_id)?;
+                    continue;
+                }
+            }
+            let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                &self.config,
+                ClientTarget {
+                    daemon_id: Some(worker_kernel_id.to_string()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::SubmitLeasedPrompt {
+                    leased_agent_id: leased_agent_id.to_string(),
+                    prompt: peeked.prompt().to_string(),
+                },
+            ));
+            let remote_provider_run_id = match response {
+                Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                    provider_run_id, ..
+                }) => provider_run_id,
+                Ok(other) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "advance remote queued prompt",
+                        message: format!("unexpected remote prompt response: {other:?}"),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            let (_session, next_candidate) = self
+                .sessions
+                .activate_next_queued_prompt(session_id, agent_id)?;
+            let Some(active) = next_candidate else {
+                continue;
+            };
+            self.echo_prompt_to_other_attachments(
+                session_id,
+                &remote_provider_run_id,
+                active.source_attachment_id(),
+                active.prompt(),
+                active.attachments(),
+            );
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                (active.workflow_run_id(), active.workflow_node_run_id())
+            {
+                self.sessions_mut().mark_workflow_turn_dispatched(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+            }
+            crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
             return Ok(Some(active));
         }
     }
