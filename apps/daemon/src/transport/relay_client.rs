@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{EncryptedRelayPayload, RelayEnvelope, RelayError};
+use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -19,10 +19,27 @@ use crate::kernel_transport::{
 };
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
+use crate::transport::relay_discovery;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
-#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+#[derive(Debug)]
 pub struct RelayClientState {
     connected: bool,
+    outgoing_tx: Option<mpsc::UnboundedSender<RelayEnvelope>>,
+    pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
+    next_peer_request_id: u64,
+}
+
+impl Default for RelayClientState {
+    fn default() -> Self {
+        Self {
+            connected: false,
+            outgoing_tx: None,
+            pending_peer_requests: BTreeMap::new(),
+            next_peer_request_id: 0,
+        }
+    }
 }
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
@@ -61,7 +78,7 @@ pub async fn run_daemon_relay_connector(
 
     loop {
         if *shutdown.borrow() {
-            set_connected(&state, false).await;
+            set_disconnected(&state).await;
             return;
         }
 
@@ -96,11 +113,11 @@ pub async fn run_daemon_relay_connector(
                 };
                 if outgoing_tx.send(register).is_err() {
                     writer_task.abort();
-                    set_connected(&state, false).await;
+                    set_disconnected(&state).await;
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                set_connected(&state, true).await;
+                set_connected(&state, outgoing_tx.clone()).await;
 
                 loop {
                     tokio::select! {
@@ -112,7 +129,7 @@ pub async fn run_daemon_relay_connector(
                                 sleep(Duration::from_millis(25)).await;
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
-                                set_connected(&state, false).await;
+                                set_disconnected(&state).await;
                                 return;
                             }
                         }
@@ -121,6 +138,7 @@ pub async fn run_daemon_relay_connector(
                                 Some(Ok(Message::Text(payload))) => {
                                     if handle_incoming_envelope(
                                         &app,
+                                        &state,
                                         &outgoing_tx,
                                         &subscription_tasks,
                                         &event_runtime,
@@ -131,21 +149,21 @@ pub async fn run_daemon_relay_connector(
                                     {
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
-                                        set_connected(&state, false).await;
+                                        set_disconnected(&state).await;
                                         break;
                                     }
                                 }
                                 Some(Ok(Message::Close(_))) => {
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    set_connected(&state, false).await;
+                                    set_disconnected(&state).await;
                                     break;
                                 }
                                 Some(Ok(_)) => {}
                                 Some(Err(_)) | None => {
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
-                                    set_connected(&state, false).await;
+                                    set_disconnected(&state).await;
                                     break;
                                 }
                             }
@@ -154,7 +172,7 @@ pub async fn run_daemon_relay_connector(
                             let _ = writer_done;
                             abort_subscription_tasks(&subscription_tasks).await;
                             writer_task.abort();
-                            set_connected(&state, false).await;
+                            set_disconnected(&state).await;
                             break;
                         }
                         _ = sleep(heartbeat) => {
@@ -164,7 +182,7 @@ pub async fn run_daemon_relay_connector(
                             if outgoing_tx.send(heartbeat_frame).is_err() {
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
-                                set_connected(&state, false).await;
+                                set_disconnected(&state).await;
                                 break;
                             }
                         }
@@ -172,7 +190,7 @@ pub async fn run_daemon_relay_connector(
                 }
             }
             Err(_) => {
-                set_connected(&state, false).await;
+                set_disconnected(&state).await;
                 let reconnect_delay = sleep(Duration::from_secs(1));
                 tokio::pin!(reconnect_delay);
                 tokio::select! {
@@ -190,6 +208,7 @@ pub async fn run_daemon_relay_connector(
 
 async fn handle_incoming_envelope(
     app: &Arc<Mutex<DaemonApp>>,
+    state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_tasks: &RelaySubscriptionTasks,
     event_runtime: &Arc<RelayEventRuntime>,
@@ -215,6 +234,38 @@ async fn handle_incoming_envelope(
                     error: relay_response.error,
                 },
             )?;
+        }
+        RelayEnvelope::DaemonIncomingPeerRequest {
+            relay_request_id,
+            from_daemon_id: _,
+            encrypted_request,
+        } => {
+            let relay_response = handle_daemon_peer_request(app, encrypted_request).await;
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonIncomingPeerResponse {
+                    relay_request_id,
+                    encrypted_response: relay_response.encrypted_response,
+                    error: relay_response.error,
+                },
+            )?;
+        }
+        RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            encrypted_response,
+            error,
+        } => {
+            resolve_pending_peer_response(
+                state,
+                request_id,
+                RelayPeerResponseEnvelope {
+                    from_daemon_id,
+                    encrypted_response,
+                    error,
+                },
+            )
+            .await;
         }
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
@@ -316,6 +367,202 @@ async fn handle_incoming_envelope(
 struct RelayRequestOutcome {
     encrypted_response: Option<EncryptedRelayPayload>,
     error: Option<RelayError>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct RelayPeerResponseEnvelope {
+    from_daemon_id: String,
+    encrypted_response: Option<EncryptedRelayPayload>,
+    error: Option<RelayError>,
+}
+
+async fn handle_daemon_peer_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    encrypted_request: EncryptedRelayPayload,
+) -> RelayRequestOutcome {
+    let (request, requester_public_key, daemon_private_key, daemon_id) = {
+        let app = app.lock().await;
+        let daemon_private_key = app.config().relay_private_key.clone();
+        let daemon_id = app.config().daemon_id.clone();
+        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
+            &daemon_private_key,
+            &encrypted_request,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay peer request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        let request = match serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext) {
+            Ok(request) => request,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "invalid_request",
+                        &format!("invalid relay peer request payload: {error}"),
+                        false,
+                    )),
+                };
+            }
+        };
+        (
+            request,
+            decrypted.sender_public_key,
+            daemon_private_key,
+            daemon_id,
+        )
+    };
+
+    let response = match request {
+        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
+    };
+    let plaintext = match serde_json::to_vec(&response) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "relay_request_failed",
+                    &format!("failed to serialize relay peer response: {error}"),
+                    false,
+                )),
+            };
+        }
+    };
+    match relay_crypto::encrypt_payload_for_peer(
+        &daemon_private_key,
+        &requester_public_key,
+        &plaintext,
+    ) {
+        Ok(encrypted_response) => RelayRequestOutcome {
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        Err(error) => RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                &format!("failed to encrypt relay peer response: {error}"),
+                false,
+            )),
+        },
+    }
+}
+
+#[allow(dead_code)]
+pub async fn send_peer_request_via_relay(
+    app: &Arc<Mutex<DaemonApp>>,
+    state: &Arc<RwLock<RelayClientState>>,
+    target: ClientTarget,
+    request: RelayPeerRequest,
+) -> Result<RelayPeerResponse, DaemonError> {
+    let target_ref = target
+        .daemon_id
+        .as_deref()
+        .or(target.daemon_alias.as_deref())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "peer target must include daemon id or alias".to_string(),
+        })?;
+    let config = {
+        let app = app.lock().await;
+        app.config().clone()
+    };
+    let kernel = relay_discovery::get_live_kernel(&config, target_ref).await?;
+    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize relay peer request",
+        message: error.to_string(),
+    })?;
+    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+        &config.relay_private_key,
+        &kernel.public_key,
+        &plaintext,
+    )?;
+    let (request_id, response_rx, outgoing_tx) = {
+        let mut guard = state.write().await;
+        let Some(outgoing_tx) = guard.outgoing_tx.clone() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "send relay peer request",
+                message: "relay is not connected".to_string(),
+            });
+        };
+        guard.next_peer_request_id += 1;
+        let request_id = format!("daemon-peer-{}", guard.next_peer_request_id);
+        let (response_tx, response_rx) = oneshot::channel();
+        guard
+            .pending_peer_requests
+            .insert(request_id.clone(), response_tx);
+        (request_id, response_rx, outgoing_tx)
+    };
+    if outgoing_tx
+        .send(RelayEnvelope::DaemonPeerRequest {
+            request_id: request_id.clone(),
+            target,
+            encrypted_request,
+        })
+        .is_err()
+    {
+        let mut guard = state.write().await;
+        guard.pending_peer_requests.remove(&request_id);
+        return Err(DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: "relay is not connected".to_string(),
+        });
+    }
+    let envelope = response_rx.await.map_err(|_| DaemonError::LocalTransport {
+        operation: "read relay peer response",
+        message: "relay peer request was cancelled".to_string(),
+    })?;
+    if let Some(error) = envelope.error {
+        return Err(DaemonError::LocalTransport {
+            operation: "read relay peer response",
+            message: error.message,
+        });
+    }
+    let encrypted_response =
+        envelope
+            .encrypted_response
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "read relay peer response",
+                message: format!(
+                    "peer `{}` returned no response payload",
+                    envelope.from_daemon_id
+                ),
+            })?;
+    let decrypted = relay_crypto::decrypt_payload_for_private_key(
+        &config.relay_private_key,
+        &encrypted_response,
+    )?;
+    serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "decode relay peer response",
+            message: error.to_string(),
+        }
+    })
+}
+
+async fn resolve_pending_peer_response(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    response: RelayPeerResponseEnvelope,
+) {
+    let sender = state
+        .write()
+        .await
+        .pending_peer_requests
+        .remove(&request_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(response);
+    }
 }
 
 async fn handle_daemon_request(
@@ -755,8 +1002,33 @@ fn send_relay_event_frame(
     )
 }
 
-async fn set_connected(state: &Arc<RwLock<RelayClientState>>, connected: bool) {
-    state.write().await.connected = connected;
+async fn set_connected(
+    state: &Arc<RwLock<RelayClientState>>,
+    outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
+) {
+    let mut guard = state.write().await;
+    guard.connected = true;
+    guard.outgoing_tx = Some(outgoing_tx);
+}
+
+async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
+    let pending = {
+        let mut guard = state.write().await;
+        guard.connected = false;
+        guard.outgoing_tx = None;
+        std::mem::take(&mut guard.pending_peer_requests)
+    };
+    for (_, sender) in pending {
+        let _ = sender.send(RelayPeerResponseEnvelope {
+            from_daemon_id: String::new(),
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_disconnected",
+                "relay connection closed before peer response arrived",
+                true,
+            )),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -776,6 +1048,8 @@ mod tests {
     };
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_crypto;
+    use crate::transport::relay_discovery;
+    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
     use std::collections::BTreeMap;
 
     #[tokio::test(flavor = "multi_thread")]
@@ -843,6 +1117,115 @@ mod tests {
         }
         assert!(!state.read().await.connected);
 
+        let _ = server_shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxied_peer_requests_are_handled_through_relay() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_until(async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut config_a = DaemonConfig::for_tests();
+        config_a.daemon_id = "daemon-a".to_string();
+        config_a.daemon_alias = Some("alpha".to_string());
+        config_a.host_machine_id = "machine-a".to_string();
+        config_a.host_machine_alias = Some("machine-alpha".to_string());
+        config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_a.relay_token = Some("secret".to_string());
+        config_a.relay_heartbeat_ms = 50;
+        let app_a = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_a.clone()).expect("daemon A should bootstrap"),
+        ));
+        let state_a = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
+        let connector_a = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_a),
+            Arc::clone(&state_a),
+            shutdown_a_rx,
+        ));
+
+        let mut config_b = DaemonConfig::for_tests();
+        config_b.daemon_id = "daemon-b".to_string();
+        config_b.daemon_alias = Some("beta".to_string());
+        config_b.host_machine_id = "machine-b".to_string();
+        config_b.host_machine_alias = Some("machine-beta".to_string());
+        config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        config_b.relay_token = Some("secret".to_string());
+        config_b.relay_heartbeat_ms = 50;
+        let app_b = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config_b.clone()).expect("daemon B should bootstrap"),
+        ));
+        let state_b = Arc::new(RwLock::new(RelayClientState::default()));
+        let (shutdown_b_tx, shutdown_b_rx) = watch::channel(false);
+        let connector_b = tokio::spawn(run_daemon_relay_connector(
+            Arc::clone(&app_b),
+            Arc::clone(&state_b),
+            shutdown_b_rx,
+        ));
+
+        wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
+        wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
+
+        let kernel = relay_discovery::get_live_kernel(&config_a, "beta")
+            .await
+            .expect("live kernel lookup should succeed");
+        assert_eq!(kernel.kernel_id, config_b.daemon_id);
+        assert_eq!(kernel.public_key, config_b.relay_public_key);
+
+        let response = send_peer_request_via_relay(
+            &app_a,
+            &state_a,
+            ClientTarget {
+                daemon_id: None,
+                daemon_alias: Some("beta".to_string()),
+            },
+            RelayPeerRequest::Ping {
+                value: "hello-remote-kernel".to_string(),
+            },
+        )
+        .await
+        .expect("peer request should succeed");
+        assert_eq!(
+            response,
+            RelayPeerResponse::Pong {
+                value: "hello-remote-kernel".to_string(),
+                daemon_id: config_b.daemon_id.clone(),
+            }
+        );
+
+        let _ = shutdown_a_tx.send(true);
+        let _ = shutdown_b_tx.send(true);
+        connector_a.await.expect("connector A should join");
+        connector_b.await.expect("connector B should join");
         let _ = server_shutdown_tx.send(());
         server_task.await.expect("server task should join");
     }

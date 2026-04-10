@@ -61,6 +61,37 @@ pub async fn list_live_kernels_for_machine(
     }
 }
 
+#[allow(dead_code)]
+pub async fn get_live_kernel(
+    config: &DaemonConfig,
+    kernel_ref: &str,
+) -> Result<RelayKernelPresence, DaemonError> {
+    let response = query_relay(
+        config,
+        RelayMetadataQuery::GetLiveKernel {
+            kernel_ref: kernel_ref.to_string(),
+        },
+    )
+    .await?;
+    match response {
+        RelayEnvelope::ClientMetadataResponse {
+            kernel: Some(kernel),
+            error: None,
+            ..
+        } => Ok(kernel),
+        RelayEnvelope::ClientMetadataResponse {
+            error: Some(error), ..
+        } => Err(DaemonError::LocalTransport {
+            operation: "get_live_kernel",
+            message: error.message,
+        }),
+        other => Err(DaemonError::LocalTransport {
+            operation: "get_live_kernel",
+            message: format!("unexpected relay response: {other:?}"),
+        }),
+    }
+}
+
 async fn query_relay(
     config: &DaemonConfig,
     query: RelayMetadataQuery,

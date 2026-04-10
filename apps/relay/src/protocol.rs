@@ -66,6 +66,7 @@ pub struct RelayKernelPresence {
     pub leased_agent_count: u32,
     #[serde(default)]
     pub local_session_count: u32,
+    pub public_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,7 @@ pub struct RelayKernelPresence {
 pub enum RelayMetadataQuery {
     ListLiveMachines,
     ListLiveKernelsForMachine { machine_ref: String },
+    GetLiveKernel { kernel_ref: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +118,28 @@ pub enum RelayEnvelope {
         request_id: String,
         machines: Option<Vec<RelayMachinePresence>>,
         kernels: Option<Vec<RelayKernelPresence>>,
+        kernel: Option<RelayKernelPresence>,
+        error: Option<RelayError>,
+    },
+    DaemonPeerRequest {
+        request_id: String,
+        target: ClientTarget,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerRequest {
+        relay_request_id: String,
+        from_daemon_id: String,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerResponse {
+        relay_request_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
+        error: Option<RelayError>,
+    },
+    DaemonPeerResponse {
+        request_id: String,
+        from_daemon_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
         error: Option<RelayError>,
     },
     ClientRequest {

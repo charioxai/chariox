@@ -37,6 +37,13 @@ struct PendingClientRequest {
 }
 
 #[derive(Debug, Clone)]
+struct PendingDaemonPeerRequest {
+    requester_daemon_id: String,
+    requester_request_id: String,
+    target_daemon_id: String,
+}
+
+#[derive(Debug, Clone)]
 enum PendingRequestKind {
     Request,
     Subscribe { subscription_id: String },
@@ -54,6 +61,7 @@ pub struct RelayRegistry {
     peers: BTreeMap<SocketAddr, PeerHandle>,
     daemons: BTreeMap<String, DaemonRegistration>,
     pending_requests: BTreeMap<String, PendingClientRequest>,
+    pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     subscriptions: BTreeMap<String, ActiveSubscription>,
 }
 
@@ -71,7 +79,7 @@ impl RelayRegistry {
     }
 
     pub fn pending_request_count(&self) -> usize {
-        self.pending_requests.len()
+        self.pending_requests.len() + self.pending_daemon_peer_requests.len()
     }
 
     pub fn subscription_count(&self) -> usize {
@@ -135,8 +143,34 @@ impl RelayRegistry {
                 accepting_remote_leases: registration.accepting_remote_leases,
                 leased_agent_count: registration.leased_agent_count,
                 local_session_count: registration.local_session_count,
+                public_key: registration.public_key.clone(),
             })
             .collect()
+    }
+
+    pub fn live_kernel(&self, kernel_ref: &str) -> Option<RelayKernelPresence> {
+        self.daemons
+            .values()
+            .find(|registration| {
+                registration.daemon_id == kernel_ref
+                    || registration.daemon_alias.as_deref() == Some(kernel_ref)
+                    || registration.kernel_alias.as_deref() == Some(kernel_ref)
+            })
+            .map(|registration| RelayKernelPresence {
+                kernel_id: registration.daemon_id.clone(),
+                machine_id: registration.machine_id.clone(),
+                machine_alias: registration.machine_alias.clone(),
+                kernel_alias: registration
+                    .kernel_alias
+                    .clone()
+                    .or_else(|| registration.daemon_alias.clone()),
+                available_providers: registration.available_providers.clone(),
+                capabilities: registration.capabilities.clone(),
+                accepting_remote_leases: registration.accepting_remote_leases,
+                leased_agent_count: registration.leased_agent_count,
+                local_session_count: registration.local_session_count,
+                public_key: registration.public_key.clone(),
+            })
     }
 }
 
@@ -290,12 +324,17 @@ async fn handle_connection(
                     } => {
                         validate_shared_token(shared_token.as_deref(), &auth_token)?;
                         let guard = registry.read().await;
-                        let (machines, kernels) = match query {
+                        let (machines, kernels, kernel) = match query {
                             RelayMetadataQuery::ListLiveMachines => {
-                                (Some(guard.live_machines()), None)
+                                (Some(guard.live_machines()), None, None)
                             }
-                            RelayMetadataQuery::ListLiveKernelsForMachine { machine_ref } => {
-                                (None, Some(guard.live_kernels_for_machine(&machine_ref)))
+                            RelayMetadataQuery::ListLiveKernelsForMachine { machine_ref } => (
+                                None,
+                                Some(guard.live_kernels_for_machine(&machine_ref)),
+                                None,
+                            ),
+                            RelayMetadataQuery::GetLiveKernel { kernel_ref } => {
+                                (None, None, guard.live_kernel(&kernel_ref))
                             }
                         };
                         send_envelope(
@@ -304,7 +343,84 @@ async fn handle_connection(
                                 request_id,
                                 machines,
                                 kernels,
+                                kernel,
                                 error: None,
+                            },
+                        )?;
+                    }
+                    RelayEnvelope::DaemonPeerRequest {
+                        request_id,
+                        target,
+                        encrypted_request,
+                    } => {
+                        let Some(requester_daemon_id) = registered_daemon_id.clone() else {
+                            send_close(
+                                &outgoing_tx,
+                                "daemon must register before sending peer requests".to_string(),
+                            );
+                            break;
+                        };
+                        let Some(target_daemon_id) =
+                            resolve_target_daemon_id(&registry, &target).await
+                        else {
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::DaemonPeerResponse {
+                                    request_id,
+                                    from_daemon_id: String::new(),
+                                    encrypted_response: None,
+                                    error: Some(relay_error(
+                                        "target_not_connected",
+                                        "target daemon is not connected to relay",
+                                        true,
+                                    )),
+                                },
+                            )?;
+                            continue;
+                        };
+                        let relay_request_id = format!(
+                            "relay-peer-request-{}",
+                            relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+                        );
+                        let daemon_sender = {
+                            let mut guard = registry.write().await;
+                            guard.pending_daemon_peer_requests.insert(
+                                relay_request_id.clone(),
+                                PendingDaemonPeerRequest {
+                                    requester_daemon_id: requester_daemon_id.clone(),
+                                    requester_request_id: request_id.clone(),
+                                    target_daemon_id: target_daemon_id.clone(),
+                                },
+                            );
+                            resolve_daemon_sender_locked(&guard, &target_daemon_id)
+                        };
+                        let Some(daemon_sender) = daemon_sender else {
+                            registry
+                                .write()
+                                .await
+                                .pending_daemon_peer_requests
+                                .remove(&relay_request_id);
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::DaemonPeerResponse {
+                                    request_id,
+                                    from_daemon_id: target_daemon_id,
+                                    encrypted_response: None,
+                                    error: Some(relay_error(
+                                        "target_not_connected",
+                                        "target daemon is not connected to relay",
+                                        true,
+                                    )),
+                                },
+                            )?;
+                            continue;
+                        };
+                        send_envelope(
+                            &daemon_sender,
+                            &RelayEnvelope::DaemonIncomingPeerRequest {
+                                relay_request_id,
+                                from_daemon_id: requester_daemon_id,
+                                encrypted_request,
                             },
                         )?;
                     }
@@ -563,6 +679,40 @@ async fn handle_connection(
                             )?;
                         }
                     }
+                    RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id,
+                        encrypted_response,
+                        error,
+                    } => {
+                        let daemon_target = {
+                            let mut guard = registry.write().await;
+                            let pending =
+                                guard.pending_daemon_peer_requests.remove(&relay_request_id);
+                            pending.and_then(|pending| {
+                                resolve_daemon_sender_locked(&guard, &pending.requester_daemon_id)
+                                    .map(|sender| {
+                                        (
+                                            sender,
+                                            pending.requester_request_id,
+                                            pending.target_daemon_id,
+                                        )
+                                    })
+                            })
+                        };
+                        if let Some((daemon_sender, requester_request_id, target_daemon_id)) =
+                            daemon_target
+                        {
+                            send_envelope(
+                                &daemon_sender,
+                                &RelayEnvelope::DaemonPeerResponse {
+                                    request_id: requester_request_id,
+                                    from_daemon_id: target_daemon_id,
+                                    encrypted_response,
+                                    error,
+                                },
+                            )?;
+                        }
+                    }
                     RelayEnvelope::DaemonEvent {
                         subscription_id,
                         event_id,
@@ -593,6 +743,8 @@ async fn handle_connection(
                     }
                     RelayEnvelope::ClientConnected { .. }
                     | RelayEnvelope::ClientMetadataResponse { .. }
+                    | RelayEnvelope::DaemonPeerResponse { .. }
+                    | RelayEnvelope::DaemonIncomingPeerRequest { .. }
                     | RelayEnvelope::ClientResponse { .. }
                     | RelayEnvelope::DaemonRequest { .. }
                     | RelayEnvelope::DaemonSubscribe { .. }
@@ -605,13 +757,28 @@ async fn handle_connection(
         }
     }
 
-    let disconnect_errors =
+    let (disconnect_errors, disconnect_peer_errors) =
         remove_peer(&registry, peer_addr, registered_daemon_id.as_deref()).await;
     for (sender, request_id) in disconnect_errors {
         let _ = send_envelope(
             &sender,
             &RelayEnvelope::ClientResponse {
                 request_id,
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "target_disconnected",
+                    "target daemon disconnected from relay",
+                    true,
+                )),
+            },
+        );
+    }
+    for (sender, request_id, target_daemon_id) in disconnect_peer_errors {
+        let _ = send_envelope(
+            &sender,
+            &RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id: target_daemon_id,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "target_disconnected",
@@ -664,7 +831,10 @@ async fn remove_peer(
     registry: &Arc<RwLock<RelayRegistry>>,
     peer_addr: SocketAddr,
     daemon_id: Option<&str>,
-) -> Vec<(mpsc::UnboundedSender<Message>, String)> {
+) -> (
+    Vec<(mpsc::UnboundedSender<Message>, String)>,
+    Vec<(mpsc::UnboundedSender<Message>, String, String)>,
+) {
     let mut guard = registry.write().await;
     guard.peers.remove(&peer_addr);
     let client_subscription_ids = guard
@@ -693,17 +863,42 @@ async fn remove_peer(
             .filter(|(_, pending)| pending.daemon_id == daemon_id)
             .map(|(relay_request_id, _)| relay_request_id.clone())
             .collect::<Vec<_>>();
-        let mut errors = Vec::new();
+        let mut client_errors = Vec::new();
         for relay_request_id in doomed_request_ids {
             if let Some(pending) = guard.pending_requests.remove(&relay_request_id) {
                 if let Some(peer) = guard.peers.get(&pending.client_addr) {
-                    errors.push((peer.sender.clone(), pending.client_request_id));
+                    client_errors.push((peer.sender.clone(), pending.client_request_id));
                 }
             }
         }
-        return errors;
+        let doomed_peer_request_ids = guard
+            .pending_daemon_peer_requests
+            .iter()
+            .filter(|(_, pending)| {
+                pending.target_daemon_id == daemon_id || pending.requester_daemon_id == daemon_id
+            })
+            .map(|(relay_request_id, _)| relay_request_id.clone())
+            .collect::<Vec<_>>();
+        let mut daemon_errors = Vec::new();
+        for relay_request_id in doomed_peer_request_ids {
+            if let Some(pending) = guard.pending_daemon_peer_requests.remove(&relay_request_id) {
+                if pending.requester_daemon_id == daemon_id {
+                    continue;
+                }
+                if let Some(sender) =
+                    resolve_daemon_sender_locked(&guard, &pending.requester_daemon_id)
+                {
+                    daemon_errors.push((
+                        sender,
+                        pending.requester_request_id,
+                        pending.target_daemon_id,
+                    ));
+                }
+            }
+        }
+        return (client_errors, daemon_errors);
     }
-    Vec::new()
+    (Vec::new(), Vec::new())
 }
 
 fn validate_shared_token(expected: Option<&str>, provided: &str) -> Result<(), std::io::Error> {
@@ -745,6 +940,7 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
 mod tests {
     use super::*;
 
+    use crate::protocol::EncryptedRelayPayload;
     use tokio::time::{sleep, Duration};
     use tokio_tungstenite::connect_async;
 
@@ -928,6 +1124,7 @@ mod tests {
                 request_id,
                 machines: Some(machines),
                 kernels: None,
+                kernel: None,
                 error: None,
             } => {
                 assert_eq!(request_id, "machines-1");
@@ -965,6 +1162,7 @@ mod tests {
                 request_id,
                 machines: None,
                 kernels: Some(kernels),
+                kernel: None,
                 error: None,
             } => {
                 assert_eq!(request_id, "kernels-1");
@@ -977,6 +1175,190 @@ mod tests {
                 assert_eq!(kernels[0].local_session_count, 3);
             }
             other => panic!("unexpected kernels response envelope: {other:?}"),
+        }
+
+        let kernel_request = RelayEnvelope::ClientMetadataRequest {
+            request_id: "kernel-1".to_string(),
+            auth_token: "secret".to_string(),
+            query: RelayMetadataQuery::GetLiveKernel {
+                kernel_ref: "default".to_string(),
+            },
+        };
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&kernel_request)
+                    .expect("kernel request should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("kernel request should send");
+        let kernel_payload = match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected kernel response: {other:?}"),
+        };
+        let kernel_response: RelayEnvelope =
+            serde_json::from_str(&kernel_payload).expect("kernel response should decode");
+        match kernel_response {
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(kernel),
+                error: None,
+            } => {
+                assert_eq!(request_id, "kernel-1");
+                assert_eq!(kernel.kernel_id, "daemon-1");
+                assert_eq!(kernel.public_key, "public-key");
+            }
+            other => panic!("unexpected kernel response envelope: {other:?}"),
+        }
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_peer_requests_are_routed_between_registered_kernels() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        drop(listener);
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_until(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_a, _) = connect_async(&url)
+            .await
+            .expect("daemon A should connect to relay");
+        let (mut daemon_b, _) = connect_async(&url)
+            .await
+            .expect("daemon B should connect to relay");
+
+        for (socket, daemon_id, daemon_alias, public_key) in [
+            (&mut daemon_a, "daemon-a", "alpha", "public-key-a"),
+            (&mut daemon_b, "daemon-b", "beta", "public-key-b"),
+        ] {
+            let register = RelayEnvelope::DaemonRegister {
+                registration: DaemonRegistration {
+                    auth_token: "secret".to_string(),
+                    daemon_id: daemon_id.to_string(),
+                    machine_id: format!("machine-{daemon_id}"),
+                    machine_alias: None,
+                    daemon_alias: Some(daemon_alias.to_string()),
+                    kernel_alias: Some(daemon_alias.to_string()),
+                    public_key: public_key.to_string(),
+                    capabilities: vec!["kernel_ws".to_string()],
+                    available_providers: vec!["opencode".to_string()],
+                    accepting_remote_leases: true,
+                    leased_agent_count: 0,
+                    local_session_count: 0,
+                },
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&register)
+                        .expect("register envelope should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("register frame should send");
+        }
+
+        let encrypted_request = EncryptedRelayPayload {
+            sender_public_key: "client-public".to_string(),
+            nonce: "nonce".to_string(),
+            ciphertext: "ciphertext".to_string(),
+        };
+        daemon_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+                    request_id: "peer-1".to_string(),
+                    target: ClientTarget {
+                        daemon_id: None,
+                        daemon_alias: Some("beta".to_string()),
+                    },
+                    encrypted_request: encrypted_request.clone(),
+                })
+                .expect("peer request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("peer request should send");
+
+        let incoming_payload = match daemon_b.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected incoming peer request: {other:?}"),
+        };
+        let relay_request_id = match serde_json::from_str::<RelayEnvelope>(&incoming_payload)
+            .expect("incoming peer request should decode")
+        {
+            RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id,
+                from_daemon_id,
+                encrypted_request: forwarded,
+            } => {
+                assert_eq!(from_daemon_id, "daemon-a");
+                assert_eq!(forwarded, encrypted_request);
+                relay_request_id
+            }
+            other => panic!("unexpected incoming peer envelope: {other:?}"),
+        };
+
+        let encrypted_response = EncryptedRelayPayload {
+            sender_public_key: "daemon-b-public".to_string(),
+            nonce: "nonce-2".to_string(),
+            ciphertext: "ciphertext-2".to_string(),
+        };
+        daemon_b
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonIncomingPeerResponse {
+                    relay_request_id,
+                    encrypted_response: Some(encrypted_response.clone()),
+                    error: None,
+                })
+                .expect("peer response should serialize")
+                .into(),
+            ))
+            .await
+            .expect("peer response should send");
+
+        let response_payload = match daemon_a.next().await {
+            Some(Ok(Message::Text(text))) => text,
+            other => panic!("unexpected routed peer response: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&response_payload)
+            .expect("routed peer response should decode")
+        {
+            RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id,
+                encrypted_response: Some(forwarded),
+                error: None,
+            } => {
+                assert_eq!(request_id, "peer-1");
+                assert_eq!(from_daemon_id, "daemon-b");
+                assert_eq!(forwarded, encrypted_response);
+            }
+            other => panic!("unexpected routed peer response envelope: {other:?}"),
         }
 
         let _ = shutdown_tx.send(());
