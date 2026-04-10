@@ -184,6 +184,9 @@ Required runtime properties:
 
 ### Slice 1. Daemon Identity
 
+Status: done
+
+
 Add persisted:
 
 - `daemon_id`
@@ -193,6 +196,9 @@ Add persisted:
 Store under daemon runtime state so relay registration has a stable identity.
 
 ### Slice 2. Relay App Skeleton
+
+Status: done
+
 
 Create a new app:
 
@@ -207,6 +213,9 @@ Provide:
 
 ### Slice 3. Daemon Relay Connector
 
+Status: done
+
+
 Add daemon-side background connector:
 
 - connect to relay
@@ -216,13 +225,20 @@ Add daemon-side background connector:
 
 ### Slice 4. Client Relay Connector
 
+Status: partial
+
+
 Add CLI relay mode:
 
 - connect to relay
 - target daemon by id/alias
-- send request/subscribe through relay
+- send request through relay for the first narrow request surface
+- event subscriptions remain for a later slice
 
 ### Slice 5. Request/Response Proxying
+
+Status: partial
+
 
 Support a narrow first surface:
 
@@ -230,7 +246,8 @@ Support a narrow first surface:
 - get session state
 - attach to session
 
-Keep the first slice small and prove daemon selection and end-to-end proxying first.
+This slice is now implemented end to end through relay.
+Keep event streaming and remote terminal transport for the next slice.
 
 ### Slice 6. Remote Terminal Flow
 

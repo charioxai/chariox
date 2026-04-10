@@ -382,6 +382,10 @@ export type ReadDirectoryTreeResult = {
 export type CliOptions = {
   kernelUrl?: string
   socketPath?: string
+  relayUrl?: string
+  relayToken?: string
+  targetDaemonId?: string
+  targetDaemonAlias?: string
   sessionId?: string
   createSession?: boolean
   deleteSessionRef?: string
@@ -401,6 +405,7 @@ export type SessionBinding = {
   providerRun: RuntimeProviderRun | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
+  promptHistoryEntries: string[]
   nextHistoryCursor: SessionHistoryCursor | null
 }
 

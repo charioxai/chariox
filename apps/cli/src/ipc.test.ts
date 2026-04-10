@@ -231,3 +231,59 @@ test("LocalIpcClient reconnects and resubscribes with the last received event id
   assert.equal(events.some((event) => event.event === "transport_closed"), true)
   assert.equal(events.some((event) => event.event === "transport_resumed"), true)
 })
+
+
+test("LocalIpcClient uses relay request frames when relay mode is configured", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  const receivedFrames: Array<Record<string, unknown>> = []
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      receivedFrames.push(frame)
+
+      if (frame.kind === "client_connect") {
+        socket.send(JSON.stringify({
+          kind: "client_connected",
+          target: frame.target,
+        }))
+        return
+      }
+
+      if (frame.kind === "client_request") {
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          response: { ok: true, echoed: frame.request },
+          error: null,
+        }))
+      }
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint, {
+    relayAuthToken: "secret",
+    targetDaemonId: "daemon-1",
+  })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  assert.equal(client.supportsKernelEvents(), false)
+  const response = await client.send<{ ok: boolean; echoed: unknown }>({
+    hello: "relay",
+  })
+  assert.equal(response.ok, true)
+  assert.deepEqual(response.echoed, { hello: "relay" })
+  assert.equal(receivedFrames[0]?.kind, "client_connect")
+  assert.equal(receivedFrames[1]?.kind, "client_request")
+  assert.equal(receivedFrames[0]?.auth_token, "secret")
+  assert.deepEqual(receivedFrames[0]?.target, { daemon_id: "daemon-1", daemon_alias: null })
+})

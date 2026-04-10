@@ -29,6 +29,41 @@ type KernelTransportError = {
   retryable: boolean
 }
 
+type RelayTarget = {
+  daemon_id?: string | null
+  daemon_alias?: string | null
+}
+
+type RelayConnectFrame = {
+  kind: "client_connect"
+  auth_token: string
+  target: RelayTarget
+}
+
+type RelayConnectedFrame = {
+  kind: "client_connected"
+  target: RelayTarget
+}
+
+type RelayRequestFrame = {
+  kind: "client_request"
+  request_id: string
+  target: RelayTarget
+  request: unknown
+}
+
+type RelayResponseFrame<TResponse> = {
+  kind: "client_response"
+  request_id: string
+  response: TResponse | null
+  error: KernelTransportError | null
+}
+
+type RelayCloseFrame = {
+  kind: "close"
+  reason: string
+}
+
 type PendingRequest<TResponse> = {
   resolve: (value: TResponse) => void
   reject: (error: LocalIpcError) => void
@@ -93,8 +128,16 @@ type KernelSubscriptionState = {
   attachmentId: string
 }
 
+type LocalIpcClientOptions = {
+  relayAuthToken?: string
+  targetDaemonId?: string
+  targetDaemonAlias?: string
+}
+
 export class LocalIpcClient {
   readonly socketPath: string
+  private readonly relayAuthToken: string | null
+  private readonly relayTarget: RelayTarget | null
   private websocket: WebSocket | null = null
   private websocketConnectPromise: Promise<WebSocket> | null = null
   private pending = new Map<string, PendingRequest<unknown>>()
@@ -105,16 +148,27 @@ export class LocalIpcClient {
   private lastReceivedEventId: number | null = null
   private suppressNextCloseEvent = false
 
-  constructor(endpoint: string) {
+  constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
     this.socketPath = endpoint
+    this.relayAuthToken = options.relayAuthToken?.trim() || null
+    this.relayTarget = this.relayAuthToken
+      ? {
+        daemon_id: options.targetDaemonId?.trim() || null,
+        daemon_alias: options.targetDaemonAlias?.trim() || null,
+      }
+      : null
   }
 
   supportsKernelEvents() {
-    return isWebSocketEndpoint(this.socketPath)
+    return isWebSocketEndpoint(this.socketPath) && !this.isRelayMode()
+  }
+
+  private isRelayMode() {
+    return this.relayAuthToken != null
   }
 
   send<TResponse>(request: unknown): Promise<TResponse> {
-    if (this.supportsKernelEvents()) {
+    if (isWebSocketEndpoint(this.socketPath)) {
       return this.sendWebSocket(request)
     }
     return this.sendLocalSocket(request)
@@ -308,7 +362,10 @@ export class LocalIpcClient {
       })
 
       try {
-        socket.send(JSON.stringify(normalizeWebSocketRequest(requestId, request)))
+        const payload = this.isRelayMode()
+          ? normalizeRelayRequest(requestId, request, this.relayTarget)
+          : normalizeWebSocketRequest(requestId, request)
+        socket.send(JSON.stringify(payload))
       } catch (error) {
         clearTimeout(timeout)
         this.pending.delete(requestId)
@@ -339,43 +396,78 @@ export class LocalIpcClient {
       }
 
       socket.once("open", () => {
-        settled = true
-        this.websocket = socket
-        this.websocketConnectPromise = null
-        this.suppressNextCloseEvent = false
-        socket.on("message", (data: WebSocket.RawData) => {
-          this.handleWebSocketMessage(data)
-        })
-        socket.once("close", (code: number, reason: Buffer) => {
-          const suppressed = this.suppressNextCloseEvent
+        const finalizeOpen = () => {
+          settled = true
+          this.websocket = socket
+          this.websocketConnectPromise = null
           this.suppressNextCloseEvent = false
-          this.rejectPending("kernel websocket closed")
-          this.websocket = null
-          const closeMessage = reason.length > 0
-            ? reason.toString("utf8")
-            : `kernel websocket closed${code ? ` (${code})` : ""}`
-          if (!suppressed) {
-            this.emitSyntheticEvent({
-              event: "transport_closed",
-              message: closeMessage,
-            })
-            this.scheduleReconnect()
+          socket.on("message", (data: WebSocket.RawData) => {
+            this.handleWebSocketMessage(data)
+          })
+          socket.once("close", (code: number, reason: Buffer) => {
+            const suppressed = this.suppressNextCloseEvent
+            this.suppressNextCloseEvent = false
+            this.rejectPending("kernel websocket closed")
+            this.websocket = null
+            const closeMessage = reason.length > 0
+              ? reason.toString("utf8")
+              : `kernel websocket closed${code ? ` (${code})` : ""}`
+            if (!suppressed) {
+              this.emitSyntheticEvent({
+                event: "transport_closed",
+                message: closeMessage,
+              })
+              this.scheduleReconnect()
+            }
+          })
+          socket.once("error", (error: Error) => {
+            const suppressed = this.suppressNextCloseEvent
+            this.suppressNextCloseEvent = false
+            this.rejectPending(error.message)
+            this.websocket = null
+            if (!suppressed) {
+              this.emitSyntheticEvent({
+                event: "transport_closed",
+                message: error.message,
+              })
+              this.scheduleReconnect()
+            }
+          })
+          resolve(socket)
+        }
+
+        if (!this.isRelayMode()) {
+          finalizeOpen()
+          return
+        }
+
+        const handleRelayHandshakeMessage = (data: WebSocket.RawData) => {
+          let frame: RelayConnectedFrame | RelayCloseFrame
+          try {
+            frame = JSON.parse(String(data)) as RelayConnectedFrame | RelayCloseFrame
+          } catch (error) {
+            fail("connect relay transport", error)
+            return
           }
-        })
-        socket.once("error", (error: Error) => {
-          const suppressed = this.suppressNextCloseEvent
-          this.suppressNextCloseEvent = false
-          this.rejectPending(error.message)
-          this.websocket = null
-          if (!suppressed) {
-            this.emitSyntheticEvent({
-              event: "transport_closed",
-              message: error.message,
-            })
-            this.scheduleReconnect()
+          if (frame.kind === "client_connected") {
+            socket.off("message", handleRelayHandshakeMessage)
+            finalizeOpen()
+            return
           }
-        })
-        resolve(socket)
+          if (frame.kind === "close") {
+            fail("connect relay transport", frame.reason)
+            return
+          }
+          fail("connect relay transport", "unexpected relay handshake frame")
+        }
+
+        socket.on("message", handleRelayHandshakeMessage)
+        try {
+          socket.send(JSON.stringify(buildRelayConnectFrame(this.relayAuthToken, this.relayTarget)))
+        } catch (error) {
+          socket.off("message", handleRelayHandshakeMessage)
+          fail("write relay connect frame", error)
+        }
       })
 
       socket.once("error", (error: Error) => fail("connect kernel websocket", error))
@@ -385,15 +477,15 @@ export class LocalIpcClient {
   }
 
   private handleWebSocketMessage(data: WebSocket.RawData) {
-    let frame: KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent>
+    let frame: KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent> | RelayResponseFrame<unknown> | RelayCloseFrame
     try {
-      frame = JSON.parse(String(data)) as KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent>
+      frame = JSON.parse(String(data)) as KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent> | RelayResponseFrame<unknown> | RelayCloseFrame
     } catch (error) {
       this.rejectPending(error instanceof Error ? error.message : String(error))
       return
     }
 
-    if (frame.type === "event") {
+    if ("type" in frame && frame.type === "event") {
       this.lastReceivedEventId = frame.event_id
       for (const handler of this.eventHandlers) {
         handler(frame.event)
@@ -401,12 +493,18 @@ export class LocalIpcClient {
       return
     }
 
-    const pending = this.pending.get(frame.request_id)
+    if ("kind" in frame && frame.kind === "close") {
+      this.rejectPending(frame.reason)
+      return
+    }
+
+    const requestId = "type" in frame ? frame.request_id : frame.request_id
+    const pending = this.pending.get(requestId)
     if (!pending) {
       return
     }
     clearTimeout(pending.timeout)
-    this.pending.delete(frame.request_id)
+    this.pending.delete(requestId)
 
     if (frame.error) {
       pending.reject(new LocalIpcError("handle kernel response", frame.error.message, frame.error.code, frame.error.retryable))
@@ -479,6 +577,32 @@ export class LocalIpcClient {
     } catch {
       this.scheduleReconnect()
     }
+  }
+}
+
+function buildRelayConnectFrame(authToken: string | null, target: RelayTarget | null): RelayConnectFrame {
+  if (!authToken) {
+    throw new Error("relay auth token is required")
+  }
+  if (!target?.daemon_id && !target?.daemon_alias) {
+    throw new Error("relay target daemon id or alias is required")
+  }
+  return {
+    kind: "client_connect",
+    auth_token: authToken,
+    target: target ?? {},
+  }
+}
+
+function normalizeRelayRequest(requestId: string, request: unknown, target: RelayTarget | null): RelayRequestFrame {
+  if (!target?.daemon_id && !target?.daemon_alias) {
+    throw new Error("relay target daemon id or alias is required")
+  }
+  return {
+    kind: "client_request",
+    request_id: requestId,
+    target,
+    request,
   }
 }
 

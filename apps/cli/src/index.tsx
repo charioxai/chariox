@@ -146,6 +146,7 @@ import {
   splitPaneAuxiliaryAgentIds,
 } from "./response-panes.js"
 import {
+  extractPromptHistoryEntries,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
   pushPromptHistoryEntry,
@@ -384,8 +385,14 @@ async function main() {
   if (!options.effort.trim()) {
     options.effort = configuredProviderPreferences?.effort ?? options.effort
   }
-  const kernelEndpoint = options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
-  const client = new LocalIpcClient(kernelEndpoint)
+  const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint()
+  const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
+    ? {
+      relayAuthToken: options.relayToken,
+      targetDaemonId: options.targetDaemonId,
+      targetDaemonAlias: options.targetDaemonAlias,
+    }
+    : undefined)
   const workspace = options.workspace ?? process.cwd()
   const worktree = options.worktree ?? workspace
   if (options.deleteSessionRef) {
@@ -478,9 +485,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const initialProviderCatalog = props.bootstrap.providerCatalog
   const initialProviderCommandCatalogs = props.bootstrap.providerCommandCatalogs
   const initialPreferences = props.bootstrap.preferences
-  const initialPromptHistory = initialBinding?.session
-    ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
-    : []
+  const initialPromptHistory = initialBinding?.promptHistoryEntries
+    ?? (initialBinding?.session
+      ? sessionPromptHistoryEntries(initialPreferences, initialBinding.session.id)
+      : [])
   const initialPromptDraft = initialBinding?.session
     ? sessionPromptDraftEntry(initialPreferences, initialBinding.session.id)
     : ""
@@ -628,6 +636,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let nextTurnId = computeNextTurnId(initialEntries)
   let mountedTranscriptAgentId = initialBinding ? initialSession.focused_agent_id ?? initialSession.agents[0]?.id ?? null : null
   let hydratedPromptHistorySessionId: string | null | undefined
+  let promptHistoryHydrationGeneration = 0
   let promptTextSnapshot = initialPromptDraft
   let promptTextMuting = false
   let promptDropPending = false
@@ -1805,6 +1814,42 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     promptTextSnapshot = nextDraft
     setPromptText(nextDraft)
   }
+  const hydratePromptHistoryFromSession = async (sessionId: string) => {
+    const generation = ++promptHistoryHydrationGeneration
+    const pagePromptHistory: string[][] = []
+    let cursor: SessionHistoryCursor | null = null
+
+    for (;;) {
+      const historyPage = await getSessionHistory(client, sessionId, cursor, null)
+      pagePromptHistory.push(extractPromptHistoryEntries(historyPage.entries))
+      if (historyPage.next_cursor === null) {
+        break
+      }
+      cursor = historyPage.next_cursor
+    }
+
+    if (generation !== promptHistoryHydrationGeneration) {
+      return
+    }
+    if (attachmentState()?.session_id !== sessionId) {
+      return
+    }
+
+    let nextEntries: string[] = []
+    for (const pageEntries of pagePromptHistory.reverse()) {
+      for (const prompt of pageEntries) {
+        nextEntries = pushPromptHistoryEntry(nextEntries, prompt)
+      }
+    }
+
+    setPromptHistoryEntries(nextEntries)
+    setPromptHistoryIndex(null)
+    setPromptHistoryDraft(null)
+    setPreferencesState((current) => mergeSessionPromptState(current, sessionId, {
+      promptHistory: nextEntries,
+    }))
+    await saveSessionPromptState(sessionId, { promptHistory: nextEntries })
+  }
   const clearPendingPromptDraftPersist = () => {
     if (pendingPromptDraftPersist) {
       clearTimeout(pendingPromptDraftPersist)
@@ -2027,6 +2072,19 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     hydratedPromptHistorySessionId = attachedSessionId
     restorePromptHistory(attachedSessionId)
+    if (!attachedSessionId) {
+      promptHistoryHydrationGeneration += 1
+      return
+    }
+    void hydratePromptHistoryFromSession(attachedSessionId).catch((error) => {
+      if (attachmentState()?.session_id !== attachedSessionId) {
+        return
+      }
+      appLogger?.warn("failed to hydrate prompt history from session history", {
+        session_id: attachedSessionId,
+        error: formatError(error),
+      })
+    })
   })
   const attachmentTokenKind = (kind: PromptAttachmentKind) => (kind === "image" ? "image" : kind === "pdf" ? "pdf" : "file")
   const hotkeySections = (): HotkeySection[] => [
@@ -6632,6 +6690,18 @@ function parseArgs(args: string[]): CliOptions {
       case "--session":
         options.sessionId = next()
         break
+      case "--relay-url":
+        options.relayUrl = next()
+        break
+      case "--relay-token":
+        options.relayToken = next()
+        break
+      case "--target-daemon-id":
+        options.targetDaemonId = next()
+        break
+      case "--target-daemon-alias":
+        options.targetDaemonAlias = next()
+        break
       case "--create-session":
         options.createSession = true
         break
@@ -6673,6 +6743,15 @@ function parseArgs(args: string[]): CliOptions {
 
   if (options.createSession && options.sessionId) {
     throw new Error("--create-session cannot be used together with --session")
+  }
+  if (options.relayUrl && !options.relayToken) {
+    throw new Error("--relay-url requires --relay-token")
+  }
+  if (options.relayUrl && !options.targetDaemonId && !options.targetDaemonAlias) {
+    throw new Error("--relay-url requires --target-daemon-id or --target-daemon-alias")
+  }
+  if (options.relayUrl && (options.kernelUrl || options.socketPath)) {
+    throw new Error("--relay-url cannot be used together with --kernel-url or --socket")
   }
   if (options.createSession && options.deleteSessionRef) {
     throw new Error("--create-session cannot be used together with --delete-session")
@@ -6943,7 +7022,7 @@ function formatError(error: unknown): string {
 
 function printUsage() {
   process.stdout.write(
-    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
+    "usage: arroba-cli [--kernel-url URL] [--socket PATH] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]\n       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N]\n\ncommands:\n  /stop                 request cancellation of the active provider turn\n  /exit                 exit the CLI\n  /waiting              go to the waiting room\n  /provider <name>      select the provider backend\n  /provider status [n]  show auth status for the current or named provider\n  /provider login [n]   start provider-native login for the current or named provider\n  /provider logout [n]  clear the current or named provider login\n  /provider reauth [n]  log out then start a fresh provider login\n  /model <id>           select the active model\n  /variant <name>       select the model variant\n  /view <mode>          set multi-agent response layout to split|individual\n  /session new [a]      create and attach to a new session\n  /session create [a]   alias for /session new\n  /session <a>          alias the current session\n  /session attach <r>   attach to a session by id or alias\n  /session delete [r]   delete the current or referenced session\n  /agent spawn [a] [m]  spawn a new agent with optional alias and model\n  /agent delete [r]     delete the focused or referenced agent\n  /agent destroy [r]    alias for /agent delete\n  /agent focus <id>     focus a specific agent\n  /agent list           list all agents in the session\n  /agent cycle          cycle to the next agent (or use Tab)\n  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent\n  /codex <cmd>          forward a Codex-native command to the focused Codex agent\n  /workflow             open the workflow outline\n  /workflow list        list workflows in the workspace\n  /workflow show <r>    show a workflow by id or alias\n  /workflow new [a]     create a new workflow with an optional alias\n  /workflow run <w> <e> [p] invoke a workflow endpoint with an optional prompt\n  /workflow runs [w]    list workflow runs for the session or one workflow\n  /workflow cancel <r>  cancel a workflow run\n  /workflow resume <r>  resume a stopped workflow run\n  /workflow terminal [w] show the workflow terminal in the I/O panel\n  /workflow watchdog ... manage scheduled endpoint triggers\n  /workflow <id> <a>    assign an alias to an existing workflow\n  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs\n  /workflow node ...    add/remove workflow nodes\n  /workflow edge ...    add/remove workflow edges (node ids or agent refs)\n  /workflow endpoint ... manage workflow endpoints\n  Tab                   keyboard shortcut to cycle focus\n  Ctrl+Tab              switch between the agent screens and workflow outline\n",
   )
 }
 
