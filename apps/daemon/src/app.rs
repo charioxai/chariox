@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod prompt_lifecycle;
@@ -924,8 +925,12 @@ impl DaemonApp {
     pub async fn run(self) -> Result<(), DaemonError> {
         let config = self.config.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let relay_task = tokio::spawn(crate::relay::run_daemon_relay_connector(
+        let relay_state = Arc::new(tokio::sync::RwLock::new(
+            crate::transport::relay_client::RelayClientState::default(),
+        ));
+        let relay_task = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
             config,
+            relay_state,
             shutdown_rx,
         ));
 

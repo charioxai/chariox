@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::SinkExt;
-use tokio::sync::watch;
+use tokio::sync::{watch, RwLock};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -9,7 +10,16 @@ use arroba_relay::protocol::{DaemonRegistration, RelayEnvelope};
 
 use crate::config::DaemonConfig;
 
-pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watch::Receiver<bool>) {
+#[derive(Debug, Clone, Default)]
+pub struct RelayClientState {
+    connected: bool,
+}
+
+pub async fn run_daemon_relay_connector(
+    config: DaemonConfig,
+    state: Arc<RwLock<RelayClientState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let Some(relay_url) = config.relay_url.clone() else {
         return;
     };
@@ -20,6 +30,7 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
     let heartbeat = Duration::from_millis(config.relay_heartbeat_ms);
     loop {
         if *shutdown.borrow() {
+            set_connected(&state, false).await;
             return;
         }
 
@@ -40,9 +51,11 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
                         .into(),
                 );
                 if socket.send(register_message).await.is_err() {
+                    set_connected(&state, false).await;
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
+                set_connected(&state, true).await;
 
                 loop {
                     tokio::select! {
@@ -56,6 +69,7 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
                                     .into(),
                                 )).await;
                                 let _ = socket.close(None).await;
+                                set_connected(&state, false).await;
                                 return;
                             }
                         }
@@ -69,6 +83,7 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
                                     .into(),
                             );
                             if socket.send(heartbeat_message).await.is_err() {
+                                set_connected(&state, false).await;
                                 break;
                             }
                         }
@@ -76,6 +91,7 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
                 }
             }
             Err(_) => {
+                set_connected(&state, false).await;
                 let reconnect_delay = sleep(Duration::from_secs(1));
                 tokio::pin!(reconnect_delay);
                 tokio::select! {
@@ -91,14 +107,16 @@ pub async fn run_daemon_relay_connector(config: DaemonConfig, mut shutdown: watc
     }
 }
 
+async fn set_connected(state: &Arc<RwLock<RelayClientState>>, connected: bool) {
+    state.write().await.connected = connected;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use std::sync::Arc;
-
     use arroba_relay::{RelayConfig, RelayServer};
-    use tokio::sync::{oneshot, RwLock};
+    use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test(flavor = "multi_thread")]
@@ -138,8 +156,13 @@ mod tests {
         config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
         config.relay_token = Some("secret".to_string());
         config.relay_heartbeat_ms = 50;
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let connector_task = tokio::spawn(run_daemon_relay_connector(config.clone(), shutdown_rx));
+        let connector_task = tokio::spawn(run_daemon_relay_connector(
+            config.clone(),
+            Arc::clone(&state),
+            shutdown_rx,
+        ));
 
         wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
 
@@ -147,6 +170,7 @@ mod tests {
             let guard = registry.read().await;
             assert!(guard.daemon(&config.daemon_id).is_some());
         }
+        assert!(state.read().await.connected);
 
         let _ = shutdown_tx.send(true);
         connector_task.await.expect("connector task should join");
@@ -155,6 +179,7 @@ mod tests {
             let guard = registry.read().await;
             assert!(guard.daemon(&config.daemon_id).is_none());
         }
+        assert!(!state.read().await.connected);
 
         let _ = server_shutdown_tx.send(());
         server_task.await.expect("server task should join");
