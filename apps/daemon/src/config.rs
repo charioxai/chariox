@@ -12,6 +12,9 @@ pub struct DaemonConfig {
     pub daemon_id: String,
     pub host_machine_id: String,
     pub daemon_alias: Option<String>,
+    pub relay_url: Option<String>,
+    pub relay_token: Option<String>,
+    pub relay_heartbeat_ms: u64,
     pub os_user: String,
     pub local_socket_path: PathBuf,
     pub kernel_websocket_host: String,
@@ -68,6 +71,19 @@ impl DaemonConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .or(runtime_identity.daemon_alias),
+            relay_url: env::var("ARROBA_RELAY_URL")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            relay_token: env::var("ARROBA_RELAY_TOKEN")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(5_000),
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
@@ -92,6 +108,9 @@ impl DaemonConfig {
             daemon_id,
             host_machine_id: host_machine_id.into(),
             daemon_alias: None,
+            relay_url: None,
+            relay_token: None,
+            relay_heartbeat_ms: 5_000,
             os_user: os_user.into(),
         }
     }
@@ -153,6 +172,18 @@ impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        if self
+            .relay_url
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            && self.relay_token.is_none()
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_token",
+                message: "value must be set when relay_url is configured",
+            });
+        }
         validate_non_empty("os_user", &self.os_user)?;
         if self.local_socket_path.as_os_str().is_empty() {
             return Err(DaemonError::InvalidConfig {
@@ -184,6 +215,12 @@ impl DaemonConfig {
             return Err(DaemonError::InvalidConfig {
                 field: "session_history_root",
                 message: "value must not be empty",
+            });
+        }
+        if self.relay_heartbeat_ms == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_heartbeat_ms",
+                message: "value must not be zero",
             });
         }
         Ok(())

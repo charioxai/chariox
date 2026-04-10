@@ -246,7 +246,8 @@ impl DaemonApp {
         let agent = self.agents.cycle_focus(session_id, &mut self.sessions)?;
         if let Some(focused) = agent.as_ref() {
             if self.agents.get_session_agents(session_id).len() > 1 {
-                if !self.should_defer_provider_run_sync_for_focus_change(session_id, focused.id())?
+                if !self
+                    .should_defer_provider_run_sync_for_focus_change(session_id, focused.id())?
                 {
                     self.sync_active_provider_run_for_agent(session_id, focused.id())?;
                 }
@@ -921,10 +922,22 @@ impl DaemonApp {
     }
 
     pub async fn run(self) -> Result<(), DaemonError> {
-        crate::kernel_transport::run_kernel_websocket_server(self, async {
+        let config = self.config.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let relay_task = tokio::spawn(crate::relay::run_daemon_relay_connector(
+            config,
+            shutdown_rx,
+        ));
+
+        let result = crate::kernel_transport::run_kernel_websocket_server(self, async {
             let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_tx.send(true);
         })
-        .await
+        .await;
+
+        let _ = shutdown_tx.send(true);
+        let _ = relay_task.await;
+        result
     }
 }
 

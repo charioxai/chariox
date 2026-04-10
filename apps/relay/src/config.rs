@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct RelayConfig {
     pub host: String,
     pub port: u16,
+    pub shared_token: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -25,6 +26,10 @@ impl RelayConfig {
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43130),
+            shared_token: env::var("ARROBA_RELAY_TOKEN")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
         };
         config.validate()?;
         Ok(config)
@@ -56,6 +61,7 @@ mod tests {
         let error = RelayConfig {
             host: String::new(),
             port: 43130,
+            shared_token: None,
         }
         .validate()
         .expect_err("empty host should be rejected");

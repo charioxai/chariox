@@ -10,6 +10,7 @@ pub enum RelayConnectionRole {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonRegistration {
+    pub auth_token: String,
     pub daemon_id: String,
     pub machine_id: String,
     #[serde(default)]
@@ -36,6 +37,7 @@ pub enum RelayEnvelope {
         daemon_id: String,
     },
     ClientConnect {
+        auth_token: String,
         target: ClientTarget,
     },
     ClientRequest {
@@ -75,6 +77,7 @@ mod tests {
     fn serializes_daemon_registration_envelope() {
         let envelope = RelayEnvelope::DaemonRegister {
             registration: DaemonRegistration {
+                auth_token: "secret".to_string(),
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 daemon_alias: Some("mbp".to_string()),
