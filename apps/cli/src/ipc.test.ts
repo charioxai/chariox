@@ -293,7 +293,7 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
     })
   })
 
-  assert.equal(client.supportsKernelEvents(), false)
+  assert.equal(client.supportsKernelEvents(), true)
   const response = await client.send<{ ok: boolean; echoed: unknown }>({
     hello: "relay",
   })
@@ -305,6 +305,106 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
   assert.deepEqual(receivedFrames[0]?.target, { daemon_id: "daemon-1", daemon_alias: null })
   assert.equal(typeof receivedFrames[1]?.encrypted_request?.ciphertext, "string")
   assert.equal(receivedFrames[1]?.request, undefined)
+})
+
+test("LocalIpcClient subscribes to relay kernel events with encrypted payloads", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  const receivedFrames: Array<Record<string, unknown>> = []
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      receivedFrames.push(frame)
+
+      if (frame.kind === "client_connect") {
+        const daemon = createECDH("prime256v1")
+        const daemonPublicKey = daemon.generateKeys().toString("base64")
+        ;(socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon = daemon
+        socket.send(JSON.stringify({
+          kind: "client_connected",
+          target: frame.target,
+          daemon_public_key: daemonPublicKey,
+        }))
+        return
+      }
+
+      if (frame.kind === "client_subscribe") {
+        const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          encrypted_response: encryptRelayPayload(
+            daemon,
+            frame.client_public_key,
+            Buffer.from(JSON.stringify({ ok: true, resumed_from_event_id: frame.resume_from_event_id }), "utf8"),
+          ),
+          error: null,
+        }))
+        socket.send(JSON.stringify({
+          kind: "client_event",
+          subscription_id: frame.subscription_id,
+          event_id: 1,
+          encrypted_event: encryptRelayPayload(
+            daemon,
+            frame.client_public_key,
+            Buffer.from(JSON.stringify({
+              event: "session_snapshot",
+              session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
+              provider_run: null,
+            }), "utf8"),
+          ),
+        }))
+        return
+      }
+
+      if (frame.kind === "client_unsubscribe") {
+        const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          encrypted_response: encryptRelayPayload(
+            daemon,
+            frame.client_public_key,
+            Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+          ),
+          error: null,
+        }))
+      }
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint, {
+    relayAuthToken: "secret",
+    targetDaemonId: "daemon-1",
+  })
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => {
+    events.push(event)
+  })
+  t.after(() => dispose())
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  await client.subscribeToKernelEvents("session-1", "attachment-1")
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  await client.unsubscribeFromKernelEvents()
+
+  assert.equal(receivedFrames[1]?.kind, "client_subscribe")
+  assert.equal(receivedFrames[2]?.kind, "client_unsubscribe")
+  assert.equal(typeof receivedFrames[1]?.client_public_key, "string")
+  assert.deepEqual(events, [{
+    event: "session_snapshot",
+    session: { id: "session-1", attachment_ids: ["attachment-1"] },
+    provider_run: null,
+  }])
 })
 
 const RELAY_NONCE_LEN = 12

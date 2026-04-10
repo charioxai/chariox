@@ -25,7 +25,7 @@ use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
 
-const WATCH_INTERVAL_MS: u64 = 50;
+pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RECENT_EVENT_LIMIT: usize = 256;
@@ -73,7 +73,7 @@ enum KernelOutgoingFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-enum KernelEvent {
+pub(crate) enum KernelEvent {
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -596,7 +596,7 @@ async fn run_subscription_loop(
     }
 }
 
-enum WatchResult {
+pub(crate) enum WatchResult {
     Ok {
         records: Vec<TerminalOutputRecord>,
         notices: Vec<RuntimeNoticeRecord>,
@@ -606,7 +606,7 @@ enum WatchResult {
     Unavailable(String),
 }
 
-fn watch_subscription_state(
+pub(crate) fn watch_subscription_state(
     app: &mut DaemonApp,
     session_id: &str,
     attachment_id: &str,

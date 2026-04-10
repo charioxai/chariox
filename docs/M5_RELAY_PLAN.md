@@ -233,7 +233,7 @@ Add CLI relay mode:
 - connect to relay
 - target daemon by id/alias
 - send request through relay for the first narrow request surface
-- event subscriptions remain for a later slice
+- receive encrypted relay-backed kernel event subscriptions
 
 ### Slice 5. Request/Response Proxying
 
@@ -247,7 +247,9 @@ Support a narrow first surface:
 - attach to session
 
 This slice is now implemented end to end through relay.
-Keep event streaming and remote terminal transport for the next slice.
+
+Encrypted event subscription forwarding is also now implemented for the relay path.
+Keep remote terminal input/resize/output transport and durable resume semantics for the next slice.
 
 ### Slice 6. Remote Terminal Flow
 

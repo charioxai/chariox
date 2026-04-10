@@ -73,6 +73,31 @@ type RelayResponseFrame<TResponse> = {
   error: KernelTransportError | null
 }
 
+type RelaySubscribeFrame = {
+  kind: "client_subscribe"
+  request_id: string
+  subscription_id: string
+  target: RelayTarget
+  session_id: string
+  attachment_id: string
+  client_public_key: string
+  resume_from_event_id: number | null
+}
+
+type RelayUnsubscribeFrame = {
+  kind: "client_unsubscribe"
+  request_id: string
+  subscription_id: string
+  client_public_key: string
+}
+
+type RelayEventFrame = {
+  kind: "client_event"
+  subscription_id: string
+  event_id: number
+  encrypted_event: EncryptedRelayPayload
+}
+
 type RelayCloseFrame = {
   kind: "close"
   reason: string
@@ -141,6 +166,8 @@ export class LocalIpcError extends Error {
 type KernelSubscriptionState = {
   sessionId: string
   attachmentId: string
+  relaySubscriptionId: string | null
+  relayPrivateKey: Buffer | null
 }
 
 type LocalIpcClientOptions = {
@@ -176,7 +203,7 @@ export class LocalIpcClient {
   }
 
   supportsKernelEvents() {
-    return isWebSocketEndpoint(this.socketPath) && !this.isRelayMode()
+    return isWebSocketEndpoint(this.socketPath)
   }
 
   private isRelayMode() {
@@ -194,16 +221,25 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
-    this.activeKernelSubscription = { sessionId, attachmentId }
+    this.activeKernelSubscription = {
+      sessionId,
+      attachmentId,
+      relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
+      relayPrivateKey: null,
+    }
     try {
-      await this.sendWebSocket<Record<string, unknown>>({
-        __kernel_transport: {
-          type: "subscribe",
-          session_id: sessionId,
-          attachment_id: attachmentId,
-          resume_from_event_id: this.lastReceivedEventId,
-        },
-      })
+      if (this.isRelayMode()) {
+        await this.sendRelaySubscribe(sessionId, attachmentId, this.lastReceivedEventId)
+      } else {
+        await this.sendWebSocket<Record<string, unknown>>({
+          __kernel_transport: {
+            type: "subscribe",
+            session_id: sessionId,
+            attachment_id: attachmentId,
+            resume_from_event_id: this.lastReceivedEventId,
+          },
+        })
+      }
       this.clearReconnectState()
     } catch (error) {
       this.scheduleReconnect()
@@ -215,16 +251,24 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
+    const subscription = this.activeKernelSubscription
     this.activeKernelSubscription = null
     this.clearReconnectState()
     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
       return
     }
-    await this.sendWebSocket<Record<string, unknown>>({
-      __kernel_transport: {
-        type: "unsubscribe",
-      },
-    })
+    if (this.isRelayMode()) {
+      if (!subscription?.relaySubscriptionId || !subscription.relayPrivateKey) {
+        return
+      }
+      await this.sendRelayUnsubscribe(subscription.relaySubscriptionId, subscription.relayPrivateKey)
+    } else {
+      await this.sendWebSocket<Record<string, unknown>>({
+        __kernel_transport: {
+          type: "unsubscribe",
+        },
+      })
+    }
   }
 
   async restartKernelEventStream(): Promise<void> {
@@ -401,6 +445,87 @@ export class LocalIpcClient {
     })
   }
 
+  private async sendRelaySubscribe(
+    sessionId: string,
+    attachmentId: string,
+    resumeFromEventId: number | null,
+  ): Promise<void> {
+    const socket = await this.ensureWebSocket()
+    const requestId = randomUUID()
+    const subscription = this.activeKernelSubscription
+    if (!subscription?.relaySubscriptionId) {
+      throw new LocalIpcError("write relay subscribe", "relay subscription state is missing")
+    }
+    const keypair = createRelayKeypair()
+    subscription.relayPrivateKey = keypair.privateKey
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(requestId)
+        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
+      }, IPC_TIMEOUT_MS)
+
+      this.pending.set(requestId, {
+        resolve: () => resolve(),
+        reject,
+        timeout,
+        relayPrivateKey: keypair.privateKey,
+      })
+
+      try {
+        const frame: RelaySubscribeFrame = {
+          kind: "client_subscribe",
+          request_id: requestId,
+          subscription_id: subscription.relaySubscriptionId,
+          target: requireRelayTarget(this.relayTarget),
+          session_id: sessionId,
+          attachment_id: attachmentId,
+          client_public_key: keypair.publicKeyBase64,
+          resume_from_event_id: resumeFromEventId,
+        }
+        socket.send(JSON.stringify(frame))
+      } catch (error) {
+        clearTimeout(timeout)
+        this.pending.delete(requestId)
+        reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+      }
+    })
+  }
+
+  private async sendRelayUnsubscribe(subscriptionId: string, privateKey: Buffer): Promise<void> {
+    const socket = await this.ensureWebSocket()
+    const requestId = randomUUID()
+    const publicKeyBase64 = relayPublicKeyFromPrivateKey(privateKey)
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(requestId)
+        reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
+      }, IPC_TIMEOUT_MS)
+
+      this.pending.set(requestId, {
+        resolve: () => resolve(),
+        reject,
+        timeout,
+        relayPrivateKey: privateKey,
+      })
+
+      try {
+        const frame: RelayUnsubscribeFrame = {
+          kind: "client_unsubscribe",
+          request_id: requestId,
+          subscription_id: subscriptionId,
+          client_public_key: publicKeyBase64,
+        }
+        socket.send(JSON.stringify(frame))
+      } catch (error) {
+        clearTimeout(timeout)
+        this.pending.delete(requestId)
+        reject(new LocalIpcError("write relay unsubscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
+      }
+    })
+  }
+
   private async ensureWebSocket(): Promise<WebSocket> {
     if (this.websocket?.readyState === WebSocket.OPEN) {
       return this.websocket
@@ -509,9 +634,19 @@ export class LocalIpcClient {
   }
 
   private handleWebSocketMessage(data: WebSocket.RawData) {
-    let frame: KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent> | RelayResponseFrame<unknown> | RelayCloseFrame
+    let frame:
+      | KernelTransportResponseFrame<unknown>
+      | KernelTransportEventFrame<KernelEvent>
+      | RelayResponseFrame<unknown>
+      | RelayEventFrame
+      | RelayCloseFrame
     try {
-      frame = JSON.parse(String(data)) as KernelTransportResponseFrame<unknown> | KernelTransportEventFrame<KernelEvent> | RelayResponseFrame<unknown> | RelayCloseFrame
+      frame = JSON.parse(String(data)) as
+        | KernelTransportResponseFrame<unknown>
+        | KernelTransportEventFrame<KernelEvent>
+        | RelayResponseFrame<unknown>
+        | RelayEventFrame
+        | RelayCloseFrame
     } catch (error) {
       this.rejectPending(error instanceof Error ? error.message : String(error))
       return
@@ -527,6 +662,22 @@ export class LocalIpcClient {
 
     if ("kind" in frame && frame.kind === "close") {
       this.rejectPending(frame.reason)
+      return
+    }
+
+    if ("kind" in frame && frame.kind === "client_event") {
+      const subscription = this.activeKernelSubscription
+      if (!subscription?.relayPrivateKey || subscription.relaySubscriptionId !== frame.subscription_id) {
+        return
+      }
+      try {
+        const decrypted = decryptRelayPayload(subscription.relayPrivateKey, frame.encrypted_event)
+        const event = JSON.parse(decrypted) as KernelEvent
+        this.lastReceivedEventId = frame.event_id
+        this.emitSyntheticEvent(event)
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error))
+      }
       return
     }
 
@@ -609,14 +760,22 @@ export class LocalIpcClient {
     }
 
     try {
-      await this.sendWebSocket<Record<string, unknown>>({
-        __kernel_transport: {
-          type: "subscribe",
-          session_id: subscription.sessionId,
-          attachment_id: subscription.attachmentId,
-          resume_from_event_id: this.lastReceivedEventId,
-        },
-      })
+      if (this.isRelayMode()) {
+        await this.sendRelaySubscribe(
+          subscription.sessionId,
+          subscription.attachmentId,
+          this.lastReceivedEventId,
+        )
+      } else {
+        await this.sendWebSocket<Record<string, unknown>>({
+          __kernel_transport: {
+            type: "subscribe",
+            session_id: subscription.sessionId,
+            attachment_id: subscription.attachmentId,
+            resume_from_event_id: this.lastReceivedEventId,
+          },
+        })
+      }
       this.clearReconnectState()
       this.emitSyntheticEvent({
         event: "transport_resumed",
@@ -649,9 +808,7 @@ function normalizeRelayRequest(
   target: RelayTarget | null,
   daemonPublicKey: string | null,
 ): { frame: RelayRequestFrame; privateKey: Buffer } {
-  if (!target?.daemon_id && !target?.daemon_alias) {
-    throw new Error("relay target daemon id or alias is required")
-  }
+  const resolvedTarget = requireRelayTarget(target)
   if (!daemonPublicKey) {
     throw new Error("relay daemon public key is required")
   }
@@ -661,7 +818,7 @@ function normalizeRelayRequest(
     frame: {
       kind: "client_request",
       request_id: requestId,
-      target,
+      target: resolvedTarget,
       encrypted_request: payload,
     },
     privateKey,
@@ -776,4 +933,26 @@ function decryptRelayPayload(privateKey: Buffer, payload: EncryptedRelayPayload)
 
 function deriveRelayKey(sharedSecret: Buffer): Buffer {
   return Buffer.from(hkdfSync("sha256", sharedSecret, Buffer.alloc(0), RELAY_INFO, 32))
+}
+
+function createRelayKeypair(): { privateKey: Buffer; publicKeyBase64: string } {
+  const ecdh = createECDH("prime256v1")
+  const publicKey = ecdh.generateKeys()
+  return {
+    privateKey: ecdh.getPrivateKey(),
+    publicKeyBase64: publicKey.toString("base64"),
+  }
+}
+
+function relayPublicKeyFromPrivateKey(privateKey: Buffer): string {
+  const ecdh = createECDH("prime256v1")
+  ecdh.setPrivateKey(privateKey)
+  return ecdh.getPublicKey().toString("base64")
+}
+
+function requireRelayTarget(target: RelayTarget | null): RelayTarget {
+  if (!target?.daemon_id && !target?.daemon_alias) {
+    throw new Error("relay target daemon id or alias is required")
+  }
+  return target
 }

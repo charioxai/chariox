@@ -78,18 +78,42 @@ pub enum RelayEnvelope {
         error: Option<RelayError>,
     },
     ClientSubscribe {
+        request_id: String,
         subscription_id: String,
         target: ClientTarget,
-        stream: String,
+        session_id: String,
+        attachment_id: String,
+        client_public_key: String,
         #[serde(default)]
-        resume_from_event_id: Option<String>,
+        resume_from_event_id: Option<u64>,
     },
     ClientUnsubscribe {
+        request_id: String,
         subscription_id: String,
+        client_public_key: String,
+    },
+    DaemonSubscribe {
+        relay_request_id: String,
+        relay_subscription_id: String,
+        session_id: String,
+        attachment_id: String,
+        client_public_key: String,
+        #[serde(default)]
+        resume_from_event_id: Option<u64>,
+    },
+    DaemonUnsubscribe {
+        relay_request_id: String,
+        relay_subscription_id: String,
+        client_public_key: String,
     },
     DaemonEvent {
         subscription_id: String,
-        event_id: String,
+        event_id: u64,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    ClientEvent {
+        subscription_id: String,
+        event_id: u64,
         encrypted_event: EncryptedRelayPayload,
     },
     Close {

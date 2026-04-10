@@ -32,6 +32,20 @@ struct PendingClientRequest {
     client_addr: SocketAddr,
     client_request_id: String,
     daemon_id: String,
+    kind: PendingRequestKind,
+}
+
+#[derive(Debug, Clone)]
+enum PendingRequestKind {
+    Request,
+    Subscribe { subscription_id: String },
+    Unsubscribe { subscription_id: String },
+}
+
+#[derive(Debug, Clone)]
+struct ActiveSubscription {
+    client_addr: SocketAddr,
+    daemon_id: String,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +53,7 @@ pub struct RelayRegistry {
     peers: BTreeMap<SocketAddr, PeerHandle>,
     daemons: BTreeMap<String, DaemonRegistration>,
     pending_requests: BTreeMap<String, PendingClientRequest>,
+    subscriptions: BTreeMap<String, ActiveSubscription>,
 }
 
 impl RelayRegistry {
@@ -56,6 +71,10 @@ impl RelayRegistry {
 
     pub fn pending_request_count(&self) -> usize {
         self.pending_requests.len()
+    }
+
+    pub fn subscription_count(&self) -> usize {
+        self.subscriptions.len()
     }
 
     pub fn connected_peer(&self, peer_addr: &SocketAddr) -> Option<ConnectedPeer> {
@@ -242,6 +261,7 @@ async fn handle_connection(
                                     client_addr: peer_addr,
                                     client_request_id: request_id.clone(),
                                     daemon_id: daemon_id.clone(),
+                                    kind: PendingRequestKind::Request,
                                 },
                             );
                             resolve_daemon_sender_locked(&guard, &daemon_id)
@@ -274,6 +294,152 @@ async fn handle_connection(
                             },
                         )?;
                     }
+                    RelayEnvelope::ClientSubscribe {
+                        request_id,
+                        subscription_id,
+                        target,
+                        session_id,
+                        attachment_id,
+                        client_public_key,
+                        resume_from_event_id,
+                    } => {
+                        let Some(daemon_id) = resolve_target_daemon_id(&registry, &target).await
+                        else {
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::ClientResponse {
+                                    request_id,
+                                    encrypted_response: None,
+                                    error: Some(relay_error(
+                                        "target_not_connected",
+                                        "target daemon is not connected to relay",
+                                        true,
+                                    )),
+                                },
+                            )?;
+                            continue;
+                        };
+                        let relay_request_id = format!(
+                            "relay-request-{}",
+                            relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+                        );
+                        let daemon_sender = {
+                            let mut guard = registry.write().await;
+                            guard.pending_requests.insert(
+                                relay_request_id.clone(),
+                                PendingClientRequest {
+                                    client_addr: peer_addr,
+                                    client_request_id: request_id.clone(),
+                                    daemon_id: daemon_id.clone(),
+                                    kind: PendingRequestKind::Subscribe {
+                                        subscription_id: subscription_id.clone(),
+                                    },
+                                },
+                            );
+                            resolve_daemon_sender_locked(&guard, &daemon_id)
+                        };
+                        let Some(daemon_sender) = daemon_sender else {
+                            registry
+                                .write()
+                                .await
+                                .pending_requests
+                                .remove(&relay_request_id);
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::ClientResponse {
+                                    request_id,
+                                    encrypted_response: None,
+                                    error: Some(relay_error(
+                                        "target_not_connected",
+                                        "target daemon is not connected to relay",
+                                        true,
+                                    )),
+                                },
+                            )?;
+                            continue;
+                        };
+                        send_envelope(
+                            &daemon_sender,
+                            &RelayEnvelope::DaemonSubscribe {
+                                relay_request_id,
+                                relay_subscription_id: subscription_id,
+                                session_id,
+                                attachment_id,
+                                client_public_key,
+                                resume_from_event_id,
+                            },
+                        )?;
+                    }
+                    RelayEnvelope::ClientUnsubscribe {
+                        request_id,
+                        subscription_id,
+                        client_public_key,
+                    } => {
+                        let relay_request_id = format!(
+                            "relay-request-{}",
+                            relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+                        );
+                        let daemon_sender = {
+                            let mut guard = registry.write().await;
+                            let Some(active) = guard.subscriptions.get(&subscription_id).cloned()
+                            else {
+                                drop(guard);
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "subscription_not_found",
+                                            "relay subscription is not active",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            };
+                            guard.pending_requests.insert(
+                                relay_request_id.clone(),
+                                PendingClientRequest {
+                                    client_addr: peer_addr,
+                                    client_request_id: request_id.clone(),
+                                    daemon_id: active.daemon_id.clone(),
+                                    kind: PendingRequestKind::Unsubscribe {
+                                        subscription_id: subscription_id.clone(),
+                                    },
+                                },
+                            );
+                            resolve_daemon_sender_locked(&guard, &active.daemon_id)
+                        };
+                        let Some(daemon_sender) = daemon_sender else {
+                            registry
+                                .write()
+                                .await
+                                .pending_requests
+                                .remove(&relay_request_id);
+                            send_envelope(
+                                &outgoing_tx,
+                                &RelayEnvelope::ClientResponse {
+                                    request_id,
+                                    encrypted_response: None,
+                                    error: Some(relay_error(
+                                        "target_not_connected",
+                                        "target daemon is not connected to relay",
+                                        true,
+                                    )),
+                                },
+                            )?;
+                            continue;
+                        };
+                        send_envelope(
+                            &daemon_sender,
+                            &RelayEnvelope::DaemonUnsubscribe {
+                                relay_request_id,
+                                relay_subscription_id: subscription_id,
+                                client_public_key,
+                            },
+                        )?;
+                    }
                     RelayEnvelope::DaemonResponse {
                         relay_request_id,
                         encrypted_response,
@@ -283,6 +449,23 @@ async fn handle_connection(
                             let mut guard = registry.write().await;
                             let pending = guard.pending_requests.remove(&relay_request_id);
                             pending.and_then(|pending| {
+                                if error.is_none() {
+                                    match &pending.kind {
+                                        PendingRequestKind::Subscribe { subscription_id } => {
+                                            guard.subscriptions.insert(
+                                                subscription_id.clone(),
+                                                ActiveSubscription {
+                                                    client_addr: pending.client_addr,
+                                                    daemon_id: pending.daemon_id.clone(),
+                                                },
+                                            );
+                                        }
+                                        PendingRequestKind::Unsubscribe { subscription_id } => {
+                                            guard.subscriptions.remove(subscription_id);
+                                        }
+                                        PendingRequestKind::Request => {}
+                                    }
+                                }
                                 guard
                                     .peers
                                     .get(&pending.client_addr)
@@ -300,6 +483,30 @@ async fn handle_connection(
                             )?;
                         }
                     }
+                    RelayEnvelope::DaemonEvent {
+                        subscription_id,
+                        event_id,
+                        encrypted_event,
+                    } => {
+                        let client_sender = {
+                            let guard = registry.read().await;
+                            guard
+                                .subscriptions
+                                .get(&subscription_id)
+                                .and_then(|active| guard.peers.get(&active.client_addr))
+                                .map(|peer| peer.sender.clone())
+                        };
+                        if let Some(client_sender) = client_sender {
+                            send_envelope(
+                                &client_sender,
+                                &RelayEnvelope::ClientEvent {
+                                    subscription_id,
+                                    event_id,
+                                    encrypted_event,
+                                },
+                            )?;
+                        }
+                    }
                     RelayEnvelope::Close { .. } => {
                         let _ = outgoing_tx.send(Message::Close(None));
                         break;
@@ -307,9 +514,9 @@ async fn handle_connection(
                     RelayEnvelope::ClientConnected { .. }
                     | RelayEnvelope::ClientResponse { .. }
                     | RelayEnvelope::DaemonRequest { .. }
-                    | RelayEnvelope::ClientSubscribe { .. }
-                    | RelayEnvelope::ClientUnsubscribe { .. }
-                    | RelayEnvelope::DaemonEvent { .. } => {}
+                    | RelayEnvelope::DaemonSubscribe { .. }
+                    | RelayEnvelope::DaemonUnsubscribe { .. }
+                    | RelayEnvelope::ClientEvent { .. } => {}
                 }
             }
             Message::Close(_) => break,
@@ -379,8 +586,26 @@ async fn remove_peer(
 ) -> Vec<(mpsc::UnboundedSender<Message>, String)> {
     let mut guard = registry.write().await;
     guard.peers.remove(&peer_addr);
+    let client_subscription_ids = guard
+        .subscriptions
+        .iter()
+        .filter(|(_, active)| active.client_addr == peer_addr)
+        .map(|(subscription_id, _)| subscription_id.clone())
+        .collect::<Vec<_>>();
+    for subscription_id in client_subscription_ids {
+        guard.subscriptions.remove(&subscription_id);
+    }
     if let Some(daemon_id) = daemon_id {
         guard.daemons.remove(daemon_id);
+        let daemon_subscription_ids = guard
+            .subscriptions
+            .iter()
+            .filter(|(_, active)| active.daemon_id == daemon_id)
+            .map(|(subscription_id, _)| subscription_id.clone())
+            .collect::<Vec<_>>();
+        for subscription_id in daemon_subscription_ids {
+            guard.subscriptions.remove(&subscription_id);
+        }
         let doomed_request_ids = guard
             .pending_requests
             .iter()
