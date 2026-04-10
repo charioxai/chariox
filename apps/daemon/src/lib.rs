@@ -212,7 +212,7 @@ mod tests {
             .all(|session| session.id() != leased_agent.backing_session_id));
 
         let (provider_run_id, outcome) = app
-            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n")
+            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
             .expect("leased prompt should submit");
         match outcome {
             PromptSubmissionOutcome::Started { .. } => {}

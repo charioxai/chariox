@@ -1,11 +1,15 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::pty::PtyProcessState;
-use crate::session::{PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome};
+use crate::session::{
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
+};
 use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RelayPromptAttachment};
 use arroba_relay::protocol::ClientTarget;
+use base64::Engine;
+use std::fs;
 
 impl DaemonApp {
     pub fn submit_prompt(
@@ -59,15 +63,6 @@ impl DaemonApp {
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
                 if let Some(remote_execution) = remote_execution.as_ref() {
-                    if !prompt.attachments().is_empty() {
-                        let _ = self
-                            .sessions
-                            .cancel_active_prompt(session_id, &target_agent_id);
-                        return Err(DaemonError::LocalTransport {
-                            operation: "submit remote prompt",
-                            message: "remote prompt attachments are not supported yet".to_string(),
-                        });
-                    }
                     let response =
                         self.block_on_relay_future(send_peer_request_via_temporary_connection(
                             &self.config,
@@ -78,6 +73,8 @@ impl DaemonApp {
                             RelayPeerRequest::SubmitLeasedPrompt {
                                 leased_agent_id: remote_execution.leased_agent_id.clone(),
                                 prompt: prompt.prompt().to_string(),
+                                attachments: self
+                                    .serialize_remote_prompt_attachments(prompt.attachments())?,
                             },
                         ));
                     let remote_provider_run_id = match response {
@@ -594,18 +591,6 @@ impl DaemonApp {
             let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
                 peeked.source_attachment_id(),
             );
-            if !peeked.attachments().is_empty() {
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachments.list_session_attachment_ids(session_id),
-                    format!(
-                        "Deferred queued prompt `{}` because remote prompt attachments are not supported yet.",
-                        peeked.id()
-                    ),
-                );
-                return Ok(None);
-            }
             if let Err(error) =
                 self.ensure_attachment_in_session(session_id, peeked.source_attachment_id())
             {
@@ -635,6 +620,7 @@ impl DaemonApp {
                 RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: leased_agent_id.to_string(),
                     prompt: peeked.prompt().to_string(),
+                    attachments: self.serialize_remote_prompt_attachments(peeked.attachments())?,
                 },
             ));
             let remote_provider_run_id = match response {
@@ -674,6 +660,43 @@ impl DaemonApp {
             crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, &active)?;
             return Ok(Some(active));
         }
+    }
+
+    fn serialize_remote_prompt_attachments(
+        &self,
+        attachments: &[PromptAttachment],
+    ) -> Result<Vec<RelayPromptAttachment>, DaemonError> {
+        attachments
+            .iter()
+            .map(|attachment| {
+                let local_path = attachment
+                    .url()
+                    .strip_prefix("file://localhost")
+                    .or_else(|| attachment.url().strip_prefix("file://"))
+                    .filter(|path| path.starts_with('/'));
+                if let Some(local_path) = local_path {
+                    let bytes =
+                        fs::read(local_path).map_err(|error| DaemonError::LocalTransport {
+                            operation: "read remote prompt attachment",
+                            message: error.to_string(),
+                        })?;
+                    return Ok(RelayPromptAttachment {
+                        url: attachment.url().to_string(),
+                        mime: attachment.mime().to_string(),
+                        filename: attachment.filename().map(str::to_string),
+                        contents_base64: Some(
+                            base64::engine::general_purpose::STANDARD.encode(bytes),
+                        ),
+                    });
+                }
+                Ok(RelayPromptAttachment {
+                    url: attachment.url().to_string(),
+                    mime: attachment.mime().to_string(),
+                    filename: attachment.filename().map(str::to_string),
+                    contents_base64: None,
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn reconcile_provider_run_exit(

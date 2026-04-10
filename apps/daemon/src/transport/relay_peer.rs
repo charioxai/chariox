@@ -5,6 +5,16 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutco
 use crate::terminal::TerminalOutputKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayPromptAttachment {
+    pub url: String,
+    pub mime: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
     Ping {
@@ -30,6 +40,8 @@ pub enum RelayPeerRequest {
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
+        #[serde(default)]
+        attachments: Vec<RelayPromptAttachment>,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
