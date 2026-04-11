@@ -211,8 +211,12 @@ pub async fn run_daemon_relay_connector(
                                 break;
                             }
                             pump_leased_projection_events(&app, &outgoing_tx).await;
-                            let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
-                                daemon_id: daemon_id.clone(),
+                            let heartbeat_frame = {
+                                let mut app = app.lock().await;
+                                RelayEnvelope::DaemonHeartbeat {
+                                    daemon_id: daemon_id.clone(),
+                                    registration: Some(app.relay_registration()),
+                                }
                             };
                             if outgoing_tx.send(heartbeat_frame).is_err() {
                                 abort_subscription_tasks(&subscription_tasks).await;

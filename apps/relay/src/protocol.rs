@@ -106,6 +106,8 @@ pub enum RelayEnvelope {
     },
     DaemonHeartbeat {
         daemon_id: String,
+        #[serde(default)]
+        registration: Option<DaemonRegistration>,
     },
     ClientConnect {
         auth_token: String,

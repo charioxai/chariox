@@ -319,9 +319,26 @@ async fn handle_connection(
                             .daemons
                             .insert(registration.daemon_id.clone(), registration);
                     }
-                    RelayEnvelope::DaemonHeartbeat { daemon_id } => {
+                    RelayEnvelope::DaemonHeartbeat {
+                        daemon_id,
+                        registration,
+                    } => {
                         if registered_daemon_id.as_deref() != Some(daemon_id.as_str()) {
                             break;
+                        }
+                        if let Some(registration) = registration {
+                            validate_shared_token(
+                                shared_token.as_deref(),
+                                &registration.auth_token,
+                            )?;
+                            if registration.daemon_id != daemon_id {
+                                break;
+                            }
+                            let mut guard = registry.write().await;
+                            if let Some(peer) = guard.peers.get_mut(&peer_addr) {
+                                peer.daemon_registration = Some(registration.clone());
+                            }
+                            guard.daemons.insert(daemon_id, registration);
                         }
                     }
                     RelayEnvelope::ClientConnect { auth_token, target } => {
