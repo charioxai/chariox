@@ -321,14 +321,14 @@ Exit criteria:
 
 The Docker lab is part of validating M5/M6 locally before requiring real separate machines. The repository should provide an Arroba base image that includes all Arroba apps (`arroba` CLI, daemon/kernel, and relay) plus required runtime dependencies. Provider installation and provider login remain the user's responsibility inside each container. Containers must have outbound internet for provider model calls, provider installation, hosted relay access, and provider login. Browser-based provider login is handled as a provider compatibility concern: the base image may include URL-printing browser shims, and each launch provider is tested/documented individually for Linux/container login behavior, callback ports, credential persistence, and normal prompt execution after restart.
 
-The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Arroba as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`.
+The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Arroba as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`. It includes a smoke runner, Codex/OpenCode installation helper, and a remote-CLI-to-host drill; provider account login remains manual.
 
 ## M6 - Remote Agents and Machine Membership
 
 Outcomes:
 
 - remote machine registration on top of relay connectivity, with machine status displayed in the waiting room; pending machines are shown inline in the machine section rather than as a separate mode
-- all machine management operations are available as in-CLI slash commands such as `/machine list`, `/machine kernels <machine-ref>`, and later `/machine approve|forget|rename ...`
+- all machine management operations are available as in-CLI slash commands: `/machine list`, `/machine kernels <machine-ref>`, `/machine approve <machine-ref>`, `/machine forget <machine-ref>`, and `/machine rename <machine-ref> <alias>`
 - remote daemons can host top-level Arroba-managed agents for the same logical collaboration model
 - session membership spanning multiple machines
 - remote agent routing and lifecycle ownership

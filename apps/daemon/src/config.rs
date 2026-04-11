@@ -204,27 +204,77 @@ impl DaemonConfig {
     }
 
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
-        let path = Self::default_daemon_config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-                operation: "persist relay config",
-                message: error.to_string(),
-            })?;
+        let mut persisted = load_persisted_daemon_config();
+        persisted.relay_url = self.relay_url.clone();
+        persisted.relay_token = self.relay_token.clone();
+        persist_daemon_config(&persisted, "persist relay config")
+    }
+
+    pub fn machine_registry_entries() -> Vec<PersistedMachineRegistration> {
+        load_persisted_daemon_config().machines
+    }
+
+    pub fn approve_remote_machine(
+        machine_id: impl Into<String>,
+        alias: Option<String>,
+    ) -> Result<PersistedMachineRegistration, DaemonError> {
+        let machine_id = machine_id.into();
+        let alias = normalized_optional(alias);
+        validate_non_empty("machine_id", &machine_id)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
+        entry.alias = alias.or_else(|| entry.alias.clone());
+        entry.approved = true;
+        entry.forgotten = false;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist machine approval")?;
+        Ok(saved)
+    }
+
+    pub fn forget_remote_machine(
+        machine_id: impl Into<String>,
+    ) -> Result<PersistedMachineRegistration, DaemonError> {
+        let machine_id = machine_id.into();
+        validate_non_empty("machine_id", &machine_id)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
+        entry.approved = false;
+        entry.forgotten = true;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist forgotten machine")?;
+        Ok(saved)
+    }
+
+    pub fn rename_remote_machine(
+        machine_id: impl Into<String>,
+        alias: impl Into<String>,
+    ) -> Result<PersistedMachineRegistration, DaemonError> {
+        let machine_id = machine_id.into();
+        let alias = alias.into().trim().to_string();
+        validate_non_empty("machine_id", &machine_id)?;
+        validate_non_empty("machine_alias", &alias)?;
+        let mut persisted = load_persisted_daemon_config();
+        let entry = upsert_machine_registration(&mut persisted.machines, &machine_id);
+        entry.alias = Some(alias);
+        entry.approved = true;
+        entry.forgotten = false;
+        let saved = entry.clone();
+        persist_daemon_config(&persisted, "persist machine rename")?;
+        Ok(saved)
+    }
+
+    pub fn resolve_registered_machine_ref(machine_ref: &str) -> Option<String> {
+        let machine_ref = machine_ref.trim();
+        if machine_ref.is_empty() {
+            return None;
         }
-        let persisted = PersistedDaemonConfig {
-            relay_url: self.relay_url.clone(),
-            relay_token: self.relay_token.clone(),
-        };
-        let payload = serde_json::to_string_pretty(&persisted).map_err(|error| {
-            DaemonError::LocalTransport {
-                operation: "persist relay config",
-                message: error.to_string(),
-            }
-        })?;
-        fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
-            operation: "persist relay config",
-            message: error.to_string(),
-        })
+        Self::machine_registry_entries()
+            .into_iter()
+            .filter(|entry| !entry.forgotten)
+            .find(|entry| {
+                entry.machine_id == machine_ref || entry.alias.as_deref() == Some(machine_ref)
+            })
+            .map(|entry| entry.machine_id)
     }
 
     pub fn validate(&self) -> Result<(), DaemonError> {
@@ -293,12 +343,78 @@ struct PersistedDaemonConfig {
     relay_url: Option<String>,
     #[serde(default)]
     relay_token: Option<String>,
+    #[serde(default)]
+    machines: Vec<PersistedMachineRegistration>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedMachineRegistration {
+    pub machine_id: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub approved: bool,
+    #[serde(default)]
+    pub forgotten: bool,
 }
 
 fn load_persisted_relay_config() -> Option<PersistedDaemonConfig> {
     let path = DaemonConfig::default_daemon_config_path();
     let payload = fs::read_to_string(path).ok()?;
     serde_json::from_str::<PersistedDaemonConfig>(&payload).ok()
+}
+
+fn load_persisted_daemon_config() -> PersistedDaemonConfig {
+    load_persisted_relay_config().unwrap_or_default()
+}
+
+fn persist_daemon_config(
+    persisted: &PersistedDaemonConfig,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let path = DaemonConfig::default_daemon_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    }
+    let payload =
+        serde_json::to_string_pretty(persisted).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: error.to_string(),
+    })
+}
+
+fn upsert_machine_registration<'a>(
+    entries: &'a mut Vec<PersistedMachineRegistration>,
+    machine_id: &str,
+) -> &'a mut PersistedMachineRegistration {
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry.machine_id == machine_id)
+    {
+        return &mut entries[index];
+    }
+    entries.push(PersistedMachineRegistration {
+        machine_id: machine_id.to_string(),
+        alias: None,
+        approved: false,
+        forgotten: false,
+    });
+    entries
+        .last_mut()
+        .expect("entry was just inserted into machine registry")
+}
+
+fn normalized_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

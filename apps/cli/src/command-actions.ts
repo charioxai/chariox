@@ -161,9 +161,32 @@ type CommandActionDeps = {
   listRemoteMachines?: () => Promise<Array<{
     machine_id: string
     machine_alias?: string | null
+    registry_alias?: string | null
+    display_name?: string
+    trust_status?: "approved" | "pending" | "forgotten"
+    online?: boolean
+    pending?: boolean
     kernel_count: number
     available_providers?: string[]
   }>>
+  approveRemoteMachine?: (machineRef: string) => Promise<{
+    machine_id: string
+    display_name?: string
+    trust_status?: "approved" | "pending" | "forgotten"
+    online?: boolean
+  }>
+  forgetRemoteMachine?: (machineRef: string) => Promise<{
+    machine_id: string
+    display_name?: string
+    trust_status?: "approved" | "pending" | "forgotten"
+    online?: boolean
+  }>
+  renameRemoteMachine?: (machineRef: string, alias: string) => Promise<{
+    machine_id: string
+    display_name?: string
+    trust_status?: "approved" | "pending" | "forgotten"
+    online?: boolean
+  }>
   listRemoteMachineKernels?: (machineRef: string) => Promise<Array<{
     kernel_id: string
     machine_id: string
@@ -983,7 +1006,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.appendNotice(
         machines
           .map((machine) =>
-            `${machine.machine_alias ?? "-"} id=${machine.machine_id} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}`
+            `${machine.display_name ?? machine.machine_alias ?? "-"} id=${machine.machine_id} status=${machine.trust_status ?? "pending"}${machine.online === false ? ",offline" : ""} kernels=${machine.kernel_count} providers=${(machine.available_providers ?? []).join(",") || "-"}`
           )
           .join("\n"),
       )
@@ -1015,7 +1038,53 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`listed ${kernels.length} live kernel(s) for ${machineRef}`, "info")
       return
     }
-    deps.flashFooter("usage: /machine list | /machine kernels <machine-ref>", "error")
+    if (subcommand === "approve") {
+      if (!deps.approveRemoteMachine) {
+        deps.flashFooter("remote machine registration is unavailable in this build", "error")
+        return
+      }
+      const machineRef = args[1]
+      if (!machineRef) {
+        deps.flashFooter("usage: /machine approve <machine-ref>", "error")
+        return
+      }
+      const machine = await deps.approveRemoteMachine(machineRef)
+      await deps.refreshWaitingRoomData?.()
+      deps.flashFooter(`approved remote machine ${machine.display_name ?? machine.machine_id}`, "info")
+      return
+    }
+    if (subcommand === "forget") {
+      if (!deps.forgetRemoteMachine) {
+        deps.flashFooter("remote machine registration is unavailable in this build", "error")
+        return
+      }
+      const machineRef = args[1]
+      if (!machineRef) {
+        deps.flashFooter("usage: /machine forget <machine-ref>", "error")
+        return
+      }
+      const machine = await deps.forgetRemoteMachine(machineRef)
+      await deps.refreshWaitingRoomData?.()
+      deps.flashFooter(`forgot remote machine ${machine.display_name ?? machine.machine_id}`, "info")
+      return
+    }
+    if (subcommand === "rename") {
+      if (!deps.renameRemoteMachine) {
+        deps.flashFooter("remote machine registration is unavailable in this build", "error")
+        return
+      }
+      const machineRef = args[1]
+      const alias = args.slice(2).join(" ").trim()
+      if (!machineRef || !alias) {
+        deps.flashFooter("usage: /machine rename <machine-ref> <alias>", "error")
+        return
+      }
+      const machine = await deps.renameRemoteMachine(machineRef, alias)
+      await deps.refreshWaitingRoomData?.()
+      deps.flashFooter(`renamed remote machine ${machine.machine_id} to ${machine.display_name ?? alias}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias>", "error")
   }
 
   const handleWorkflowCommand = async (

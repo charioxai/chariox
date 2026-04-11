@@ -1,4 +1,5 @@
 use crate::app::DaemonApp;
+use crate::config::{DaemonConfig, PersistedMachineRegistration};
 use crate::error::DaemonError;
 use crate::provider::{
     default_provider_command_catalogs, ensure_codex_catalog_endpoint,
@@ -10,9 +11,11 @@ use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
 
 use super::api::{
-    ConfigureRelayRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
-    LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse,
-    LogoutProviderRequest, RelayStatus, StartProviderLoginRequest,
+    ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
+    ListRemoteMachineKernelsRequest, LocalDaemonResponse, LogoutProviderRequest, RelayStatus,
+    RemoteMachineRecord, RemoteMachineTrustStatus, RenameRemoteMachineRequest,
+    StartProviderLoginRequest,
 };
 
 impl DaemonApp {
@@ -96,9 +99,11 @@ impl DaemonApp {
             } else {
                 Vec::new()
             };
+        let approved_remote_machines =
+            approved_live_remote_machines(&remote_machines, &self.config().host_machine_id);
         annotate_remote_machine_providers(
             &mut catalog,
-            &remote_machines,
+            &approved_remote_machines,
             &self.config().host_machine_id,
         );
         crate::logging::info_with_fields(
@@ -168,6 +173,7 @@ impl DaemonApp {
         let machines = block_on_relay_query(
             crate::transport::relay_discovery::list_live_machines(&config),
         )?;
+        let machines = remote_machine_records(machines, &config.host_machine_id);
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
 
@@ -176,7 +182,7 @@ impl DaemonApp {
         request: ListRemoteMachineKernelsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let config = self.config().clone();
-        let machine_ref = request.machine_ref;
+        let machine_ref = resolve_registered_or_raw_machine_ref(&request.machine_ref);
         let kernels = block_on_relay_query(
             crate::transport::relay_discovery::list_live_kernels_for_machine(&config, &machine_ref),
         )?;
@@ -184,6 +190,54 @@ impl DaemonApp {
             machine_ref,
             kernels,
         })
+    }
+
+    pub(super) fn handle_approve_remote_machine_request(
+        &mut self,
+        request: ApproveRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config().clone();
+        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+            &config,
+        ))
+        .unwrap_or_default();
+        let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
+        DaemonConfig::approve_remote_machine(
+            machine.machine_id.clone(),
+            machine.machine_alias.clone(),
+        )?;
+        let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
+        Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
+    }
+
+    pub(super) fn handle_forget_remote_machine_request(
+        &mut self,
+        request: ForgetRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config().clone();
+        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+            &config,
+        ))
+        .unwrap_or_default();
+        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
+        let saved = DaemonConfig::forget_remote_machine(machine.clone())?;
+        let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
+        Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
+    }
+
+    pub(super) fn handle_rename_remote_machine_request(
+        &mut self,
+        request: RenameRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config().clone();
+        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+            &config,
+        ))
+        .unwrap_or_default();
+        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
+        DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
+        let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
+        Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 
     pub(super) fn handle_get_provider_auth_status_request(
@@ -325,6 +379,202 @@ fn remote_machine_aliases_for_provider(
     aliases.sort();
     aliases.dedup();
     aliases
+}
+
+fn approved_live_remote_machines(
+    live_machines: &[RelayMachinePresence],
+    local_machine_id: &str,
+) -> Vec<RelayMachinePresence> {
+    let registry = DaemonConfig::machine_registry_entries();
+    live_machines
+        .iter()
+        .filter(|machine| machine.machine_id != local_machine_id)
+        .filter_map(|machine| {
+            registry
+                .iter()
+                .find(|entry| {
+                    entry.machine_id == machine.machine_id && entry.approved && !entry.forgotten
+                })
+                .map(|entry| {
+                    let mut machine = machine.clone();
+                    if entry.alias.is_some() {
+                        machine.machine_alias = entry.alias.clone();
+                    }
+                    machine
+                })
+        })
+        .collect()
+}
+
+fn remote_machine_records(
+    live_machines: Vec<RelayMachinePresence>,
+    local_machine_id: &str,
+) -> Vec<RemoteMachineRecord> {
+    let registry = DaemonConfig::machine_registry_entries();
+    let mut records: Vec<RemoteMachineRecord> = live_machines
+        .into_iter()
+        .filter(|machine| machine.machine_id != local_machine_id)
+        .filter_map(|machine| {
+            let entry = registry
+                .iter()
+                .find(|entry| entry.machine_id == machine.machine_id);
+            if entry.map(|entry| entry.forgotten).unwrap_or(false) {
+                return None;
+            }
+            Some(remote_machine_record(machine, entry, true))
+        })
+        .collect();
+
+    let offline_entries = registry
+        .iter()
+        .filter(|entry| entry.approved && !entry.forgotten)
+        .filter(|entry| {
+            !records
+                .iter()
+                .any(|record| record.machine_id == entry.machine_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for entry in offline_entries {
+        records.push(RemoteMachineRecord {
+            machine_id: entry.machine_id.clone(),
+            machine_alias: None,
+            registry_alias: entry.alias.clone(),
+            display_name: entry
+                .alias
+                .clone()
+                .unwrap_or_else(|| entry.machine_id.clone()),
+            trust_status: RemoteMachineTrustStatus::Approved,
+            online: false,
+            pending: false,
+            kernel_count: 0,
+            available_providers: Vec::new(),
+        });
+    }
+
+    records.sort_by_key(|record| {
+        (
+            !record.online,
+            record.pending,
+            record.display_name.to_ascii_lowercase(),
+            record.machine_id.clone(),
+        )
+    });
+    records
+}
+
+fn remote_machine_record(
+    machine: RelayMachinePresence,
+    entry: Option<&PersistedMachineRegistration>,
+    online: bool,
+) -> RemoteMachineRecord {
+    let approved = entry
+        .map(|entry| entry.approved && !entry.forgotten)
+        .unwrap_or(false);
+    let registry_alias = entry.and_then(|entry| entry.alias.clone());
+    let display_name = registry_alias
+        .clone()
+        .or_else(|| machine.machine_alias.clone())
+        .unwrap_or_else(|| machine.machine_id.clone());
+    RemoteMachineRecord {
+        machine_id: machine.machine_id,
+        machine_alias: machine.machine_alias,
+        registry_alias,
+        display_name,
+        trust_status: if approved {
+            RemoteMachineTrustStatus::Approved
+        } else {
+            RemoteMachineTrustStatus::Pending
+        },
+        online,
+        pending: !approved,
+        kernel_count: machine.kernel_count,
+        available_providers: machine.available_providers,
+    }
+}
+
+fn resolve_registered_or_raw_machine_ref(machine_ref: &str) -> String {
+    DaemonConfig::resolve_registered_machine_ref(machine_ref)
+        .unwrap_or_else(|| machine_ref.trim().to_string())
+}
+
+fn resolve_machine_for_registry(
+    machine_ref: &str,
+    live_machines: &[RelayMachinePresence],
+) -> Result<RelayMachinePresence, DaemonError> {
+    let machine_ref = machine_ref.trim();
+    live_machines
+        .iter()
+        .find(|machine| {
+            machine.machine_id == machine_ref
+                || machine.machine_alias.as_deref() == Some(machine_ref)
+        })
+        .cloned()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "resolve remote machine",
+            message: format!("no live remote machine found for `{machine_ref}`"),
+        })
+}
+
+fn resolve_machine_id_for_registry(
+    machine_ref: &str,
+    live_machines: &[RelayMachinePresence],
+) -> Result<String, DaemonError> {
+    if let Some(machine_id) = DaemonConfig::resolve_registered_machine_ref(machine_ref) {
+        return Ok(machine_id);
+    }
+    resolve_machine_for_registry(machine_ref, live_machines).map(|machine| machine.machine_id)
+}
+
+fn record_for_machine_id(
+    machine_id: String,
+    live_machines: Vec<RelayMachinePresence>,
+    local_machine_id: &str,
+) -> Result<RemoteMachineRecord, DaemonError> {
+    remote_machine_records(live_machines, local_machine_id)
+        .into_iter()
+        .find(|machine| machine.machine_id == machine_id)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "load remote machine record",
+            message: format!("remote machine `{machine_id}` is not visible"),
+        })
+}
+
+fn forgotten_machine_record(
+    machine_id: String,
+    registry_alias: Option<String>,
+    live_machines: Vec<RelayMachinePresence>,
+    local_machine_id: &str,
+) -> RemoteMachineRecord {
+    let live = live_machines
+        .into_iter()
+        .find(|machine| machine.machine_id == machine_id && machine.machine_id != local_machine_id);
+    let display_name = registry_alias
+        .clone()
+        .or_else(|| {
+            live.as_ref()
+                .and_then(|machine| machine.machine_alias.clone())
+        })
+        .unwrap_or_else(|| machine_id.clone());
+    RemoteMachineRecord {
+        machine_id,
+        machine_alias: live
+            .as_ref()
+            .and_then(|machine| machine.machine_alias.clone()),
+        registry_alias,
+        display_name,
+        trust_status: RemoteMachineTrustStatus::Forgotten,
+        online: live.is_some(),
+        pending: false,
+        kernel_count: live
+            .as_ref()
+            .map(|machine| machine.kernel_count)
+            .unwrap_or(0),
+        available_providers: live
+            .map(|machine| machine.available_providers)
+            .unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

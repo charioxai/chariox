@@ -27,12 +27,19 @@ From the host Arroba CLI, point the home kernel at the lab relay:
 
 ## Use Separate Provider Accounts
 
-Enter each worker and install/log into providers manually:
+Install the launch provider CLIs in a worker:
+
+```sh
+docker/lab/install-providers.sh arroba-worker-a
+docker/lab/install-providers.sh arroba-worker-b
+```
+
+Then enter each worker and complete provider-native login manually:
 
 ```sh
 docker exec -it arroba-worker-a zsh
-# install provider CLIs using their Linux instructions
-# run provider-native login, for example: codex login
+codex login
+opencode auth login
 ```
 
 ```sh
@@ -70,6 +77,10 @@ Login callback ports are provider-specific. The compose file publishes `39000-39
 The base image sets `BROWSER=arroba-open-url` and places an `xdg-open` shim earlier in `PATH`. When a provider asks to open a browser through either path, the helper prints the URL so you can open it on the host.
 
 If a provider uses an unconfigurable random localhost callback port, test and document that provider separately. The launch-provider compatibility matrix should record the tested provider version, login method, callback behavior, and whether Docker login is supported.
+
+## Remote CLI Drill
+
+Use `docker/lab/remote-cli-to-host.md` to run the CLI from inside a lab container while targeting the host kernel through the relay. This is the drill for proving remote CLI behavior before provider account login is involved.
 
 ## Smoke Test
 

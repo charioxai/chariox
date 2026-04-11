@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
-use arroba_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
+use arroba_relay::protocol::RelayKernelPresence;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachToSessionRequest {
@@ -77,6 +77,46 @@ pub struct ListRemoteMachinesRequest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListRemoteMachineKernelsRequest {
     pub machine_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApproveRemoteMachineRequest {
+    pub machine_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetRemoteMachineRequest {
+    pub machine_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameRemoteMachineRequest {
+    pub machine_ref: String,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMachineTrustStatus {
+    Approved,
+    Pending,
+    Forgotten,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMachineRecord {
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub registry_alias: Option<String>,
+    pub display_name: String,
+    pub trust_status: RemoteMachineTrustStatus,
+    pub online: bool,
+    pub pending: bool,
+    pub kernel_count: usize,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -532,6 +572,9 @@ pub enum LocalDaemonRequest {
     ConfigureRelay(ConfigureRelayRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
+    ApproveRemoteMachine(ApproveRemoteMachineRequest),
+    ForgetRemoteMachine(ForgetRemoteMachineRequest),
+    RenameRemoteMachine(RenameRemoteMachineRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
     StartProviderLogin(StartProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
@@ -636,11 +679,20 @@ pub enum LocalDaemonResponse {
         status: RelayStatus,
     },
     RemoteMachinesListed {
-        machines: Vec<RelayMachinePresence>,
+        machines: Vec<RemoteMachineRecord>,
     },
     RemoteMachineKernelsListed {
         machine_ref: String,
         kernels: Vec<RelayKernelPresence>,
+    },
+    RemoteMachineApproved {
+        machine: RemoteMachineRecord,
+    },
+    RemoteMachineForgotten {
+        machine: RemoteMachineRecord,
+    },
+    RemoteMachineRenamed {
+        machine: RemoteMachineRecord,
     },
     ProviderAuthStatus {
         status: ProviderAuthStatus,

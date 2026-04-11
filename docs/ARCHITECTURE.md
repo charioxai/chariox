@@ -351,6 +351,8 @@ Current architectural interpretation:
 - relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
 - the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
+- the home kernel maintains local machine trust state: live unknown machines are pending, `/machine approve` makes them spawn targets, `/machine rename` stores a user alias, and `/machine forget` hides them from normal machine/provider availability
+- relay-visible machine metadata remains plain routing/liveness metadata; trust decisions and aliases are local home-kernel state, not relay authority
 
 
 ### Docker Remote-Machine Lab

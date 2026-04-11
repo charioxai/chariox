@@ -49,6 +49,10 @@ export type WaitingRoomRemoteState = {
   machines?: Array<{
     machine_id: string
     machine_alias?: string | null
+    registry_alias?: string | null
+    display_name?: string
+    trust_status?: "approved" | "pending" | "forgotten"
+    online?: boolean
     kernel_count: number
     available_providers?: string[]
     pending?: boolean
@@ -339,7 +343,7 @@ function waitingRoomRemoteRows(remote: WaitingRoomRemoteState, titleWidth: numbe
   const relay = remote.relay ?? null
   const machines = remote.machines ?? []
   const pendingCount = machines.filter((machine) => machine.pending).length
-  const onlineMachines = machines.filter((machine) => !machine.pending)
+  const onlineMachines = machines.filter((machine) => machine.online !== false)
   const relayStatus = !relay || !relay.configured
     ? "not configured"
     : relay.connected
@@ -407,11 +411,12 @@ function waitingRoomRemoteRows(remote: WaitingRoomRemoteState, titleWidth: numbe
   }
 
   for (const machine of machines.slice(0, 4)) {
-    const label = machine.machine_alias ?? machine.machine_id
+    const label = machine.display_name ?? machine.registry_alias ?? machine.machine_alias ?? machine.machine_id
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
+    const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
     rows.push({
       id: `machine:${machine.machine_id}`,
-      title: `${label}${machine.pending ? " (pending)" : ""}`,
+      title: `${label}${status !== "approved" ? ` (${status})` : ""}`,
       value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}`,
       titleWidth,
       indent: 1,

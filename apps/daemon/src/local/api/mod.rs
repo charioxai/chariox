@@ -121,6 +121,15 @@ impl DaemonApp {
             LocalDaemonRequest::ListRemoteMachineKernels(request) => {
                 self.handle_list_remote_machine_kernels_request(request)
             }
+            LocalDaemonRequest::ApproveRemoteMachine(request) => {
+                self.handle_approve_remote_machine_request(request)
+            }
+            LocalDaemonRequest::ForgetRemoteMachine(request) => {
+                self.handle_forget_remote_machine_request(request)
+            }
+            LocalDaemonRequest::RenameRemoteMachine(request) => {
+                self.handle_rename_remote_machine_request(request)
+            }
             LocalDaemonRequest::GetProviderAuthStatus(request) => {
                 self.handle_get_provider_auth_status_request(request)
             }

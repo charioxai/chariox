@@ -1676,8 +1676,10 @@ impl DaemonApp {
         machine_ref: &str,
         provider: &str,
     ) -> Result<RelayKernelPresence, DaemonError> {
+        let machine_ref = crate::config::DaemonConfig::resolve_registered_machine_ref(machine_ref)
+            .unwrap_or_else(|| machine_ref.to_string());
         let kernels = self.block_on_relay_future(
-            relay_discovery::list_live_kernels_for_machine(&self.config, machine_ref),
+            relay_discovery::list_live_kernels_for_machine(&self.config, &machine_ref),
         )?;
         kernels
             .into_iter()
@@ -1696,7 +1698,7 @@ impl DaemonApp {
                 )
             })
             .ok_or_else(|| DaemonError::NoRemoteKernelAvailable {
-                machine_ref: machine_ref.to_string(),
+                machine_ref,
                 provider: provider.to_string(),
             })
     }

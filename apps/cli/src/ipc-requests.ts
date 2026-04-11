@@ -540,6 +540,31 @@ export function listRemoteMachineKernelsRequest(machineRef: string) {
   }
 }
 
+export function approveRemoteMachineRequest(machineRef: string) {
+  return {
+    ApproveRemoteMachine: {
+      machine_ref: machineRef,
+    },
+  }
+}
+
+export function forgetRemoteMachineRequest(machineRef: string) {
+  return {
+    ForgetRemoteMachine: {
+      machine_ref: machineRef,
+    },
+  }
+}
+
+export function renameRemoteMachineRequest(machineRef: string, alias: string) {
+  return {
+    RenameRemoteMachine: {
+      machine_ref: machineRef,
+      alias,
+    },
+  }
+}
+
 export function getProviderCommandCatalogsRequest() {
   return { GetProviderCommandCatalogs: null }
 }
