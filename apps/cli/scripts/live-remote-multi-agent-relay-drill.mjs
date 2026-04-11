@@ -190,18 +190,18 @@ async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
   throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? 'unknown error'}`)
 }
 
-async function waitForRemoteMachine(client, machineAlias) {
+async function waitForRemoteMachine(client, machineRef) {
   let lastError = null
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       const machines = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed').machines || []
-      if (machines.some((machine) => machine.machine_alias === machineAlias)) return machines
+      if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) return machines
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
     }
     await sleep(500)
   }
-  throw new Error(`remote machine ${machineAlias} did not become visible: ${lastError ?? 'unknown error'}`)
+  throw new Error(`remote machine ${machineRef} did not become visible: ${lastError ?? 'unknown error'}`)
 }
 
 async function waitForEvent(bucket, predicate, timeoutMs, description) {
@@ -288,6 +288,7 @@ async function main() {
 
   const homeDaemonId = `multi-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `multi-worker-${process.pid}-${Date.now()}`
+  const workerMachineId = `machine-worker-${process.pid}`
   const workerMachineAlias = `builder-west-${process.pid}`
 
   const relayBinary = await resolveBinary(
@@ -339,7 +340,7 @@ async function main() {
         relayToken,
         daemonId: workerDaemonId,
         daemonAlias: 'worker',
-        machineId: `machine-worker-${process.pid}`,
+        machineId: workerMachineId,
         machineAlias: workerMachineAlias,
         acceptRemoteLeases: true,
         kernelPort: ports.workerKernelPort,
@@ -360,7 +361,7 @@ async function main() {
       targetDaemonAlias: 'home',
     })
 
-    const machines = await waitForRemoteMachine(remoteClient, workerMachineAlias)
+    const machines = await waitForRemoteMachine(remoteClient, workerMachineId)
 
     const localEvents = []
     const remoteEvents = []
@@ -389,11 +390,11 @@ async function main() {
       'AgentSpawned',
     ).agent
     const remoteAgentA = unwrapVariant(
-      await localClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-a', options.model, workerMachineAlias)),
+      await localClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-a', options.model, workerMachineId)),
       'AgentSpawned',
     ).agent
     const remoteAgentB = unwrapVariant(
-      await remoteClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-b', options.model, workerMachineAlias)),
+      await remoteClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-b', options.model, workerMachineId)),
       'AgentSpawned',
     ).agent
 

@@ -229,6 +229,7 @@ async function main() {
   }
   const homeDaemonId = `remote-machine-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `remote-machine-worker-${process.pid}-${Date.now()}`
+  const workerMachineId = `machine-worker-${process.pid}`
   const workerMachineAlias = `builder-west-${process.pid}`
 
   const homeEnv = makeDaemonEnv({
@@ -252,7 +253,7 @@ async function main() {
     relayToken,
     daemonId: workerDaemonId,
     daemonAlias: 'worker',
-    machineId: `machine-worker-${process.pid}`,
+    machineId: workerMachineId,
     machineAlias: workerMachineAlias,
     acceptRemoteLeases: true,
     socketName: 'worker-daemon.sock',
@@ -291,7 +292,7 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
     client = new LocalIpcClient(homeKernelUrl)
-    await waitForRemoteMachine(client, workerMachineAlias)
+    await waitForRemoteMachine(client, workerMachineId)
 
     const created = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated')
     sessionId = created.session.id
@@ -304,18 +305,18 @@ async function main() {
 
     const machineList = unwrapVariant(await client.send({ ListRemoteMachines: {} }), 'RemoteMachinesListed')
     const remoteMachines = machineList.machines || []
-    if (!remoteMachines.some((machine) => machine.machine_alias === workerMachineAlias)) {
-      throw new Error(`machine ${workerMachineAlias} not visible through home kernel`)
+    if (!remoteMachines.some((machine) => machine.machine_id === workerMachineId)) {
+      throw new Error(`machine ${workerMachineId} not visible through home kernel`)
     }
 
     const kernelList = unwrapVariant(
-      await client.send({ ListRemoteMachineKernels: { machine_ref: workerMachineAlias } }),
+      await client.send({ ListRemoteMachineKernels: { machine_ref: workerMachineId } }),
       'RemoteMachineKernelsListed',
     )
     const kernels = kernelList.kernels || []
     const selectedKernel = kernels.find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers || []).includes(options.provider))
     if (!selectedKernel) {
-      throw new Error(`no worker kernel on ${workerMachineAlias} advertises provider ${options.provider}`)
+      throw new Error(`no worker kernel on ${workerMachineId} advertises provider ${options.provider}`)
     }
 
     const spawned = unwrapVariant(await client.send({
@@ -326,7 +327,7 @@ async function main() {
         model: options.model,
         effort: 'medium',
         worktree_id: null,
-        machine_ref: workerMachineAlias,
+        machine_ref: workerMachineId,
       },
     }), 'AgentSpawned')
     const remoteAgent = spawned.agent
@@ -383,7 +384,7 @@ async function main() {
       relayUrl: `ws://127.0.0.1:${ports.relayPort}`,
       homeKernelUrl,
       sessionId,
-      workerMachineAlias,
+      workerMachineId,
       remoteAgentId: remoteAgent.id,
       remoteExecution: remoteAgent.remote_execution ?? null,
       selectedKernel: {

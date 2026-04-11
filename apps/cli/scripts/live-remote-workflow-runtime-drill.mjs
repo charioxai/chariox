@@ -177,13 +177,13 @@ async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
   throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? 'unknown error'}`)
 }
 
-async function waitForRemoteMachine(client, machineAlias) {
+async function waitForRemoteMachine(client, machineRef) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const machines = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed').machines || []
-    if (machines.some((machine) => machine.machine_alias === machineAlias)) return
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) return
     await sleep(500)
   }
-  throw new Error(`remote machine ${machineAlias} did not become visible`)
+  throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
 async function runWorkflowChild(args, cwd) {
@@ -239,6 +239,7 @@ async function main() {
     ARROBA_RELAY_PORT: String(ports.relayPort),
     ARROBA_RELAY_TOKEN: relayToken,
   }
+  const workerMachineId = `workflow-machine-worker-${process.pid}`
   const workerMachineAlias = `workflow-builder-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
@@ -276,7 +277,7 @@ async function main() {
         relayToken,
         daemonId: `workflow-worker-${process.pid}-${Date.now()}`,
         daemonAlias: 'worker',
-        machineId: `workflow-machine-worker-${process.pid}`,
+        machineId: workerMachineId,
         machineAlias: workerMachineAlias,
         acceptRemoteLeases: true,
         kernelPort: ports.workerKernelPort,
@@ -292,7 +293,7 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
 
     localClient = new LocalIpcClient(homeKernelUrl)
-    await waitForRemoteMachine(localClient, workerMachineAlias)
+    await waitForRemoteMachine(localClient, workerMachineId)
 
     const stdout = await runWorkflowChild([
       path.join('apps', 'cli', 'scripts', 'live-workflow-runtime-drill.mjs'),
@@ -300,7 +301,7 @@ async function main() {
       '--relay-url', relayUrl,
       '--relay-token', relayToken,
       '--target-daemon-alias', 'home',
-      '--machine-ref', workerMachineAlias,
+      '--machine-ref', workerMachineId,
       '--providers', `${options.provider},${options.provider}`,
       '--model', options.model,
       '--workspace', repoRoot,
@@ -317,6 +318,7 @@ async function main() {
       status: 'ok',
       relayUrl,
       homeKernelUrl,
+      workerMachineId,
       workerMachineAlias,
       scenario: options.scenario,
       provider: options.provider,
