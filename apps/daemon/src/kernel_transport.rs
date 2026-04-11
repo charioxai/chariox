@@ -166,7 +166,7 @@ where
 
     tokio::pin!(shutdown);
 
-    tokio::spawn(async move {
+    let pump_task = tokio::spawn(async move {
         loop {
             {
                 let mut app = pump_app.lock().await;
@@ -177,13 +177,15 @@ where
     });
 
     let mcp_app = Arc::clone(&app);
-    tokio::spawn(async move {
+    let mcp_task = tokio::spawn(async move {
         let _ = crate::transport::mcp_server::run_mcp_http_server(mcp_app).await;
     });
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                pump_task.abort();
+                mcp_task.abort();
                 let mut app = app.lock().await;
                 let _ = app.shutdown_cleanup();
                 return Ok(());
