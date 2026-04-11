@@ -1267,10 +1267,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
   const refreshWaitingRoomData = async () => {
-    const [sessions, catalog, commandCatalogs, relayStatus] = await Promise.all([
+    const [sessions, relayStatus] = await Promise.all([
       listSessions(client),
-      getProviderCatalog(client, appLogger),
-      getProviderCommandCatalogs(client, appLogger),
       getRelayStatus(client).catch((error) => {
         appLogger?.warn("relay status refresh failed", { error: formatError(error) })
         return null
@@ -1283,8 +1281,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       })
       : []
     setAvailableSessions(sessions)
-    setProviderCatalogState(catalog)
-    setProviderCommandCatalogState(commandCatalogs)
     setRelayStatusState(relayStatus)
     setRemoteMachinesState(machines)
     reconcileWaitingRoom(waitingRoomState())
