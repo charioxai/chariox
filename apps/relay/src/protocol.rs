@@ -59,6 +59,8 @@ pub struct RelayKernelPresence {
     #[serde(default)]
     pub machine_alias: Option<String>,
     #[serde(default)]
+    pub relay_alias: Option<String>,
+    #[serde(default)]
     pub kernel_alias: Option<String>,
     #[serde(default)]
     pub available_providers: Vec<String>,

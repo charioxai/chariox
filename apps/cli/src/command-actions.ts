@@ -191,6 +191,7 @@ type CommandActionDeps = {
     kernel_id: string
     machine_id: string
     machine_alias?: string | null
+    relay_alias?: string | null
     kernel_alias?: string | null
     available_providers?: string[]
     capabilities?: string[]
@@ -1030,9 +1031,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       deps.appendNotice(
         kernels
-          .map((kernel) =>
-            `${kernel.kernel_alias ?? "-"} id=${kernel.kernel_id} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
-          )
+          .map((kernel) => {
+            const displayName = kernel.relay_alias ?? kernel.kernel_alias ?? "-"
+            const kernelAlias =
+              kernel.kernel_alias && kernel.kernel_alias !== displayName
+                ? ` kernel_alias=${kernel.kernel_alias}`
+                : ""
+            return `${displayName} id=${kernel.kernel_id}${kernelAlias} machine=${kernel.machine_alias ?? kernel.machine_id} providers=${(kernel.available_providers ?? []).join(",") || "-"} accepting_remote_leases=${String(kernel.accepting_remote_leases ?? false)} leased_agents=${kernel.leased_agent_count ?? 0} local_sessions=${kernel.local_session_count ?? 0}`
+          })
           .join("\n"),
       )
       deps.flashFooter(`listed ${kernels.length} live kernel(s) for ${machineRef}`, "info")
