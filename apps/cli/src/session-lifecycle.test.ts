@@ -306,6 +306,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     setSubmitting: () => events.push("setSubmitting"),
     setWorking: () => events.push("setWorking"),
     setStatusLine: () => events.push("setStatusLine"),
+    setSessionHydratingState: () => events.push("setSessionHydratingState"),
     updateSessionChrome: () => events.push("updateSessionChrome"),
     focusPromptInput: () => events.push("focusPromptInput"),
     setMultiAgentResponseLayout: () => events.push("setMultiAgentResponseLayout"),
