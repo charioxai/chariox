@@ -14,7 +14,13 @@ if ! docker inspect "$worker" >/dev/null 2>&1; then
   exit 1
 fi
 
-docker exec -it "$worker" sh -lc '
+docker_exec=(docker exec)
+if [[ -t 0 ]]; then
+  docker_exec+=(--interactive --tty)
+fi
+docker_exec+=("$worker" sh -lc)
+
+"${docker_exec[@]}" '
   set -eu
   npm install -g @openai/codex opencode-ai
   echo "installed provider CLIs:"
