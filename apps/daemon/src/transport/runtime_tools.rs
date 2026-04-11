@@ -1,13 +1,17 @@
+use arroba_relay::protocol::ClientTarget;
 use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::execution_lease::RemoteWorkflowTurnContext;
 use crate::session::{
     WorkflowArtifactRef, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowRuntimeToolCallEvent, WorkflowTurnRuntimeState,
 };
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 pub const ACK_WORKFLOW_TURN_TOOL: &str = "ack_workflow_turn";
 pub const VALIDATE_WORKFLOW_OUTPUT_TOOL: &str = "validate_workflow_output";
@@ -481,11 +485,6 @@ pub fn dispatch_authenticated_runtime_tool_call(
             message: "invalid runtime MCP auth token".to_string(),
         });
     }
-    let session_id = provider_runs[0].session_id().to_string();
-    let candidate_agent_ids = provider_runs
-        .iter()
-        .filter_map(|run| run.agent_instance_id().map(str::to_string))
-        .collect::<Vec<_>>();
     let requested_delivery_token = match canonical_tool_name.as_str() {
         ACK_WORKFLOW_TURN_TOOL => serde_json::from_value::<AckWorkflowTurnArgs>(arguments.clone())
             .ok()
@@ -510,6 +509,81 @@ pub fn dispatch_authenticated_runtime_tool_call(
         }
         _ => None,
     };
+    let leased_binding_candidates = provider_runs
+        .iter()
+        .filter_map(|run| {
+            app.leased_workflow_turn_binding_for_provider_run(run.id())
+                .map(|binding| (run, binding))
+        })
+        .collect::<Vec<_>>();
+    let selected_leased_binding = requested_delivery_token
+        .as_deref()
+        .and_then(|delivery_token| {
+            leased_binding_candidates
+                .iter()
+                .find(|(_, binding)| binding.context.delivery_token == delivery_token)
+                .map(|(_, binding)| binding.clone())
+        })
+        .or_else(|| {
+            let delivery_token = requested_delivery_token.as_deref()?;
+            let workflow_node_run_id = delivery_token.strip_prefix("workflow-ack:")?;
+            let mut binding = leased_binding_candidates
+                .first()
+                .map(|(_, binding)| binding.clone())?;
+            binding.context.workflow_node_run_id = workflow_node_run_id.to_string();
+            binding.context.delivery_token = delivery_token.to_string();
+            Some(binding)
+        })
+        .or_else(|| {
+            let active = leased_binding_candidates
+                .iter()
+                .filter(|(run, _)| {
+                    run.agent_instance_id().is_some_and(|agent_id| {
+                        app.sessions()
+                            .get_session(run.session_id())
+                            .ok()
+                            .and_then(|session| session.active_prompt_for_agent(agent_id).cloned())
+                            .is_some()
+                    })
+                })
+                .map(|(_, binding)| binding.clone())
+                .collect::<Vec<_>>();
+            if active.len() == 1 {
+                active.into_iter().next()
+            } else if leased_binding_candidates.len() == 1 {
+                leased_binding_candidates
+                    .first()
+                    .map(|(_, binding)| binding.clone())
+            } else {
+                None
+            }
+        });
+    if let Some(binding) = selected_leased_binding {
+        let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+            app.config(),
+            ClientTarget {
+                daemon_id: Some(binding.context.home_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardWorkflowRuntimeTool {
+                context: binding.context,
+                tool_name: canonical_tool_name.clone(),
+                arguments,
+            },
+        ))?;
+        return match response {
+            RelayPeerResponse::WorkflowRuntimeToolHandled { result } => Ok(result),
+            other => Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: format!("unexpected forwarded workflow runtime tool response: {other:?}"),
+            }),
+        };
+    }
+    let session_id = provider_runs[0].session_id().to_string();
+    let candidate_agent_ids = provider_runs
+        .iter()
+        .filter_map(|run| run.agent_instance_id().map(str::to_string))
+        .collect::<Vec<_>>();
     let (workflow_run_ref, workflow_node_run_id) = resolve_authenticated_workflow_turn(
         app,
         &session_id,
@@ -544,6 +618,49 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 workflow_run_ref,
                 workflow_node_run_id,
                 delivery_token: None,
+                allowed_output_schema_refs,
+                workflow_run_output_schema_ref,
+                workflow_intermediate_output_schema_ref,
+                can_complete_workflow_run,
+                can_emit_intermediate_workflow_run_output,
+            },
+        },
+    )
+}
+
+pub fn dispatch_forwarded_workflow_runtime_tool_call(
+    app: &mut DaemonApp,
+    context: RemoteWorkflowTurnContext,
+    tool_name: String,
+    arguments: Value,
+) -> Result<RuntimeToolResult, DaemonError> {
+    let allowed_output_schema_refs = allowed_output_schema_refs_for_active_workflow_turn(
+        app,
+        &context.home_session_id,
+        &context.workflow_run_id,
+        &context.workflow_node_run_id,
+    )?;
+    let (
+        workflow_run_output_schema_ref,
+        workflow_intermediate_output_schema_ref,
+        can_complete_workflow_run,
+        can_emit_intermediate_workflow_run_output,
+    ) = workflow_run_completion_context_for_active_workflow_turn(
+        app,
+        &context.home_session_id,
+        &context.workflow_run_id,
+        &context.workflow_node_run_id,
+    )?;
+    dispatch_runtime_tool_call(
+        app,
+        RuntimeToolCall {
+            tool_name,
+            arguments,
+            context: WorkflowRuntimeToolContext {
+                session_id: context.home_session_id,
+                workflow_run_ref: context.workflow_run_id,
+                workflow_node_run_id: context.workflow_node_run_id,
+                delivery_token: Some(context.delivery_token),
                 allowed_output_schema_refs,
                 workflow_run_output_schema_ref,
                 workflow_intermediate_output_schema_ref,

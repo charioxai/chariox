@@ -600,10 +600,16 @@ async fn handle_daemon_peer_request(
             leased_agent_id,
             prompt,
             attachments,
+            workflow_context,
         } => {
             let submitted = {
                 let mut app = app.lock().await;
-                app.submit_leased_prompt(&leased_agent_id, &prompt, attachments)
+                app.submit_leased_prompt_with_workflow_context(
+                    &leased_agent_id,
+                    &prompt,
+                    attachments,
+                    workflow_context,
+                )
             };
             match submitted {
                 Ok((provider_run_id, outcome)) => {
@@ -672,6 +678,27 @@ async fn handle_daemon_peer_request(
             };
             match cancellation {
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ForwardWorkflowRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+        } => {
+            let handled = {
+                let mut app = app.lock().await;
+                crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
+                    &mut app, context, tool_name, arguments,
+                )
+            };
+            match handled {
+                Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

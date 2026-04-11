@@ -75,6 +75,7 @@ impl DaemonApp {
                                 prompt: prompt.prompt().to_string(),
                                 attachments: self
                                     .serialize_remote_prompt_attachments(prompt.attachments())?,
+                                workflow_context: None,
                             },
                         ));
                     let remote_provider_run_id = match response {
@@ -621,6 +622,13 @@ impl DaemonApp {
                     leased_agent_id: leased_agent_id.to_string(),
                     prompt: peeked.prompt().to_string(),
                     attachments: self.serialize_remote_prompt_attachments(peeked.attachments())?,
+                    workflow_context: if is_workflow_prompt {
+                        Some(self.remote_workflow_turn_context_for_prompt(
+                            session_id, agent_id, &peeked,
+                        )?)
+                    } else {
+                        None
+                    },
                 },
             ));
             let remote_provider_run_id = match response {

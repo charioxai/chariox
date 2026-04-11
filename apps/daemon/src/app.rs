@@ -29,7 +29,9 @@ use crate::capability::{
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::execution_lease::{ExecutionLease, LeasedAgent};
+use crate::execution_lease::{
+    ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
+};
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
 use crate::pty::PtyManager;
@@ -70,6 +72,7 @@ pub struct DaemonApp {
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
 }
@@ -146,6 +149,7 @@ impl DaemonApp {
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            leased_workflow_turns: BTreeMap::new(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             config,
@@ -1022,6 +1026,8 @@ impl DaemonApp {
                 leased_agent_id: leased_agent_id.to_string(),
             }
         })?;
+        self.leased_workflow_turns
+            .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
         let _ = self
             .attachments
             .detach(&mut self.sessions, &agent.backing_attachment_id);
@@ -1038,6 +1044,16 @@ impl DaemonApp {
         leased_agent_id: &str,
         prompt: &str,
         attachments: Vec<RelayPromptAttachment>,
+    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
+        self.submit_leased_prompt_with_workflow_context(leased_agent_id, prompt, attachments, None)
+    }
+
+    pub fn submit_leased_prompt_with_workflow_context(
+        &mut self,
+        leased_agent_id: &str,
+        prompt: &str,
+        attachments: Vec<RelayPromptAttachment>,
+        workflow_context: Option<RemoteWorkflowTurnContext>,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent = self
             .leased_agents
@@ -1076,7 +1092,69 @@ impl DaemonApp {
             prompt,
             materialized_attachments,
         )?;
+        if let Some(context) = workflow_context {
+            self.leased_workflow_turns.insert(
+                provider_run_id.clone(),
+                LeasedWorkflowTurnBinding {
+                    leased_agent_id: leased_agent_id.to_string(),
+                    provider_run_id: provider_run_id.clone(),
+                    context,
+                },
+            );
+        }
         Ok((provider_run_id, outcome))
+    }
+
+    pub fn leased_workflow_turn_binding_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<LeasedWorkflowTurnBinding> {
+        self.leased_workflow_turns.get(provider_run_id).cloned()
+    }
+
+    pub(crate) fn remote_workflow_turn_context_for_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<RemoteWorkflowTurnContext, DaemonError> {
+        let workflow_run_id =
+            prompt
+                .workflow_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow run id".to_string(),
+                })?;
+        let workflow_node_run_id =
+            prompt
+                .workflow_node_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow node run id".to_string(),
+                })?;
+        let workflow_run = self
+            .sessions()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let delivery_token = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .and_then(|node_run| node_run.turn_envelope())
+            .map(|envelope| envelope.delivery_token().to_string())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "dispatch remote workflow prompt",
+                message: format!(
+                    "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
+                ),
+            })?;
+        Ok(RemoteWorkflowTurnContext {
+            home_kernel_id: self.config().daemon_id.clone(),
+            home_session_id: session_id.to_string(),
+            home_agent_id: target_agent_id.to_string(),
+            workflow_run_id: workflow_run.id().to_string(),
+            workflow_node_run_id: workflow_node_run_id.to_string(),
+            delivery_token,
+        })
     }
 
     pub fn complete_leased_prompt(
@@ -1097,11 +1175,15 @@ impl DaemonApp {
                 &leased_agent.backing_agent_id,
             )
             .map(|run| run.id().to_string());
-        self.complete_active_prompt(
+        let completion = self.complete_active_prompt(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
             provider_run_id.as_deref(),
-        )
+        )?;
+        if let Some(provider_run_id) = provider_run_id {
+            self.leased_workflow_turns.remove(&provider_run_id);
+        }
+        Ok(completion)
     }
 
     pub fn cancel_leased_prompt(
@@ -1115,11 +1197,14 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        self.cancel_active_prompt_internal(
+        let cancellation = self.cancel_active_prompt_internal(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
             None,
-        )
+        )?;
+        self.leased_workflow_turns
+            .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
+        Ok(cancellation)
     }
 
     pub fn leased_agent_provider_run_id(

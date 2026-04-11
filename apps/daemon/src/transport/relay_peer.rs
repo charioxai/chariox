@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::execution_lease::{ExecutionLease, LeasedAgent};
+use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
 
@@ -42,12 +42,19 @@ pub enum RelayPeerRequest {
         prompt: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow_context: Option<RemoteWorkflowTurnContext>,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
     },
     CancelLeasedPrompt {
         leased_agent_id: String,
+    },
+    ForwardWorkflowRuntimeTool {
+        context: RemoteWorkflowTurnContext,
+        tool_name: String,
+        arguments: serde_json::Value,
     },
 }
 
@@ -80,6 +87,9 @@ pub enum RelayPeerResponse {
     },
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
+    },
+    WorkflowRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
     },
 }
 

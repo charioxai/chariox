@@ -51,6 +51,23 @@ pub struct LeasedAgent {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkflowTurnContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub workflow_run_id: String,
+    pub workflow_node_run_id: String,
+    pub delivery_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedWorkflowTurnBinding {
+    pub leased_agent_id: String,
+    pub provider_run_id: String,
+    pub context: RemoteWorkflowTurnContext,
+}
+
 impl LeasedAgent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
