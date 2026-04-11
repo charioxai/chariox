@@ -1,4 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
+use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{
@@ -7,6 +11,8 @@ use arroba_relay::protocol::{
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+
+static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub async fn list_live_machines(
     config: &DaemonConfig,
@@ -110,33 +116,52 @@ async fn query_relay(
             operation: "relay_metadata_query",
             message: "relay_token is not configured".to_string(),
         })?;
-    let (mut socket, _) =
-        connect_async(&relay_url)
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: error.to_string(),
-            })?;
+    let request_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    let (mut socket, _) = timeout(request_timeout, connect_async(&relay_url))
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+        })?
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: error.to_string(),
+        })?;
     let request = RelayEnvelope::ClientMetadataRequest {
-        request_id: format!("relay-meta-{}", std::process::id()),
+        request_id: format!(
+            "relay-meta-{}-{}",
+            std::process::id(),
+            RELAY_METADATA_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
+        ),
         auth_token: relay_token,
         query,
     };
-    socket
-        .send(Message::Text(
+    timeout(
+        request_timeout,
+        socket.send(Message::Text(
             serde_json::to_string(&request)
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "serialize relay metadata request",
                     message: error.to_string(),
                 })?
                 .into(),
-        ))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "write relay metadata request",
-            message: error.to_string(),
-        })?;
-    match socket.next().await {
+        )),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "write relay metadata request",
+        message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+    })?
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "write relay metadata request",
+        message: error.to_string(),
+    })?;
+    match timeout(request_timeout, socket.next()).await.map_err(|_| {
+        DaemonError::LocalTransport {
+            operation: "read relay metadata response",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+        }
+    })? {
         Some(Ok(Message::Text(text))) => {
             serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {
                 DaemonError::LocalTransport {

@@ -20,6 +20,7 @@ pub struct DaemonConfig {
     pub relay_public_key: String,
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
+    pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
     pub os_user: String,
     pub local_socket_path: PathBuf,
@@ -104,6 +105,11 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(5_000),
+            relay_request_timeout_ms: env::var("ARROBA_RELAY_REQUEST_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(5_000),
             accept_remote_leases: env::var("ARROBA_ACCEPT_REMOTE_LEASES")
                 .ok()
                 .map(|value| {
@@ -147,6 +153,7 @@ impl DaemonConfig {
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: 5_000,
+            relay_request_timeout_ms: 5_000,
             accept_remote_leases: false,
             os_user: os_user.into(),
         }
@@ -338,6 +345,12 @@ impl DaemonConfig {
         if self.relay_heartbeat_ms == 0 {
             return Err(DaemonError::InvalidConfig {
                 field: "relay_heartbeat_ms",
+                message: "value must not be zero",
+            });
+        }
+        if self.relay_request_timeout_ms == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_request_timeout_ms",
                 message: "value must not be zero",
             });
         }
