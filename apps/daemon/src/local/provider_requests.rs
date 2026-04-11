@@ -449,7 +449,7 @@ fn approved_live_remote_machines(
         .collect()
 }
 
-fn remote_machine_records(
+pub(crate) fn remote_machine_records(
     live_machines: Vec<RelayMachinePresence>,
     local_machine_id: &str,
 ) -> Vec<RemoteMachineRecord> {
@@ -537,7 +537,7 @@ fn remote_machine_record(
     }
 }
 
-fn resolve_registered_or_raw_machine_ref(machine_ref: &str) -> String {
+pub(crate) fn resolve_registered_or_raw_machine_ref(machine_ref: &str) -> String {
     DaemonConfig::resolve_registered_machine_ref(machine_ref)
         .unwrap_or_else(|| machine_ref.trim().to_string())
 }

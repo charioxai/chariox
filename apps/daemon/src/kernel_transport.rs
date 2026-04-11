@@ -18,7 +18,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::LocalDaemonRequest;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
 use crate::provider::RuntimeProviderRun;
 use crate::session::RuntimeSession;
 use crate::terminal::{
@@ -304,6 +304,67 @@ async fn handle_kernel_connection(
     Ok(())
 }
 
+async fn handle_local_request_with_async_boundaries(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::RelayStatus(_) => {
+            let (config, relay_state) = {
+                let app = app.lock().await;
+                (app.config().clone(), app.relay_client_state())
+            };
+            let connected = relay_state.read().await.connected();
+            Ok(LocalDaemonResponse::RelayStatus {
+                status: RelayStatus {
+                    configured: config.relay_url.is_some() && config.relay_token.is_some(),
+                    connected,
+                    relay_url: config.relay_url,
+                    relay_token_configured: config.relay_token.is_some(),
+                    daemon_id: config.daemon_id,
+                    machine_id: config.host_machine_id,
+                    machine_alias: config.host_machine_alias,
+                },
+            })
+        }
+        LocalDaemonRequest::ListRemoteMachines(_) => {
+            let config = {
+                let app = app.lock().await;
+                app.config().clone()
+            };
+            let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
+            let machines = crate::local::provider_requests::remote_machine_records(
+                machines,
+                &config.host_machine_id,
+            );
+            Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+        }
+        LocalDaemonRequest::ListRemoteMachineKernels(request) => {
+            let config = {
+                let app = app.lock().await;
+                app.config().clone()
+            };
+            let machine_ref =
+                crate::local::provider_requests::resolve_registered_or_raw_machine_ref(
+                    &request.machine_ref,
+                );
+            let kernels = crate::transport::relay_discovery::list_live_kernels_for_machine(
+                &config,
+                &machine_ref,
+            )
+            .await?;
+            Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
+                machine_ref,
+                kernels,
+            })
+        }
+        request => {
+            let mut app = app.lock().await;
+            app.handle_local_request(request)
+        }
+    }
+}
+
 async fn handle_incoming_payload(
     app: &Arc<Mutex<DaemonApp>>,
     runtime: &Arc<KernelTransportRuntime>,
@@ -341,10 +402,7 @@ async fn handle_incoming_payload(
             request_id,
             request,
         } => {
-            let response = {
-                let mut app = app.lock().await;
-                app.handle_local_request(request)
-            };
+            let response = handle_local_request_with_async_boundaries(&app, request).await;
             let outgoing = match response {
                 Ok(response) => KernelOutgoingFrame::Response {
                     request_id,

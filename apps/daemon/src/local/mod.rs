@@ -1,7 +1,7 @@
 mod api;
 mod harness;
 mod ipc;
-mod provider_requests;
+pub(crate) mod provider_requests;
 
 pub use api::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
@@ -18,12 +18,12 @@ pub use api::{
     ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
     ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     PollRuntimeNoticesRequest, PumpTerminalOutputRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RemoveQueuedWorkflowLaunchRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, RemoveWorkflowWatchdogRequest, ResizeTerminalRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
-    SetWorkflowFlushContextRequest, SetWorkflowIntermediateOutputSchemaRequest,
-    SetWorkflowLaunchPolicyRequest, SetWorkflowNodeCanCompleteRunRequest,
-    SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    ReadFileCapabilityRequest, RelayStatus, RemoveQueuedWorkflowLaunchRequest,
+    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RemoveWorkflowWatchdogRequest,
+    ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+    RunShellCapabilityRequest, SetWorkflowFlushContextRequest,
+    SetWorkflowIntermediateOutputSchemaRequest, SetWorkflowLaunchPolicyRequest,
+    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowRunOutputSchemaRequest, SetWorkflowWatchdogEnabledRequest, SpawnAgentRequest,
     StartProviderLoginRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
