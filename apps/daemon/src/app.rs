@@ -33,7 +33,9 @@ use crate::execution_lease::{
     ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::provider::{LaunchProviderRequest, ProviderProcessService, RuntimeProviderRun};
+use crate::provider::{
+    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService, RuntimeProviderRun,
+};
 use crate::pty::PtyManager;
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptStatus, RuntimeSession, SessionConfigState,
@@ -66,6 +68,7 @@ pub struct DaemonApp {
     transfer_capabilities: FileTransferService,
     pty: PtyManager,
     providers: ProviderProcessService,
+    pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
     pub(crate) tracked_provider_processes: BTreeMap<String, TrackedProviderProcess>,
     pub(crate) tracked_provider_run_processes: BTreeMap<String, String>,
     pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
@@ -143,6 +146,7 @@ impl DaemonApp {
             transfer_capabilities: FileTransferService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
+            provider_catalog_cache: None,
             tracked_provider_processes: BTreeMap::new(),
             tracked_provider_run_processes: BTreeMap::new(),
             prompt_activity: BTreeMap::new(),
