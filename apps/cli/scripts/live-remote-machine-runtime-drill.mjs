@@ -393,7 +393,7 @@ async function main() {
         providers: selectedKernel.available_providers,
       },
       firstPrompt: {
-        completePromptResponse: completeResponse.completion?.completed?.id ?? null,
+        completePromptResponse: completeResponse?.completion?.completed?.id ?? null,
         completionEventMessageId: firstCompletionEvent.message_id ?? null,
         terminalOutputEvents: eventLog.filter((event) => event.event === 'terminal_output').length,
         pumpedOutputRecords: 0,
