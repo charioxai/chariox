@@ -145,11 +145,12 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "history:agent-a"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "history:agent-a", "history:null"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
   assert.deepEqual(bootstrap.binding?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
+  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, ["hi"])
 })
 
 test("bootstrapSession reattaches and hydrates missed output from history catch-up", async () => {
@@ -232,16 +233,24 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
       catchUpAttachedSession: async () => {
         calls.push("catchup")
       },
-      getSessionHistory: async () => ({
-        entries: [
-          {
-            entry_index: 4,
-            fragment_start: 24,
-            fragment_end: 42,
-            total_chars: 42,
-            entry: { kind: "provider_output", text: "while you were away", merge_key: "reply-1" },
-          },
-        ],
+      getSessionHistory: async (_client, _sessionId, _cursor, agentId) => ({
+        entries: agentId === null
+          ? [{
+            entry_index: 3,
+            fragment_start: 0,
+            fragment_end: 6,
+            total_chars: 6,
+            entry: { kind: "user_prompt", text: "hello\n" },
+          }]
+          : [
+            {
+              entry_index: 4,
+              fragment_start: 24,
+              fragment_end: 42,
+              total_chars: 42,
+              entry: { kind: "provider_output", text: "while you were away", merge_key: "reply-1" },
+            },
+          ],
         next_cursor: null,
       }),
       resolveVisibleAgentId: () => "agent-a",
@@ -251,6 +260,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
 
   assert.deepEqual(calls, ["attach", "session", "load-run", "catchup", "session"])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
+  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, ["hello"])
   assert.equal(bootstrap.binding?.historyEntries[0]?.role, "assistant")
   assert.equal(bootstrap.binding?.historyEntries[0]?.text, "while you were away")
   assert.equal(bootstrap.binding?.historyEntries[0]?.historyDeferred, true)

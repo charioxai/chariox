@@ -1,10 +1,16 @@
 import assert from "node:assert/strict"
+import os from "node:os"
+import path from "node:path"
+import { mkdtemp, rm } from "node:fs/promises"
 import test from "node:test"
 
 import {
+  loadPreferences,
   mergeSessionPromptState,
   mergeSessionPromptHistory,
   mergeUiPreferences,
+  preferencesPath,
+  saveSessionPromptState,
   sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
   type ArrobaPreferences,
@@ -131,4 +137,34 @@ test("sessionPromptDraftEntry returns normalized draft text for one session", ()
   assert.equal(sessionPromptDraftEntry(current, "session-1"), "hello\nworld")
   assert.equal(sessionPromptDraftEntry(current, "session-2"), "")
   assert.equal(sessionPromptDraftEntry(current, "missing"), "")
+})
+
+test("saveSessionPromptState preserves prompt history across queued draft-only writes", async () => {
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
+  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "arroba-preferences-"))
+  process.env.XDG_CONFIG_HOME = tempConfigHome
+
+  try {
+    await Promise.all([
+      saveSessionPromptState("session-1", {
+        promptHistory: ["prompt 1", "prompt 2"],
+        promptDraft: "",
+      }),
+      saveSessionPromptState("session-1", {
+        promptDraft: "draft prompt",
+      }),
+    ])
+
+    const current = await loadPreferences()
+    assert.equal(preferencesPath(), path.join(tempConfigHome, "arroba", "config.json"))
+    assert.deepEqual(sessionPromptHistoryEntries(current, "session-1"), ["prompt 1", "prompt 2"])
+    assert.equal(sessionPromptDraftEntry(current, "session-1"), "draft prompt")
+  } finally {
+    if (previousConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousConfigHome
+    }
+    await rm(tempConfigHome, { recursive: true, force: true })
+  }
 })

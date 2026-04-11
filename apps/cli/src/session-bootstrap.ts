@@ -1,5 +1,6 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
+import { extractPromptHistoryEntries, pushPromptHistoryEntry } from "./prompt-history.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
@@ -142,6 +143,7 @@ export async function bootstrapSession(
   const historyPage = visibleAgentId
     ? await deps.getSessionHistory(client, session.id, null, visibleAgentId)
     : { entries: [], next_cursor: null }
+  const promptHistoryEntries = await loadSessionPromptHistory(client, session.id, deps)
 
   return {
     client,
@@ -151,6 +153,7 @@ export async function bootstrapSession(
       providerRun,
       createdSession,
       historyEntries: deps.prepareHistoryEntries(historyPage.entries, hydratedSession),
+      promptHistoryEntries,
       nextHistoryCursor: historyPage.next_cursor,
     },
     sessions,
@@ -159,6 +162,32 @@ export async function bootstrapSession(
     options,
     preferences,
   }
+}
+
+async function loadSessionPromptHistory(
+  client: LocalIpcClient,
+  sessionId: string,
+  deps: Pick<BootstrapDeps, "getSessionHistory">,
+) {
+  const promptHistoryPages: string[][] = []
+  let cursor: SessionHistoryCursor | null = null
+
+  for (;;) {
+    const historyPage = await deps.getSessionHistory(client, sessionId, cursor, null)
+    promptHistoryPages.push(extractPromptHistoryEntries(historyPage.entries))
+    if (!historyPage.next_cursor) {
+      break
+    }
+    cursor = historyPage.next_cursor
+  }
+
+  let promptHistoryEntries: string[] = []
+  for (const page of promptHistoryPages.reverse()) {
+    for (const prompt of page) {
+      promptHistoryEntries = pushPromptHistoryEntry(promptHistoryEntries, prompt)
+    }
+  }
+  return promptHistoryEntries
 }
 
 function resolveStoredAgentLaunch(

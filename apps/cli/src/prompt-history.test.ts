@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  extractPromptHistoryEntries,
+  isProgrammaticPromptContentEcho,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
   pushPromptHistoryEntry,
@@ -34,6 +36,42 @@ test("pushPromptHistoryEntry keeps the full session prompt history", () => {
   assert.equal(entries.length, 150)
   assert.equal(entries[0], "prompt 1")
   assert.equal(entries.at(-1), "prompt 150")
+})
+
+test("extractPromptHistoryEntries rebuilds full prompts from fragmented session history", () => {
+  assert.deepEqual(
+    extractPromptHistoryEntries([
+      {
+        entry_index: 1,
+        fragment_start: 0,
+        fragment_end: 7,
+        total_chars: 11,
+        entry: { kind: "user_prompt", text: "git sta" },
+      },
+      {
+        entry_index: 1,
+        fragment_start: 7,
+        fragment_end: 11,
+        total_chars: 11,
+        entry: { kind: "user_prompt", text: "tus\n" },
+      },
+      {
+        entry_index: 2,
+        fragment_start: 0,
+        fragment_end: 5,
+        total_chars: 5,
+        entry: { kind: "provider_output", text: "done\n" },
+      },
+      {
+        entry_index: 3,
+        fragment_start: 0,
+        fragment_end: 8,
+        total_chars: 8,
+        entry: { kind: "user_prompt", text: "git log\n" },
+      },
+    ]),
+    ["git status", "git log"],
+  )
 })
 
 test("navigatePromptHistory walks backward through prompt history and restores the draft on exit", () => {
@@ -108,6 +146,27 @@ test("navigatePromptHistory restores a saved draft even if navigation index was 
     navigationIndex: null,
     navigationDraft: null,
   })
+})
+
+test("isProgrammaticPromptContentEcho preserves history navigation on setText echoes", () => {
+  assert.equal(
+    isProgrammaticPromptContentEcho({
+      currentText: "git log",
+      previousSnapshot: "git log",
+      programmaticMutation: false,
+      dropPending: false,
+    }),
+    true,
+  )
+  assert.equal(
+    isProgrammaticPromptContentEcho({
+      currentText: "git log with edit",
+      previousSnapshot: "git log",
+      programmaticMutation: false,
+      dropPending: false,
+    }),
+    false,
+  )
 })
 
 test("promptHistoryDirectionForKey yields to the command center and modifiers", () => {

@@ -110,8 +110,8 @@ export async function loadPreferences() {
 }
 
 export async function saveProviderPreferences(provider: string, next: ProviderPreferences) {
-  const current = await loadPreferences()
-  await savePreferences({
+  await updatePreferences((current) => ({
+    ...current,
     providers: {
       ...(current.providers ?? {}),
       [provider]: {
@@ -119,17 +119,15 @@ export async function saveProviderPreferences(provider: string, next: ProviderPr
         ...next,
       },
     },
-  })
+  }))
 }
 
 export async function saveUiPreferences(next: UiPreferences) {
-  const current = await loadPreferences()
-  await savePreferences(mergeUiPreferences(current, next))
+  await updatePreferences((current) => mergeUiPreferences(current, next))
 }
 
 export async function saveSessionPromptHistory(sessionId: string, entries: readonly string[]) {
-  const current = await loadPreferences()
-  await savePreferences(mergeSessionPromptHistory(current, sessionId, entries))
+  await updatePreferences((current) => mergeSessionPromptHistory(current, sessionId, entries))
 }
 
 export async function saveSessionPromptState(
@@ -139,8 +137,7 @@ export async function saveSessionPromptState(
     promptDraft?: string | null
   },
 ) {
-  const current = await loadPreferences()
-  await savePreferences(mergeSessionPromptState(current, sessionId, next))
+  await updatePreferences((current) => mergeSessionPromptState(current, sessionId, next))
 }
 
 export function preferencesPath() {
@@ -151,7 +148,9 @@ export function preferencesPath() {
   return path.join(os.homedir(), ".arroba", "config.json")
 }
 
-async function savePreferences(next: ArrobaPreferences) {
+async function updatePreferences(
+  apply: (current: ArrobaPreferences) => ArrobaPreferences,
+) {
   preferencesSaveQueue = preferencesSaveQueue
     .catch(() => {
       // Preserve the queue after prior save failures.
@@ -159,18 +158,9 @@ async function savePreferences(next: ArrobaPreferences) {
     .then(async () => {
       const filePath = preferencesPath()
       const current = await loadPreferences()
+      const next = apply(current)
       await mkdir(path.dirname(filePath), { recursive: true })
-      await writeFile(
-        filePath,
-        JSON.stringify(
-          {
-            ...current,
-            ...next,
-          } satisfies ArrobaPreferences,
-          null,
-          2,
-        ),
-      )
+      await writeFile(filePath, JSON.stringify(next, null, 2))
     })
   await preferencesSaveQueue
 }

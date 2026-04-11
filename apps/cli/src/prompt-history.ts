@@ -1,3 +1,5 @@
+import type { SessionHistoryPageEntry } from "./cli-types.js"
+
 export type PromptHistoryDirection = "previous" | "next"
 
 export type PromptHistoryNavigation = {
@@ -24,6 +26,21 @@ export type PromptHistoryKeyPolicy = {
   meta?: boolean | undefined
   alt?: boolean | undefined
   shift?: boolean | undefined
+}
+
+export type PromptContentChangePolicy = {
+  currentText: string
+  previousSnapshot: string
+  programmaticMutation: boolean
+  dropPending: boolean
+}
+
+export function isProgrammaticPromptContentEcho(
+  options: PromptContentChangePolicy,
+) {
+  return options.programmaticMutation
+    || options.dropPending
+    || options.currentText === options.previousSnapshot
 }
 
 export function promptHistoryDirectionForKey(
@@ -61,6 +78,55 @@ export function pushPromptHistoryEntry(
   return entries.at(-1) === normalized
     ? [...entries]
     : [...entries, normalized]
+}
+
+export function extractPromptHistoryEntries(
+  historyEntries: SessionHistoryPageEntry[],
+): string[] {
+  const mergedEntries = mergeAdjacentPromptHistoryEntries(historyEntries)
+  let prompts: string[] = []
+  for (const entry of mergedEntries) {
+    if (entry.entry.kind !== "user_prompt") {
+      continue
+    }
+    prompts = pushPromptHistoryEntry(prompts, entry.entry.text)
+  }
+  return prompts
+}
+
+function mergeAdjacentPromptHistoryEntries(historyEntries: SessionHistoryPageEntry[]) {
+  const merged: SessionHistoryPageEntry[] = []
+
+  for (const entry of historyEntries) {
+    const previous = merged.at(-1)
+    if (
+      previous
+      && previous.entry_index === entry.entry_index
+      && previous.entry.kind === entry.entry.kind
+      && previous.fragment_end === entry.fragment_start
+    ) {
+      previous.fragment_end = entry.fragment_end
+      previous.entry.text += entry.entry.text
+      previous.total_chars = Math.max(previous.total_chars, entry.total_chars)
+      continue
+    }
+
+    merged.push({
+      entry_index: entry.entry_index,
+      fragment_start: entry.fragment_start,
+      fragment_end: entry.fragment_end,
+      total_chars: entry.total_chars,
+      entry: {
+        kind: entry.entry.kind,
+        text: entry.entry.text,
+        ...(entry.entry.agent_id !== undefined ? { agent_id: entry.entry.agent_id } : {}),
+        ...(entry.entry.provider_run_id !== undefined ? { provider_run_id: entry.entry.provider_run_id } : {}),
+        ...(entry.entry.merge_key !== undefined ? { merge_key: entry.entry.merge_key } : {}),
+      },
+    })
+  }
+
+  return merged
 }
 
 export function navigatePromptHistory(

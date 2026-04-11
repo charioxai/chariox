@@ -149,6 +149,7 @@ import {
 } from "./response-panes.js"
 import {
   extractPromptHistoryEntries,
+  isProgrammaticPromptContentEcho,
   navigatePromptHistory,
   promptHistoryDirectionForKey,
   pushPromptHistoryEntry,
@@ -1818,6 +1819,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const hydratePromptHistoryFromSession = async (sessionId: string) => {
     const generation = ++promptHistoryHydrationGeneration
+    await loadAndApplyPromptHistoryFromSession(sessionId, generation)
+  }
+  const loadAndApplyPromptHistoryFromSession = async (
+    sessionId: string,
+    generation: number,
+  ) => {
     const pagePromptHistory: string[][] = []
     let cursor: SessionHistoryCursor | null = null
 
@@ -2443,7 +2450,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       syncCommandCenter(value)
       return
     }
-    if (promptTextMuting || promptDropPending) {
+    if (isProgrammaticPromptContentEcho({
+      currentText: value,
+      previousSnapshot: promptTextSnapshot,
+      programmaticMutation: promptTextMuting,
+      dropPending: promptDropPending,
+    })) {
       promptTextSnapshot = value
       syncCommandCenter(value)
       return
@@ -4692,6 +4704,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const primeAttachedSessionBinding = async (session: RuntimeSession) => {
+    const promptHistoryGeneration = ++promptHistoryHydrationGeneration
     const visibleAgentId = selectResponsePaneAgents(
       session.agents,
       session.focused_agent_id,
@@ -4702,10 +4715,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (!visibleAgentId) {
       replaceTranscriptEntries([], null)
       setNextHistoryCursor(null)
+      await loadAndApplyPromptHistoryFromSession(session.id, promptHistoryGeneration)
       return
     }
 
     const historyPage = await getSessionHistory(client, session.id, null, visibleAgentId)
+    await loadAndApplyPromptHistoryFromSession(session.id, promptHistoryGeneration)
     const preparedEntries = reindexTranscriptEntries(
       hydrateTranscriptEntries(historyPage.entries),
       0,
@@ -5217,6 +5232,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       created_session: createdSessionState(),
     })
     try {
+      syncPromptTextSnapshot()
       await flushPendingPromptDraftPersist().catch((error) => {
         appLogger?.warn("failed to flush prompt draft during exit", {
           error: formatError(error),
@@ -5269,6 +5285,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       created_session: createdSessionState(),
     })
     try {
+      syncPromptTextSnapshot()
       await flushPendingPromptDraftPersist().catch((error) => {
         appLogger?.warn("failed to flush prompt draft during waiting-room transition", {
           error: formatError(error),
