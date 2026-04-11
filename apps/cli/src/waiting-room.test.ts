@@ -64,13 +64,15 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 1)
+  state = moveWaitingRoomFocus(state, sessions, 4)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
-  assert.equal(firstWindow[1]?.title, "Join Existing Session")
-  assert.equal(firstWindow[1]?.indent, 0)
-  assert.equal(firstWindow.find((row) => row.id === "provider")?.indent, 1)
-  assert.equal(firstWindow.find((row) => row.id === "effort")?.title, "Variant")
+  assert.equal(firstWindow[1]?.id, "provider")
+  assert.equal(firstWindow[1]?.indent, 1)
+  assert.equal(firstWindow[2]?.id, "model")
+  assert.equal(firstWindow[3]?.id, "effort")
+  assert.equal(firstWindow[4]?.id, "join-header")
+  assert.equal(firstWindow[4]?.indent, 0)
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
     ["Status", "Last used", "Created at"],
@@ -113,7 +115,7 @@ test("waiting room renders session rows with alias text", () => {
   assert.equal(aliasedSessionRow?.title, "session-1 (frontend)")
 })
 
-test("waiting room places join below start and makes relay configure selectable", () => {
+test("waiting room places join below start configuration and makes relay configure selectable", () => {
   const catalog = fallbackProviderCatalog()
   let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
   const rows = waitingRoomRows(state, [], catalog, {
@@ -124,10 +126,14 @@ test("waiting room places join below start and makes relay configure selectable"
   })
 
   assert.equal(rows[0]?.id, "new")
-  assert.equal(rows[1]?.id, "join-header")
-  assert.equal(rows[1]?.title, "Join Existing Session")
+  assert.equal(rows[1]?.id, "provider")
+  assert.equal(rows[2]?.id, "model")
+  assert.equal(rows[3]?.id, "effort")
+  assert.equal(rows[4]?.id, "join-header")
+  assert.equal(rows[4]?.title, "Join Existing Session")
 
   state = moveWaitingRoomFocus(state, [], 4)
+  assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
       configured: false,

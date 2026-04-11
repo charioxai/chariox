@@ -244,6 +244,36 @@ export function waitingRoomRows(
       scrollbar: "",
     },
     {
+      id: "provider",
+      title: "Provider",
+      value: formatBackendProviderLabel(choice.providerId),
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "provider",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "model",
+      title: "Model",
+      value: choice.model ? formatWaitingRoomModelLabel(choice.model, modelOptions) : "No models available",
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "model",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "effort",
+      title: "Variant",
+      value: choice.effort ? formatTitleCase(choice.effort) : "Default",
+      titleWidth,
+      indent: 1,
+      focused: state.focus === "effort",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
       id: "join-header",
       title: "Join Existing Session",
       value: "",
@@ -304,36 +334,6 @@ export function waitingRoomRows(
   }
 
   rows.push(
-    {
-      id: "provider",
-      title: "Provider",
-      value: formatBackendProviderLabel(choice.providerId),
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "provider",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "model",
-      title: "Model",
-      value: choice.model ? formatWaitingRoomModelLabel(choice.model, modelOptions) : "No models available",
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "model",
-      selectable: true,
-      scrollbar: "",
-    },
-    {
-      id: "effort",
-      title: "Variant",
-      value: choice.effort ? formatTitleCase(choice.effort) : "Default",
-      titleWidth,
-      indent: 1,
-      focused: state.focus === "effort",
-      selectable: true,
-      scrollbar: "",
-    },
     ...waitingRoomRemoteRows(state, remote, titleWidth),
   )
 
@@ -518,10 +518,10 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
   const visibleSessions = waitingRoomSessions(sessions)
   return [
     { focus: "new" as const, sessionIndex: 0 },
-    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
+    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "relay" as const, sessionIndex: 0 },
   ]
 }
