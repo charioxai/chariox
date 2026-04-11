@@ -4,7 +4,7 @@ use crate::error::DaemonError;
 use crate::provider::{
     default_provider_command_catalogs, ensure_codex_catalog_endpoint,
     ensure_opencode_catalog_endpoint, logout_codex, CodexClient, LaunchProviderRequest,
-    OpenCodeClient, OpenCodeProviderCatalog,
+    OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use tokio::runtime::Handle;
@@ -85,11 +85,6 @@ impl DaemonApp {
             }
         }
 
-        let mut catalog =
-            merge_provider_catalogs(catalogs).ok_or_else(|| DaemonError::LocalTransport {
-                operation: "get_provider_catalog",
-                message: "no provider catalog sources were reachable".to_string(),
-            })?;
         let remote_machines =
             if self.config().relay_url.is_some() && self.config().relay_token.is_some() {
                 block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
@@ -101,6 +96,18 @@ impl DaemonApp {
             };
         let approved_remote_machines =
             approved_live_remote_machines(&remote_machines, &self.config().host_machine_id);
+
+        let mut catalog = merge_provider_catalogs(catalogs)
+            .or_else(|| {
+                remote_only_provider_catalog(
+                    &approved_remote_machines,
+                    &self.config().host_machine_id,
+                )
+            })
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: "no provider catalog sources were reachable".to_string(),
+            })?;
         annotate_remote_machine_providers(
             &mut catalog,
             &approved_remote_machines,
@@ -339,6 +346,47 @@ fn merge_provider_catalogs(
         .all
         .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     Some(merged)
+}
+
+fn remote_only_provider_catalog(
+    live_machines: &[RelayMachinePresence],
+    local_machine_id: &str,
+) -> Option<OpenCodeProviderCatalog> {
+    let mut provider_ids = live_machines
+        .iter()
+        .filter(|machine| machine.machine_id != local_machine_id)
+        .flat_map(|machine| machine.available_providers.iter().cloned())
+        .collect::<Vec<_>>();
+    provider_ids.sort();
+    provider_ids.dedup();
+    if provider_ids.is_empty() {
+        return None;
+    }
+
+    let all = provider_ids
+        .into_iter()
+        .map(|provider_id| OpenCodeProviderInfo {
+            name: display_name_for_provider(&provider_id),
+            id: provider_id,
+            remote_machine_aliases: Vec::new(),
+            models: Default::default(),
+        })
+        .collect::<Vec<_>>();
+
+    Some(OpenCodeProviderCatalog {
+        connected: all.iter().map(|provider| provider.id.clone()).collect(),
+        all,
+        default: Default::default(),
+    })
+}
+
+fn display_name_for_provider(provider_id: &str) -> String {
+    match provider_id {
+        "codex" => "Codex".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "dev-stub" => "Dev Stub".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn annotate_remote_machine_providers(
@@ -644,5 +692,47 @@ mod tests {
             opencode.remote_machine_aliases,
             vec!["builder-west".to_string()]
         );
+    }
+
+    #[test]
+    fn builds_remote_only_catalog_when_local_provider_sources_are_unavailable() {
+        let live_machines = vec![
+            RelayMachinePresence {
+                machine_id: "machine-local".to_string(),
+                machine_alias: Some("home".to_string()),
+                kernel_count: 1,
+                available_providers: vec!["codex".to_string()],
+            },
+            RelayMachinePresence {
+                machine_id: "machine-remote".to_string(),
+                machine_alias: Some("builder".to_string()),
+                kernel_count: 1,
+                available_providers: vec!["codex".to_string(), "opencode".to_string()],
+            },
+        ];
+
+        let mut catalog = remote_only_provider_catalog(&live_machines, "machine-local")
+            .expect("remote providers should create a catalog");
+        annotate_remote_machine_providers(&mut catalog, &live_machines, "machine-local");
+
+        assert_eq!(
+            catalog.connected,
+            vec!["codex".to_string(), "opencode".to_string()]
+        );
+        assert_eq!(catalog.default.len(), 0);
+        let codex = catalog
+            .all
+            .iter()
+            .find(|provider| provider.id == "codex")
+            .unwrap();
+        let opencode = catalog
+            .all
+            .iter()
+            .find(|provider| provider.id == "opencode")
+            .unwrap();
+        assert_eq!(codex.name, "Codex");
+        assert_eq!(codex.remote_machine_aliases, vec!["builder".to_string()]);
+        assert_eq!(opencode.name, "OpenCode");
+        assert_eq!(opencode.remote_machine_aliases, vec!["builder".to_string()]);
     }
 }
