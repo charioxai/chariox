@@ -71,6 +71,16 @@ The base image sets `BROWSER=arroba-open-url` and places an `xdg-open` shim earl
 
 If a provider uses an unconfigurable random localhost callback port, test and document that provider separately. The launch-provider compatibility matrix should record the tested provider version, login method, callback behavior, and whether Docker login is supported.
 
+## Smoke Test
+
+Run the lab smoke test after installing Docker:
+
+```sh
+docker/lab/smoke.sh
+```
+
+The smoke test builds the image, starts the relay plus two worker kernels, verifies that the Arroba binaries and Bun are available inside each worker, and checks that the relay and daemons reached their startup banners. It does not install provider CLIs or touch provider credentials.
+
 ## Useful Commands
 
 Build only the image:
