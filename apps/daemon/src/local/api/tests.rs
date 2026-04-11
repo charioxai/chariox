@@ -135,6 +135,8 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),
             machine_alias: Some("workstation".to_string()),
+            os_name: Some("macOS".to_string()),
+            kernel_started_at_ms: 10,
             daemon_alias: Some("mbp".to_string()),
             kernel_alias: Some("default".to_string()),
             public_key: "public-key".to_string(),
@@ -170,14 +172,17 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
         LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
         other => panic!("unexpected response: {other:?}"),
     };
-    assert_eq!(machines.len(), 1);
-    assert_eq!(machines[0].machine_alias.as_deref(), Some("workstation"));
-    assert_eq!(machines[0].available_providers, vec!["codex", "opencode"]);
+    let machine = machines
+        .iter()
+        .find(|machine| machine.machine_id == "machine-1")
+        .expect("registered machine should be listed");
+    assert_eq!(machine.machine_alias.as_deref(), Some("machine 1 (macOS)"));
+    assert_eq!(machine.available_providers, vec!["codex", "opencode"]);
 
     let kernels = match app
         .handle_local_request(LocalDaemonRequest::ListRemoteMachineKernels(
             ListRemoteMachineKernelsRequest {
-                machine_ref: "workstation".to_string(),
+                machine_ref: "machine 1 (macOS)".to_string(),
             },
         ))
         .expect("remote machine kernels request should succeed")

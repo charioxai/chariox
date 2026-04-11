@@ -54,6 +54,7 @@ use crate::transport::relay_peer::{
 
 pub struct DaemonApp {
     config: DaemonConfig,
+    started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
     agents: AgentService,
     attachments: AttachmentService,
@@ -154,6 +155,7 @@ impl DaemonApp {
             leased_workflow_turns: BTreeMap::new(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
+            started_at_ms: crate::session::unix_epoch_ms(),
             relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
             config,
         })
@@ -1567,6 +1569,8 @@ impl DaemonApp {
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
             machine_alias: self.config.host_machine_alias.clone(),
+            os_name: Some(self.config.os_name.clone()),
+            kernel_started_at_ms: self.started_at_ms,
             daemon_alias: self.config.daemon_alias.clone(),
             kernel_alias: self.config.daemon_alias.clone(),
             public_key: self.config.relay_public_key.clone(),

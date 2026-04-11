@@ -92,6 +92,10 @@ Required daemon-side identities:
   - stable identifier used for routing through the relay
 - `machine_id`
   - stable identifier for the hosting machine/user context
+- `os_name`
+  - plain liveness metadata reported by the daemon for relay display naming, for example `macOS` or `Linux`
+- `kernel_started_at_ms`
+  - first-start timestamp for the live kernel process; the relay uses this to assign deterministic live machine display ordinals
 - `daemon_alias`
   - optional human-friendly label for CLI targeting
 
@@ -100,6 +104,7 @@ Routing rule:
 - relay routes by `daemon_id`
 - CLI may target by alias when available
 - alias resolution maps to `daemon_id`
+- relay machine lists expose relay-scoped display names like `machine 1 (macOS)` based on live kernel registration order and reported OS name; user-owned approval/rename state remains in the home kernel
 
 ## Configuration Model
 

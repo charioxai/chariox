@@ -22,6 +22,10 @@ pub struct DaemonRegistration {
     #[serde(default)]
     pub machine_alias: Option<String>,
     #[serde(default)]
+    pub os_name: Option<String>,
+    #[serde(default)]
+    pub kernel_started_at_ms: u64,
+    #[serde(default)]
     pub daemon_alias: Option<String>,
     #[serde(default)]
     pub kernel_alias: Option<String>,
@@ -225,6 +229,8 @@ mod tests {
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("workstation".to_string()),
+                os_name: Some("macOS".to_string()),
+                kernel_started_at_ms: 10,
                 daemon_alias: Some("mbp".to_string()),
                 kernel_alias: Some("default".to_string()),
                 public_key: "public-key".to_string(),

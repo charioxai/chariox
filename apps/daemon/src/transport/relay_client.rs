@@ -1002,6 +1002,8 @@ pub async fn send_peer_request_via_temporary_connection(
             daemon_id: format!("{}:peer-tmp:{}", config.daemon_id, request_id),
             machine_id: config.host_machine_id.clone(),
             machine_alias: config.host_machine_alias.clone(),
+            os_name: Some(config.os_name.clone()),
+            kernel_started_at_ms: crate::session::unix_epoch_ms(),
             daemon_alias: config.daemon_alias.clone(),
             kernel_alias: config.daemon_alias.clone(),
             public_key: config.relay_public_key.clone(),

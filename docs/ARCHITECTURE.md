@@ -352,6 +352,7 @@ Current architectural interpretation:
 - the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
 - the home kernel maintains local machine trust state: live unknown machines are pending, `/machine approve` makes them spawn targets, `/machine rename` stores a user alias, and `/machine forget` hides them from normal machine/provider availability
+- relay machine display names are relay-scoped live labels, not durable user aliases: each registered kernel reports its OS name and kernel start time, and the relay exposes names such as `machine 1 (macOS)` for discovery; user-facing stable names still come from local home-kernel rename/approval state
 - relay-visible machine metadata remains plain routing/liveness metadata; trust decisions and aliases are local home-kernel state, not relay authority
 
 

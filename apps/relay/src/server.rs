@@ -94,6 +94,7 @@ impl RelayRegistry {
     }
 
     pub fn live_machines(&self) -> Vec<RelayMachinePresence> {
+        let relay_aliases = self.relay_machine_aliases();
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
         for registration in self.daemons.values() {
             grouped
@@ -104,9 +105,6 @@ impl RelayRegistry {
         grouped
             .into_iter()
             .map(|(machine_id, registrations)| {
-                let machine_alias = registrations
-                    .iter()
-                    .find_map(|registration| registration.machine_alias.clone());
                 let mut available_providers = registrations
                     .iter()
                     .flat_map(|registration| registration.available_providers.iter().cloned())
@@ -114,8 +112,8 @@ impl RelayRegistry {
                 available_providers.sort();
                 available_providers.dedup();
                 RelayMachinePresence {
+                    machine_alias: relay_aliases.get(&machine_id).cloned(),
                     machine_id,
-                    machine_alias,
                     kernel_count: registrations.len(),
                     available_providers,
                 }
@@ -124,31 +122,23 @@ impl RelayRegistry {
     }
 
     pub fn live_kernels_for_machine(&self, machine_ref: &str) -> Vec<RelayKernelPresence> {
+        let relay_aliases = self.relay_machine_aliases();
         self.daemons
             .values()
             .filter(|registration| {
                 registration.machine_id == machine_ref
+                    || relay_aliases
+                        .get(&registration.machine_id)
+                        .map(String::as_str)
+                        == Some(machine_ref)
                     || registration.machine_alias.as_deref() == Some(machine_ref)
             })
-            .map(|registration| RelayKernelPresence {
-                kernel_id: registration.daemon_id.clone(),
-                machine_id: registration.machine_id.clone(),
-                machine_alias: registration.machine_alias.clone(),
-                kernel_alias: registration
-                    .kernel_alias
-                    .clone()
-                    .or_else(|| registration.daemon_alias.clone()),
-                available_providers: registration.available_providers.clone(),
-                capabilities: registration.capabilities.clone(),
-                accepting_remote_leases: registration.accepting_remote_leases,
-                leased_agent_count: registration.leased_agent_count,
-                local_session_count: registration.local_session_count,
-                public_key: registration.public_key.clone(),
-            })
+            .map(|registration| self.kernel_presence(registration, &relay_aliases))
             .collect()
     }
 
     pub fn live_kernel(&self, kernel_ref: &str) -> Option<RelayKernelPresence> {
+        let relay_aliases = self.relay_machine_aliases();
         self.daemons
             .values()
             .find(|registration| {
@@ -156,22 +146,77 @@ impl RelayRegistry {
                     || registration.daemon_alias.as_deref() == Some(kernel_ref)
                     || registration.kernel_alias.as_deref() == Some(kernel_ref)
             })
-            .map(|registration| RelayKernelPresence {
-                kernel_id: registration.daemon_id.clone(),
-                machine_id: registration.machine_id.clone(),
-                machine_alias: registration.machine_alias.clone(),
-                kernel_alias: registration
-                    .kernel_alias
-                    .clone()
-                    .or_else(|| registration.daemon_alias.clone()),
-                available_providers: registration.available_providers.clone(),
-                capabilities: registration.capabilities.clone(),
-                accepting_remote_leases: registration.accepting_remote_leases,
-                leased_agent_count: registration.leased_agent_count,
-                local_session_count: registration.local_session_count,
-                public_key: registration.public_key.clone(),
-            })
+            .map(|registration| self.kernel_presence(registration, &relay_aliases))
     }
+
+    fn kernel_presence(
+        &self,
+        registration: &DaemonRegistration,
+        relay_aliases: &BTreeMap<String, String>,
+    ) -> RelayKernelPresence {
+        RelayKernelPresence {
+            kernel_id: registration.daemon_id.clone(),
+            machine_id: registration.machine_id.clone(),
+            machine_alias: relay_aliases.get(&registration.machine_id).cloned(),
+            kernel_alias: registration
+                .kernel_alias
+                .clone()
+                .or_else(|| registration.daemon_alias.clone()),
+            available_providers: registration.available_providers.clone(),
+            capabilities: registration.capabilities.clone(),
+            accepting_remote_leases: registration.accepting_remote_leases,
+            leased_agent_count: registration.leased_agent_count,
+            local_session_count: registration.local_session_count,
+            public_key: registration.public_key.clone(),
+        }
+    }
+
+    fn relay_machine_aliases(&self) -> BTreeMap<String, String> {
+        let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
+        for registration in self.daemons.values() {
+            grouped
+                .entry(registration.machine_id.clone())
+                .or_default()
+                .push(registration);
+        }
+
+        let mut groups = grouped.into_iter().collect::<Vec<_>>();
+        groups.sort_by(
+            |(left_id, left_registrations), (right_id, right_registrations)| {
+                let left_started = earliest_kernel_started_at_ms(left_registrations);
+                let right_started = earliest_kernel_started_at_ms(right_registrations);
+                left_started
+                    .cmp(&right_started)
+                    .then_with(|| left_id.cmp(right_id))
+            },
+        );
+
+        groups
+            .into_iter()
+            .enumerate()
+            .map(|(index, (machine_id, registrations))| {
+                let os_name = registrations
+                    .iter()
+                    .find_map(|registration| registration.os_name.clone())
+                    .or_else(|| {
+                        registrations
+                            .iter()
+                            .find_map(|registration| registration.machine_alias.clone())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                (machine_id, format!("machine {} ({})", index + 1, os_name))
+            })
+            .collect()
+    }
+}
+
+fn earliest_kernel_started_at_ms(registrations: &[&DaemonRegistration]) -> u64 {
+    registrations
+        .iter()
+        .map(|registration| registration.kernel_started_at_ms)
+        .filter(|started_at_ms| *started_at_ms > 0)
+        .min()
+        .unwrap_or(0)
 }
 
 #[derive(Debug)]
@@ -1032,6 +1077,8 @@ mod tests {
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("workstation".to_string()),
+                os_name: Some("macOS".to_string()),
+                kernel_started_at_ms: 10,
                 daemon_alias: Some("mbp".to_string()),
                 kernel_alias: Some("default".to_string()),
                 public_key: "public-key".to_string(),
@@ -1109,6 +1156,8 @@ mod tests {
                 daemon_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("workstation".to_string()),
+                os_name: Some("macOS".to_string()),
+                kernel_started_at_ms: 10,
                 daemon_alias: Some("mbp".to_string()),
                 kernel_alias: Some("default".to_string()),
                 public_key: "public-key".to_string(),
@@ -1161,7 +1210,10 @@ mod tests {
                 assert_eq!(request_id, "machines-1");
                 assert_eq!(machines.len(), 1);
                 assert_eq!(machines[0].machine_id, "machine-1");
-                assert_eq!(machines[0].machine_alias.as_deref(), Some("workstation"));
+                assert_eq!(
+                    machines[0].machine_alias.as_deref(),
+                    Some("machine 1 (macOS)")
+                );
                 assert_eq!(machines[0].available_providers, vec!["codex", "opencode"]);
             }
             other => panic!("unexpected machines response envelope: {other:?}"),
@@ -1171,7 +1223,7 @@ mod tests {
             request_id: "kernels-1".to_string(),
             auth_token: "secret".to_string(),
             query: RelayMetadataQuery::ListLiveKernelsForMachine {
-                machine_ref: "workstation".to_string(),
+                machine_ref: "machine 1 (macOS)".to_string(),
             },
         };
         client_socket
@@ -1199,7 +1251,10 @@ mod tests {
                 assert_eq!(request_id, "kernels-1");
                 assert_eq!(kernels.len(), 1);
                 assert_eq!(kernels[0].kernel_id, "daemon-1");
-                assert_eq!(kernels[0].machine_alias.as_deref(), Some("workstation"));
+                assert_eq!(
+                    kernels[0].machine_alias.as_deref(),
+                    Some("machine 1 (macOS)")
+                );
                 assert_eq!(kernels[0].available_providers, vec!["opencode", "codex"]);
                 assert!(kernels[0].accepting_remote_leases);
                 assert_eq!(kernels[0].leased_agent_count, 2);
@@ -1294,6 +1349,8 @@ mod tests {
                     daemon_id: daemon_id.to_string(),
                     machine_id: format!("machine-{daemon_id}"),
                     machine_alias: None,
+                    os_name: Some("Linux".to_string()),
+                    kernel_started_at_ms: 10,
                     daemon_alias: Some(daemon_alias.to_string()),
                     kernel_alias: Some(daemon_alias.to_string()),
                     public_key: public_key.to_string(),

@@ -13,6 +13,7 @@ pub struct DaemonConfig {
     pub daemon_id: String,
     pub host_machine_id: String,
     pub host_machine_alias: Option<String>,
+    pub os_name: String,
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
@@ -76,6 +77,11 @@ impl DaemonConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .or(runtime_identity.machine_alias),
+            os_name: env::var("ARROBA_OS_NAME")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(default_os_name),
             daemon_alias: env::var("ARROBA_DAEMON_ALIAS")
                 .ok()
                 .map(|value| value.trim().to_string())
@@ -134,6 +140,7 @@ impl DaemonConfig {
             daemon_id,
             host_machine_id: host_machine_id.into(),
             host_machine_alias: None,
+            os_name: default_os_name(),
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
@@ -299,6 +306,7 @@ impl DaemonConfig {
                 message: "value must not be empty",
             });
         }
+        validate_non_empty("os_name", &self.os_name)?;
         validate_non_empty("kernel_websocket_host", &self.kernel_websocket_host)?;
         if self.kernel_websocket_port == 0 {
             return Err(DaemonError::InvalidConfig {
@@ -503,6 +511,17 @@ fn default_runtime_dir() -> PathBuf {
     }
 
     std::env::temp_dir().join("arroba")
+}
+
+fn default_os_name() -> String {
+    match std::env::consts::OS {
+        "macos" => "macOS".to_string(),
+        "windows" => "Windows".to_string(),
+        "linux" => "Linux".to_string(),
+        "ios" => "iOS".to_string(),
+        "android" => "Android".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DaemonError> {
