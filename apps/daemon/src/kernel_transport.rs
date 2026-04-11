@@ -96,6 +96,9 @@ pub(crate) enum KernelEvent {
         session_id: String,
         message: String,
     },
+    RelayStatusChanged {
+        status: RelayStatus,
+    },
     Heartbeat {
         session_id: String,
     },
@@ -524,6 +527,7 @@ async fn run_subscription_loop(
     subscription: KernelSubscription,
 ) {
     let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
+    let mut previous_relay_status: Option<RelayStatus> = None;
     let mut tick: u64 = 0;
 
     loop {
@@ -630,6 +634,39 @@ async fn run_subscription_loop(
                 {
                     break;
                 }
+                if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
+                    match relay_status_snapshot_for_events(&app).await {
+                        Ok(status) => {
+                            if previous_relay_status.as_ref() != Some(&status) {
+                                previous_relay_status = Some(status.clone());
+                                if !emit_kernel_event(
+                                    &runtime,
+                                    &outgoing_tx,
+                                    &close_tx,
+                                    &close_requested,
+                                    KernelEvent::RelayStatusChanged { status },
+                                    Some(&subscription.session_id),
+                                    Some(&subscription.attachment_id),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.kernel_transport",
+                                "kernel event loop failed to build relay status snapshot",
+                                serde_json::json!({
+                                    "session_id": subscription.session_id,
+                                    "attachment_id": subscription.attachment_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
             }
             WatchResult::Unavailable(message) => {
                 let _ = emit_kernel_event(
@@ -652,6 +689,25 @@ async fn run_subscription_loop(
         tick = tick.wrapping_add(1);
         sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
     }
+}
+
+async fn relay_status_snapshot_for_events(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> Result<RelayStatus, DaemonError> {
+    let (config, relay_state) = {
+        let app = app.lock().await;
+        (app.config().clone(), app.relay_client_state())
+    };
+    let connected = relay_state.read().await.connected();
+    Ok(RelayStatus {
+        configured: config.relay_url.is_some() && config.relay_token.is_some(),
+        connected,
+        relay_url: config.relay_url,
+        relay_token_configured: config.relay_token.is_some(),
+        daemon_id: config.daemon_id,
+        machine_id: config.host_machine_id,
+        machine_alias: config.host_machine_alias,
+    })
 }
 
 pub(crate) enum WatchResult {
@@ -755,7 +811,7 @@ async fn emit_kernel_event(
     attachment_id: Option<&str>,
 ) -> bool {
     let event_id = next_event_id(&runtime.event_counter);
-    if let Some(session_id) = event_session_id(&event) {
+    if let Some(session_id) = event_session_id(&event).or(session_id) {
         let mut recent_events = runtime.recent_events.lock().await;
         let entry = recent_events.entry(session_id.to_string()).or_default();
         entry.push_back(PersistedKernelEvent {
@@ -875,6 +931,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::RelayStatusChanged { .. } => None,
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
     }
@@ -903,6 +960,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
             .any(|id| id == attachment_id),
         KernelEvent::SessionSnapshot { .. }
         | KernelEvent::SessionUnavailable { .. }
+        | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. } => true,
     }

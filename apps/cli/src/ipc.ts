@@ -138,6 +138,18 @@ export type KernelEvent =
     message: string
   }
   | {
+    event: "relay_status_changed"
+    status: {
+      configured: boolean
+      connected: boolean
+      relay_url?: string | null
+      relay_token_configured: boolean
+      daemon_id: string
+      machine_id: string
+      machine_alias?: string | null
+    }
+  }
+  | {
     event: "heartbeat"
     session_id: string
   }

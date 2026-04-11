@@ -6146,6 +6146,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       case "session_unavailable":
         await transitionToNoSession(event.message)
         return
+      case "relay_status_changed":
+        setRelayStatusState(event.status)
+        reconcileWaitingRoom(waitingRoomState())
+        return
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
         return
@@ -6534,7 +6538,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const relayMachineRefresh = startInterval(() => {
     void refreshWaitingRoomData()
-  }, 5_000)
+  }, 30_000)
 
   onCleanup(() => {
     clearInterval(relayMachineRefresh)
