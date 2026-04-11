@@ -1,0 +1,64 @@
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: docker/lab/Dockerfile
+    image: arroba-lab:latest
+    container_name: arroba-relay
+    command: ["relay"]
+    environment:
+      ARROBA_RELAY_HOST: 0.0.0.0
+      ARROBA_RELAY_PORT: "43150"
+      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
+    ports:
+      - "43150:43150"
+
+  worker-a:
+    image: arroba-lab:latest
+    build:
+      context: ../..
+      dockerfile: docker/lab/Dockerfile
+    container_name: arroba-worker-a
+    hostname: arroba-worker-a
+    command: ["daemon"]
+    environment:
+      ARROBA_RELAY_URL: ws://relay:43150
+      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
+      ARROBA_ACCEPT_REMOTE_LEASES: "true"
+      ARROBA_MACHINE_ALIAS: arroba-worker-a
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-relay,localhost,127.0.0.1}
+    volumes:
+      - worker-a-home:/home/arroba
+    ports:
+      - "39000-39049:39000-39049"
+    depends_on:
+      - relay
+
+  worker-b:
+    image: arroba-lab:latest
+    build:
+      context: ../..
+      dockerfile: docker/lab/Dockerfile
+    container_name: arroba-worker-b
+    hostname: arroba-worker-b
+    command: ["daemon"]
+    environment:
+      ARROBA_RELAY_URL: ws://relay:43150
+      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
+      ARROBA_ACCEPT_REMOTE_LEASES: "true"
+      ARROBA_MACHINE_ALIAS: arroba-worker-b
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-relay,localhost,127.0.0.1}
+    volumes:
+      - worker-b-home:/home/arroba
+    ports:
+      - "39050-39099:39050-39099"
+    depends_on:
+      - relay
+
+volumes:
+  worker-a-home:
+  worker-b-home:

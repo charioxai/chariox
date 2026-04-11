@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+url="${1:-}"
+cat <<MSG
+
+A provider requested browser login from inside this Arroba container.
+Open this URL in your host browser:
+
+  ${url:-<no-url-provided>}
+
+If the URL points at localhost/127.0.0.1, it is inside the container.
+Use the lab compose port range or provider-specific login instructions in docker/lab/README.md.
+
+MSG
