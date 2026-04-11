@@ -118,13 +118,8 @@ impl DaemonApp {
             "Retrieved merged provider catalog",
             serde_json::json!({
                 "provider_count": catalog.all.len(),
-                "providers": catalog.all.iter().map(|p| serde_json::json!({
-                    "id": &p.id,
-                    "name": &p.name,
-                    "remote_machine_aliases": &p.remote_machine_aliases,
-                    "model_count": p.models.len(),
-                    "models": p.models.keys().collect::<Vec<_>>(),
-                })).collect::<Vec<_>>(),
+                "model_count": catalog.all.iter().map(|provider| provider.models.len()).sum::<usize>(),
+                "remote_provider_count": catalog.all.iter().filter(|provider| !provider.remote_machine_aliases.is_empty()).count(),
                 "connected": &catalog.connected,
             }),
         );

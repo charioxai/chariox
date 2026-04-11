@@ -1266,7 +1266,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flashFooter(formatError(error), "error")
     }
   }
-  const refreshWaitingRoomData = async () => {
+  let waitingRoomDataRefresh: Promise<void> | null = null
+  const refreshWaitingRoomDataNow = async () => {
     const [sessions, relayStatus] = await Promise.all([
       listSessions(client),
       getRelayStatus(client).catch((error) => {
@@ -1284,6 +1285,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setRelayStatusState(relayStatus)
     setRemoteMachinesState(machines)
     reconcileWaitingRoom(waitingRoomState())
+  }
+  const refreshWaitingRoomData = async () => {
+    if (waitingRoomDataRefresh) {
+      return waitingRoomDataRefresh
+    }
+    waitingRoomDataRefresh = refreshWaitingRoomDataNow().finally(() => {
+      waitingRoomDataRefresh = null
+    })
+    return waitingRoomDataRefresh
   }
   const applyModelSelection = async (modelId: string) => {
     const currentSelection = currentProviderSelection()
