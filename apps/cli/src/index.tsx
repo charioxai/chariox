@@ -6148,6 +6148,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       case "relay_status_changed":
         setRelayStatusState(event.status)
+        void refreshWaitingRoomData()
         reconcileWaitingRoom(waitingRoomState())
         return
       case "transport_resumed":
