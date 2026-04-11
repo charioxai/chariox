@@ -176,6 +176,7 @@ pub async fn run_daemon_relay_connector(
                             break;
                         }
                         _ = sleep(heartbeat) => {
+                            pump_leased_projection_events(&app, &outgoing_tx).await;
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
                             };
@@ -368,6 +369,100 @@ async fn handle_incoming_envelope(
         _ => {}
     }
     Ok(())
+}
+
+async fn pump_leased_projection_events(
+    app: &Arc<Mutex<DaemonApp>>,
+    outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
+) {
+    let events = {
+        let mut app = app.lock().await;
+        match app.pump_leased_runtime_projections() {
+            Ok(events) => events,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "failed to pump leased runtime projections",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        }
+    };
+    for (target_daemon_id, event) in events {
+        let config = {
+            let app = app.lock().await;
+            app.config().clone()
+        };
+        let target_kernel = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            relay_discovery::get_live_kernel(&config, &target_daemon_id),
+        )
+        .await
+        {
+            Ok(Ok(kernel)) => kernel,
+            Ok(Err(error)) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "failed to resolve leased runtime projection target",
+                    serde_json::json!({
+                        "target_daemon_id": target_daemon_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                continue;
+            }
+            Err(_) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "timed out resolving leased runtime projection target",
+                    serde_json::json!({
+                        "target_daemon_id": target_daemon_id,
+                    }),
+                );
+                continue;
+            }
+        };
+        let encrypted_event = match encrypt_peer_payload(
+            &config.relay_private_key,
+            &target_kernel.public_key,
+            &event,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "failed to encrypt leased runtime projection event",
+                    serde_json::json!({
+                        "target_daemon_id": target_daemon_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                continue;
+            }
+        };
+        if let Err(error) = send_outgoing_envelope(
+            outgoing_tx,
+            RelayEnvelope::DaemonPeerEvent {
+                target: ClientTarget {
+                    daemon_id: Some(target_daemon_id.clone()),
+                    daemon_alias: None,
+                },
+                encrypted_event,
+            },
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.relay",
+                "failed to send leased runtime projection event",
+                serde_json::json!({
+                    "target_daemon_id": target_daemon_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1057,30 +1152,9 @@ async fn handle_daemon_request(
 }
 
 fn is_supported_relay_request(request: &LocalDaemonRequest) -> bool {
-    matches!(
+    !matches!(
         request,
-        LocalDaemonRequest::ListSessions(_)
-            | LocalDaemonRequest::GetSessionState(_)
-            | LocalDaemonRequest::AttachToSession(_)
-            | LocalDaemonRequest::ResolveSession(_)
-            | LocalDaemonRequest::DetachFromSession(_)
-            | LocalDaemonRequest::GetProviderRun(_)
-            | LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
-            | LocalDaemonRequest::GetProviderAuthStatus(_)
-            | LocalDaemonRequest::StartProviderLogin(_)
-            | LocalDaemonRequest::LogoutProvider(_)
-            | LocalDaemonRequest::SubmitPrompt(_)
-            | LocalDaemonRequest::CompletePrompt(_)
-            | LocalDaemonRequest::CancelActivePrompt(_)
-            | LocalDaemonRequest::UpdateSessionConfig(_)
-            | LocalDaemonRequest::ResizeTerminal(_)
-            | LocalDaemonRequest::PumpTerminalOutput(_)
-            | LocalDaemonRequest::LaunchProviderRun(_)
-            | LocalDaemonRequest::FocusAgent(_)
-            | LocalDaemonRequest::CycleAgentFocus(_)
-            | LocalDaemonRequest::ListAgents(_)
-            | LocalDaemonRequest::EndSession(_)
+        LocalDaemonRequest::ValidateWorkflowOutput(_) | LocalDaemonRequest::AckWorkflowTurn(_)
     )
 }
 

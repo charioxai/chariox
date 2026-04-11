@@ -79,15 +79,18 @@ function makePorts() {
     workerMcpPort: base + 2001,
     homeOpenCodePort: base + 3000,
     workerOpenCodePort: base + 3001,
+    homeCodexPort: base + 3002,
+    workerCodexPort: base + 3003,
   }
 }
 
-function makeDaemonEnv({ ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, socketName, kernelPort, mcpPort, opencodePort }) {
+function makeDaemonEnv({ ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, socketName, kernelPort, mcpPort, opencodePort, codexPort }) {
   return {
     ...process.env,
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
+    ARROBA_CODEX_PORT: String(codexPort),
     ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
     ARROBA_RELAY_TOKEN: relayToken,
     ARROBA_DAEMON_ID: daemonId,
@@ -241,6 +244,7 @@ async function main() {
     kernelPort: ports.homeKernelPort,
     mcpPort: ports.homeMcpPort,
     opencodePort: ports.homeOpenCodePort,
+    codexPort: ports.homeCodexPort,
   })
   const workerEnv = makeDaemonEnv({
     ports,
@@ -255,6 +259,7 @@ async function main() {
     kernelPort: ports.workerKernelPort,
     mcpPort: ports.workerMcpPort,
     opencodePort: ports.workerOpenCodePort,
+    codexPort: ports.workerCodexPort,
   })
 
   const relayBinary = await resolveBinary(

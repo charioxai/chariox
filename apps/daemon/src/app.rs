@@ -1292,6 +1292,36 @@ impl DaemonApp {
         )))
     }
 
+    pub fn pump_leased_runtime_projections(
+        &mut self,
+    ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
+        let leased_agents = self.leased_agents.values().cloned().collect::<Vec<_>>();
+        let mut events = Vec::new();
+        for leased_agent in leased_agents {
+            let Some(provider_run_id) = self
+                .providers
+                .get_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+                .map(|run| run.id().to_string())
+            else {
+                continue;
+            };
+            let _ = self.pump_provider_output(
+                &leased_agent.backing_session_id,
+                &provider_run_id,
+                vec![leased_agent.backing_attachment_id.clone()],
+            )?;
+            if let Some(event) =
+                self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
+            {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+
     pub fn project_remote_runtime_projection(
         &mut self,
         session_id: &str,
@@ -1303,6 +1333,7 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         let _ = self.sessions.get_session(session_id)?;
         let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+        let saw_completion = !completions.is_empty();
         for chunk in output_chunks {
             self.terminal.fan_out_output(
                 session_id,
@@ -1354,6 +1385,42 @@ impl DaemonApp {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
+        }
+        if saw_completion
+            && self
+                .sessions
+                .get_session(session_id)?
+                .active_prompt_for_agent(agent_id)
+                .is_some()
+        {
+            let remote_execution = self.agents.get_agent(agent_id)?.remote_execution().cloned();
+            let (_session, completed) = self
+                .sessions
+                .complete_active_prompt_only(session_id, agent_id)?;
+            crate::scheduler::runtime::on_workflow_prompt_completed(
+                self,
+                session_id,
+                &completed,
+                Some(provider_run_id),
+            )?;
+            if let Some(remote_execution) = remote_execution {
+                if self
+                    .sessions
+                    .get_session(session_id)?
+                    .active_prompt_for_agent(agent_id)
+                    .is_none()
+                {
+                    let started_next = self.advance_next_queued_prompt_remote(
+                        session_id,
+                        agent_id,
+                        &remote_execution.worker_kernel_id,
+                        &remote_execution.leased_agent_id,
+                    )?;
+                    if started_next.is_none() {
+                        self.sync_focused_provider_run_if_idle(session_id)?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1528,7 +1595,7 @@ impl DaemonApp {
             })
     }
 
-    fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>
+    pub(crate) fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>
     where
         F: std::future::Future<Output = Result<T, DaemonError>>,
     {

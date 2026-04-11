@@ -1,6 +1,10 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem};
+use arroba_relay::protocol::ClientTarget;
+
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 pub(crate) mod flow_control;
 pub(crate) mod mcp_server;
@@ -85,6 +89,29 @@ impl TransportService {
         target_agent_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<(), DaemonError> {
+        let target_agent = app.agents().get_agent(target_agent_id)?;
+        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+                app.config(),
+                ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::SubmitLeasedPrompt {
+                    leased_agent_id: remote_execution.leased_agent_id,
+                    prompt: prompt.prompt().to_string(),
+                    attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
+                },
+            ));
+            return match response {
+                Ok(RelayPeerResponse::LeasedPromptSubmitted { .. }) => Ok(()),
+                Ok(other) => Err(DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: format!("unexpected remote workflow prompt response: {other:?}"),
+                }),
+                Err(error) => Err(error),
+            };
+        }
         let dispatch = |app: &mut DaemonApp, provider_run_id: &str| {
             app.dispatch_prompt_to_provider(
                 session_id,

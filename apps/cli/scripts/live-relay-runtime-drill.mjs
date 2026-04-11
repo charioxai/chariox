@@ -95,6 +95,7 @@ function makePorts() {
     kernelPort: base + 1000,
     mcpPort: base + 2000,
     opencodePort: base + 3000,
+    codexPort: base + 3001,
   }
 }
 
@@ -117,6 +118,7 @@ function makeChildrenEnv(ports, rootDir) {
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
       ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+      ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
       ARROBA_RELAY_TOKEN: relayToken,
       ARROBA_DAEMON_ID: daemonId,

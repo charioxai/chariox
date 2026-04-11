@@ -662,7 +662,7 @@ impl DaemonApp {
         }
     }
 
-    fn serialize_remote_prompt_attachments(
+    pub(crate) fn serialize_remote_prompt_attachments(
         &self,
         attachments: &[PromptAttachment],
     ) -> Result<Vec<RelayPromptAttachment>, DaemonError> {

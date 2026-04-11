@@ -1,17 +1,40 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
+const cliRuntimeDir = path.join(cliRoot, '.tmp-live-workflow-runtime-drill')
 
-const distIpcUrl = pathToFileURL(path.join(cliRoot, 'dist', 'ipc.js')).href
-const distRequestsUrl = pathToFileURL(path.join(cliRoot, 'dist', 'ipc-requests.js')).href
-const { LocalIpcClient } = await import(distIpcUrl)
-const requests = await import(distRequestsUrl)
+async function loadCliModules(runtimeDir) {
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
+    const sourcePath = path.join(cliRoot, rel)
+    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
+    const code = await readFile(sourcePath, 'utf8')
+    const transformed = await transformAsync(code, {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await writeFile(outPath, transformed?.code ?? '', 'utf8')
+  }
+  const ipcUrl = new URL(`file://${path.join(runtimeDir, 'ipc.js')}`).href
+  const requestsUrl = new URL(`file://${path.join(runtimeDir, 'ipc-requests.js')}`).href
+  const { LocalIpcClient } = await import(ipcUrl)
+  const requests = await import(requestsUrl)
+  return { LocalIpcClient, requests }
+}
+
+await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+await mkdir(cliRuntimeDir, { recursive: true })
+const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
 
 const {
   createSessionRequest,
@@ -45,6 +68,11 @@ function parseArgs(argv) {
   const options = {
     scenario: 'simple-chain',
     kernel: DEFAULT_KERNEL,
+    relayUrl: null,
+    relayToken: null,
+    targetDaemonId: null,
+    targetDaemonAlias: null,
+    machineRef: null,
     workspace: DEFAULT_WORKSPACE,
     worktree: DEFAULT_WORKTREE,
     model: DEFAULT_MODEL,
@@ -58,6 +86,11 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === '--scenario') options.scenario = argv[++index]
     else if (arg === '--kernel') options.kernel = argv[++index]
+    else if (arg === '--relay-url') options.relayUrl = argv[++index]
+    else if (arg === '--relay-token') options.relayToken = argv[++index]
+    else if (arg === '--target-daemon-id') options.targetDaemonId = argv[++index]
+    else if (arg === '--target-daemon-alias') options.targetDaemonAlias = argv[++index]
+    else if (arg === '--machine-ref') options.machineRef = argv[++index]
     else if (arg === '--workspace') options.workspace = argv[++index]
     else if (arg === '--worktree') options.worktree = argv[++index]
     else if (arg === '--model') options.model = argv[++index]
@@ -79,6 +112,8 @@ function printHelp() {
     'Options:',
     '  --scenario simple-chain|validated-increment-chain|console-increment-chain|final-run-output-chain|cyclic-final-run-output-chain|cyclic-budgeted-final-run-output-chain|cyclic-final-run-with-intermediate-output-chain',
     `  --kernel ${DEFAULT_KERNEL}`,
+    '  --relay-url ws://127.0.0.1:45168 --relay-token TOKEN --target-daemon-alias NAME',
+    '  --machine-ref MACHINE_ALIAS',
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
     `  --model ${DEFAULT_MODEL}`,
@@ -90,10 +125,24 @@ function printHelp() {
   ].join('\n'))
 }
 
+function validateConnectionOptions(options) {
+  const usingRelay = Boolean(options.relayUrl)
+  if (usingRelay && (!options.relayToken || (!options.targetDaemonId && !options.targetDaemonAlias))) {
+    throw new Error('--relay-url requires --relay-token and one of --target-daemon-id/--target-daemon-alias')
+  }
+  if (usingRelay && options.kernel !== DEFAULT_KERNEL && options.kernel) {
+    throw new Error('--kernel cannot be combined with relay connection options')
+  }
+  if (!usingRelay && options.machineRef && options.spawnDaemon) {
+    return
+  }
+}
+
 function deriveSpawnedKernelUrl() {
   const kernelPort = 44000 + Math.floor(Math.random() * 1000)
   const mcpPort = kernelPort + 1000
   const opencodePort = kernelPort + 2000
+  const codexPort = kernelPort + 2001
   const socketPath = path.join(os.tmpdir(), `arroba-drill-${process.pid}-${Date.now()}.sock`)
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
@@ -102,6 +151,7 @@ function deriveSpawnedKernelUrl() {
       ARROBA_KERNEL_PORT: String(kernelPort),
       ARROBA_MCP_PORT: String(mcpPort),
       ARROBA_OPENCODE_PORT: String(opencodePort),
+      ARROBA_CODEX_PORT: String(codexPort),
       ARROBA_DAEMON_SOCKET: socketPath,
       ARROBA_DAEMON_ID: `drill-${process.pid}-${Date.now()}`,
     },
@@ -488,6 +538,7 @@ function createScenario(options, schemaPath) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  validateConnectionOptions(options)
   if (options.help) {
     printHelp()
     return
@@ -519,7 +570,13 @@ async function main() {
       { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
     )
   }
-  const client = new LocalIpcClient(kernelUrl)
+  const client = options.relayUrl
+    ? new LocalIpcClient(options.relayUrl, {
+        relayAuthToken: options.relayToken,
+        targetDaemonId: options.targetDaemonId,
+        targetDaemonAlias: options.targetDaemonAlias,
+      })
+    : new LocalIpcClient(kernelUrl)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
   const pidExists = (pid) => {
@@ -579,13 +636,24 @@ async function main() {
     for (let index = 0; index < scenario.providers.length; index += 1) {
       const provider = scenario.providers[index]
       logStep('spawn_agent', { index, provider })
+      const spawnRequest = options.machineRef
+        ? {
+            SpawnAgent: {
+              session_id: session.id,
+              provider,
+              alias: `a${index + 1}`,
+              model: scenario.model,
+              effort: 'medium',
+              worktree_id: options.worktree,
+              machine_ref: options.machineRef,
+            },
+          }
+        : spawnAgentRequest(session.id, provider, `a${index + 1}`, scenario.model, options.worktree, 'medium')
       const agent = unwrap(
-        await client.send(spawnAgentRequest(session.id, provider, `a${index + 1}`, scenario.model, options.worktree, 'medium')),
+        await client.send(spawnRequest),
         'AgentSpawned',
       ).agent
       agentIds.push(agent.id)
-      logStep('launch_provider_run', { index, provider, agentId: agent.id })
-      await client.send(launchProviderRunRequest(session.id, provider, 'default', scenario.model, 'medium', agent.id))
     }
 
     logStep('create_workflow', { alias: scenario.alias })
