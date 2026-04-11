@@ -1230,6 +1230,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const activateWaitingRoom = async () => {
     try {
+      if (waitingRoomState().focus === "relay") {
+        setPromptText("/relay use ")
+        promptInput?.focus()
+        syncCommandCenter("/relay use ")
+        flashFooter("enter relay URL and token, then press Enter", "info")
+        return
+      }
       const decision = deriveWaitingRoomActivationDecision({
         state: waitingRoomState(),
         sessions: availableSessions(),

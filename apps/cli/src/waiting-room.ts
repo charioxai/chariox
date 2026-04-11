@@ -21,7 +21,7 @@ function formatWaitingRoomSessionTitle(session: SessionListEntry) {
   return `${session.id} (${session.alias})`
 }
 
-export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session"
+export type WaitingRoomFocus = "new" | "provider" | "model" | "effort" | "session" | "relay"
 
 export type WaitingRoomKeyState = {
   up: boolean
@@ -244,6 +244,67 @@ export function waitingRoomRows(
       scrollbar: "",
     },
     {
+      id: "join-header",
+      title: "Join Existing Session",
+      value: "",
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: true,
+      scrollbar: "",
+    },
+  ]
+
+  if (visibleSessions.length === 0) {
+    rows.push({
+      id: "no-sessions",
+      title: "No sessions available",
+      value: "",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+  } else {
+    rows.push({
+      id: "session-header",
+      title: "Session",
+      value: "",
+      titleWidth,
+      columns: [
+        formatWaitingRoomColumnHeader("Status", statusWidth),
+        formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
+        formatWaitingRoomColumnHeader("Created at", createdAtWidth),
+      ],
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+
+    for (const [offset, session] of windowSessions.entries()) {
+      const sessionIndex = sessionWindow.start + offset
+      rows.push({
+        id: `session:${session.id}`,
+        title: formatWaitingRoomSessionTitle(session),
+        value: formatSessionStatus(session.status),
+        titleWidth,
+        columns: [
+          formatWaitingRoomColumn(formatSessionStatus(session.status), statusWidth),
+          formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
+          formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
+        ],
+        indent: 1,
+        focused: state.focus === "session" && state.sessionIndex === sessionIndex,
+        selectable: true,
+        scrollbar: sessionScrollbar[offset] ?? "",
+      })
+    }
+  }
+
+  rows.push(
+    {
       id: "provider",
       title: "Provider",
       value: formatBackendProviderLabel(choice.providerId),
@@ -273,73 +334,18 @@ export function waitingRoomRows(
       selectable: true,
       scrollbar: "",
     },
-    ...waitingRoomRemoteRows(remote, titleWidth),
-    {
-      id: "join-header",
-      title: "Join Existing Session",
-      value: "",
-      titleWidth,
-      indent: 0,
-      focused: false,
-      selectable: true,
-      scrollbar: "",
-    },
-  ]
-
-  if (visibleSessions.length === 0) {
-    rows.push({
-      id: "no-sessions",
-      title: "No sessions available",
-      value: "",
-      titleWidth,
-      indent: 1,
-      focused: false,
-      selectable: false,
-      scrollbar: "",
-    })
-    return rows
-  }
-
-  rows.push({
-    id: "session-header",
-    title: "Session",
-    value: "",
-    titleWidth,
-    columns: [
-      formatWaitingRoomColumnHeader("Status", statusWidth),
-      formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
-      formatWaitingRoomColumnHeader("Created at", createdAtWidth),
-    ],
-    indent: 1,
-    focused: false,
-    selectable: false,
-    scrollbar: "",
-  })
-
-  for (const [offset, session] of windowSessions.entries()) {
-    const sessionIndex = sessionWindow.start + offset
-    rows.push({
-      id: `session:${session.id}`,
-      title: formatWaitingRoomSessionTitle(session),
-      value: formatSessionStatus(session.status),
-      titleWidth,
-      columns: [
-        formatWaitingRoomColumn(formatSessionStatus(session.status), statusWidth),
-        formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),
-        formatWaitingRoomColumn(formatSessionTimestamp(session.created_at_ms ?? null), createdAtWidth),
-      ],
-      indent: 1,
-      focused: state.focus === "session" && state.sessionIndex === sessionIndex,
-      selectable: true,
-      scrollbar: sessionScrollbar[offset] ?? "",
-    })
-  }
+    ...waitingRoomRemoteRows(state, remote, titleWidth),
+  )
 
   return rows
 }
 
 
-function waitingRoomRemoteRows(remote: WaitingRoomRemoteState, titleWidth: number): WaitingRoomRow[] {
+function waitingRoomRemoteRows(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+  titleWidth: number,
+): WaitingRoomRow[] {
   const relay = remote.relay ?? null
   const machines = remote.machines ?? []
   const pendingCount = machines.filter((machine) => machine.pending).length
@@ -362,12 +368,12 @@ function waitingRoomRemoteRows(remote: WaitingRoomRemoteState, titleWidth: numbe
     },
     {
       id: "relay-configure",
-      title: relay?.configured ? "Configure Relay" : "Configure Relay",
+      title: "Configure Relay",
       value: "/relay use <ws-url> <token>",
       titleWidth,
       indent: 1,
-      focused: false,
-      selectable: false,
+      focused: state.focus === "relay",
+      selectable: true,
       scrollbar: "",
     },
     {
@@ -512,10 +518,11 @@ function waitingRoomFocusTargets(sessions: SessionListEntry[]) {
   const visibleSessions = waitingRoomSessions(sessions)
   return [
     { focus: "new" as const, sessionIndex: 0 },
+    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
-    ...visibleSessions.map((_, sessionIndex) => ({ focus: "session" as const, sessionIndex })),
+    { focus: "relay" as const, sessionIndex: 0 },
   ]
 }
 

@@ -64,18 +64,21 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "openai/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 4)
+  state = moveWaitingRoomFocus(state, sessions, 1)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
-  assert.equal(firstWindow[1]?.indent, 1)
-  assert.equal(firstWindow[3]?.title, "Variant")
+  assert.equal(firstWindow[1]?.title, "Join Existing Session")
+  assert.equal(firstWindow[1]?.indent, 0)
+  assert.equal(firstWindow.find((row) => row.id === "provider")?.indent, 1)
+  assert.equal(firstWindow.find((row) => row.id === "effort")?.title, "Variant")
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
     ["Status", "Last used", "Created at"],
   )
-  assert.equal(firstWindow[6]?.title, "session-1 (alpha)")
+  const firstSessionRow = firstWindow.find((row) => row.id === "session:session-1")
+  assert.equal(firstSessionRow?.title, "session-1 (alpha)")
   assert.deepEqual(
-    firstWindow[6]?.columns?.map((cell) => cell.trim()),
+    firstSessionRow?.columns?.map((cell) => cell.trim()),
     ["Active", "2026-04-06 11:00 UTC", "2026-04-06 10:00 UTC"],
   )
   assert.equal(firstWindow.filter((row) => row.id.startsWith("session:")).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
@@ -87,7 +90,7 @@ test("waiting room renders indented sections and scrolls existing sessions", () 
 
   const scrolledWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(scrolledWindow.find((row) => row.focused)?.title, "session-11")
-  assert.equal(scrolledWindow[6]?.title, "session-2")
+  assert.equal(scrolledWindow.find((row) => row.id.startsWith("session:"))?.title, "session-2")
 })
 
 test("waiting room renders session rows with alias text", () => {
@@ -108,6 +111,32 @@ test("waiting room renders session rows with alias text", () => {
   const aliasedSessionRow = rows.find((row) => row.id === "session:session-1")
 
   assert.equal(aliasedSessionRow?.title, "session-1 (frontend)")
+})
+
+test("waiting room places join below start and makes relay configure selectable", () => {
+  const catalog = fallbackProviderCatalog()
+  let state = createWaitingRoomState([], catalog, "opencode", "openai/gpt-5.4", "high")
+  const rows = waitingRoomRows(state, [], catalog, {
+    relay: {
+      configured: false,
+      connected: false,
+    },
+  })
+
+  assert.equal(rows[0]?.id, "new")
+  assert.equal(rows[1]?.id, "join-header")
+  assert.equal(rows[1]?.title, "Join Existing Session")
+
+  state = moveWaitingRoomFocus(state, [], 4)
+  const relayRows = waitingRoomRows(state, [], catalog, {
+    relay: {
+      configured: false,
+      connected: false,
+    },
+  })
+  const relayConfigure = relayRows.find((row) => row.id === "relay-configure")
+  assert.equal(relayConfigure?.selectable, true)
+  assert.equal(relayConfigure?.focused, true)
 })
 
 test("waiting room keeps session metadata column widths stable across scroll windows", () => {
