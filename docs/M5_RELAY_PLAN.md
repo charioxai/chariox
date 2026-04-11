@@ -131,6 +131,8 @@ The CLI must be configurable with:
 - relay credential/token
 - target daemon id or alias
 
+For CLI-side relay configuration, prefer `ARROBA_RELAY_TOKEN` plus `/relay use <ws-url>` so the token does not have to be typed into visible terminal scrollback. `/relay use <ws-url> <token>` remains available for self-hosted/manual testing.
+
 ### v1 mode rule
 
 The CLI should not silently decide between local and relay paths in the first slice.

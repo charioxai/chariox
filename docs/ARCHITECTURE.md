@@ -349,6 +349,7 @@ Current architectural interpretation:
 - the same CLI should support local direct daemon operation and relay-mediated remote operation without becoming two apps
 - the CLI should always open the waiting room first; local sessions remain available even when relay is not configured or disconnected
 - relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
+- `/relay use <ws-url>` may read the token from `ARROBA_RELAY_TOKEN`; passing the token as a visible slash-command argument remains supported for self-hosted/manual testing but should not be the preferred documented path for shared terminals or screenshots
 - the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
 - the home kernel maintains local machine trust state: live unknown machines are pending, `/machine approve` makes them spawn targets, `/machine rename` stores a user alias, and `/machine forget` hides them from normal machine/provider availability

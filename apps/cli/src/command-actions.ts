@@ -963,9 +963,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       const relayUrl = args[0]
-      const relayToken = args[1]
-      if (!relayUrl || !relayToken) {
-        deps.flashFooter("usage: /relay use <ws-url> <token>", "error")
+      const relayToken = args[1] ?? process.env.ARROBA_RELAY_TOKEN
+      if (!relayUrl) {
+        deps.flashFooter("usage: /relay use <ws-url> [token]", "error")
+        return
+      }
+      if (!relayToken) {
+        deps.flashFooter("relay token missing; pass it or set ARROBA_RELAY_TOKEN", "error")
         return
       }
       const status = await deps.configureRelay(relayUrl, relayToken)
@@ -986,7 +990,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter("relay disabled", "info")
       return
     }
-    deps.flashFooter("usage: /relay status | /relay use <ws-url> <token> | /relay disable", "error")
+    deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable", "error")
   }
 
   const handleMachineCommand = async (
