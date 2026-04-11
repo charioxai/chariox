@@ -150,6 +150,20 @@ export type KernelEvent =
     }
   }
   | {
+    event: "remote_machines_changed"
+    machines: Array<{
+      machine_id: string
+      machine_alias?: string | null
+      registry_alias?: string | null
+      display_name: string
+      trust_status: "approved" | "pending" | "forgotten"
+      online: boolean
+      pending: boolean
+      kernel_count: number
+      available_providers?: string[]
+    }>
+  }
+  | {
     event: "heartbeat"
     session_id: string
   }

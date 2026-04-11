@@ -18,7 +18,7 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus, RemoteMachineRecord};
 use crate::provider::RuntimeProviderRun;
 use crate::session::RuntimeSession;
 use crate::terminal::{
@@ -28,6 +28,7 @@ use crate::terminal::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
+const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 
@@ -98,6 +99,9 @@ pub(crate) enum KernelEvent {
     },
     RelayStatusChanged {
         status: RelayStatus,
+    },
+    RemoteMachinesChanged {
+        machines: Vec<RemoteMachineRecord>,
     },
     Heartbeat {
         session_id: String,
@@ -528,6 +532,7 @@ async fn run_subscription_loop(
 ) {
     let mut previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)> = None;
     let mut previous_relay_status: Option<RelayStatus> = None;
+    let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut tick: u64 = 0;
 
     loop {
@@ -634,7 +639,7 @@ async fn run_subscription_loop(
                 {
                     break;
                 }
-                if tick.is_multiple_of(STATE_INTERVAL_TICKS) {
+                if tick.is_multiple_of(HEARTBEAT_INTERVAL_TICKS) {
                     match relay_status_snapshot_for_events(&app).await {
                         Ok(status) => {
                             if previous_relay_status.as_ref() != Some(&status) {
@@ -658,6 +663,39 @@ async fn run_subscription_loop(
                             crate::logging::warn_with_fields(
                                 "daemon.kernel_transport",
                                 "kernel event loop failed to build relay status snapshot",
+                                serde_json::json!({
+                                    "session_id": subscription.session_id,
+                                    "attachment_id": subscription.attachment_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
+                if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
+                    match remote_machines_snapshot_for_events(&app).await {
+                        Ok(machines) => {
+                            if previous_remote_machines.as_ref() != Some(&machines) {
+                                previous_remote_machines = Some(machines.clone());
+                                if !emit_kernel_event(
+                                    &runtime,
+                                    &outgoing_tx,
+                                    &close_tx,
+                                    &close_requested,
+                                    KernelEvent::RemoteMachinesChanged { machines },
+                                    Some(&subscription.session_id),
+                                    Some(&subscription.attachment_id),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.kernel_transport",
+                                "kernel event loop failed to build remote machines snapshot",
                                 serde_json::json!({
                                     "session_id": subscription.session_id,
                                     "attachment_id": subscription.attachment_id,
@@ -708,6 +746,23 @@ async fn relay_status_snapshot_for_events(
         machine_id: config.host_machine_id,
         machine_alias: config.host_machine_alias,
     })
+}
+
+async fn remote_machines_snapshot_for_events(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> Result<Vec<RemoteMachineRecord>, DaemonError> {
+    let config = {
+        let app = app.lock().await;
+        app.config().clone()
+    };
+    if config.relay_url.is_none() || config.relay_token.is_none() {
+        return Ok(Vec::new());
+    }
+    let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
+    Ok(crate::local::provider_requests::remote_machine_records(
+        machines,
+        &config.host_machine_id,
+    ))
 }
 
 pub(crate) enum WatchResult {
@@ -932,6 +987,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::SessionUnavailable { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RelayStatusChanged { .. } => None,
+        KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
     }
@@ -961,6 +1017,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         KernelEvent::SessionSnapshot { .. }
         | KernelEvent::SessionUnavailable { .. }
         | KernelEvent::RelayStatusChanged { .. }
+        | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. } => true,
     }

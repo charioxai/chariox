@@ -6151,6 +6151,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         void refreshWaitingRoomData()
         reconcileWaitingRoom(waitingRoomState())
         return
+      case "remote_machines_changed":
+        setRemoteMachinesState(event.machines)
+        reconcileWaitingRoom(waitingRoomState())
+        return
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
         return

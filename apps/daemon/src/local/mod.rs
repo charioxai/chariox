@@ -18,7 +18,7 @@ pub use api::{
     ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
     ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest,
     PollRuntimeNoticesRequest, PumpTerminalOutputRequest, ReadDirectoryTreeCapabilityRequest,
-    ReadFileCapabilityRequest, RelayStatus, RemoveQueuedWorkflowLaunchRequest,
+    ReadFileCapabilityRequest, RelayStatus, RemoteMachineRecord, RemoveQueuedWorkflowLaunchRequest,
     RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RemoveWorkflowWatchdogRequest,
     ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
     RunShellCapabilityRequest, SetWorkflowFlushContextRequest,
