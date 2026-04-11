@@ -10,7 +10,7 @@ RUN pnpm install --frozen-lockfile
 COPY apps/cli apps/cli
 RUN pnpm --filter @arroba/cli run build
 
-FROM rust:1.85-bookworm AS rust-builder
+FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /opt/arroba
 COPY apps/relay apps/relay
 COPY apps/daemon apps/daemon

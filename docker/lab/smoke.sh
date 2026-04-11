@@ -42,9 +42,15 @@ if ! docker logs --tail 120 arroba-relay 2>&1 | grep -q "arroba relay listening"
 fi
 
 for container in arroba-worker-a arroba-worker-b; do
-  if ! docker logs --tail 160 "$container" 2>&1 | grep -q "ready on machine"; then
-    echo "$container did not print daemon readiness" >&2
+  if ! docker exec "$container" sh -lc 'pgrep -x arroba-daemon >/dev/null'; then
+    echo "$container is running but arroba-daemon is not alive" >&2
     docker logs --tail 160 "$container" >&2 || true
+    exit 1
+  fi
+
+  if ! docker exec "$container" sh -lc 'grep -R "ready on machine" "$HOME/.local/state/arroba/logs" >/dev/null 2>&1'; then
+    echo "$container did not record daemon readiness" >&2
+    docker exec "$container" sh -lc 'cat "$HOME"/.local/state/arroba/logs/*.ndjson 2>/dev/null | tail -n 160' >&2 || true
     exit 1
   fi
 done
