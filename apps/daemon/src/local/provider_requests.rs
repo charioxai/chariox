@@ -10,9 +10,9 @@ use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
 
 use super::api::{
-    GetProviderAuthStatusRequest, GetProviderRunRequest, LaunchProviderRunRequest,
-    ListRemoteMachineKernelsRequest, LocalDaemonResponse, LogoutProviderRequest,
-    StartProviderLoginRequest,
+    ConfigureRelayRequest, GetProviderAuthStatusRequest, GetProviderRunRequest,
+    LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse,
+    LogoutProviderRequest, RelayStatus, StartProviderLoginRequest,
 };
 
 impl DaemonApp {
@@ -124,6 +124,40 @@ impl DaemonApp {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::ProviderCommandCatalogs {
             catalogs: default_provider_command_catalogs(),
+        })
+    }
+
+    pub(super) fn handle_relay_status_request(
+        &mut self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::RelayStatus {
+            status: self.relay_status_snapshot()?,
+        })
+    }
+
+    pub(super) fn handle_configure_relay_request(
+        &mut self,
+        request: ConfigureRelayRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.configure_relay(request.relay_url, request.relay_token)?;
+        Ok(LocalDaemonResponse::RelayConfigured {
+            status: self.relay_status_snapshot()?,
+        })
+    }
+
+    fn relay_status_snapshot(&self) -> Result<RelayStatus, DaemonError> {
+        let relay_state = self.relay_client_state();
+        let connected = block_on_relay_query(async move {
+            Ok::<bool, DaemonError>(relay_state.read().await.connected())
+        })?;
+        Ok(RelayStatus {
+            configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
+            connected,
+            relay_url: self.config().relay_url.clone(),
+            relay_token_configured: self.config().relay_token.is_some(),
+            daemon_id: self.config().daemon_id.clone(),
+            machine_id: self.config().host_machine_id.clone(),
+            machine_alias: self.config().host_machine_alias.clone(),
         })
     }
 

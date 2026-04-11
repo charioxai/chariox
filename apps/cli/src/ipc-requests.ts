@@ -515,6 +515,19 @@ export function getProviderCatalogRequest() {
   return { GetProviderCatalog: null }
 }
 
+export function relayStatusRequest() {
+  return { RelayStatus: null }
+}
+
+export function configureRelayRequest(relayUrl: string | null, relayToken: string | null) {
+  return {
+    ConfigureRelay: {
+      relay_url: relayUrl,
+      relay_token: relayToken,
+    },
+  }
+}
+
 export function listRemoteMachinesRequest() {
   return { ListRemoteMachines: null }
 }

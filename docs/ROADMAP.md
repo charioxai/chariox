@@ -292,14 +292,11 @@ Outcomes:
   - persisted `daemon_id`
   - persisted `machine_id`
   - optional human-friendly daemon alias
-- daemon outbound registration to one active relay endpoint at a time
-- same CLI supports both:
-  - local direct connection
-  - relay-mediated remote connection
-- explicit connection-mode selection in the CLI:
-  - `local`
-  - `relay`
-  - possible `auto` only after the model is stable
+- daemon outbound registration to one active relay endpoint at a time, configured from the CLI or waiting-room relay panel
+- the CLI always starts in the normal waiting room; local sessions are never blocked by relay setup or relay failures
+- relay auto-connect happens in the background after a relay is configured; the waiting room updates when connected, and active sessions may surface a small informational footer when remote capability becomes available
+- the waiting room keeps relay status and relay actions together under a `Relay` section, including the currently configured relay and the option to configure another one while connected
+- the same CLI supports both local direct operation and relay-mediated remote operation without a separate remote CLI app
 - remote terminal attachment through relay using the same daemon-owned request/event semantics
 - remote event subscription, heartbeat, reconnect, and resume behavior
 - self-hosted relay mode for the open-source project:
@@ -312,17 +309,26 @@ Outcomes:
 
 Exit criteria:
 
-- a daemon can register to a relay and remain connected through an outbound connection
+- a daemon can register to a configured relay in the background and remain connected through an outbound connection
+- the waiting room shows local status, relay status/actions, and machine status in one surface
 - a CLI can connect through the relay to a selected daemon by id or alias
 - remote prompt submission and output streaming work without changing daemon session authority
 - the relay remains a transport broker, not a workspace/workflow authority
 - open-source self-hosted relay usage does not depend on any external managed service
 
+
+## M5 Docker Remote-Machine Lab
+
+The Docker lab is part of validating M5/M6 locally before requiring real separate machines. The repository should provide an Arroba base image that includes all Arroba apps (`arroba` CLI, daemon/kernel, and relay) plus required runtime dependencies. Provider installation and provider login remain the user's responsibility inside each container. Containers must have outbound internet for provider model calls, provider installation, hosted relay access, and provider login. Browser-based provider login is handled as a provider compatibility concern: the base image may include URL-printing browser shims, and each launch provider is tested/documented individually for Linux/container login behavior, callback ports, credential persistence, and normal prompt execution after restart.
+
+The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Arroba as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`.
+
 ## M6 - Remote Agents and Machine Membership
 
 Outcomes:
 
-- remote machine registration on top of relay connectivity
+- remote machine registration on top of relay connectivity, with machine status displayed in the waiting room; pending machines are shown inline in the machine section rather than as a separate mode
+- all machine management operations are available as in-CLI slash commands such as `/machine list`, `/machine kernels <machine-ref>`, and later `/machine approve|forget|rename ...`
 - remote daemons can host top-level Arroba-managed agents for the same logical collaboration model
 - session membership spanning multiple machines
 - remote agent routing and lifecycle ownership

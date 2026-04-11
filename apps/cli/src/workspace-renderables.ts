@@ -16,7 +16,7 @@ import type {
 import type { ProviderCatalog } from "./provider-catalog.js"
 import { SESSION_NEW_HELP_TEXT } from "./sessions.js"
 import { SplitBorder, theme } from "./theme.js"
-import type { WaitingRoomState } from "./waiting-room.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room.js"
 import {
   arrobaArtFrame,
   waitingRoomMenuMinWidth,
@@ -152,6 +152,7 @@ export function buildNoSessionRenderable(
   state: WaitingRoomState,
   sessions: RuntimeSession[],
   catalog: ProviderCatalog,
+  remote: WaitingRoomRemoteState = {},
 ) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
@@ -161,7 +162,7 @@ export function buildNoSessionRenderable(
     alignItems: "center",
     gap: 1,
   })
-  const rows = waitingRoomRows(state, sessions, catalog)
+  const rows = waitingRoomRows(state, sessions, catalog, remote)
   const noSessionText = "No session attached. Dial in and choose your next run."
   const sessionWarning = theme.warning
   const menuRows = rows.map((row) => {

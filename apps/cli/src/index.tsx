@@ -70,6 +70,7 @@ import { createKernelEventController } from "./kernel-event-controller.js"
 import {
   attachToSessionRequest,
   cancelActivePromptRequest,
+  configureRelayRequest,
   captureScreenshotRequest,
   aliasSessionRequest,
   createSessionRequest,
@@ -89,6 +90,7 @@ import {
   listProviderProcessesRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
+  relayStatusRequest,
   logoutProviderRequest,
   listSessionsRequest,
   pollRuntimeNoticesRequest,
@@ -291,6 +293,24 @@ const HOTKEY_DIALOG_WIDTH = 72
 type HotkeyItem = {
   keys: string
   description: string
+}
+
+
+type RelayStatusView = {
+  configured: boolean
+  connected: boolean
+  relay_url?: string | null
+  relay_token_configured: boolean
+  daemon_id: string
+  machine_id: string
+  machine_alias?: string | null
+}
+
+type RemoteMachineView = {
+  machine_id: string
+  machine_alias?: string | null
+  kernel_count: number
+  available_providers?: string[]
 }
 
 type HotkeySection = {
@@ -504,6 +524,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const [availableSessions, setAvailableSessions] = createSignal<RuntimeSession[]>(initialSessions)
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
+  const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
+  const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
@@ -1230,14 +1252,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
   const refreshWaitingRoomData = async () => {
-    const [sessions, catalog, commandCatalogs] = await Promise.all([
+    const [sessions, catalog, commandCatalogs, relayStatus] = await Promise.all([
       listSessions(client),
       getProviderCatalog(client, appLogger),
       getProviderCommandCatalogs(client, appLogger),
+      getRelayStatus(client).catch((error) => {
+        appLogger?.warn("relay status refresh failed", { error: formatError(error) })
+        return null
+      }),
     ])
+    const machines = relayStatus?.configured
+      ? await listRemoteMachines(client).catch((error) => {
+        appLogger?.warn("remote machine refresh failed", { error: formatError(error) })
+        return []
+      })
+      : []
     setAvailableSessions(sessions)
     setProviderCatalogState(catalog)
     setProviderCommandCatalogState(commandCatalogs)
+    setRelayStatusState(relayStatus)
+    setRemoteMachinesState(machines)
     reconcileWaitingRoom(waitingRoomState())
   }
   const applyModelSelection = async (modelId: string) => {
@@ -4449,7 +4483,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ? (sessionHydrating()
             ? buildLoadingTranscriptRenderable(renderer)
             : buildEmptyTranscriptRenderable(renderer))
-        : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState())
+        : buildNoSessionRenderable(renderer, waitingRoomState(), availableSessions(), providerCatalogState(), {
+          relay: relayStatusState(),
+          machines: remoteMachinesState(),
+        })
       transcriptScrollbox.add(emptyTranscriptRenderable)
       if (isAttached()) {
         transcriptScrollbox.scrollTo({ x: transcriptScrollbox.scrollLeft, y: 0 })
@@ -4959,6 +4996,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleCycleAgentFocus,
     handleAgentCommand,
     handleMachineCommand,
+    handleRelayCommand,
     handleWorkflowCommand,
   } = createCommandActionHandlers({
     workspace: options.workspace ?? process.cwd(),
@@ -4990,6 +5028,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
     startProviderLogin: (provider) => startProviderLogin(client, provider),
     logoutProvider: (provider) => logoutProvider(client, provider),
+    getRelayStatus: () => getRelayStatus(client),
+    configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
+    refreshWaitingRoomData,
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     listProviderProcesses: async (provider) => {
@@ -5204,6 +5245,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onMachine: async (command) => {
         try {
           await handleMachineCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onRelay: async (command) => {
+        try {
+          await handleRelayCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -5430,6 +5478,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       onAgent: async (command) => {
         try {
           await handleAgentCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onMachine: async (command) => {
+        try {
+          await handleMachineCommand(command)
+        } catch (error) {
+          flashFooter(formatError(error), "error")
+        }
+      },
+      onRelay: async (command) => {
+        try {
+          await handleRelayCommand(command)
         } catch (error) {
           flashFooter(formatError(error), "error")
         }
@@ -6446,7 +6508,16 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearInterval(waitingRoomAnimation)
   })
 
+  const relayMachineRefresh = startInterval(() => {
+    void refreshWaitingRoomData()
+  }, 5_000)
+
+  onCleanup(() => {
+    clearInterval(relayMachineRefresh)
+  })
+
   onMount(() => {
+    void refreshWaitingRoomData()
     void hydrateCurrentAttachedSession("mount")
   })
 
@@ -6840,12 +6911,22 @@ async function getProviderCommandCatalogs(
   }
 }
 
-async function listRemoteMachines(client: LocalIpcClient): Promise<Array<{
-  machine_id: string
-  machine_alias?: string | null
-  kernel_count: number
-  available_providers?: string[]
-}>> {
+
+async function getRelayStatus(client: LocalIpcClient): Promise<RelayStatusView> {
+  const response = await client.send<Record<string, unknown>>(relayStatusRequest())
+  return expectVariant<{ status: RelayStatusView }>(response, "RelayStatus").status
+}
+
+async function configureRelay(
+  client: LocalIpcClient,
+  relayUrl: string | null,
+  relayToken: string | null,
+): Promise<RelayStatusView> {
+  const response = await client.send<Record<string, unknown>>(configureRelayRequest(relayUrl, relayToken))
+  return expectVariant<{ status: RelayStatusView }>(response, "RelayConfigured").status
+}
+
+async function listRemoteMachines(client: LocalIpcClient): Promise<RemoteMachineView[]> {
   const response = await client.send<Record<string, unknown>>(listRemoteMachinesRequest())
   const payload = expectVariant<{
     machines: Array<{

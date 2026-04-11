@@ -139,6 +139,25 @@ type CommandActionDeps = {
   getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
   logoutProvider?: (provider: string) => Promise<{ provider: string }>
+  getRelayStatus?: () => Promise<{
+    configured: boolean
+    connected: boolean
+    relay_url?: string | null
+    relay_token_configured: boolean
+    daemon_id: string
+    machine_id: string
+    machine_alias?: string | null
+  }>
+  configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<{
+    configured: boolean
+    connected: boolean
+    relay_url?: string | null
+    relay_token_configured: boolean
+    daemon_id: string
+    machine_id: string
+    machine_alias?: string | null
+  }>
+  refreshWaitingRoomData?: () => Promise<void>
   listRemoteMachines?: () => Promise<Array<{
     machine_id: string
     machine_alias?: string | null
@@ -894,6 +913,56 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           "error",
         )
     }
+  }
+
+
+  const handleRelayCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "relay" }>,
+  ): Promise<void> => {
+    const [subcommand, ...args] = command.args
+    if (!subcommand || subcommand === "status") {
+      if (!deps.getRelayStatus) {
+        deps.flashFooter("relay status is unavailable in this build", "error")
+        return
+      }
+      const status = await deps.getRelayStatus()
+      const state = !status.configured ? "not configured" : status.connected ? "connected" : "configured, disconnected"
+      deps.appendNotice(
+        `relay ${state}\nurl=${status.relay_url ?? "-"}\ntoken_configured=${String(status.relay_token_configured)}\ndaemon=${status.daemon_id}\nmachine=${status.machine_alias ?? status.machine_id}`,
+      )
+      deps.flashFooter(`relay ${state}`, "info")
+      return
+    }
+    if (subcommand === "use" || subcommand === "configure") {
+      if (!deps.configureRelay) {
+        deps.flashFooter("relay configuration is unavailable in this build", "error")
+        return
+      }
+      const relayUrl = args[0]
+      const relayToken = args[1]
+      if (!relayUrl || !relayToken) {
+        deps.flashFooter("usage: /relay use <ws-url> <token>", "error")
+        return
+      }
+      const status = await deps.configureRelay(relayUrl, relayToken)
+      await deps.refreshWaitingRoomData?.()
+      deps.flashFooter(
+        `relay configured: ${status.relay_url ?? relayUrl} (${status.connected ? "connected" : "connecting"})`,
+        "info",
+      )
+      return
+    }
+    if (subcommand === "disable" || subcommand === "reset") {
+      if (!deps.configureRelay) {
+        deps.flashFooter("relay configuration is unavailable in this build", "error")
+        return
+      }
+      await deps.configureRelay(null, null)
+      await deps.refreshWaitingRoomData?.()
+      deps.flashFooter("relay disabled", "info")
+      return
+    }
+    deps.flashFooter("usage: /relay status | /relay use <ws-url> <token> | /relay disable", "error")
   }
 
   const handleMachineCommand = async (
@@ -1839,6 +1908,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleCycleAgentFocus,
     handleAgentCommand,
     handleMachineCommand,
+    handleRelayCommand,
     handleWorkflowCommand,
   }
 }

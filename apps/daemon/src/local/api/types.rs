@@ -80,6 +80,26 @@ pub struct ListRemoteMachineKernelsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayStatusRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigureRelayRequest {
+    pub relay_url: Option<String>,
+    pub relay_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayStatus {
+    pub configured: bool,
+    pub connected: bool,
+    pub relay_url: Option<String>,
+    pub relay_token_configured: bool,
+    pub daemon_id: String,
+    pub machine_id: String,
+    pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderAuthStatusRequest {
     pub provider: String,
 }
@@ -508,6 +528,8 @@ pub enum LocalDaemonRequest {
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
+    RelayStatus(RelayStatusRequest),
+    ConfigureRelay(ConfigureRelayRequest),
     ListRemoteMachines(ListRemoteMachinesRequest),
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetProviderAuthStatus(GetProviderAuthStatusRequest),
@@ -606,6 +628,12 @@ pub enum LocalDaemonResponse {
     },
     ProviderCommandCatalogs {
         catalogs: BTreeMap<String, ProviderCommandCatalog>,
+    },
+    RelayStatus {
+        status: RelayStatus,
+    },
+    RelayConfigured {
+        status: RelayStatus,
     },
     RemoteMachinesListed {
         machines: Vec<RelayMachinePresence>,

@@ -31,6 +31,12 @@ pub struct RelayClientState {
     next_peer_request_id: u64,
 }
 
+impl RelayClientState {
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
+}
+
 impl Default for RelayClientState {
     fn default() -> Self {
         Self {
@@ -64,23 +70,37 @@ pub async fn run_daemon_relay_connector(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let event_runtime = Arc::new(RelayEventRuntime::default());
-    let (relay_url, heartbeat) = {
-        let app = app.lock().await;
-        let config = app.config();
-        let Some(relay_url) = config.relay_url.clone() else {
-            return;
-        };
-        if config.relay_token.is_none() {
-            return;
-        }
-        (relay_url, Duration::from_millis(config.relay_heartbeat_ms))
-    };
 
     loop {
         if *shutdown.borrow() {
             set_disconnected(&state).await;
             return;
         }
+
+        let (relay_url, heartbeat) = {
+            let app = app.lock().await;
+            let config = app.config();
+            match (config.relay_url.clone(), config.relay_token.clone()) {
+                (Some(relay_url), Some(_)) => {
+                    (relay_url, Duration::from_millis(config.relay_heartbeat_ms))
+                }
+                _ => {
+                    set_disconnected(&state).await;
+                    let wait = sleep(Duration::from_secs(1));
+                    tokio::pin!(wait);
+                    tokio::select! {
+                        changed = shutdown.changed() => {
+                            if changed.is_ok() && *shutdown.borrow() {
+                                set_disconnected(&state).await;
+                                return;
+                            }
+                        }
+                        _ = &mut wait => {}
+                    }
+                    continue;
+                }
+            }
+        };
 
         match connect_async(&relay_url).await {
             Ok((socket, _)) => {
@@ -176,6 +196,20 @@ pub async fn run_daemon_relay_connector(
                             break;
                         }
                         _ = sleep(heartbeat) => {
+                            let still_configured = {
+                                let app = app.lock().await;
+                                app.config().relay_url.as_deref() == Some(relay_url.as_str())
+                                    && app.config().relay_token.is_some()
+                            };
+                            if !still_configured {
+                                let _ = outgoing_tx.send(RelayEnvelope::Close {
+                                    reason: "relay configuration changed".to_string(),
+                                });
+                                abort_subscription_tasks(&subscription_tasks).await;
+                                writer_task.abort();
+                                set_disconnected(&state).await;
+                                break;
+                            }
                             pump_leased_projection_events(&app, &outgoing_tx).await;
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),

@@ -40,6 +40,21 @@ export type WaitingRoomState = {
   keyState: WaitingRoomKeyState
 }
 
+export type WaitingRoomRemoteState = {
+  relay?: {
+    configured: boolean
+    connected: boolean
+    relay_url?: string | null
+  } | null
+  machines?: Array<{
+    machine_id: string
+    machine_alias?: string | null
+    kernel_count: number
+    available_providers?: string[]
+    pending?: boolean
+  }>
+}
+
 export type WaitingRoomRow = {
   id: string
   title: string
@@ -182,7 +197,12 @@ export function waitingRoomChoice(state: WaitingRoomState, sessions: SessionList
   }
 }
 
-export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEntry[], catalog: ProviderCatalog) {
+export function waitingRoomRows(
+  state: WaitingRoomState,
+  sessions: SessionListEntry[],
+  catalog: ProviderCatalog,
+  remote: WaitingRoomRemoteState = {},
+) {
   const choice = waitingRoomChoice(state, sessions, catalog)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
@@ -249,6 +269,7 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
       selectable: true,
       scrollbar: "",
     },
+    ...waitingRoomRemoteRows(remote, titleWidth),
     {
       id: "join-header",
       title: "Join Existing Session",
@@ -310,6 +331,107 @@ export function waitingRoomRows(state: WaitingRoomState, sessions: SessionListEn
     })
   }
 
+  return rows
+}
+
+
+function waitingRoomRemoteRows(remote: WaitingRoomRemoteState, titleWidth: number): WaitingRoomRow[] {
+  const relay = remote.relay ?? null
+  const machines = remote.machines ?? []
+  const pendingCount = machines.filter((machine) => machine.pending).length
+  const onlineMachines = machines.filter((machine) => !machine.pending)
+  const relayStatus = !relay || !relay.configured
+    ? "not configured"
+    : relay.connected
+      ? `connected ${relay.relay_url ?? ""}`.trim()
+      : `connecting ${relay.relay_url ?? ""}`.trim()
+  const rows: WaitingRoomRow[] = [
+    {
+      id: "relay-header",
+      title: "Relay",
+      value: relayStatus,
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    {
+      id: "relay-configure",
+      title: relay?.configured ? "Configure Relay" : "Configure Relay",
+      value: "/relay use <ws-url> <token>",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    {
+      id: "machines-header",
+      title: "Machines",
+      value: `${onlineMachines.length} online${pendingCount > 0 ? ` (${pendingCount} pending)` : ""}`,
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+  ]
+
+  if (!relay?.configured) {
+    rows.push({
+      id: "machines-unavailable",
+      title: "Remote Machines",
+      value: "unavailable until relay is configured",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+    return rows
+  }
+
+  if (machines.length === 0) {
+    rows.push({
+      id: "machines-none",
+      title: "Remote Machines",
+      value: relay.connected ? "none online" : "waiting for relay connection",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+    return rows
+  }
+
+  for (const machine of machines.slice(0, 4)) {
+    const label = machine.machine_alias ?? machine.machine_id
+    const providers = (machine.available_providers ?? []).join(",") || "no providers"
+    rows.push({
+      id: `machine:${machine.machine_id}`,
+      title: `${label}${machine.pending ? " (pending)" : ""}`,
+      value: `${machine.kernel_count} kernel${machine.kernel_count === 1 ? "" : "s"} ${providers}`,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+  }
+  if (machines.length > 4) {
+    rows.push({
+      id: "machines-more",
+      title: "More Machines",
+      value: `/machine list (${machines.length - 4} more)`,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+  }
   return rows
 }
 

@@ -45,6 +45,7 @@ pub use crate::session_history_page::{
 };
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_client::RelayClientState;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
@@ -53,6 +54,7 @@ use crate::transport::relay_peer::{
 
 pub struct DaemonApp {
     config: DaemonConfig,
+    relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
     agents: AgentService,
     attachments: AttachmentService,
     capabilities: ShellCommandService,
@@ -152,6 +154,7 @@ impl DaemonApp {
             leased_workflow_turns: BTreeMap::new(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
+            relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
             config,
         })
     }
@@ -190,6 +193,25 @@ impl DaemonApp {
 
     pub fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {
+        Arc::clone(&self.relay_client_state)
+    }
+
+    pub(crate) fn configure_relay(
+        &mut self,
+        relay_url: Option<String>,
+        relay_token: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.config.relay_url = relay_url
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.config.relay_token = relay_token
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.config.validate()?;
+        self.config.persist_relay_config()
     }
 
     pub fn sessions(&self) -> &SessionService {
@@ -616,14 +638,13 @@ impl DaemonApp {
             .sessions
             .get_session(session_id)?
             .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-        let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+            .map(str::to_string);
 
-        let _ =
-            self.pump_provider_output(session_id, &provider_run_id, recipient_attachment_ids)?;
+        if let Some(provider_run_id) = provider_run_id {
+            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
+            let _ =
+                self.pump_provider_output(session_id, &provider_run_id, recipient_attachment_ids)?;
+        }
         Ok(self
             .terminal
             .drain_output_records(session_id, attachment_id))
@@ -1740,9 +1761,10 @@ impl DaemonApp {
     pub async fn run(self) -> Result<(), DaemonError> {
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let relay_state = Arc::new(tokio::sync::RwLock::new(
-            crate::transport::relay_client::RelayClientState::default(),
-        ));
+        let relay_state = {
+            let app = app.lock().await;
+            app.relay_client_state()
+        };
         let relay_task = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
             Arc::clone(&app),
             relay_state,

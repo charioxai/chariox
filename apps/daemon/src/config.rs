@@ -84,11 +84,13 @@ impl DaemonConfig {
             relay_url: env::var("ARROBA_RELAY_URL")
                 .ok()
                 .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+                .filter(|value| !value.is_empty())
+                .or_else(|| load_persisted_relay_config().and_then(|config| config.relay_url)),
             relay_token: env::var("ARROBA_RELAY_TOKEN")
                 .ok()
                 .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+                .filter(|value| !value.is_empty())
+                .or_else(|| load_persisted_relay_config().and_then(|config| config.relay_token)),
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
             relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
@@ -197,6 +199,34 @@ impl DaemonConfig {
         default_state_dir().join("daemon").join("identity.json")
     }
 
+    pub fn default_daemon_config_path() -> PathBuf {
+        default_state_dir().join("daemon").join("config.json")
+    }
+
+    pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
+        let path = Self::default_daemon_config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+                operation: "persist relay config",
+                message: error.to_string(),
+            })?;
+        }
+        let persisted = PersistedDaemonConfig {
+            relay_url: self.relay_url.clone(),
+            relay_token: self.relay_token.clone(),
+        };
+        let payload = serde_json::to_string_pretty(&persisted).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "persist relay config",
+                message: error.to_string(),
+            }
+        })?;
+        fs::write(path, payload).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist relay config",
+            message: error.to_string(),
+        })
+    }
+
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
@@ -255,6 +285,20 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedDaemonConfig {
+    #[serde(default)]
+    relay_url: Option<String>,
+    #[serde(default)]
+    relay_token: Option<String>,
+}
+
+fn load_persisted_relay_config() -> Option<PersistedDaemonConfig> {
+    let path = DaemonConfig::default_daemon_config_path();
+    let payload = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<PersistedDaemonConfig>(&payload).ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

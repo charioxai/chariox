@@ -18,6 +18,7 @@ export type ParsedSlashCommand =
   | { kind: "view"; raw: string; value: string }
   | { kind: "agent"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
+  | { kind: "relay"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
 
 export type SlashCommandHandlers = {
@@ -32,6 +33,7 @@ export type SlashCommandHandlers = {
   onView: (command: Extract<ParsedSlashCommand, { kind: "view" }>) => Promise<unknown> | unknown
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
+  onRelay: (command: Extract<ParsedSlashCommand, { kind: "relay" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
 }
 
@@ -104,6 +106,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/machine\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed.startsWith("/relay")) {
+    return {
+      kind: "relay",
+      raw: trimmed,
+      args: trimmed.replace(/^\/relay\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   if (trimmed.startsWith("/workflow")) {
     return {
       kind: "workflow",
@@ -156,6 +165,9 @@ export async function executeSlashCommand(
     case "machine":
       await handlers.onMachine(command)
       break
+    case "relay":
+      await handlers.onRelay(command)
+      break
     case "workflow":
       await handlers.onWorkflow(command)
       break
@@ -171,6 +183,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "view":
     case "agent":
     case "machine":
+    case "relay":
     case "workflow":
       return true
     default:

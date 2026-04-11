@@ -113,6 +113,10 @@ impl DaemonApp {
             LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
                 self.handle_get_provider_command_catalogs_request()
             }
+            LocalDaemonRequest::RelayStatus(_) => self.handle_relay_status_request(),
+            LocalDaemonRequest::ConfigureRelay(request) => {
+                self.handle_configure_relay_request(request)
+            }
             LocalDaemonRequest::ListRemoteMachines(_) => self.handle_list_remote_machines_request(),
             LocalDaemonRequest::ListRemoteMachineKernels(request) => {
                 self.handle_list_remote_machine_kernels_request(request)

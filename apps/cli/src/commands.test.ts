@@ -51,6 +51,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onVariant: () => calls.push("variant"),
     onView: () => calls.push("view"),
     onAgent: () => calls.push("agent"),
+    onMachine: () => calls.push("machine"),
+    onRelay: () => calls.push("relay"),
     onWorkflow: () => calls.push("workflow"),
   })
 
@@ -74,6 +76,8 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onVariant: () => undefined,
     onView: () => undefined,
     onAgent: () => undefined,
+    onMachine: () => undefined,
+    onRelay: () => undefined,
     onWorkflow: () => undefined,
   })
 

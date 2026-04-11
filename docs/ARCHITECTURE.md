@@ -346,13 +346,26 @@ Current architectural interpretation:
 - self-hosted relay mode must work without any external managed identity/discovery service
 - all user-generated payloads that cross relay boundaries must be session-scoped end-to-end encrypted, including prompts, workflow payloads, and transferred artifacts
 - this encryption requirement applies equally to self-hosted relay deployments; self-hosting does not relax the transport privacy model
-- the same CLI should support both:
-  - local direct daemon connection
-  - relay-mediated remote daemon connection
-- connection-mode choice should be explicit in v1:
-  - `local`
-  - `relay`
-  - possible `auto` only after the transport model is stable
+- the same CLI should support local direct daemon operation and relay-mediated remote operation without becoming two apps
+- the CLI should always open the waiting room first; local sessions remain available even when relay is not configured or disconnected
+- relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
+- the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
+- once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
+
+
+### Docker Remote-Machine Lab
+
+The Docker lab models containers as ordinary Arroba machines. The base image should include every Arroba app: CLI, daemon/kernel, and relay. It should not include provider credentials or manage provider login. Users install and authenticate provider CLIs inside each persistent container. This intentionally supports multiple concurrent accounts for the same provider by isolating each container's home directory, Arroba identity, provider config, and provider credentials.
+
+Required container properties:
+
+- outbound internet for provider APIs, package installation, hosted relay access, and auth flows
+- persistent `/home/arroba` or equivalent so machine identity and provider credentials survive restart
+- separate machine identity per container, derived from persisted config rather than baked into the image
+- optional URL-printing browser/`xdg-open` shims for provider login flows that request a browser
+- documented provider compatibility for the small launch-provider set, including login method, callback-port behavior, and tested CLI versions
+
+Normal provider runtime ports do not need host mapping when the provider process and worker kernel run in the same container. Login callback ports are provider-specific and must be tested/documented per provider.
 
 ### 3.5 Directory Service
 
