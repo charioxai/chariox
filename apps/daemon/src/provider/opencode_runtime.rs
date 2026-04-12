@@ -34,7 +34,7 @@ pub struct OpenCodeAssistantCompletion {
 }
 
 #[derive(Debug)]
-pub(super) struct OpenCodeRuntimeState {
+pub(crate) struct OpenCodeRuntimeState {
     base_url: String,
     session_id: String,
     emitted_text_offsets: BTreeMap<String, usize>,

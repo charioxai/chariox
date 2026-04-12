@@ -10,12 +10,13 @@ use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
 use crate::local::provider_requests::{
-    load_provider_catalog, logout_provider_response, provider_auth_status_response,
-    provider_command_catalogs_response, start_provider_login_response,
+    launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
+    provider_auth_status_response, provider_command_catalogs_response,
+    start_provider_login_response,
 };
 use crate::local::{
-    GetSessionHistoryRequest, ListProviderProcessesRequest, LocalDaemonRequest,
-    LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
+    GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
+    LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
 use crate::session_history_page::paginate_session_history;
 
@@ -185,6 +186,9 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
         LocalDaemonRequest::GetSessionHistory(request) => {
             execute_session_history_request(app, request).await
         }
+        LocalDaemonRequest::LaunchProviderRun(request) => {
+            execute_launch_provider_run_request(app, request).await
+        }
         LocalDaemonRequest::GetProviderCatalog(_) => execute_provider_catalog_request(app).await,
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => provider_command_catalogs_response(),
         LocalDaemonRequest::GetProviderAuthStatus(request) => {
@@ -283,6 +287,44 @@ async fn execute_provider_catalog_request(
     let mut app = app.lock().await;
     app.cache_provider_catalog(catalog.clone());
     Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+}
+
+async fn execute_launch_provider_run_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: LaunchProviderRunRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (started, runtime_init_delay_ms) = {
+        let mut app = app.lock().await;
+        let launch_request = launch_provider_request_from_local(&app, request);
+        (
+            app.start_provider_launch(launch_request)?,
+            app.config().provider_runtime_init_delay_ms,
+        )
+    };
+    if runtime_init_delay_ms > 0 {
+        sleep(Duration::from_millis(runtime_init_delay_ms)).await;
+    }
+    let run = started.run.clone();
+    let binding =
+        tokio::task::spawn_blocking(move || DaemonApp::initialize_provider_runtime_binding(&run))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize provider runtime",
+                message: error.to_string(),
+            })?;
+
+    match binding {
+        Ok(binding) => {
+            let mut app = app.lock().await;
+            app.finish_provider_launch(&started, binding)
+                .map(|provider_run| LocalDaemonResponse::ProviderRunLaunched { provider_run })
+        }
+        Err(error) => {
+            let mut app = app.lock().await;
+            app.fail_provider_launch(&started, &error);
+            Err(error)
+        }
+    }
 }
 
 async fn execute_list_provider_processes_request(

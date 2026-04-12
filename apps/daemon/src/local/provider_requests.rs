@@ -27,22 +27,7 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut launch_request = LaunchProviderRequest::new(
-            request.session_id.clone(),
-            request.adapter_key,
-            request.provider,
-            request.account_profile,
-            request.model,
-        )
-        .with_variant(request.variant);
-        if let Some(agent_id) = request.agent_id.clone().or_else(|| {
-            self.sessions()
-                .get_session(&request.session_id)
-                .ok()
-                .and_then(|session| session.focused_agent_id().map(str::to_string))
-        }) {
-            launch_request = launch_request.with_agent_id(agent_id);
-        }
+        let launch_request = launch_provider_request_from_local(self, request);
         let provider_run = self.launch_provider(launch_request)?;
         crate::logging::debug_with_fields(
             "daemon.local_api",
@@ -260,6 +245,29 @@ impl DaemonApp {
             }),
         }
     }
+}
+
+pub(crate) fn launch_provider_request_from_local(
+    app: &DaemonApp,
+    request: LaunchProviderRunRequest,
+) -> LaunchProviderRequest {
+    let mut launch_request = LaunchProviderRequest::new(
+        request.session_id.clone(),
+        request.adapter_key,
+        request.provider,
+        request.account_profile,
+        request.model,
+    )
+    .with_variant(request.variant);
+    if let Some(agent_id) = request.agent_id.clone().or_else(|| {
+        app.sessions()
+            .get_session(&request.session_id)
+            .ok()
+            .and_then(|session| session.focused_agent_id().map(str::to_string))
+    }) {
+        launch_request = launch_request.with_agent_id(agent_id);
+    }
+    launch_request
 }
 
 pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {

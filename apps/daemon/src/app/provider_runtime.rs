@@ -7,9 +7,16 @@ use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::error::DaemonError;
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderResumeState,
-    ProviderRunState, RuntimeMcpBinding, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderProcessService,
+    ProviderResumeState, ProviderRunState, ProviderRuntimeBinding, RuntimeMcpBinding,
+    RuntimeProviderRun,
 };
+
+#[derive(Debug, Clone)]
+pub(crate) struct StartedProviderLaunch {
+    pub(crate) run: RuntimeProviderRun,
+    previous_active_run_id: Option<String>,
+}
 
 impl DaemonApp {
     pub(crate) fn project_session_runtime_view(
@@ -108,10 +115,10 @@ impl DaemonApp {
         Ok(removed)
     }
 
-    pub fn launch_provider(
+    pub(crate) fn start_provider_launch(
         &mut self,
         mut request: LaunchProviderRequest,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
+    ) -> Result<StartedProviderLaunch, DaemonError> {
         if request.agent_id.is_none() {
             request.agent_id = self
                 .sessions
@@ -236,6 +243,64 @@ impl DaemonApp {
             }
             self.register_managed_provider_process(&run)?;
         }
+        Ok(StartedProviderLaunch {
+            run,
+            previous_active_run_id,
+        })
+    }
+
+    pub(crate) fn initialize_provider_runtime_binding(
+        run: &RuntimeProviderRun,
+    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        ProviderProcessService::initialize_runtime_binding(run)
+    }
+
+    pub(crate) fn finish_provider_launch(
+        &mut self,
+        started: &StartedProviderLaunch,
+        binding: Option<ProviderRuntimeBinding>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        if let Some(binding) = binding {
+            self.providers
+                .apply_runtime_binding(started.run.id(), binding)?;
+        }
+        self.finish_provider_launch_success(&started.run)
+    }
+
+    pub(crate) fn fail_provider_launch(
+        &mut self,
+        started: &StartedProviderLaunch,
+        error: &DaemonError,
+    ) {
+        crate::logging::error_with_fields(
+            "daemon.app",
+            "provider runtime initialization failed",
+            serde_json::json!({
+                "provider_run_id": started.run.id(),
+                "session_id": started.run.session_id(),
+                "error": error.to_string(),
+            }),
+        );
+        let _ = self.remove_tracked_provider_process_for_run(started.run.id());
+        self.providers.clear_runtime(started.run.id());
+        let _ = self.providers.terminate_run(
+            &mut self.sessions,
+            started.run.session_id(),
+            started.run.id(),
+        );
+        if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+            let _ = self.providers.resume_run(
+                &mut self.sessions,
+                started.run.session_id(),
+                previous_active_run_id,
+            );
+        }
+    }
+
+    fn finish_provider_launch_success(
+        &mut self,
+        run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
         crate::logging::info_with_fields(
             "daemon.app",
             "initializing provider runtime",
@@ -244,30 +309,6 @@ impl DaemonApp {
                 "session_id": run.session_id(),
             }),
         );
-        if let Err(error) = self.providers.initialize_runtime(&run) {
-            crate::logging::error_with_fields(
-                "daemon.app",
-                "provider runtime initialization failed",
-                serde_json::json!({
-                    "provider_run_id": run.id(),
-                    "session_id": run.session_id(),
-                    "error": error.to_string(),
-                }),
-            );
-            let _ = self.remove_tracked_provider_process_for_run(run.id());
-            self.providers.clear_runtime(run.id());
-            let _ = self
-                .providers
-                .terminate_run(&mut self.sessions, run.session_id(), run.id());
-            if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
-                let _ = self.providers.resume_run(
-                    &mut self.sessions,
-                    run.session_id(),
-                    previous_active_run_id,
-                );
-            }
-            return Err(error);
-        }
         crate::logging::info_with_fields(
             "daemon.app",
             "provider runtime initialized successfully",
@@ -288,6 +329,25 @@ impl DaemonApp {
             )?;
         }
         Ok(run)
+    }
+
+    pub fn launch_provider(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let started = self.start_provider_launch(request)?;
+        let binding = match Self::initialize_provider_runtime_binding(&started.run) {
+            Ok(binding) => binding,
+            Err(error) => {
+                self.fail_provider_launch(&started, &error);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.finish_provider_launch(&started, binding) {
+            self.fail_provider_launch(&started, &error);
+            return Err(error);
+        }
+        self.providers.get_run(started.run.id())
     }
 
     pub(crate) fn launch_provider_detached(

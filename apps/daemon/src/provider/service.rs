@@ -6,11 +6,12 @@ use crate::session::{PromptAttachment, SessionService};
 use super::{
     codex_runtime::{
         abort_codex_turn, drain_codex_events, initialize_codex_runtime, submit_codex_prompt,
-        CodexRuntimeState,
+        CodexRuntimeBinding, CodexRuntimeState,
     },
     opencode_binding::{
         abort_opencode_session, initialize_opencode_runtime, runtime_is_healthy,
         submit_opencode_prompt, sync_opencode_run_selection, OpenCodeRunSelection,
+        OpenCodeRuntimeBinding,
     },
     opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
     LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
@@ -24,6 +25,11 @@ pub struct ProviderProcessService {
     opencode_runs: BTreeMap<String, OpenCodeRuntimeState>,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
+}
+
+pub(crate) enum ProviderRuntimeBinding {
+    Codex(CodexRuntimeBinding),
+    OpenCode(OpenCodeRuntimeBinding),
 }
 
 impl ProviderProcessService {
@@ -366,34 +372,57 @@ impl ProviderProcessService {
     }
 
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
-        if run.adapter_key() == "codex" {
-            let binding = initialize_codex_runtime(run)?;
-            self.codex_runs.insert(run.id().to_string(), binding.state);
-            let run_mut = self.get_run_mut(run.id())?;
-            run_mut.set_resume_state(binding.resume_state.clone());
-            run_mut.set_provider_session_id(
-                binding.resume_state.codex_thread_id().map(str::to_string),
-            );
-            self.apply_codex_run_selection(run.id(), binding.selection)?;
-            return Ok(());
+        if let Some(binding) = Self::initialize_runtime_binding(run)? {
+            self.apply_runtime_binding(run.id(), binding)?;
         }
-        if run.adapter_key() != "opencode" {
-            return Ok(());
-        }
+        Ok(())
+    }
 
-        let binding = initialize_opencode_runtime(run)?;
-        self.opencode_runs
-            .insert(run.id().to_string(), binding.state);
-        let run_mut = self.get_run_mut(run.id())?;
-        run_mut.set_resume_state(binding.resume_state.clone());
-        run_mut.set_provider_session_id(
-            binding
-                .resume_state
-                .opencode_session_id()
-                .map(str::to_string),
-        );
-        self.apply_opencode_run_selection(run.id(), binding.selection)?;
-        self.sync_run_selection(run.id())?;
+    pub(crate) fn initialize_runtime_binding(
+        run: &RuntimeProviderRun,
+    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        if run.adapter_key() == "codex" {
+            return initialize_codex_runtime(run)
+                .map(ProviderRuntimeBinding::Codex)
+                .map(Some);
+        }
+        if run.adapter_key() == "opencode" {
+            return initialize_opencode_runtime(run)
+                .map(ProviderRuntimeBinding::OpenCode)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn apply_runtime_binding(
+        &mut self,
+        run_id: &str,
+        binding: ProviderRuntimeBinding,
+    ) -> Result<(), DaemonError> {
+        match binding {
+            ProviderRuntimeBinding::Codex(binding) => {
+                self.codex_runs.insert(run_id.to_string(), binding.state);
+                let run_mut = self.get_run_mut(run_id)?;
+                run_mut.set_resume_state(binding.resume_state.clone());
+                run_mut.set_provider_session_id(
+                    binding.resume_state.codex_thread_id().map(str::to_string),
+                );
+                self.apply_codex_run_selection(run_id, binding.selection)?;
+            }
+            ProviderRuntimeBinding::OpenCode(binding) => {
+                self.opencode_runs.insert(run_id.to_string(), binding.state);
+                let run_mut = self.get_run_mut(run_id)?;
+                run_mut.set_resume_state(binding.resume_state.clone());
+                run_mut.set_provider_session_id(
+                    binding
+                        .resume_state
+                        .opencode_session_id()
+                        .map(str::to_string),
+                );
+                self.apply_opencode_run_selection(run_id, binding.selection)?;
+                self.sync_run_selection(run_id)?;
+            }
+        }
         Ok(())
     }
 

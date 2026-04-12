@@ -10,18 +10,18 @@ const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
-pub(super) struct OpenCodeRunSelection {
+pub(crate) struct OpenCodeRunSelection {
     pub model: Option<String>,
     pub variant: Option<String>,
 }
 
-pub(super) struct OpenCodeRuntimeBinding {
+pub(crate) struct OpenCodeRuntimeBinding {
     pub state: OpenCodeRuntimeState,
     pub selection: OpenCodeRunSelection,
     pub resume_state: ProviderResumeState,
 }
 
-pub(super) fn initialize_opencode_runtime(
+pub(crate) fn initialize_opencode_runtime(
     run: &RuntimeProviderRun,
 ) -> Result<OpenCodeRuntimeBinding, DaemonError> {
     let base_url = run
