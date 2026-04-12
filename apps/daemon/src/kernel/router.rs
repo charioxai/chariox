@@ -7,7 +7,10 @@ use crate::error::DaemonError;
 use crate::kernel::agent_actor::AgentActor;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
+use crate::local::{
+    GetSessionHistoryRequest, LocalDaemonRequest, LocalDaemonResponse, RelayStatus,
+};
+use crate::session_history_page::paginate_session_history;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -172,6 +175,9 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
                 kernels,
             })
         }
+        LocalDaemonRequest::GetSessionHistory(request) => {
+            execute_session_history_request(app, request).await
+        }
         request => {
             if is_blocking_local_request(&request) {
                 let app = Arc::clone(app);
@@ -192,6 +198,42 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
             app.handle_local_request(request)
         }
     }
+}
+
+async fn execute_session_history_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: GetSessionHistoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (history, session) = {
+        let app = app.lock().await;
+        let session = app.sessions().get_session(&request.session_id)?;
+        (app.history_store(), session)
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let mut entries = history.load(&session)?;
+        if let Some(agent_id) = request.agent_id.as_deref() {
+            entries.retain(|entry| {
+                entry.agent_id.is_none() || entry.agent_id.as_deref() == Some(agent_id)
+            });
+        }
+        let page = paginate_session_history(
+            &entries,
+            request.round_count,
+            request.max_chars,
+            request.before_entry_index,
+            request.before_entry_char_offset,
+        );
+        Ok(LocalDaemonResponse::SessionHistory {
+            entries: page.entries,
+            next_cursor: page.next_cursor,
+        })
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "load session history",
+        message: error.to_string(),
+    })?
 }
 
 fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {

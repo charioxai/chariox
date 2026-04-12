@@ -1,6 +1,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -103,19 +105,30 @@ impl SessionHistoryEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionHistoryStore {
     root: PathBuf,
+    read_delay_ms: u64,
 }
 
 impl SessionHistoryStore {
     pub fn new(root: PathBuf) -> Result<Self, DaemonError> {
+        Self::new_with_read_delay(root, 0)
+    }
+
+    pub fn new_with_read_delay(root: PathBuf, read_delay_ms: u64) -> Result<Self, DaemonError> {
         fs::create_dir_all(&root).map_err(|error| DaemonError::SessionHistoryFailed {
             session_id: None,
             operation: "create session history directory",
             message: error.to_string(),
         })?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            read_delay_ms,
+        })
     }
 
     pub fn load(&self, session: &RuntimeSession) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        if self.read_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(self.read_delay_ms));
+        }
         let path = self.path_for_session(session);
         if !path.exists() {
             return Ok(Vec::new());

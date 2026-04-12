@@ -31,6 +31,7 @@ pub struct DaemonConfig {
     pub runtime_mcp_host: String,
     pub runtime_mcp_port: u16,
     pub session_history_root: PathBuf,
+    pub session_history_read_delay_ms: u64,
 }
 
 impl DaemonConfig {
@@ -68,6 +69,10 @@ impl DaemonConfig {
             session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
+            session_history_read_delay_ms: env::var("ARROBA_SESSION_HISTORY_READ_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
             daemon_id,
             host_machine_id: env::var("ARROBA_MACHINE_ID")
                 .ok()
@@ -143,6 +148,7 @@ impl DaemonConfig {
             runtime_mcp_host: "127.0.0.1".to_string(),
             runtime_mcp_port: 43120,
             session_history_root: Self::default_session_history_root(),
+            session_history_read_delay_ms: 0,
             daemon_id,
             host_machine_id: host_machine_id.into(),
             host_machine_alias: None,

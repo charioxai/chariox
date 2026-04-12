@@ -152,7 +152,10 @@ impl DaemonApp {
             prompt_activity: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             sessions: SessionService::new(&config),
-            history: SessionHistoryStore::new(config.session_history_root.clone())?,
+            history: SessionHistoryStore::new_with_read_delay(
+                config.session_history_root.clone(),
+                config.session_history_read_delay_ms,
+            )?,
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -222,6 +225,10 @@ impl DaemonApp {
 
     pub fn sessions(&self) -> &SessionService {
         &self.sessions
+    }
+
+    pub(crate) fn history_store(&self) -> SessionHistoryStore {
+        self.history.clone()
     }
 
     pub fn sessions_mut(&mut self) -> &mut SessionService {
