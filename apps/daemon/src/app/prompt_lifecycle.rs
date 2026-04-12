@@ -448,6 +448,18 @@ impl DaemonApp {
         Err(error)
     }
 
+    pub(crate) fn spawn_kernel_prompt_abort_job(
+        &mut self,
+        dispatch: KernelPromptAbortDispatch,
+        job: ProviderPromptAbortJob,
+    ) {
+        self.providers.spawn_structured_prompt_abort_job(
+            dispatch.session_id,
+            dispatch.provider_run_id,
+            job,
+        );
+    }
+
     pub fn complete_active_prompt(
         &mut self,
         session_id: &str,
@@ -743,6 +755,15 @@ impl DaemonApp {
                 finished.session_id,
                 finished.provider_run_id,
                 finished.agent_id,
+                finished.completion,
+                finished.result,
+            );
+        }
+        let finished_jobs = self.providers.drain_finished_structured_prompt_aborts();
+        for finished in finished_jobs {
+            let _ = self.finish_kernel_prompt_abort(
+                finished.session_id,
+                finished.provider_run_id,
                 finished.completion,
                 finished.result,
             );

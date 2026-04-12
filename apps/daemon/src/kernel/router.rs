@@ -195,27 +195,8 @@ async fn execute_kernel_prompt_cancel(
                     }
                 }
             };
-            let executed = tokio::task::spawn_blocking(move || job.execute()).await;
-            match executed {
-                Ok((completion, result)) => {
-                    let mut app = app.lock().await;
-                    let _ = app.finish_kernel_prompt_abort(
-                        dispatch.session_id,
-                        dispatch.provider_run_id,
-                        completion,
-                        result,
-                    );
-                }
-                Err(error) => {
-                    crate::logging::error_with_fields(
-                        "daemon.kernel_router",
-                        "kernel prompt abort task failed",
-                        serde_json::json!({
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
+            let mut app = app.lock().await;
+            app.spawn_kernel_prompt_abort_job(dispatch, job);
         });
     }
 

@@ -849,10 +849,26 @@ impl ProviderProcessService {
             .spawn_submit(session_id, provider_run_id, agent_id, job);
     }
 
+    pub(crate) fn spawn_structured_prompt_abort_job(
+        &mut self,
+        session_id: String,
+        provider_run_id: String,
+        job: ProviderPromptAbortJob,
+    ) {
+        self.run_actor_mailbox
+            .spawn_abort(session_id, provider_run_id, job);
+    }
+
     pub(crate) fn drain_finished_structured_prompt_submits(
         &mut self,
     ) -> Vec<super::FinishedProviderPromptSubmitJob> {
         self.run_actor_mailbox.drain_finished_submits()
+    }
+
+    pub(crate) fn drain_finished_structured_prompt_aborts(
+        &mut self,
+    ) -> Vec<super::FinishedProviderPromptAbortJob> {
+        self.run_actor_mailbox.drain_finished_aborts()
     }
 
     pub fn poll_structured_output(
