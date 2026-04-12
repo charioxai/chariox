@@ -866,6 +866,213 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
 }
 
 #[test]
+fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
+    let _guard = opencode_env_guard();
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.set_prompt_async_response_delay(Duration::from_millis(500));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    assert!(app
+        .providers()
+        .structured_runtime_state_bound_for_tests(run.id()));
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "submit cleanup race\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    wait_for_provider_runtime_state(&app, run.id(), false, "submit I/O is in flight");
+
+    app.providers_mut().clear_runtime(run.id());
+    thread::sleep(Duration::from_millis(700));
+
+    assert!(!app
+        .providers()
+        .structured_runtime_state_bound_for_tests(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+}
+
+#[test]
+fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
+    let _guard = opencode_env_guard();
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(1_000));
+    mock_server.set_abort_response_delay(Duration::from_millis(500));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "abort cleanup race\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
+    let cancellation = arroba_daemon::transport::TransportService::cancel_active_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+    )
+    .expect("active prompt should cancel");
+    assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
+    wait_for_provider_runtime_state(&app, run.id(), false, "abort I/O is in flight");
+
+    app.providers_mut().clear_runtime(run.id());
+    thread::sleep(Duration::from_millis(700));
+
+    assert!(!app
+        .providers()
+        .structured_runtime_state_bound_for_tests(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+}
+
+#[test]
+fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
+    let _guard = opencode_env_guard();
+    let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
+    mock_server.set_message_response_delay(Duration::from_millis(500));
+    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
+    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
+    env::remove_var("ARROBA_OPENCODE_BIN");
+    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "default",
+        ))
+        .expect("provider run should launch");
+
+    let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "poll cleanup race\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    thread::sleep(Duration::from_millis(120));
+    wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
+
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let _ = app
+        .pump_provider_output(session.id(), run.id(), recipients)
+        .expect("poll should enqueue");
+    wait_for_provider_runtime_state(&app, run.id(), false, "output poll I/O is in flight");
+
+    app.providers_mut().clear_runtime(run.id());
+    thread::sleep(Duration::from_millis(700));
+
+    assert!(!app
+        .providers()
+        .structured_runtime_state_bound_for_tests(run.id()));
+
+    if let Some(previous_bin) = previous_bin {
+        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_BIN");
+    }
+    if let Some(previous_port) = previous_port {
+        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+    } else {
+        env::remove_var("ARROBA_OPENCODE_PORT");
+    }
+    mock_server.stop();
+}
+
+#[test]
 fn session_error_completes_the_active_prompt_and_advances_the_queue() {
     let _guard = OPENCODE_ENV_LOCK
         .lock()
@@ -2514,6 +2721,26 @@ where
     }
 }
 
+fn wait_for_provider_runtime_state(
+    app: &DaemonApp,
+    provider_run_id: &str,
+    expected_bound: bool,
+    context: &str,
+) {
+    let deadline = Instant::now() + Duration::from_millis(output_timeout_ms().max(4_000));
+    while app
+        .providers()
+        .structured_runtime_state_bound_for_tests(provider_run_id)
+        != expected_bound
+    {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for provider runtime state to become {expected_bound} while {context}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn render_terminal_output(records: &[arroba_daemon::terminal::TerminalOutputRecord]) -> String {
     let mut output = Vec::new();
     for record in records {
@@ -2537,6 +2764,9 @@ struct MockOpenCodeState {
     fail_next_event_stream_attempts: u64,
     event_subscribers: Vec<mpsc::Sender<String>>,
     next_prompt_error: Option<String>,
+    prompt_async_response_delay: Duration,
+    abort_response_delay: Duration,
+    message_response_delay: Duration,
     response_delay: Duration,
     omit_session_status: bool,
     sessions: BTreeMap<String, MockOpenCodeSessionState>,
@@ -2569,6 +2799,9 @@ impl MockOpenCodeServer {
             fail_next_event_stream_attempts: 0,
             event_subscribers: Vec::new(),
             next_prompt_error: None,
+            prompt_async_response_delay: Duration::ZERO,
+            abort_response_delay: Duration::ZERO,
+            message_response_delay: Duration::ZERO,
             response_delay,
             omit_session_status: false,
             sessions: BTreeMap::new(),
@@ -2637,6 +2870,27 @@ impl MockOpenCodeServer {
             .lock()
             .expect("mock state should not be poisoned")
             .emit_tool_call_before_completion = emit_tool_call_before_completion;
+    }
+
+    fn set_prompt_async_response_delay(&self, delay: Duration) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .prompt_async_response_delay = delay;
+    }
+
+    fn set_abort_response_delay(&self, delay: Duration) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .abort_response_delay = delay;
+    }
+
+    fn set_message_response_delay(&self, delay: Duration) {
+        self.state
+            .lock()
+            .expect("mock state should not be poisoned")
+            .message_response_delay = delay;
     }
 
     fn fail_next_event_stream_attempts(&self, count: u64) {
@@ -2716,6 +2970,11 @@ fn handle_mock_opencode_request(
             }
         }
         ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
+            let response_delay = state
+                .lock()
+                .expect("mock state should not be poisoned")
+                .message_response_delay;
+            thread::sleep(response_delay);
             let state = state.lock().expect("mock state should not be poisoned");
             let session_id = path
                 .strip_prefix("/session/")
@@ -2743,12 +3002,22 @@ fn handle_mock_opencode_request(
                 .expect("prompt path should include a session id")
                 .to_string();
             schedule_mock_response(state.clone(), session_id, prompt);
+            let response_delay = state
+                .lock()
+                .expect("mock state should not be poisoned")
+                .prompt_async_response_delay;
+            thread::sleep(response_delay);
             write_http_empty_response(&mut stream, 204);
             return;
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/abort") => {
+            let response_delay = {
+                let mut state = state.lock().expect("mock state should not be poisoned");
+                state.abort_count += 1;
+                state.abort_response_delay
+            };
+            thread::sleep(response_delay);
             let mut state = state.lock().expect("mock state should not be poisoned");
-            state.abort_count += 1;
             let session_id = path
                 .strip_prefix("/session/")
                 .and_then(|value| value.strip_suffix("/abort"))

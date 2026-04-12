@@ -155,6 +155,27 @@ impl ProviderRunActorMailbox {
             .contains(run_id)
     }
 
+    pub(crate) fn structured_runtime_state_bound(&self, run_id: &str) -> bool {
+        if self
+            .codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| slot.lock().expect("codex runtime slot poisoned").is_some())
+        {
+            return true;
+        }
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| {
+                slot.lock()
+                    .expect("opencode runtime slot poisoned")
+                    .is_some()
+            })
+    }
+
     pub(crate) fn mark_structured_prompt_io_in_flight(&self, run_id: String) {
         self.structured_prompt_submissions
             .lock()

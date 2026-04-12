@@ -468,6 +468,12 @@ impl ProviderProcessService {
             .structured_prompt_io_in_flight(provider_run_id)
     }
 
+    #[doc(hidden)]
+    pub fn structured_runtime_state_bound_for_tests(&self, provider_run_id: &str) -> bool {
+        self.run_actor_mailbox
+            .structured_runtime_state_bound(provider_run_id)
+    }
+
     pub(crate) fn run_operation_lanes(&self) -> ProviderRunOperationLanes {
         self.run_actor_mailbox.operation_lanes()
     }
