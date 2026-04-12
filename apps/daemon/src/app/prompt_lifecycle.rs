@@ -1,8 +1,8 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
-    ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
-    ProviderPromptSubmitJob, ProviderRunOperationLanes, ProviderRunState,
+    ProviderPromptAbortCompletion, ProviderPromptSubmitCompletion, ProviderRunOperationLanes,
+    ProviderRunState,
 };
 use crate::pty::PtyProcessState;
 use crate::session::{
@@ -408,25 +408,20 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn take_kernel_prompt_dispatch_job(
+    pub(crate) fn enqueue_kernel_prompt_dispatch(
         &mut self,
         dispatch: &KernelPromptDispatch,
-    ) -> Result<ProviderPromptSubmitJob, DaemonError> {
+    ) -> Result<(), DaemonError> {
         let provider_run =
             self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
-        self.providers
-            .take_structured_prompt_submit_job(
-                &provider_run,
-                &dispatch.prompt,
-                &dispatch.attachments,
-            )?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "prepare structured prompt dispatch",
-                message: format!(
-                    "provider run `{}` does not use structured prompt I/O",
-                    dispatch.provider_run_id
-                ),
-            })
+        self.providers.enqueue_structured_prompt_submit(
+            dispatch.session_id.clone(),
+            dispatch.provider_run_id.clone(),
+            dispatch.agent_id.clone(),
+            &provider_run,
+            &dispatch.prompt,
+            &dispatch.attachments,
+        )
     }
 
     pub(crate) fn fail_kernel_prompt_dispatch(
@@ -448,19 +443,6 @@ impl DaemonApp {
         Err(error)
     }
 
-    pub(crate) fn spawn_kernel_prompt_dispatch_job(
-        &mut self,
-        dispatch: KernelPromptDispatch,
-        job: ProviderPromptSubmitJob,
-    ) {
-        self.providers.spawn_structured_prompt_submit_job(
-            dispatch.session_id,
-            dispatch.provider_run_id,
-            dispatch.agent_id,
-            job,
-        );
-    }
-
     pub(crate) fn spawn_kernel_prompt_dispatch_operation(
         app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,
@@ -470,31 +452,11 @@ impl DaemonApp {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            let job = {
-                let mut app = app.lock().await;
-                match app.take_kernel_prompt_dispatch_job(&dispatch) {
-                    Ok(job) => job,
-                    Err(error) => {
-                        let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
-                        return;
-                    }
-                }
-            };
             let mut app = app.lock().await;
-            app.spawn_kernel_prompt_dispatch_job(dispatch, job);
+            if let Err(error) = app.enqueue_kernel_prompt_dispatch(&dispatch) {
+                let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
+            }
         });
-    }
-
-    pub(crate) fn spawn_kernel_prompt_abort_job(
-        &mut self,
-        dispatch: KernelPromptAbortDispatch,
-        job: ProviderPromptAbortJob,
-    ) {
-        self.providers.spawn_structured_prompt_abort_job(
-            dispatch.session_id,
-            dispatch.provider_run_id,
-            job,
-        );
     }
 
     pub(crate) fn spawn_kernel_prompt_abort_operation(
@@ -506,10 +468,10 @@ impl DaemonApp {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            let job = loop {
+            loop {
                 let mut app = app.lock().await;
-                match app.take_kernel_prompt_abort_job(&dispatch) {
-                    Ok(job) => break job,
+                match app.enqueue_kernel_prompt_abort(&dispatch) {
+                    Ok(()) => break,
                     Err(_) if app.structured_prompt_io_in_flight(&dispatch.provider_run_id) => {
                         drop(app);
                         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -520,9 +482,7 @@ impl DaemonApp {
                         return;
                     }
                 }
-            };
-            let mut app = app.lock().await;
-            app.spawn_kernel_prompt_abort_job(dispatch, job);
+            }
         });
     }
 
@@ -758,21 +718,16 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn take_kernel_prompt_abort_job(
+    pub(crate) fn enqueue_kernel_prompt_abort(
         &mut self,
         dispatch: &KernelPromptAbortDispatch,
-    ) -> Result<ProviderPromptAbortJob, DaemonError> {
+    ) -> Result<(), DaemonError> {
         self.reap_structured_prompt_submit_jobs();
         self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
-        self.providers
-            .take_structured_prompt_abort_job(&dispatch.provider_run_id)?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "prepare structured prompt abort",
-                message: format!(
-                    "provider run `{}` does not use structured prompt I/O",
-                    dispatch.provider_run_id
-                ),
-            })
+        self.providers.enqueue_structured_prompt_abort(
+            dispatch.session_id.clone(),
+            dispatch.provider_run_id.clone(),
+        )
     }
 
     pub(crate) fn fail_kernel_prompt_abort(

@@ -665,7 +665,7 @@ impl ProviderProcessService {
         Ok(true)
     }
 
-    pub(crate) fn take_structured_prompt_abort_job(
+    fn take_structured_prompt_abort_job(
         &mut self,
         provider_run_id: &str,
     ) -> Result<Option<ProviderPromptAbortJob>, DaemonError> {
@@ -766,7 +766,7 @@ impl ProviderProcessService {
         Ok(true)
     }
 
-    pub(crate) fn take_structured_prompt_submit_job(
+    fn take_structured_prompt_submit_job(
         &mut self,
         run: &RuntimeProviderRun,
         prompt: &str,
@@ -842,7 +842,7 @@ impl ProviderProcessService {
         }
     }
 
-    pub(crate) fn spawn_structured_prompt_submit_job(
+    fn spawn_structured_prompt_submit_job(
         &mut self,
         session_id: String,
         provider_run_id: String,
@@ -853,7 +853,7 @@ impl ProviderProcessService {
             .spawn_submit(session_id, provider_run_id, agent_id, job);
     }
 
-    pub(crate) fn spawn_structured_prompt_abort_job(
+    fn spawn_structured_prompt_abort_job(
         &mut self,
         session_id: String,
         provider_run_id: String,
@@ -861,6 +861,44 @@ impl ProviderProcessService {
     ) {
         self.run_actor_mailbox
             .spawn_abort(session_id, provider_run_id, job);
+    }
+
+    pub(crate) fn enqueue_structured_prompt_submit(
+        &mut self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        run: &RuntimeProviderRun,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<(), DaemonError> {
+        let job = self
+            .take_structured_prompt_submit_job(run, prompt, attachments)?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "enqueue structured prompt dispatch",
+                message: format!(
+                    "provider run `{provider_run_id}` does not use structured prompt I/O"
+                ),
+            })?;
+        self.spawn_structured_prompt_submit_job(session_id, provider_run_id, agent_id, job);
+        Ok(())
+    }
+
+    pub(crate) fn enqueue_structured_prompt_abort(
+        &mut self,
+        session_id: String,
+        provider_run_id: String,
+    ) -> Result<(), DaemonError> {
+        let job = self
+            .take_structured_prompt_abort_job(&provider_run_id)?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "enqueue structured prompt abort",
+                message: format!(
+                    "provider run `{provider_run_id}` does not use structured prompt I/O"
+                ),
+            })?;
+        self.spawn_structured_prompt_abort_job(session_id, provider_run_id, job);
+        Ok(())
     }
 
     pub(crate) fn drain_finished_structured_prompt_submits(

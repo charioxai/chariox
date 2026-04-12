@@ -817,21 +817,14 @@ impl DaemonApp {
                     agent_id: "provider run has no agent".to_string(),
                 })?
                 .to_string();
-            let job = self
-                .providers
-                .take_structured_prompt_submit_job(&provider_run, prompt, attachments)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "prepare structured prompt dispatch",
-                    message: format!(
-                        "provider run `{provider_run_id}` does not use structured prompt I/O"
-                    ),
-                })?;
-            self.providers.spawn_structured_prompt_submit_job(
+            self.providers.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.to_string(),
                 agent_id,
-                job,
-            );
+                &provider_run,
+                prompt,
+                attachments,
+            )?;
             return Ok(());
         }
 
