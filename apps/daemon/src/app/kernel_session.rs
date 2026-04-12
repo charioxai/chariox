@@ -3,6 +3,7 @@ use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, ProviderRunState};
+use crate::session::{RuntimeSession, SessionStatus};
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
@@ -155,6 +156,54 @@ impl<'a> KernelSessionService<'a> {
         );
 
         Ok(attachment)
+    }
+
+    pub(crate) fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        let session = self.app.sessions.get_session(session_id)?;
+
+        if session.status() == SessionStatus::Ended {
+            return self.app.sessions.end_session(session_id);
+        }
+
+        let removed_attachments = self.app.attachments.remove_session_attachments(session_id);
+        let terminated_runs = self
+            .app
+            .providers
+            .terminate_session_runs(&mut self.app.sessions, session_id)?;
+        let terminated_run_ids = terminated_runs
+            .iter()
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        for run in terminated_runs {
+            self.app.remove_tracked_provider_process_for_run(run.id())?;
+        }
+
+        let removed_agents = self.app.agents.remove_session_agents(session_id);
+        let removed_agent_ids: Vec<_> = removed_agents
+            .iter()
+            .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
+            .collect();
+
+        for run in self.app.providers.list_runs() {
+            if run.session_id() == session_id {
+                crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
+            }
+        }
+        let ended = self.app.sessions.end_session(session_id)?;
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session ended",
+            serde_json::json!({
+                "session_id": session_id,
+                "removed_attachment_ids": removed_attachments
+                    .iter()
+                    .map(|attachment| attachment.id().to_string())
+                    .collect::<Vec<_>>(),
+                "terminated_provider_run_ids": terminated_run_ids,
+                "removed_agents": removed_agent_ids,
+            }),
+        );
+        Ok(ended)
     }
 
     pub(crate) fn focus_agent(

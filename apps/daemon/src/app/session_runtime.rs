@@ -1,7 +1,7 @@
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
-use crate::session::{RuntimeSession, SessionStatus};
+use crate::session::RuntimeSession;
 
 impl DaemonApp {
     pub fn attach(&mut self, request: AttachRequest) -> Result<RuntimeAttachment, DaemonError> {
@@ -13,47 +13,7 @@ impl DaemonApp {
     }
 
     pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-
-        if session.status() == SessionStatus::Ended {
-            return self.sessions.end_session(session_id);
-        }
-
-        let removed_attachments = self.attachments.remove_session_attachments(session_id);
-        let terminated_runs = self
-            .providers
-            .terminate_session_runs(&mut self.sessions, session_id)?;
-        let terminated_run_ids = terminated_runs
-            .iter()
-            .map(|run| run.id().to_string())
-            .collect::<Vec<_>>();
-        for run in terminated_runs {
-            self.remove_tracked_provider_process_for_run(run.id())?;
-        }
-
-        let removed_agents = self.agents.remove_session_agents(session_id);
-        let removed_agent_ids: Vec<_> = removed_agents
-            .iter()
-            .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
-            .collect();
-
-        for run in self.providers.list_runs() {
-            if run.session_id() == session_id {
-                crate::transport::flow_control::clear_prompt_activity(self, run.id());
-            }
-        }
-        let ended = self.sessions.end_session(session_id)?;
-        crate::logging::info_with_fields(
-            "daemon.session",
-            "session ended",
-            serde_json::json!({
-                "session_id": session_id,
-                "removed_attachment_ids": removed_attachments.iter().map(|attachment| attachment.id().to_string()).collect::<Vec<_>>(),
-                "terminated_provider_run_ids": terminated_run_ids,
-                "removed_agents": removed_agent_ids,
-            }),
-        );
-        Ok(ended)
+        self.kernel_sessions().end_session(session_id)
     }
 
     pub fn delete_session_ref(
