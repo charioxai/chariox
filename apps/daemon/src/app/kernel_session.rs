@@ -206,6 +206,29 @@ impl<'a> KernelSessionService<'a> {
         Ok(ended)
     }
 
+    pub(crate) fn delete_session_ref(
+        &mut self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self
+            .app
+            .sessions
+            .resolve_session_ref(session_ref, workspace_id)?;
+        let session_id = session.id().to_string();
+        let ended = self.end_session(&session_id)?;
+        let deleted = self.app.sessions.delete_session(ended.id())?;
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session deleted",
+            serde_json::json!({
+                "session_id": deleted.id(),
+                "session_alias": deleted.alias(),
+            }),
+        );
+        Ok(deleted)
+    }
+
     pub(crate) fn focus_agent(
         &mut self,
         session_id: &str,
