@@ -339,6 +339,7 @@ impl CommandRouter {
                 crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
                 crate::kernel_transport::INBOUND_REQUEST_LIMIT,
             ),
+            self.session_projection.workspace_coordination_snapshot(),
         )
     }
 

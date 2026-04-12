@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -116,6 +116,19 @@ impl SessionStateProjectionStore {
             active_prompts,
             queued_prompts,
         }
+    }
+
+    pub(crate) fn workspace_coordination_snapshot(&self) -> WorkspaceCoordinationHealthSnapshot {
+        let state = self
+            .state
+            .lock()
+            .expect("session projection lock should not be poisoned");
+        let sessions = state
+            .session_list
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.session_states.values().cloned().collect());
+        workspace_coordination_snapshot(sessions)
     }
 }
 
@@ -398,6 +411,57 @@ pub struct ProviderCatalogHealthSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeClaimSnapshot {
+    pub workspace_id: String,
+    pub worktree_id: String,
+    pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkspaceCoordinationHealthSnapshot {
+    pub active_worktree_claims: Vec<WorktreeClaimSnapshot>,
+    pub worktree_collisions: Vec<WorktreeClaimSnapshot>,
+}
+
+fn workspace_coordination_snapshot(
+    sessions: Vec<RuntimeSession>,
+) -> WorkspaceCoordinationHealthSnapshot {
+    let mut claims_by_worktree: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for session in sessions {
+        if session.status() == crate::session::SessionStatus::Ended {
+            continue;
+        }
+        claims_by_worktree
+            .entry((
+                session.workspace_id().to_string(),
+                session.worktree_id().to_string(),
+            ))
+            .or_default()
+            .push(session.id().to_string());
+    }
+
+    let mut active_worktree_claims = Vec::new();
+    let mut worktree_collisions = Vec::new();
+    for ((workspace_id, worktree_id), mut session_ids) in claims_by_worktree {
+        session_ids.sort();
+        let claim = WorktreeClaimSnapshot {
+            workspace_id,
+            worktree_id,
+            session_ids,
+        };
+        if claim.session_ids.len() > 1 {
+            worktree_collisions.push(claim.clone());
+        }
+        active_worktree_claims.push(claim);
+    }
+
+    WorkspaceCoordinationHealthSnapshot {
+        active_worktree_claims,
+        worktree_collisions,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportHealthSnapshot {
     pub active_connections: usize,
     pub active_subscriptions: usize,
@@ -551,6 +615,7 @@ pub struct DaemonHealthProjection {
     pub session_projection: SessionProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
     pub transport: TransportHealthSnapshot,
+    pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
 }
 
 impl DaemonHealthProjection {
@@ -562,6 +627,7 @@ impl DaemonHealthProjection {
         session_projection: SessionProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
         transport: TransportHealthSnapshot,
+        workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     ) -> Self {
         Self {
             metadata: ProjectionMetadata::new(1, last_event_id),
@@ -571,6 +637,7 @@ impl DaemonHealthProjection {
             session_projection,
             provider_catalog,
             transport,
+            workspace_coordination,
         }
     }
 }
@@ -579,7 +646,8 @@ impl DaemonHealthProjection {
 mod tests {
     use crate::kernel::projection::{
         ActorQueueSnapshot, DaemonHealthProjection, ProviderCatalogHealthSnapshot,
-        SessionProjectionHealthSnapshot, SessionSnapshotProjection, TransportHealthSnapshot,
+        SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
+        TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -633,6 +701,18 @@ mod tests {
                 outgoing_queue_overflows: 1,
                 slow_consumer_closes: 1,
             },
+            WorkspaceCoordinationHealthSnapshot {
+                active_worktree_claims: vec![crate::kernel::projection::WorktreeClaimSnapshot {
+                    workspace_id: "workspace-1".to_string(),
+                    worktree_id: "worktree-1".to_string(),
+                    session_ids: vec!["session-1".to_string(), "session-2".to_string()],
+                }],
+                worktree_collisions: vec![crate::kernel::projection::WorktreeClaimSnapshot {
+                    workspace_id: "workspace-1".to_string(),
+                    worktree_id: "worktree-1".to_string(),
+                    session_ids: vec!["session-1".to_string(), "session-2".to_string()],
+                }],
+            },
         );
 
         assert_eq!(projection.metadata.last_event_id, 7);
@@ -648,5 +728,34 @@ mod tests {
         assert!(projection.provider_catalog.cached);
         assert_eq!(projection.transport.active_connections, 2);
         assert_eq!(projection.transport.slow_consumer_closes, 1);
+        assert_eq!(
+            projection.workspace_coordination.worktree_collisions.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn workspace_coordination_snapshot_reports_worktree_collisions() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (first, _) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
+            .expect("first session should be created");
+        let (second, _) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
+            .expect("second session should be created");
+        let (other_workspace, _) = app
+            .create_session(CreateSessionRequest::new("workspace-2", "shared-worktree"))
+            .expect("other workspace session should be created");
+
+        let store = SessionStateProjectionStore::default();
+        store.update_list(vec![first.clone(), second.clone(), other_workspace]);
+
+        let snapshot = store.workspace_coordination_snapshot();
+        assert_eq!(snapshot.active_worktree_claims.len(), 2);
+        assert_eq!(snapshot.worktree_collisions.len(), 1);
+        assert_eq!(
+            snapshot.worktree_collisions[0].session_ids,
+            vec![first.id().to_string(), second.id().to_string()]
+        );
     }
 }
