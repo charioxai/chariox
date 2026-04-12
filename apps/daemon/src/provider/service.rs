@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -18,7 +17,8 @@ use super::{
     },
     opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
     LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunState, RuntimeProviderRun,
+    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox, ProviderRunState,
+    RuntimeProviderRun,
 };
 
 pub struct ProviderProcessService {
@@ -26,7 +26,7 @@ pub struct ProviderProcessService {
     codex_runs: BTreeMap<String, CodexRuntimeState>,
     opencode_runs: BTreeMap<String, OpenCodeRuntimeState>,
     structured_prompt_submissions: BTreeSet<String>,
-    finished_structured_prompt_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
+    run_actor_mailbox: ProviderRunActorMailbox,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
 }
@@ -52,14 +52,6 @@ enum ProviderPromptSubmitJobInner {
 pub(crate) struct ProviderPromptSubmitCompletion {
     run_id: String,
     inner: ProviderPromptSubmitJobInner,
-}
-
-pub(crate) struct FinishedProviderPromptSubmitJob {
-    pub(crate) session_id: String,
-    pub(crate) provider_run_id: String,
-    pub(crate) agent_id: String,
-    pub(crate) completion: ProviderPromptSubmitCompletion,
-    pub(crate) result: Result<(), DaemonError>,
 }
 
 pub(crate) struct ProviderPromptAbortJob {
@@ -167,7 +159,7 @@ impl ProviderProcessService {
             codex_runs: BTreeMap::new(),
             opencode_runs: BTreeMap::new(),
             structured_prompt_submissions: BTreeSet::new(),
-            finished_structured_prompt_submits: Arc::new(Mutex::new(Vec::new())),
+            run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
             next_run_number: 0,
         }
@@ -853,47 +845,14 @@ impl ProviderProcessService {
         agent_id: String,
         job: ProviderPromptSubmitJob,
     ) {
-        let finished_jobs = Arc::clone(&self.finished_structured_prompt_submits);
-        thread::spawn(move || {
-            let (completion, result) = job.execute();
-            let finished = FinishedProviderPromptSubmitJob {
-                session_id,
-                provider_run_id,
-                agent_id,
-                completion,
-                result,
-            };
-            match finished_jobs.lock() {
-                Ok(mut jobs) => jobs.push(finished),
-                Err(error) => {
-                    crate::logging::error_with_fields(
-                        "daemon.provider_service",
-                        "structured prompt submit completion queue poisoned",
-                        serde_json::json!({
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-        });
+        self.run_actor_mailbox
+            .spawn_submit(session_id, provider_run_id, agent_id, job);
     }
 
     pub(crate) fn drain_finished_structured_prompt_submits(
         &mut self,
-    ) -> Vec<FinishedProviderPromptSubmitJob> {
-        match self.finished_structured_prompt_submits.lock() {
-            Ok(mut jobs) => std::mem::take(&mut *jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_service",
-                    "structured prompt submit completion queue poisoned",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                Vec::new()
-            }
-        }
+    ) -> Vec<super::FinishedProviderPromptSubmitJob> {
+        self.run_actor_mailbox.drain_finished_submits()
     }
 
     pub fn poll_structured_output(

@@ -6,6 +6,7 @@ mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
 mod registry;
+mod run_actor;
 mod service;
 mod types;
 
@@ -27,6 +28,7 @@ pub use opencode_client::{
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel, OpenCodeSessionSnapshot,
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
+pub(crate) use run_actor::{FinishedProviderPromptSubmitJob, ProviderRunActorMailbox};
 pub use service::ProviderProcessService;
 pub(crate) use service::{
     ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
