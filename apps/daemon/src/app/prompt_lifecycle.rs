@@ -368,15 +368,8 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        let target_agent_id = self
-            .sessions
-            .get_session(session_id)?
-            .focused_agent_id()
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-        self.cancel_active_prompt_internal(session_id, &target_agent_id, None)
+        self.kernel_agents()
+            .cancel_active_prompt_for_runtime(session_id)
     }
 
     pub(crate) fn cancel_active_prompt_internal(
