@@ -21,10 +21,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added responsiveness/race coverage for slow history, provider catalog, shell capability, provider launch, structured submit/cancel/poll, slow consumers, replay gaps, duplicate command ids, and runtime cleanup races.
 - Introduced `KernelSessionService` and moved session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind that service while keeping `DaemonApp` as a compatibility facade.
 - Introduced `KernelAgentService` and moved prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind that service while keeping `DaemonApp` as a compatibility facade.
+- Added `AgentRuntime` per-agent mailboxes for prompt submit/cancel admission so agent prompt commands no longer wait behind the generic interactive queue.
+- Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, and resize admission so session UI commands are isolated from the generic interactive queue and from unrelated sessions.
 
 ### Remaining M4.5 work
 
-- Convert `KernelSessionService` and `KernelAgentService` into real `SessionActor` / `AgentActor` mailbox ownership.
+- Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
 - Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Add daemon health projections for actor queue depths, background jobs, slow consumers, and workspace coordination.

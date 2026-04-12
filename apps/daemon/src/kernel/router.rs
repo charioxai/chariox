@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
-use crate::kernel::session_actor::SessionActor;
+use crate::kernel::session_actor::{SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response,
@@ -35,6 +35,7 @@ pub(crate) struct CommandRouter {
     app: Arc<Mutex<DaemonApp>>,
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
     agent_runtime: AgentRuntime,
+    session_runtime: SessionRuntime,
 }
 
 impl CommandRouter {
@@ -50,13 +51,16 @@ impl CommandRouter {
         )
     }
 
-    pub(crate) fn with_interactive_capacity_and_provider_lanes(
+    #[cfg(test)]
+    fn with_interactive_and_session_capacity(
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
-        provider_runtime_lanes: ProviderRunOperationLanes,
+        session_capacity: usize,
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
-        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes.clone());
+        let provider_runtime_lanes = ProviderRunOperationLanes::default();
+        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes);
+        let session_runtime = SessionRuntime::with_queue_limit(Arc::clone(&app), session_capacity);
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             interactive_rx,
@@ -65,6 +69,27 @@ impl CommandRouter {
             app,
             interactive_tx,
             agent_runtime,
+            session_runtime,
+        }
+    }
+
+    pub(crate) fn with_interactive_capacity_and_provider_lanes(
+        app: Arc<Mutex<DaemonApp>>,
+        interactive_capacity: usize,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> Self {
+        let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
+        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes.clone());
+        let session_runtime = SessionRuntime::new(Arc::clone(&app));
+        tokio::spawn(run_interactive_command_lane(
+            Arc::clone(&app),
+            interactive_rx,
+        ));
+        Self {
+            app,
+            interactive_tx,
+            agent_runtime,
+            session_runtime,
         }
     }
 
@@ -86,6 +111,13 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if SessionActor::is_session_interactive_command(&request) {
+            return self
+                .session_runtime
+                .dispatch_session_command(command, request)
+                .await;
+        }
+
         match request {
             LocalDaemonRequest::SubmitPrompt(request) => {
                 return self
@@ -488,64 +520,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_interactive_commands_when_bounded_lane_is_full() {
+    async fn rejects_session_commands_when_bounded_lane_is_full() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
         let app = Arc::new(Mutex::new(app));
-        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let router = CommandRouter::with_interactive_and_session_capacity(Arc::clone(&app), 1, 1);
         let app_guard = app.lock().await;
 
         let first_request = attach_request(&session_id, "cli-1");
-        let first_command = KernelCommand::from_local_request("cmd-1", None, None, &first_request);
-        let first_router = router.clone();
-        let first_task =
-            tokio::spawn(async move { first_router.dispatch(first_command, first_request).await });
+        let first_result_rx = router
+            .session_runtime
+            .enqueue_for_test(&session_id, "cmd-1", "session.attach", first_request)
+            .await
+            .expect("first command should enter the session lane");
 
-        for _ in 0..10 {
-            if router.interactive_tx.capacity() == 1 {
+        let mut first_command_is_running = false;
+        for _ in 0..50 {
+            if router
+                .session_runtime
+                .lane_capacity(&session_id)
+                .await
+                .is_some_and(|capacity| capacity == 1)
+            {
+                first_command_is_running = true;
                 break;
             }
             tokio::task::yield_now().await;
         }
+        assert!(
+            first_command_is_running,
+            "first session command should be running before filling the queue"
+        );
 
-        let second_request = attach_request(&session_id, "cli-2");
-        let second_command =
-            KernelCommand::from_local_request("cmd-2", None, None, &second_request);
-        let (second_result_tx, second_result_rx) = tokio::sync::oneshot::channel();
-        router
-            .interactive_tx
-            .try_send(super::InteractiveCommandEnvelope {
-                command: second_command,
-                request: second_request,
-                result_tx: second_result_tx,
-            })
-            .expect("second command should fill the interactive lane");
+        let queued_request = attach_request(&session_id, "queued-cli");
+        let queued_result_rx = router
+            .session_runtime
+            .enqueue_for_test(&session_id, "cmd-queued", "session.attach", queued_request)
+            .await
+            .expect("queued command should fill the session lane");
 
-        for _ in 0..10 {
-            if router.interactive_tx.capacity() == 0 {
+        let mut session_lane_is_full = false;
+        for _ in 0..50 {
+            if router
+                .session_runtime
+                .lane_capacity(&session_id)
+                .await
+                .is_some_and(|capacity| capacity == 0)
+            {
+                session_lane_is_full = true;
                 break;
             }
             tokio::task::yield_now().await;
         }
+        assert!(
+            session_lane_is_full,
+            "session command queue should be full before overflow dispatch"
+        );
 
-        let third_request = attach_request(&session_id, "cli-3");
-        let third_command = KernelCommand::from_local_request("cmd-3", None, None, &third_request);
+        let third_request = attach_request(&session_id, "cli-overflow");
+        let third_command =
+            KernelCommand::from_local_request("cmd-overflow", None, None, &third_request);
         let error = router
             .dispatch(third_command, third_request)
             .await
-            .expect_err("third interactive command should be rejected while lane is full");
+            .expect_err("overflow session command should be rejected while lane is full");
         assert!(error
             .to_string()
-            .contains("interactive command lane overloaded"));
+            .contains("session command lane overloaded"));
 
         drop(app_guard);
-        let _ = first_task.await.expect("first task should join");
-        let _ = second_result_rx
+        let _ = first_result_rx.await.expect("first result should resolve");
+        let _ = queued_result_rx
             .await
-            .expect("second result should resolve");
+            .expect("queued result should resolve");
+    }
+
+    #[tokio::test]
+    async fn focus_uses_session_lane_when_interactive_lane_is_full() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+
+        let blocked_request = focus_request(&session_id, &agent_id);
+        let blocked_command =
+            KernelCommand::from_local_request("cmd-blocked-generic", None, None, &blocked_request);
+        let (blocked_result_tx, blocked_result_rx) = tokio::sync::oneshot::channel();
+        router
+            .interactive_tx
+            .try_send(super::InteractiveCommandEnvelope {
+                command: blocked_command,
+                request: blocked_request,
+                result_tx: blocked_result_tx,
+            })
+            .expect("generic interactive lane should fill");
+
+        let focus_request = focus_request(&session_id, &agent_id);
+        let focus_command =
+            KernelCommand::from_local_request("cmd-focus", None, None, &focus_request);
+        let focus_router = router.clone();
+        let focus_task =
+            tokio::spawn(async move { focus_router.dispatch(focus_command, focus_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !focus_task.is_finished(),
+            "focus should be admitted to the session lane instead of failing on the full generic lane"
+        );
+
+        drop(app_guard);
+        let _ = blocked_result_rx
+            .await
+            .expect("blocked generic command should resolve");
+        let focus_response = focus_task
+            .await
+            .expect("focus task should join")
+            .expect("focus should succeed");
+        assert!(matches!(
+            focus_response,
+            crate::local::LocalDaemonResponse::AgentFocused { .. }
+        ));
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ The target is not "more locks." The target is explicit ownership:
 
 The current primary CLI path uses the kernel WebSocket transport. The first M4.5 slices now normalize requests through `KernelCommand`, route them through `CommandRouter`, publish bounded replay events through `EventLog`, and keep the responsiveness-critical operations on a bounded `InteractiveCommandLane`.
 
-The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`.
+The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, and session attach/detach/focus/cycle/resize commands enter per-session mailboxes instead of the generic interactive queue.
 
 Important caveat: the implementation still has a compatibility `DaemonApp`, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
 
@@ -41,10 +41,12 @@ Status as of 2026-04-12:
 - Landed: reserved-listener WebSocket integration harness startup to remove the observed free-port race.
 - Landed: `KernelSessionService` now owns attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the public `DaemonApp` compatibility methods.
 - Landed: `KernelAgentService` now owns prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind the public `DaemonApp` compatibility methods.
+- Landed: `AgentRuntime` per-agent command mailboxes for prompt submit/cancel admission, so agent-scoped prompt commands are not rejected behind unrelated generic interactive work.
+- Landed: `SessionRuntime` per-session command mailboxes for attach/detach/focus/cycle/resize admission, so session-scoped UI commands are isolated from the generic interactive queue and from other sessions.
 
 Still open:
 
-- move `KernelSessionService` and `KernelAgentService` from compatibility services into true `SessionActor`/`AgentActor` mailbox ownership
+- move `KernelSessionService` and `KernelAgentService` state out of the compatibility facade and into the new `SessionRuntime`/`AgentRuntime` mailbox owners
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
 - make session/list/transcript/provider-health reads projection-first on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
@@ -283,7 +285,7 @@ Rules:
 - Move prompt queues, per-agent prompt states, and provider-run binding into `AgentActor`.
 - Preserve the multi-agent invariant that focus does not park/resume/terminate another live run.
 
-Current status: session lifecycle/focus/resize behavior has been consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior has been consolidated behind `KernelAgentService`. The `SessionActor` and `AgentActor` surfaces still delegate through these services, so true actor-owned state is not complete until prompt queues, per-agent prompt states, and compatibility session fields stop requiring shared `DaemonApp` access.
+Current status: session lifecycle/focus/resize behavior has been consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior has been consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` now provide bounded per-session/per-agent mailboxes for responsiveness-critical command admission. The mailbox workers still delegate mutation through the compatibility services, so true actor-owned state is not complete until prompt queues, per-agent prompt states, and compatibility session fields stop requiring shared `DaemonApp` access.
 
 ### Phase 5. ProviderRunActor and Output Fanout
 

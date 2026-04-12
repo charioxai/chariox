@@ -35,7 +35,7 @@ The current codebase provides:
 - a Rust daemon runtime with config/bootstrap wiring, in-memory session lifecycle, shared attachment participation, provider-run orchestration, prompt queueing/config propagation, and PTY-backed terminal fan-out
 - a real local daemon IPC surface, a TypeScript OpenTUI local CLI with an OpenCode-inspired transcript/prompt layout, and a working OpenCode baseline path with prompt submission and live streamed output
 - a kernel-hosted WebSocket transport for the TypeScript CLI, including pushed events, resumable subscriptions, heartbeat/liveness, and reconnect-friendly behavior
-- the first M4.5 kernel runtime slices: normalized kernel commands, an event log service with replay-gap handling, a command router, bounded interactive routing, safe command-id retry handling, typed CLI replay-gap notices, provider-run actor coverage for structured submit/cancel/poll paths, `KernelSessionService` for session lifecycle/focus/resize operations, and `KernelAgentService` for prompt submit/cancel/complete/queue-advance lifecycle behavior
+- the first M4.5 kernel runtime slices: normalized kernel commands, an event log service with replay-gap handling, a command router, bounded interactive routing, safe command-id retry handling, typed CLI replay-gap notices, provider-run actor coverage for structured submit/cancel/poll paths, `KernelSessionService` for session lifecycle/focus/resize operations, `KernelAgentService` for prompt submit/cancel/complete/queue-advance lifecycle behavior, per-agent prompt command mailboxes, and per-session UI command mailboxes
 - a real manual multi-agent session slice in the daemon and TypeScript CLI: agent records, focused-agent prompt routing, per-agent provider-run ownership/history metadata, `/agent ...` management commands, `Ctrl+A` focus cycling, and `individual`/`split` response views
 - a Rust compatibility launcher for the TypeScript CLI
 - a local daemon smoke harness for managed-session flows
@@ -46,7 +46,7 @@ Current implementation caveat:
 
 - the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
-- the M4.5 refactor is not complete yet: `DaemonApp` still exists as a compatibility facade, and service-owned prompt/session behavior still needs to become true actor/projection ownership before relay scale-out
+- the M4.5 refactor is not complete yet: `DaemonApp` still exists as a compatibility facade, and service-owned prompt/session state still needs to move fully behind actor/projection ownership before relay scale-out
 - generic agent transport is intentionally deferred for now; OpenCode continues to use its native local HTTP + SSE adapter path
 
 The project specification and architecture remain the primary source of truth for behavior beyond this bootstrap.
