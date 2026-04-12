@@ -139,6 +139,11 @@ impl CommandRouter {
                 }
             }
         }
+        if matches!(request, LocalDaemonRequest::ListSessions(_)) {
+            if let Some(sessions) = self.session_projection.list().await {
+                return Ok(LocalDaemonResponse::SessionsListed { sessions });
+            }
+        }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
@@ -265,6 +270,9 @@ impl CommandRouter {
         for session in response_sessions(response) {
             refreshed_session_ids.push(session.id().to_string());
             self.session_projection.update(session).await;
+        }
+        if let LocalDaemonResponse::SessionsListed { sessions } = response {
+            self.session_projection.update_list(sessions.clone()).await;
         }
         for session_id in response_removed_session_ids(response) {
             self.session_projection.remove(session_id).await;
@@ -810,9 +818,10 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SpawnAgentRequest, SubmitPromptRequest,
+        AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
+        GetDaemonHealthRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+        ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -1473,6 +1482,158 @@ mod tests {
                 assert_eq!(session.agents().len(), 1);
             }
             _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_sessions_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-list-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm the projection");
+
+        let app_guard = app.lock().await;
+        let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let projected_list_command = KernelCommand::from_local_request(
+            "cmd-list-projection",
+            None,
+            None,
+            &projected_list_request,
+        );
+        let list_router = router.clone();
+        let list_task = tokio::spawn(async move {
+            list_router
+                .dispatch(projected_list_command, projected_list_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            list_task.is_finished(),
+            "warmed ListSessions should be served from the session list projection without app lock access"
+        );
+
+        drop(app_guard);
+        let list_response = list_task
+            .await
+            .expect("list task should join")
+            .expect("list should resolve");
+        match list_response {
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].id(), session_id);
+            }
+            _ => panic!("unexpected list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn warmed_session_list_projection_tracks_create_and_delete_responses() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-list-empty", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm an empty projection");
+
+        let create_request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-list-projection",
+            "worktree-list-projection",
+        ));
+        let create_command =
+            KernelCommand::from_local_request("cmd-create-for-list", None, None, &create_request);
+        let created_session_id = match router
+            .dispatch(create_command, create_request)
+            .await
+            .expect("create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+            _ => panic!("unexpected create response"),
+        };
+
+        let app_guard = app.lock().await;
+        let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let projected_list_command = KernelCommand::from_local_request(
+            "cmd-list-after-create",
+            None,
+            None,
+            &projected_list_request,
+        );
+        let list_router = router.clone();
+        let list_task = tokio::spawn(async move {
+            list_router
+                .dispatch(projected_list_command, projected_list_request)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(list_task.is_finished());
+        drop(app_guard);
+        let list_response = list_task
+            .await
+            .expect("list task should join")
+            .expect("list should resolve");
+        match list_response {
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].id(), created_session_id);
+            }
+            _ => panic!("unexpected list response"),
+        }
+
+        let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: created_session_id.clone(),
+            workspace_id: None,
+        });
+        let delete_command =
+            KernelCommand::from_local_request("cmd-delete-for-list", None, None, &delete_request);
+        router
+            .dispatch(delete_command, delete_request)
+            .await
+            .expect("delete should succeed");
+
+        let app_guard = app.lock().await;
+        let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let projected_list_command = KernelCommand::from_local_request(
+            "cmd-list-after-delete",
+            None,
+            None,
+            &projected_list_request,
+        );
+        let list_router = router.clone();
+        let list_task = tokio::spawn(async move {
+            list_router
+                .dispatch(projected_list_command, projected_list_request)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(list_task.is_finished());
+        drop(app_guard);
+        let list_response = list_task
+            .await
+            .expect("list task should join")
+            .expect("list should resolve");
+        match list_response {
+            LocalDaemonResponse::SessionsListed { sessions } => {
+                assert!(sessions.is_empty());
+            }
+            _ => panic!("unexpected list response"),
         }
     }
 

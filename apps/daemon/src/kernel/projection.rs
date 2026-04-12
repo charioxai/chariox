@@ -35,23 +35,61 @@ pub struct SessionSnapshotProjection {
 
 #[derive(Clone, Default)]
 pub(crate) struct SessionStateProjectionStore {
-    sessions: Arc<Mutex<HashMap<String, RuntimeSession>>>,
+    state: Arc<Mutex<SessionProjectionState>>,
+}
+
+#[derive(Default)]
+struct SessionProjectionState {
+    session_states: HashMap<String, RuntimeSession>,
+    session_list: Option<Vec<RuntimeSession>>,
 }
 
 impl SessionStateProjectionStore {
     pub(crate) async fn get(&self, session_id: &str) -> Option<RuntimeSession> {
-        self.sessions.lock().await.get(session_id).cloned()
+        self.state
+            .lock()
+            .await
+            .session_states
+            .get(session_id)
+            .cloned()
+    }
+
+    pub(crate) async fn list(&self) -> Option<Vec<RuntimeSession>> {
+        self.state.lock().await.session_list.clone()
     }
 
     pub(crate) async fn update(&self, session: RuntimeSession) {
-        self.sessions
-            .lock()
-            .await
+        let mut state = self.state.lock().await;
+        upsert_session(&mut state.session_list, session.clone());
+        state
+            .session_states
             .insert(session.id().to_string(), session);
     }
 
+    pub(crate) async fn update_list(&self, sessions: Vec<RuntimeSession>) {
+        self.state.lock().await.session_list = Some(sessions);
+    }
+
     pub(crate) async fn remove(&self, session_id: &str) {
-        self.sessions.lock().await.remove(session_id);
+        let mut state = self.state.lock().await;
+        state.session_states.remove(session_id);
+        if let Some(session_list) = state.session_list.as_mut() {
+            session_list.retain(|session| session.id() != session_id);
+        }
+    }
+}
+
+fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) {
+    let Some(session_list) = session_list.as_mut() else {
+        return;
+    };
+    if let Some(existing) = session_list
+        .iter_mut()
+        .find(|existing| existing.id() == session.id())
+    {
+        *existing = session;
+    } else {
+        session_list.push(session);
     }
 }
 
