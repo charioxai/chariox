@@ -11,7 +11,6 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RelayPro
 use arroba_relay::protocol::ClientTarget;
 use base64::Engine;
 use std::fs;
-use std::thread;
 use std::time::Duration;
 
 pub(crate) struct KernelPromptSubmission {
@@ -741,25 +740,6 @@ impl DaemonApp {
             .structured_prompt_io_in_flight(provider_run_id)
     }
 
-    pub(crate) fn wait_for_structured_prompt_io_idle(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<(), DaemonError> {
-        for _ in 0..200 {
-            self.reap_structured_prompt_jobs();
-            if !self.structured_prompt_io_in_flight(provider_run_id) {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        Err(DaemonError::LocalTransport {
-            operation: "wait for structured prompt I/O",
-            message: format!(
-                "provider run `{provider_run_id}` still has structured prompt I/O in flight"
-            ),
-        })
-    }
-
     pub(crate) fn reap_structured_prompt_jobs(&mut self) {
         let finished_jobs = self
             .providers
@@ -873,10 +853,8 @@ impl DaemonApp {
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
 
-        if self.providers.run_uses_structured_prompt_io(&provider_run) {
-            self.wait_for_structured_prompt_io_idle(&provider_run_id)?;
-        }
-        if !self.providers.abort_structured_runtime(&provider_run_id)? {
+        let uses_structured_prompt_io = self.providers.run_uses_structured_prompt_io(&provider_run);
+        if !uses_structured_prompt_io {
             self.send_provider_input(
                 session_id,
                 &provider_run_id,
@@ -889,6 +867,10 @@ impl DaemonApp {
             .sessions
             .begin_cancelling_active_prompt(session_id, agent_id)?;
         flow_control::note_prompt_settlement_requested(self, &provider_run_id);
+        if uses_structured_prompt_io {
+            self.providers
+                .enqueue_structured_prompt_abort(session_id.to_string(), provider_run_id.clone())?;
+        }
         let recipients = match attachment_id {
             Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
             None => self.attachments.list_session_attachment_ids(session_id),

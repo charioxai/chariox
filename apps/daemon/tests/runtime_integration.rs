@@ -1016,7 +1016,6 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
     .expect("active prompt should cancel");
     assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
     assert!(cancellation.started_next.is_none());
-    assert_eq!(mock_server.abort_count(), 1);
     assert_eq!(
         app.sessions()
             .get_session(session.id())
@@ -1036,6 +1035,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         |output, _app| output.contains("fixture response: second prompt after cancel"),
     );
     assert!(output.contains("fixture response: second prompt after cancel"));
+    assert_eq!(mock_server.abort_count(), 1);
 
     if let Some(previous_bin) = previous_bin {
         env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
@@ -1104,7 +1104,6 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
     .expect("active prompt should cancel");
     assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
     assert!(cancellation.started_next.is_none());
-    assert_eq!(mock_server.abort_count(), 1);
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
     let _records = collect_provider_records_until(
@@ -1113,11 +1112,13 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
         run.id(),
         recipients,
         |_records, app| {
-            app.sessions()
-                .get_session(session.id())
-                .expect("session should still exist")
-                .active_prompt()
-                .is_none()
+            mock_server.abort_count() == 1
+                && app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should still exist")
+                    .active_prompt()
+                    .is_none()
         },
     );
     let session_state = app
