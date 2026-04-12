@@ -22,7 +22,8 @@ Chronological notes to preserve execution context between contributors/agents.
 - Introduced `KernelSessionService` and moved session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind that service while keeping `DaemonApp` as a compatibility facade.
 - Introduced `KernelAgentService` and moved prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind that service while keeping `DaemonApp` as a compatibility facade.
 - Added `AgentRuntime` per-agent mailboxes for prompt submit/cancel admission so agent prompt commands no longer wait behind the generic interactive queue.
-- Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, and resize admission so session UI commands are isolated from the generic interactive queue and from unrelated sessions.
+- Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, resize, end, and delete admission so session UI/lifecycle commands are isolated from the generic interactive queue and from unrelated sessions.
+- Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
 
 ### Remaining M4.5 work
 

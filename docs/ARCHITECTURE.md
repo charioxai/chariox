@@ -249,7 +249,7 @@ Current M4.5 implementation status:
 - Provider-run actors now own structured provider submit/cancel/poll execution and guard runtime slots with cleanup tombstones so in-flight provider I/O cannot resurrect cleared runtime state.
 - `KernelSessionService` now owns session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the current compatibility API.
 - `KernelAgentService` now owns prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind the current compatibility API.
-- `AgentRuntime` now admits prompt submit/cancel through bounded per-agent mailboxes, and `SessionRuntime` now admits attach/detach/focus/cycle/resize through bounded per-session mailboxes.
+- `AgentRuntime` now admits prompt submit/cancel through bounded per-agent mailboxes, and `SessionRuntime` now admits attach/detach/focus/cycle/resize/end/delete through bounded per-session mailboxes. Successful end/delete deregisters the session mailbox.
 - `DaemonApp` still remains the compatibility facade for many paths. The next major implementation step is to move `KernelSessionService` and `KernelAgentService` state into those mailbox owners and make reads projection-first so request handlers no longer depend on `Arc<Mutex<DaemonApp>>` for hot-path work.
 
 ### 3.3.2 Workflow Model

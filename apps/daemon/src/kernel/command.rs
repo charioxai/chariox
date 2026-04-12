@@ -175,6 +175,12 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::CycleAgentFocus(request) => {
             LocalRequestMetadata::new("agent.cycle_focus", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::EndSession(request) => {
+            LocalRequestMetadata::new("session.end", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::DeleteSession(request) => {
+            LocalRequestMetadata::new("session.delete", Interactive).session(&request.session_ref)
+        }
         LocalDaemonRequest::GetSessionHistory(request) => {
             let mut metadata = LocalRequestMetadata::new("session.history.get", Background)
                 .session(&request.session_id);
@@ -233,8 +239,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::InspectGit(_) => "capability.git.inspect",
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
-        LocalDaemonRequest::EndSession(_) => "session.end",
-        LocalDaemonRequest::DeleteSession(_) => "session.delete",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
@@ -290,6 +294,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ResizeTerminal(_)
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::CycleAgentFocus(_)
+        | LocalDaemonRequest::EndSession(_)
+        | LocalDaemonRequest::DeleteSession(_)
         | LocalDaemonRequest::GetSessionHistory(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
@@ -300,7 +306,8 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
     use crate::local::{
-        AttachToSessionRequest, FocusAgentRequest, LocalDaemonRequest, SubmitPromptRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonRequest,
+        SubmitPromptRequest,
     };
 
     #[test]
@@ -355,6 +362,22 @@ mod tests {
         assert_eq!(focus.command_type, "agent.focus");
         assert_eq!(focus.priority, KernelCommandPriority::Interactive);
         assert_eq!(focus.agent_id.as_deref(), Some("agent-2"));
+    }
+
+    #[test]
+    fn normalizes_end_session_as_interactive_command() {
+        let command = KernelCommand::from_local_request(
+            "end-1",
+            None,
+            None,
+            &LocalDaemonRequest::EndSession(EndSessionRequest {
+                session_id: "session-1".to_string(),
+            }),
+        );
+
+        assert_eq!(command.command_type, "session.end");
+        assert_eq!(command.priority, KernelCommandPriority::Interactive);
+        assert_eq!(command.session_id.as_deref(), Some("session-1"));
     }
 
     #[test]

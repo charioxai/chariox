@@ -56,12 +56,19 @@ impl SessionRuntime {
             operation: "enqueue session kernel command",
             message: format!("session command lane overloaded: {error}"),
         })?;
-        result_rx
+        let response = result_rx
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "await session kernel command",
                 message: error.to_string(),
-            })?
+            })??;
+        if matches!(
+            response,
+            LocalDaemonResponse::SessionEnded { .. } | LocalDaemonResponse::SessionDeleted { .. }
+        ) {
+            self.remove_session_lane(&session_id).await;
+        }
+        Ok(response)
     }
 
     async fn resolve_session_lane_key(
@@ -73,6 +80,14 @@ impl SessionRuntime {
             LocalDaemonRequest::FocusAgent(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::CycleAgentFocus(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::DeleteSession(request) => {
+                let app = self.app.lock().await;
+                Ok(app
+                    .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?
+                    .id()
+                    .to_string())
+            }
             LocalDaemonRequest::DetachFromSession(request) => {
                 let app = self.app.lock().await;
                 Ok(app
@@ -101,6 +116,17 @@ impl SessionRuntime {
             rx,
         ));
         tx
+    }
+
+    async fn remove_session_lane(&self, session_id: &str) {
+        let mut lanes = self.lanes.lock().await;
+        lanes.remove(session_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn has_lane(&self, session_id: &str) -> bool {
+        let lanes = self.lanes.lock().await;
+        lanes.contains_key(session_id)
     }
 
     #[cfg(test)]
@@ -174,6 +200,8 @@ impl SessionActor {
                 | LocalDaemonRequest::FocusAgent(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
+                | LocalDaemonRequest::EndSession(_)
+                | LocalDaemonRequest::DeleteSession(_)
         )
     }
 
@@ -219,6 +247,16 @@ impl SessionActor {
                     }
                 }))
             }
+            LocalDaemonRequest::EndSession(request) => Some(
+                sessions
+                    .end_session(&request.session_id)
+                    .map(|session| LocalDaemonResponse::SessionEnded { session }),
+            ),
+            LocalDaemonRequest::DeleteSession(request) => Some(
+                sessions
+                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())
+                    .map(|session| LocalDaemonResponse::SessionDeleted { session }),
+            ),
             _ => None,
         }
     }

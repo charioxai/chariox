@@ -487,8 +487,8 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-        SubmitPromptRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LaunchProviderRunRequest,
+        LocalDaemonRequest, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -648,6 +648,44 @@ mod tests {
             focus_response,
             crate::local::LocalDaemonResponse::AgentFocused { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn end_session_uses_session_lane_and_removes_lane_registration() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let attach_request = attach_request(&session_id, "cli-1");
+        let attach_command =
+            KernelCommand::from_local_request("cmd-attach", None, None, &attach_request);
+        router
+            .dispatch(attach_command, attach_request)
+            .await
+            .expect("attach should create a session lane");
+        assert!(router.session_runtime.has_lane(&session_id).await);
+
+        let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session_id.clone(),
+        });
+        let end_command = KernelCommand::from_local_request("cmd-end", None, None, &end_request);
+        let response = router
+            .dispatch(end_command, end_request)
+            .await
+            .expect("end session should run through the session lane");
+
+        assert!(matches!(
+            response,
+            crate::local::LocalDaemonResponse::SessionEnded { .. }
+        ));
+        assert!(
+            !router.session_runtime.has_lane(&session_id).await,
+            "ending a session should remove its mailbox registration"
+        );
     }
 
     #[tokio::test]
