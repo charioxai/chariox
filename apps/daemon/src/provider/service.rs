@@ -902,13 +902,13 @@ impl ProviderProcessService {
         Ok(())
     }
 
-    pub(crate) fn drain_finished_structured_prompt_submits(
+    pub(crate) fn drain_finished_structured_prompt_submit_jobs(
         &mut self,
     ) -> Vec<super::FinishedProviderPromptSubmitJob> {
         self.run_actor_mailbox.drain_finished_submits()
     }
 
-    pub(crate) fn drain_finished_structured_prompt_aborts(
+    pub(crate) fn drain_finished_structured_prompt_abort_jobs(
         &mut self,
     ) -> Vec<super::FinishedProviderPromptAbortJob> {
         self.run_actor_mailbox.drain_finished_aborts()

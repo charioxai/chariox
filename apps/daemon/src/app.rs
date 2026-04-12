@@ -642,7 +642,7 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.reap_structured_prompt_submit_jobs();
+        self.reap_structured_prompt_jobs();
         self.ensure_attachment_in_session(session_id, attachment_id)?;
         let provider_run_id = self
             .sessions
@@ -666,7 +666,7 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.reap_structured_prompt_submit_jobs();
+        self.reap_structured_prompt_jobs();
         if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
             return Ok(Vec::new());
         }
@@ -724,7 +724,7 @@ impl DaemonApp {
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {
-        self.reap_structured_prompt_submit_jobs();
+        self.reap_structured_prompt_jobs();
         let sessions = self.sessions.list_sessions();
         for session in sessions {
             let recipient_attachment_ids =

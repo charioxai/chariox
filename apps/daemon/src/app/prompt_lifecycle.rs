@@ -722,7 +722,7 @@ impl DaemonApp {
         &mut self,
         dispatch: &KernelPromptAbortDispatch,
     ) -> Result<(), DaemonError> {
-        self.reap_structured_prompt_submit_jobs();
+        self.reap_structured_prompt_jobs();
         self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
         self.providers.enqueue_structured_prompt_abort(
             dispatch.session_id.clone(),
@@ -755,7 +755,7 @@ impl DaemonApp {
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
         for _ in 0..200 {
-            self.reap_structured_prompt_submit_jobs();
+            self.reap_structured_prompt_jobs();
             if !self.structured_prompt_io_in_flight(provider_run_id) {
                 return Ok(());
             }
@@ -769,8 +769,10 @@ impl DaemonApp {
         })
     }
 
-    pub(crate) fn reap_structured_prompt_submit_jobs(&mut self) {
-        let finished_jobs = self.providers.drain_finished_structured_prompt_submits();
+    pub(crate) fn reap_structured_prompt_jobs(&mut self) {
+        let finished_jobs = self
+            .providers
+            .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
             let _ = self.finish_kernel_prompt_dispatch(
                 finished.session_id,
@@ -780,7 +782,7 @@ impl DaemonApp {
                 finished.result,
             );
         }
-        let finished_jobs = self.providers.drain_finished_structured_prompt_aborts();
+        let finished_jobs = self.providers.drain_finished_structured_prompt_abort_jobs();
         for finished in finished_jobs {
             let _ = self.finish_kernel_prompt_abort(
                 finished.session_id,
