@@ -7,6 +7,7 @@ use crate::provider::{
     OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo,
 };
 use arroba_relay::protocol::RelayMachinePresence;
+use std::thread;
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
@@ -71,79 +72,38 @@ impl DaemonApp {
     pub(crate) fn handle_get_provider_catalog_request(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if let Some((cached_at, catalog)) = &self.provider_catalog_cache {
-            if cached_at.elapsed() < PROVIDER_CATALOG_CACHE_TTL {
-                return Ok(LocalDaemonResponse::ProviderCatalog {
-                    catalog: catalog.clone(),
-                });
-            }
+        if let Some(catalog) = self.cached_provider_catalog() {
+            return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
         }
 
-        let mut catalogs = Vec::new();
-
-        if let Ok(endpoint) = ensure_opencode_catalog_endpoint() {
-            if let Ok(client) = OpenCodeClient::new("catalog", endpoint) {
-                if let Ok(catalog) = client.provider_catalog() {
-                    catalogs.push(catalog);
-                }
-            }
-        }
-        if let Ok(endpoint) = ensure_codex_catalog_endpoint() {
-            if let Ok(client) = CodexClient::new("catalog", endpoint) {
-                if let Ok(catalog) = client.provider_catalog() {
-                    catalogs.push(catalog);
-                }
-            }
-        }
-
-        let remote_machines =
-            if self.config().relay_url.is_some() && self.config().relay_token.is_some() {
-                block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-                    self.config(),
-                ))
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-        let approved_remote_machines =
-            approved_live_remote_machines(&remote_machines, &self.config().host_machine_id);
-
-        let mut catalog = merge_provider_catalogs(catalogs)
-            .or_else(|| {
-                remote_only_provider_catalog(
-                    &approved_remote_machines,
-                    &self.config().host_machine_id,
-                )
-            })
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "get_provider_catalog",
-                message: "no provider catalog sources were reachable".to_string(),
-            })?;
-        annotate_remote_machine_providers(
-            &mut catalog,
-            &approved_remote_machines,
-            &self.config().host_machine_id,
-        );
-        crate::logging::info_with_fields(
-            "daemon.local",
-            "Retrieved merged provider catalog",
-            serde_json::json!({
-                "provider_count": catalog.all.len(),
-                "model_count": catalog.all.iter().map(|provider| provider.models.len()).sum::<usize>(),
-                "remote_provider_count": catalog.all.iter().filter(|provider| !provider.remote_machine_aliases.is_empty()).count(),
-                "connected": &catalog.connected,
-            }),
-        );
-        self.provider_catalog_cache = Some((Instant::now(), catalog.clone()));
+        let catalog = load_provider_catalog(self.config().clone())?;
+        self.cache_provider_catalog(catalog.clone());
         Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    }
+
+    pub(crate) fn cached_provider_catalog(&self) -> Option<OpenCodeProviderCatalog> {
+        let Some((cached_at, catalog)) = &self.provider_catalog_cache else {
+            return None;
+        };
+        if cached_at.elapsed() < PROVIDER_CATALOG_CACHE_TTL {
+            Some(catalog.clone())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn cache_provider_catalog(&mut self, catalog: OpenCodeProviderCatalog) {
+        self.provider_catalog_cache = Some((Instant::now(), catalog.clone()));
+    }
+
+    pub(crate) fn invalidate_provider_catalog_cache(&mut self) {
+        self.provider_catalog_cache = None;
     }
 
     pub(super) fn handle_get_provider_command_catalogs_request(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::ProviderCommandCatalogs {
-            catalogs: default_provider_command_catalogs(),
-        })
+        provider_command_catalogs_response()
     }
 
     pub(super) fn handle_relay_status_request(
@@ -263,13 +223,7 @@ impl DaemonApp {
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request.provider.as_str() {
-            "codex" => {
-                let endpoint = ensure_codex_catalog_endpoint()?;
-                let client = CodexClient::new("provider-auth", endpoint)?;
-                Ok(LocalDaemonResponse::ProviderAuthStatus {
-                    status: client.auth_status()?,
-                })
-            }
+            "codex" => provider_auth_status_response(request),
             provider => Err(DaemonError::LocalTransport {
                 operation: "get_provider_auth_status",
                 message: format!("provider `{provider}` does not expose an auth status API"),
@@ -282,13 +236,7 @@ impl DaemonApp {
         request: StartProviderLoginRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request.provider.as_str() {
-            "codex" => {
-                let endpoint = ensure_codex_catalog_endpoint()?;
-                let client = CodexClient::new("provider-login", endpoint)?;
-                Ok(LocalDaemonResponse::ProviderLoginStarted {
-                    login: client.start_login()?,
-                })
-            }
+            "codex" => start_provider_login_response(request),
             provider => Err(DaemonError::LocalTransport {
                 operation: "start_provider_login",
                 message: format!("provider `{provider}` does not expose a login API"),
@@ -302,17 +250,135 @@ impl DaemonApp {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request.provider.as_str() {
             "codex" => {
-                logout_codex()?;
+                let response = logout_provider_response(request)?;
                 self.provider_catalog_cache = None;
-                Ok(LocalDaemonResponse::ProviderLoggedOut {
-                    provider: "codex".to_string(),
-                })
+                Ok(response)
             }
             provider => Err(DaemonError::LocalTransport {
                 operation: "logout_provider",
                 message: format!("provider `{provider}` does not expose a logout API"),
             }),
         }
+    }
+}
+
+pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse, DaemonError> {
+    Ok(LocalDaemonResponse::ProviderCommandCatalogs {
+        catalogs: default_provider_command_catalogs(),
+    })
+}
+
+pub(crate) fn load_provider_catalog(
+    config: DaemonConfig,
+) -> Result<OpenCodeProviderCatalog, DaemonError> {
+    if config.provider_catalog_read_delay_ms > 0 {
+        thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
+    }
+
+    let mut catalogs = Vec::new();
+
+    if let Ok(endpoint) = ensure_opencode_catalog_endpoint() {
+        if let Ok(client) = OpenCodeClient::new("catalog", endpoint) {
+            if let Ok(catalog) = client.provider_catalog() {
+                catalogs.push(catalog);
+            }
+        }
+    }
+    if let Ok(endpoint) = ensure_codex_catalog_endpoint() {
+        if let Ok(client) = CodexClient::new("catalog", endpoint) {
+            if let Ok(catalog) = client.provider_catalog() {
+                catalogs.push(catalog);
+            }
+        }
+    }
+
+    let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
+        block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
+            &config,
+        ))
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let approved_remote_machines =
+        approved_live_remote_machines(&remote_machines, &config.host_machine_id);
+
+    let mut catalog = merge_provider_catalogs(catalogs)
+        .or_else(|| {
+            remote_only_provider_catalog(&approved_remote_machines, &config.host_machine_id)
+        })
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "get_provider_catalog",
+            message: "no provider catalog sources were reachable".to_string(),
+        })?;
+    annotate_remote_machine_providers(
+        &mut catalog,
+        &approved_remote_machines,
+        &config.host_machine_id,
+    );
+    crate::logging::info_with_fields(
+        "daemon.local",
+        "Retrieved merged provider catalog",
+        serde_json::json!({
+            "provider_count": catalog.all.len(),
+            "model_count": catalog.all.iter().map(|provider| provider.models.len()).sum::<usize>(),
+            "remote_provider_count": catalog.all.iter().filter(|provider| !provider.remote_machine_aliases.is_empty()).count(),
+            "connected": &catalog.connected,
+        }),
+    );
+    Ok(catalog)
+}
+
+pub(crate) fn provider_auth_status_response(
+    request: GetProviderAuthStatusRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request.provider.as_str() {
+        "codex" => {
+            let endpoint = ensure_codex_catalog_endpoint()?;
+            let client = CodexClient::new("provider-auth", endpoint)?;
+            Ok(LocalDaemonResponse::ProviderAuthStatus {
+                status: client.auth_status()?,
+            })
+        }
+        provider => Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: format!("provider `{provider}` does not expose an auth status API"),
+        }),
+    }
+}
+
+pub(crate) fn start_provider_login_response(
+    request: StartProviderLoginRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request.provider.as_str() {
+        "codex" => {
+            let endpoint = ensure_codex_catalog_endpoint()?;
+            let client = CodexClient::new("provider-login", endpoint)?;
+            Ok(LocalDaemonResponse::ProviderLoginStarted {
+                login: client.start_login()?,
+            })
+        }
+        provider => Err(DaemonError::LocalTransport {
+            operation: "start_provider_login",
+            message: format!("provider `{provider}` does not expose a login API"),
+        }),
+    }
+}
+
+pub(crate) fn logout_provider_response(
+    request: LogoutProviderRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request.provider.as_str() {
+        "codex" => {
+            logout_codex()?;
+            Ok(LocalDaemonResponse::ProviderLoggedOut {
+                provider: "codex".to_string(),
+            })
+        }
+        provider => Err(DaemonError::LocalTransport {
+            operation: "logout_provider",
+            message: format!("provider `{provider}` does not expose a logout API"),
+        }),
     }
 }
 

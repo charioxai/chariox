@@ -7,6 +7,10 @@ use crate::error::DaemonError;
 use crate::kernel::agent_actor::AgentActor;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
+use crate::local::provider_requests::{
+    load_provider_catalog, logout_provider_response, provider_auth_status_response,
+    provider_command_catalogs_response, start_provider_login_response,
+};
 use crate::local::{
     GetSessionHistoryRequest, LocalDaemonRequest, LocalDaemonResponse, RelayStatus,
 };
@@ -178,6 +182,35 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
         LocalDaemonRequest::GetSessionHistory(request) => {
             execute_session_history_request(app, request).await
         }
+        LocalDaemonRequest::GetProviderCatalog(_) => execute_provider_catalog_request(app).await,
+        LocalDaemonRequest::GetProviderCommandCatalogs(_) => provider_command_catalogs_response(),
+        LocalDaemonRequest::GetProviderAuthStatus(request) => {
+            tokio::task::spawn_blocking(move || provider_auth_status_response(request))
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "get provider auth status",
+                    message: error.to_string(),
+                })?
+        }
+        LocalDaemonRequest::StartProviderLogin(request) => {
+            tokio::task::spawn_blocking(move || start_provider_login_response(request))
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "start provider login",
+                    message: error.to_string(),
+                })?
+        }
+        LocalDaemonRequest::LogoutProvider(request) => {
+            let response = tokio::task::spawn_blocking(move || logout_provider_response(request))
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "logout provider",
+                    message: error.to_string(),
+                })??;
+            let mut app = app.lock().await;
+            app.invalidate_provider_catalog_cache();
+            Ok(response)
+        }
         request => {
             if is_blocking_local_request(&request) {
                 let app = Arc::clone(app);
@@ -198,6 +231,28 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
             app.handle_local_request(request)
         }
     }
+}
+
+async fn execute_provider_catalog_request(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let config = {
+        let app = app.lock().await;
+        if let Some(catalog) = app.cached_provider_catalog() {
+            return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        }
+        app.config().clone()
+    };
+
+    let catalog = tokio::task::spawn_blocking(move || load_provider_catalog(config))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "load provider catalog",
+            message: error.to_string(),
+        })??;
+    let mut app = app.lock().await;
+    app.cache_provider_catalog(catalog.clone());
+    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
 }
 
 async fn execute_session_history_request(
