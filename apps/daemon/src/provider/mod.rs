@@ -33,10 +33,7 @@ pub(crate) use run_actor::{
     ProviderRunOperationLanes,
 };
 pub use service::ProviderProcessService;
-pub(crate) use service::{
-    ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
-    ProviderPromptSubmitJob, ProviderRuntimeBinding,
-};
+pub(crate) use service::ProviderRuntimeBinding;
 pub use types::{
     default_provider_command_catalogs, AgentEndpointMode, ControlCapability, ControlCapabilityMode,
     ControlOperation, LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,

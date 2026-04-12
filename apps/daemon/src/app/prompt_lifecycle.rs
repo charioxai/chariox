@@ -1,9 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{
-    ProviderPromptAbortCompletion, ProviderPromptSubmitCompletion, ProviderRunOperationLanes,
-    ProviderRunState,
-};
+use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::pty::PtyProcessState;
 use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
@@ -389,11 +386,8 @@ impl DaemonApp {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
-        completion: ProviderPromptSubmitCompletion,
         result: Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
-        self.providers
-            .finish_structured_prompt_submit_job(completion);
         if let Err(error) = result {
             let _ = self.sessions.cancel_active_prompt(&session_id, &agent_id);
             flow_control::clear_prompt_activity(self, &provider_run_id);
@@ -701,11 +695,8 @@ impl DaemonApp {
         &mut self,
         session_id: String,
         provider_run_id: String,
-        completion: ProviderPromptAbortCompletion,
         result: Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
-        self.providers
-            .finish_structured_prompt_abort_job(completion);
         if let Err(error) = result {
             self.record_notice(
                 &session_id,
@@ -778,7 +769,6 @@ impl DaemonApp {
                 finished.session_id,
                 finished.provider_run_id,
                 finished.agent_id,
-                finished.completion,
                 finished.result,
             );
         }
@@ -787,7 +777,6 @@ impl DaemonApp {
             let _ = self.finish_kernel_prompt_abort(
                 finished.session_id,
                 finished.provider_run_id,
-                finished.completion,
                 finished.result,
             );
         }

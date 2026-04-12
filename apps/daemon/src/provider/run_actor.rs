@@ -6,10 +6,13 @@ use std::thread;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
+use crate::session::PromptAttachment;
 
 use super::{
-    opencode_runtime::OpenCodeRuntimeState, CodexRuntimeState, ProviderPromptAbortCompletion,
-    ProviderPromptAbortJob, ProviderPromptSubmitCompletion, ProviderPromptSubmitJob,
+    codex_runtime::{abort_codex_turn, submit_codex_prompt},
+    opencode_binding::{abort_opencode_session, submit_opencode_prompt},
+    opencode_runtime::OpenCodeRuntimeState,
+    CodexRuntimeState, RuntimeProviderRun,
 };
 
 #[derive(Clone, Default)]
@@ -32,14 +35,12 @@ pub(crate) struct FinishedProviderPromptSubmitJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
-    pub(crate) completion: ProviderPromptSubmitCompletion,
     pub(crate) result: Result<(), DaemonError>,
 }
 
 pub(crate) struct FinishedProviderPromptAbortJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
-    pub(crate) completion: ProviderPromptAbortCompletion,
     pub(crate) result: Result<(), DaemonError>,
 }
 
@@ -48,12 +49,14 @@ enum ProviderRunActorCommand {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
-        job: ProviderPromptSubmitJob,
+        run: RuntimeProviderRun,
+        prompt: String,
+        attachments: Vec<PromptAttachment>,
     },
     Abort {
         session_id: String,
         provider_run_id: String,
-        job: ProviderPromptAbortJob,
+        run: RuntimeProviderRun,
     },
     Stop,
 }
@@ -98,13 +101,6 @@ impl ProviderRunActorMailbox {
             .insert(run_id, state);
     }
 
-    pub(crate) fn take_codex_runtime(&self, run_id: &str) -> Option<CodexRuntimeState> {
-        self.codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .remove(run_id)
-    }
-
     pub(crate) fn codex_runtime_exists(&self, run_id: &str) -> bool {
         self.codex_runs
             .lock()
@@ -131,13 +127,6 @@ impl ProviderRunActorMailbox {
             .insert(run_id, state);
     }
 
-    pub(crate) fn take_opencode_runtime(&self, run_id: &str) -> Option<OpenCodeRuntimeState> {
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .remove(run_id)
-    }
-
     pub(crate) fn with_opencode_runtime<R>(
         &self,
         run_id: &str,
@@ -148,6 +137,13 @@ impl ProviderRunActorMailbox {
             .expect("opencode runtime map poisoned")
             .get(run_id)
             .map(f)
+    }
+
+    pub(crate) fn opencode_runtime_exists(&self, run_id: &str) -> bool {
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .contains_key(run_id)
     }
 
     pub(crate) fn with_opencode_runtime_mut<R>(
@@ -204,15 +200,21 @@ impl ProviderRunActorMailbox {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
-        job: ProviderPromptSubmitJob,
+        run: RuntimeProviderRun,
+        prompt: String,
+        attachments: Vec<PromptAttachment>,
     ) {
+        self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         if let Err(error) = sender.send(ProviderRunActorCommand::Submit {
             session_id,
             provider_run_id: provider_run_id.clone(),
             agent_id,
-            job,
+            run,
+            prompt,
+            attachments,
         }) {
+            self.clear_structured_prompt_io_in_flight(&provider_run_id);
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "structured prompt submit command enqueue failed",
@@ -228,14 +230,16 @@ impl ProviderRunActorMailbox {
         &self,
         session_id: String,
         provider_run_id: String,
-        job: ProviderPromptAbortJob,
+        run: RuntimeProviderRun,
     ) {
+        self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         if let Err(error) = sender.send(ProviderRunActorCommand::Abort {
             session_id,
             provider_run_id: provider_run_id.clone(),
-            job,
+            run,
         }) {
+            self.clear_structured_prompt_io_in_flight(&provider_run_id);
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "structured prompt abort command enqueue failed",
@@ -303,6 +307,9 @@ impl ProviderRunActorMailbox {
             .or_insert_with(|| {
                 Self::spawn_worker(
                     provider_run_id.to_string(),
+                    Arc::clone(&self.codex_runs),
+                    Arc::clone(&self.opencode_runs),
+                    Arc::clone(&self.structured_prompt_submissions),
                     Arc::clone(&self.finished_submits),
                     Arc::clone(&self.finished_aborts),
                 )
@@ -312,6 +319,9 @@ impl ProviderRunActorMailbox {
 
     fn spawn_worker(
         provider_run_id: String,
+        codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+        opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+        structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
         finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
         finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     ) -> mpsc::Sender<ProviderRunActorCommand> {
@@ -323,14 +333,25 @@ impl ProviderRunActorMailbox {
                         session_id,
                         provider_run_id,
                         agent_id,
-                        job,
+                        run,
+                        prompt,
+                        attachments,
                     } => {
-                        let (completion, result) = job.execute();
+                        let result = execute_submit_command(
+                            &codex_runs,
+                            &opencode_runs,
+                            run,
+                            prompt,
+                            attachments,
+                        );
+                        clear_structured_prompt_io_in_flight(
+                            &structured_prompt_submissions,
+                            &provider_run_id,
+                        );
                         let finished = FinishedProviderPromptSubmitJob {
                             session_id,
                             provider_run_id,
                             agent_id,
-                            completion,
                             result,
                         };
                         push_finished_submit(&finished_submits, finished);
@@ -338,13 +359,16 @@ impl ProviderRunActorMailbox {
                     ProviderRunActorCommand::Abort {
                         session_id,
                         provider_run_id,
-                        job,
+                        run,
                     } => {
-                        let (completion, result) = job.execute();
+                        let result = execute_abort_command(&codex_runs, &opencode_runs, run);
+                        clear_structured_prompt_io_in_flight(
+                            &structured_prompt_submissions,
+                            &provider_run_id,
+                        );
                         let finished = FinishedProviderPromptAbortJob {
                             session_id,
                             provider_run_id,
-                            completion,
                             result,
                         };
                         push_finished_abort(&finished_aborts, finished);
@@ -433,6 +457,114 @@ fn push_finished_submit(
             );
         }
     }
+}
+
+fn execute_submit_command(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run: RuntimeProviderRun,
+    prompt: String,
+    attachments: Vec<PromptAttachment>,
+) -> Result<(), DaemonError> {
+    let run_id = run.id().to_string();
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(std::time::Duration::from_millis(750));
+        return Ok(());
+    }
+    if run.adapter_key() == "codex" {
+        let mut state = codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .remove(&run_id)
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run_id.clone(),
+                operation: "codex_thread_missing",
+                message: "no Codex thread is bound to this provider run".to_string(),
+            })?;
+        let result = submit_codex_prompt(&run, &mut state, &prompt, &attachments);
+        codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .insert(run_id, state);
+        return result;
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(());
+    }
+
+    let state = opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .remove(&run_id)
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.clone(),
+            operation: "opencode_session_missing",
+            message: "no OpenCode session is bound to this provider run".to_string(),
+        })?;
+    let result = submit_opencode_prompt(&run, &state, &prompt, &attachments);
+    opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .insert(run_id, state);
+    result
+}
+
+fn execute_abort_command(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run: RuntimeProviderRun,
+) -> Result<(), DaemonError> {
+    let run_id = run.id().to_string();
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(std::time::Duration::from_millis(750));
+        return Ok(());
+    }
+    if run.adapter_key() == "codex" {
+        let mut state = codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .remove(&run_id)
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run_id.clone(),
+                operation: "codex_thread_missing",
+                message: "no Codex thread is bound to this provider run".to_string(),
+            })?;
+        let result = abort_codex_turn(&run_id, &mut state);
+        codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .insert(run_id, state);
+        return result;
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(());
+    }
+
+    let state = opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .remove(&run_id)
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.clone(),
+            operation: "opencode_session_missing",
+            message: "no OpenCode session is bound to this provider run".to_string(),
+        })?;
+    let result = abort_opencode_session(&run_id, &state);
+    opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .insert(run_id, state);
+    result
+}
+
+fn clear_structured_prompt_io_in_flight(
+    structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+) {
+    structured_prompt_submissions
+        .lock()
+        .expect("structured prompt submission set poisoned")
+        .remove(run_id);
 }
 
 fn push_finished_abort(
