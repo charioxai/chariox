@@ -6,10 +6,11 @@ use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server_on_listener;
 use arroba_daemon::local::{
     AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest, FocusAgentRequest,
-    GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    ListSessionsRequest, LocalDaemonRequest, PumpTerminalOutputRequest, ResizeTerminalRequest,
-    RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+    GetDaemonHealthRequest, GetProviderCatalogRequest, GetProviderRunRequest,
+    GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+    ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest,
+    PumpTerminalOutputRequest, ResizeTerminalRequest, RunShellCapabilityRequest, SpawnAgentRequest,
+    SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -207,6 +208,29 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
         Some("kernel transport overloaded; reconnecting")
     );
 
+    let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    let health = send_request(
+        &mut health_socket,
+        "daemon-health-after-slow-consumer",
+        LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+    )
+    .await;
+    let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
+    assert!(
+        transport["outgoing_queue_overflows"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "transport health should report outgoing queue pressure: {health}"
+    );
+    assert!(
+        transport["slow_consumer_closes"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "transport health should report slow-consumer closes: {health}"
+    );
+
     let _ = shutdown_tx.send(());
     server
         .await
@@ -294,6 +318,18 @@ async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained(
     assert_eq!(
         snapshot_event["event"]["session"]["id"].as_str(),
         Some(session_id.as_str())
+    );
+
+    let health = send_request(
+        &mut socket,
+        "daemon-health-after-replay-gap",
+        LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+    )
+    .await;
+    let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
+    assert!(
+        transport["replay_gaps"].as_u64().unwrap_or_default() >= 1,
+        "transport health should report replay gaps: {health}"
     );
 
     let _ = shutdown_tx.send(());
@@ -509,6 +545,21 @@ async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
         Some(false)
     );
 
+    let health = send_request(
+        &mut socket,
+        "daemon-health-after-duplicate-conflict",
+        LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+    )
+    .await;
+    let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
+    assert!(
+        transport["duplicate_command_conflicts"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "transport health should report duplicate command conflicts: {health}"
+    );
+
     let _ = shutdown_tx.send(());
     server
         .await
@@ -591,6 +642,22 @@ async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
     assert_eq!(
         overload_response["error"]["retryable"].as_bool(),
         Some(true)
+    );
+
+    let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    let health = send_request(
+        &mut health_socket,
+        "daemon-health-after-inbound-overload",
+        LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+    )
+    .await;
+    let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
+    assert!(
+        transport["inbound_overload_rejections"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1,
+        "transport health should report inbound overload rejections: {health}"
     );
 
     let _ = shutdown_tx.send(());

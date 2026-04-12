@@ -53,6 +53,7 @@ Status as of 2026-04-12:
 - Landed: prompt-state projection publication. Prompt submit, completion, cancellation, dispatch failure, and queue advancement now publish updated session snapshots into the shared projection, so warmed `GetSessionState` reflects prompt lifecycle transitions without a compatibility-store read.
 - Landed: `ProviderCatalogProjectionStore` for TTL-bound warmed provider catalog snapshots. `GetProviderCatalog` can return without taking the compatibility app lock after warm-up, and provider logout/configuration changes invalidate the projection.
 - Landed: projection correctness hardening. Provider-process snapshots are canonical rather than request-scoped, teardown refreshes affected process/run projections, warmed OpenCode provider-run reads preserve selection-sync side effects, relay reconfiguration invalidates provider-catalog projection state, and agent command lanes are cleaned up on agent/session removal.
+- Landed: transport health projection. Kernel websocket slow-consumer closes, outgoing queue overflows, inbound overload rejections, replay gaps, request/event counts, active connections, and active subscriptions are now surfaced through `GetDaemonHealth`.
 
 Still open:
 
@@ -60,7 +61,7 @@ Still open:
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
 - broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models can be served without compatibility-store reads on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
-- expand `DaemonHealthProjection` beyond actor/projection/cache state to include slow consumers and workspace coordination
+- expand `DaemonHealthProjection` beyond actor/projection/cache/transport state to include workspace coordination
 - introduce `WorkspaceCoordinator` claim enforcement for worktree/file/port collisions
 
 ## Non-Goals

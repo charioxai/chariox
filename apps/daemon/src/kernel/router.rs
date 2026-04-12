@@ -13,7 +13,7 @@ use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
     page_history_entries, DaemonHealthProjection, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
@@ -50,6 +50,7 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    transport_health: TransportHealthStore,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -111,6 +112,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            transport_health: TransportHealthStore::default(),
             pending_provider_launch_sessions,
         }
     }
@@ -119,6 +121,20 @@ impl CommandRouter {
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
         provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> Self {
+        Self::with_interactive_capacity_provider_lanes_and_transport_health(
+            app,
+            interactive_capacity,
+            provider_runtime_lanes,
+            TransportHealthStore::default(),
+        )
+    }
+
+    pub(crate) fn with_interactive_capacity_provider_lanes_and_transport_health(
+        app: Arc<Mutex<DaemonApp>>,
+        interactive_capacity: usize,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+        transport_health: TransportHealthStore,
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let focus_projection = FocusedAgentProjection::default();
@@ -158,6 +174,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            transport_health,
             pending_provider_launch_sessions,
         }
     }
@@ -317,6 +334,11 @@ impl CommandRouter {
             self.session_projection.health_snapshot(),
             self.provider_catalog_projection
                 .health_snapshot(PROVIDER_CATALOG_CACHE_TTL),
+            self.transport_health.snapshot(
+                crate::kernel_transport::RECENT_EVENT_LIMIT,
+                crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
+                crate::kernel_transport::INBOUND_REQUEST_LIMIT,
+            ),
         )
     }
 

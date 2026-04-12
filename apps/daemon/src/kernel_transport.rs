@@ -23,7 +23,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::command::KernelCommand;
 use crate::kernel::event_log::{EventLog, ReplayGap, ReplayOutcome};
-use crate::kernel::projection::SessionSnapshotProjection;
+use crate::kernel::projection::{SessionSnapshotProjection, TransportHealthStore};
 use crate::kernel::router::CommandRouter;
 use crate::local::{LocalDaemonRequest, RelayStatus, RemoteMachineRecord};
 use crate::provider::RuntimeProviderRun;
@@ -38,9 +38,9 @@ const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
-const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
+pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
-const INBOUND_REQUEST_LIMIT: usize = 8;
+pub(crate) const INBOUND_REQUEST_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -194,14 +194,22 @@ struct KernelTransportRuntime {
     event_log: EventLog<KernelEvent>,
     command_results: Mutex<BTreeMap<String, CommandResultEntry>>,
     command_result_order: Mutex<VecDeque<String>>,
+    transport_health: TransportHealthStore,
 }
 
 impl Default for KernelTransportRuntime {
     fn default() -> Self {
+        Self::new(TransportHealthStore::default())
+    }
+}
+
+impl KernelTransportRuntime {
+    fn new(transport_health: TransportHealthStore) -> Self {
         Self {
             event_log: EventLog::new(RECENT_EVENT_LIMIT),
             command_results: Mutex::new(BTreeMap::new()),
             command_result_order: Mutex::new(VecDeque::new()),
+            transport_health,
         }
     }
 }
@@ -215,6 +223,16 @@ struct ConnectionState {
 #[derive(Debug, Clone)]
 struct ConnectionCloseCommand {
     reason: String,
+}
+
+struct TransportConnectionGuard {
+    transport_health: TransportHealthStore,
+}
+
+impl Drop for TransportConnectionGuard {
+    fn drop(&mut self) {
+        self.transport_health.record_connection_closed();
+    }
 }
 
 pub async fn run_kernel_websocket_server<F>(
@@ -279,12 +297,19 @@ where
     F: Future<Output = ()>,
 {
     let pump_app = Arc::clone(&app);
-    let runtime = Arc::new(KernelTransportRuntime::default());
-    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
-        Arc::clone(&app),
-        crate::kernel::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
-        provider_runtime_lanes,
-    ));
+    let transport_health = {
+        let app = app.lock().await;
+        app.transport_health_store()
+    };
+    let runtime = Arc::new(KernelTransportRuntime::new(transport_health.clone()));
+    let router = Arc::new(
+        CommandRouter::with_interactive_capacity_provider_lanes_and_transport_health(
+            Arc::clone(&app),
+            crate::kernel::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            provider_runtime_lanes,
+            transport_health,
+        ),
+    );
 
     tokio::pin!(shutdown);
 
@@ -340,6 +365,10 @@ async fn handle_kernel_connection(
             operation: "accept kernel websocket handshake",
             message: error.to_string(),
         })?;
+    runtime.transport_health.record_connection_opened();
+    let _connection_guard = TransportConnectionGuard {
+        transport_health: runtime.transport_health.clone(),
+    };
     let (queue_capacity, write_delay_ms) = {
         let app = app.lock().await;
         (
@@ -393,14 +422,16 @@ async fn handle_kernel_connection(
         }
     });
 
+    let mut read_error = None;
     while let Some(message_result) = reader.next().await {
         let message = match message_result {
             Ok(message) => message,
             Err(error) => {
-                return Err(DaemonError::LocalTransport {
+                read_error = Some(DaemonError::LocalTransport {
                     operation: "read kernel websocket frame",
                     message: error.to_string(),
                 });
+                break;
             }
         };
 
@@ -444,8 +475,15 @@ async fn handle_kernel_connection(
         if let Some(task) = state.watch_task.take() {
             task.abort();
         }
+        if state.subscription.take().is_some() {
+            runtime.transport_health.record_subscription_closed();
+        }
     }
     writer_task.abort();
+
+    if let Some(error) = read_error {
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -468,6 +506,7 @@ async fn handle_incoming_payload(
                 outgoing_tx,
                 close_tx,
                 close_requested,
+                &runtime.transport_health,
                 KernelOutgoingFrame::Response {
                     request_id: "unknown".to_string(),
                     response: Box::new(None),
@@ -492,6 +531,7 @@ async fn handle_incoming_payload(
             correlation_id,
             request,
         } => {
+            runtime.transport_health.record_incoming_request();
             let command = KernelCommand::from_local_request(
                 command_id.unwrap_or_else(|| request_id.clone()),
                 correlation_id,
@@ -504,6 +544,7 @@ async fn handle_incoming_payload(
                     let outgoing_tx = outgoing_tx.clone();
                     let close_tx = close_tx.clone();
                     let close_requested = Arc::clone(close_requested);
+                    let transport_health = runtime.transport_health.clone();
                     let session_id = command.session_id.clone();
                     let attachment_id = command.attachment_id.clone();
                     tokio::spawn(async move {
@@ -512,6 +553,7 @@ async fn handle_incoming_payload(
                                 &outgoing_tx,
                                 &close_tx,
                                 &close_requested,
+                                &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
                                     response: Box::new(None),
@@ -532,6 +574,7 @@ async fn handle_incoming_payload(
                             &outgoing_tx,
                             &close_tx,
                             &close_requested,
+                            &transport_health,
                             KernelOutgoingFrame::Response {
                                 request_id,
                                 response: cached.response,
@@ -544,10 +587,12 @@ async fn handle_incoming_payload(
                     return;
                 }
                 CommandReservation::Conflict => {
+                    runtime.transport_health.record_duplicate_command_conflict();
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
                         close_requested,
+                        &runtime.transport_health,
                         KernelOutgoingFrame::Response {
                             request_id,
                             response: Box::new(None),
@@ -571,10 +616,12 @@ async fn handle_incoming_payload(
                 Ok(permit) => permit,
                 Err(error) => {
                     forget_pending_command_result(&runtime, &command.command_id).await;
+                    runtime.transport_health.record_inbound_overload_rejection();
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
                         close_requested,
+                        &runtime.transport_health,
                         KernelOutgoingFrame::Response {
                             request_id,
                             response: Box::new(None),
@@ -636,6 +683,7 @@ async fn handle_incoming_payload(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
+                    &runtime.transport_health,
                     outgoing,
                     session_id.as_deref(),
                     attachment_id.as_deref(),
@@ -688,6 +736,9 @@ async fn handle_incoming_payload(
                 if let Some(task) = state.watch_task.take() {
                     task.abort();
                 }
+                if state.subscription.is_none() {
+                    runtime.transport_health.record_subscription_opened();
+                }
                 state.subscription = Some(KernelSubscription {
                     session_id: session_id.clone(),
                     attachment_id: attachment_id.clone(),
@@ -708,6 +759,7 @@ async fn handle_incoming_payload(
                 outgoing_tx,
                 close_tx,
                 close_requested,
+                &runtime.transport_health,
                 KernelOutgoingFrame::Response {
                     request_id,
                     response: Box::new(Some(serde_json::json!({
@@ -733,7 +785,9 @@ async fn handle_incoming_payload(
             );
             {
                 let mut state = connection_state.lock().await;
-                state.subscription = None;
+                if state.subscription.take().is_some() {
+                    runtime.transport_health.record_subscription_closed();
+                }
                 if let Some(task) = state.watch_task.take() {
                     task.abort();
                 }
@@ -742,6 +796,7 @@ async fn handle_incoming_payload(
                 outgoing_tx,
                 close_tx,
                 close_requested,
+                &runtime.transport_health,
                 KernelOutgoingFrame::Response {
                     request_id,
                     response: Box::new(Some(serde_json::json!({ "ok": true }))),
@@ -1111,10 +1166,12 @@ async fn emit_kernel_event(
             .await
             .event_id
     };
+    runtime.transport_health.record_emitted_event();
     try_send_outgoing_frame(
         outgoing_tx,
         close_tx,
         close_requested,
+        &runtime.transport_health,
         KernelOutgoingFrame::Event {
             event_id,
             event: Box::new(event),
@@ -1149,6 +1206,7 @@ async fn replay_recent_events(
     let events = match replay {
         ReplayOutcome::Replayed(events) => events,
         ReplayOutcome::Gap(gap) => {
+            runtime.transport_health.record_replay_gap();
             let _ = emit_kernel_event(
                 runtime,
                 outgoing_tx,
@@ -1177,6 +1235,7 @@ async fn replay_recent_events(
             outgoing_tx,
             close_tx,
             close_requested,
+            &runtime.transport_health,
             KernelOutgoingFrame::Event {
                 event_id: persisted.event_id,
                 event: Box::new(persisted.event.clone()),
@@ -1192,6 +1251,7 @@ async fn replay_recent_events(
         outgoing_tx,
         close_tx,
         close_requested,
+        &runtime.transport_health,
         KernelOutgoingFrame::Event {
             event_id: runtime
                 .event_log
@@ -1352,6 +1412,7 @@ fn try_send_outgoing_frame(
     outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
+    transport_health: &TransportHealthStore,
     frame: KernelOutgoingFrame,
     session_id: Option<&str>,
     attachment_id: Option<&str>,
@@ -1359,7 +1420,9 @@ fn try_send_outgoing_frame(
     match outgoing_tx.try_send(frame) {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            transport_health.record_outgoing_queue_overflow();
             if !close_requested.swap(true, Ordering::SeqCst) {
+                transport_health.record_slow_consumer_close();
                 crate::logging::warn_with_fields(
                     "daemon.kernel_transport",
                     "kernel websocket connection overflowed; closing slow consumer",

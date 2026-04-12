@@ -255,8 +255,8 @@ Current M4.5 implementation status:
 - `ProviderRunProjectionStore` now serves warmed `GetProviderRun` reads. The router refreshes it from provider-run responses, and the daemon updates the shared projection as provider runs start, finish launch, fail launch, park, resume, or end.
 - `ProviderProcessProjectionStore` now serves warmed `ListProviderProcesses` reads. Provider-run and session lifecycle changes invalidate it so teardown-safety metadata is recomputed before the next warmed reuse.
 - `ProviderCatalogProjectionStore` now serves TTL-bound warmed `GetProviderCatalog` reads. Provider logout and relay/provider configuration changes invalidate the projection.
-- `DaemonHealthProjection` now exposes session command lanes, agent command lanes, provider runtime operation lanes, session projection counts, active/queued prompt counts, and provider-catalog cache status without taking the compatibility app lock.
-- `DaemonApp` still remains the compatibility facade for many paths. The next major implementation step is to move the rest of `KernelSessionService` and `KernelAgentService` state into those mailbox owners, expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots, and continue broadening daemon health with slow-consumer and workspace-coordination state.
+- `DaemonHealthProjection` now exposes session command lanes, agent command lanes, provider runtime operation lanes, session projection counts, active/queued prompt counts, provider-catalog cache status, and kernel websocket transport pressure without taking the compatibility app lock.
+- `DaemonApp` still remains the compatibility facade for many paths. The next major implementation step is to move the rest of `KernelSessionService` and `KernelAgentService` state into those mailbox owners, expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots, and continue broadening daemon health with workspace-coordination state.
 
 ### 3.3.2 Workflow Model
 

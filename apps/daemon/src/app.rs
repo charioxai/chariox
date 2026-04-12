@@ -38,6 +38,7 @@ use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
     page_history_entries, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
     ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
+    TransportHealthStore,
 };
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
@@ -88,6 +89,7 @@ pub struct DaemonApp {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    transport_health: TransportHealthStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -181,6 +183,7 @@ impl DaemonApp {
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
+            transport_health: TransportHealthStore::default(),
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -299,6 +302,10 @@ impl DaemonApp {
 
     pub(crate) fn provider_process_projection_store(&self) -> ProviderProcessProjectionStore {
         self.provider_process_projection.clone()
+    }
+
+    pub(crate) fn transport_health_store(&self) -> TransportHealthStore {
+        self.transport_health.clone()
     }
 
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {

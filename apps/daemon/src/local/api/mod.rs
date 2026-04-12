@@ -121,6 +121,11 @@ impl DaemonApp {
                     self.provider_catalog_projection_store().health_snapshot(
                         crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL,
                     ),
+                    self.transport_health_store().snapshot(
+                        crate::kernel_transport::RECENT_EVENT_LIMIT,
+                        crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
+                        crate::kernel_transport::INBOUND_REQUEST_LIMIT,
+                    ),
                 ),
             }),
             LocalDaemonRequest::GetProviderRun(request) => {
