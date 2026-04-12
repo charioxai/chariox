@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
+use crate::kernel::session_actor::SessionActor;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -97,9 +98,20 @@ async fn run_interactive_command_lane(
                 "agent_id": envelope.command.agent_id,
             }),
         );
-        let result = execute_local_request_with_async_boundaries(&app, envelope.request).await;
+        let result = execute_interactive_request(&app, envelope.request).await;
         let _ = envelope.result_tx.send(result);
     }
+}
+
+async fn execute_interactive_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let mut app = app.lock().await;
+    if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
+        return result;
+    }
+    app.handle_local_request(request)
 }
 
 pub(crate) async fn execute_local_request_with_async_boundaries(
