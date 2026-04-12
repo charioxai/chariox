@@ -1517,6 +1517,9 @@ fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ProviderRunNotFound { .. } => {
             kernel_error("provider_run_not_found", error, false)
         }
+        DaemonError::WorkspaceClaimConflict { .. } => {
+            kernel_error("workspace_claim_conflict", error, true)
+        }
         DaemonError::ProviderAdapterNotFound { .. } => {
             kernel_error("provider_adapter_not_found", error, false)
         }

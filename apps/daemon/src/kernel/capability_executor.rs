@@ -105,6 +105,13 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("edit file", move || {
+                        let _claim = context.workspace_coordinator.acquire_worktree_write_claim(
+                            context.workspace_id.clone(),
+                            context.worktree_root.display().to_string(),
+                            request.session_id.clone(),
+                            Some(request.attachment_id.clone()),
+                            "file_edit",
+                        )?;
                         FileCapabilityService::new()
                             .edit_file(EditFileRequest::new(
                                 request.session_id,
@@ -180,6 +187,13 @@ pub(crate) async fn execute_capability_request(
             Some(match context {
                 Ok(context) => {
                     spawn_capability("store transferred file", move || {
+                        let _claim = context.workspace_coordinator.acquire_worktree_write_claim(
+                            context.workspace_id.clone(),
+                            context.worktree_root.display().to_string(),
+                            request.session_id.clone(),
+                            Some(request.attachment_id.clone()),
+                            "transfer_store",
+                        )?;
                         let artifact_root = context.artifact_root("transfers");
                         FileTransferService::new()
                             .store_file(StoreTransferredFileRequest::new(
@@ -205,7 +219,9 @@ pub(crate) async fn execute_capability_request(
 struct CapabilityContext {
     session_id: String,
     attachment_id: String,
+    workspace_id: String,
     worktree_root: PathBuf,
+    workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
 
 impl CapabilityContext {
@@ -221,11 +237,14 @@ async fn capability_context(
     capability: &'static str,
 ) -> Result<CapabilityContext, DaemonError> {
     let app = app.lock().await;
-    let worktree_root = app.capability_worktree_root(session_id, attachment_id, capability)?;
+    let context = app.capability_context(session_id, attachment_id, capability)?;
+    let workspace_coordinator = app.workspace_coordinator();
     Ok(CapabilityContext {
         session_id: session_id.to_string(),
         attachment_id: attachment_id.to_string(),
-        worktree_root,
+        workspace_id: context.workspace_id,
+        worktree_root: context.worktree_root,
+        workspace_coordinator,
     })
 }
 

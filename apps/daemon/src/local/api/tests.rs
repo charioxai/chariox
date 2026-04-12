@@ -19,14 +19,14 @@ use super::{
     CancelActivePromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
     CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
     CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest,
-    EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetSessionStateRequest,
-    GetWorkflowRunRequest, InspectGitCapabilityRequest, InvokeWorkflowEndpointRequest,
-    LaunchProviderRunRequest, ListAgentsRequest, ListRemoteMachineKernelsRequest,
-    ListRemoteMachinesRequest, ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-    ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-    ResumeWorkflowRunRequest, RunShellCapabilityRequest, SpawnAgentRequest,
+    EditFileCapabilityRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+    GetSessionStateRequest, GetWorkflowRunRequest, InspectGitCapabilityRequest,
+    InvokeWorkflowEndpointRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListSessionsRequest,
+    ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    PollRuntimeNoticesRequest, ReadDirectoryTreeCapabilityRequest, ReadFileCapabilityRequest,
+    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveSessionRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RunShellCapabilityRequest, SpawnAgentRequest,
     StoreTransferredFileCapabilityRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     UpdateWorkflowNodeInstructionsRequest,
 };
@@ -3066,6 +3066,87 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
     match git {
         LocalDaemonResponse::GitInspected { result } => assert!(result.status.contains("main")),
         _ => panic!("unexpected git response"),
+    }
+}
+
+#[test]
+fn local_request_api_rejects_conflicting_workspace_write_claims() {
+    let worktree_root = std::env::temp_dir().join("arroba-workspace-claim-local-api-test");
+    let _ = std::fs::remove_dir_all(&worktree_root);
+    std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
+    std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
+
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-workspace-claim".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let _claim = app
+        .workspace_coordinator()
+        .acquire_worktree_write_claim(
+            session.workspace_id().to_string(),
+            worktree_root.display().to_string(),
+            "other-session",
+            Some("other-attachment".to_string()),
+            "file_edit",
+        )
+        .expect("existing claim should acquire");
+
+    let health = app
+        .handle_local_request(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
+        .expect("health should be available while claim is active");
+    match health {
+        LocalDaemonResponse::DaemonHealth { projection } => {
+            assert_eq!(
+                projection
+                    .workspace_coordination
+                    .active_operation_claims
+                    .len(),
+                1
+            );
+        }
+        _ => panic!("unexpected health response"),
+    }
+
+    let error = app
+        .handle_local_request(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            path: worktree_root.join("src/lib.rs"),
+            contents: "after".to_string(),
+        }))
+        .expect_err("conflicting write should be rejected");
+
+    match error {
+        DaemonError::WorkspaceClaimConflict {
+            requested_session_id,
+            existing_session_id,
+            ..
+        } => {
+            assert_eq!(requested_session_id, session.id());
+            assert_eq!(existing_session_id, "other-session");
+        }
+        other => panic!("unexpected error: {other}"),
     }
 }
 

@@ -40,6 +40,7 @@ use crate::kernel::projection::{
     ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
     TransportHealthStore,
 };
+use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
@@ -90,6 +91,7 @@ pub struct DaemonApp {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     transport_health: TransportHealthStore,
+    workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -103,6 +105,12 @@ pub(crate) struct ActivePromptState {
     pub(crate) last_output_at: Option<Instant>,
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CapabilityRuntimeContext {
+    pub(crate) workspace_id: String,
+    pub(crate) worktree_root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +192,7 @@ impl DaemonApp {
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             transport_health: TransportHealthStore::default(),
+            workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -306,6 +315,10 @@ impl DaemonApp {
 
     pub(crate) fn transport_health_store(&self) -> TransportHealthStore {
         self.transport_health.clone()
+    }
+
+    pub(crate) fn workspace_coordinator(&self) -> WorkspaceCoordinator {
+        self.workspace_coordinator.clone()
     }
 
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {
@@ -512,12 +525,18 @@ impl DaemonApp {
         path: PathBuf,
         contents: String,
     ) -> Result<EditFileResult, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(session_id, attachment_id, "file_edit")?;
+        let context = self.capability_context(session_id, attachment_id, "file_edit")?;
+        let _claim = self.workspace_coordinator.acquire_worktree_write_claim(
+            context.workspace_id,
+            context.worktree_root.display().to_string(),
+            session_id.to_string(),
+            Some(attachment_id.to_string()),
+            "file_edit",
+        )?;
         self.file_capabilities.edit_file(EditFileRequest::new(
             session_id,
             attachment_id,
-            worktree_root,
+            context.worktree_root,
             path,
             contents,
         ))
@@ -560,13 +579,19 @@ impl DaemonApp {
         source_path: PathBuf,
         display_name: Option<String>,
     ) -> Result<StoredTransferArtifact, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(session_id, attachment_id, "transfer_store")?;
+        let context = self.capability_context(session_id, attachment_id, "transfer_store")?;
+        let _claim = self.workspace_coordinator.acquire_worktree_write_claim(
+            context.workspace_id,
+            context.worktree_root.display().to_string(),
+            session_id.to_string(),
+            Some(attachment_id.to_string()),
+            "transfer_store",
+        )?;
         self.transfer_capabilities
             .store_file(StoreTransferredFileRequest::new(
                 session_id,
                 attachment_id,
-                worktree_root,
+                context.worktree_root,
                 Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
                 source_path,
                 display_name,
@@ -1686,10 +1711,24 @@ impl DaemonApp {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<PathBuf, DaemonError> {
+        Ok(self
+            .capability_context(session_id, attachment_id, capability)?
+            .worktree_root)
+    }
+
+    pub(crate) fn capability_context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityRuntimeContext, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
         self.ensure_attachment_can_run_capability(session_id, &attachment, capability)?;
-        Ok(PathBuf::from(session.worktree_id()))
+        Ok(CapabilityRuntimeContext {
+            workspace_id: session.workspace_id().to_string(),
+            worktree_root: PathBuf::from(session.worktree_id()),
+        })
     }
 
     pub fn relay_registration(&mut self) -> DaemonRegistration {

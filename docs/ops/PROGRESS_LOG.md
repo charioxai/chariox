@@ -35,13 +35,14 @@ Chronological notes to preserve execution context between contributors/agents.
 - Fixed projection correctness gaps: provider-process projection now stores a canonical unfiltered snapshot and refreshes after teardown, warmed OpenCode `GetProviderRun` no longer bypasses selection-sync side effects, relay reconfiguration invalidates provider catalog projection state, and agent lanes are removed on agent/session cleanup.
 - Added transport health projection counters for kernel websocket pressure: active connections/subscriptions, incoming requests, emitted events, replay gaps, inbound overload rejections, outgoing queue overflows, and slow-consumer closes are now exposed through `GetDaemonHealth`.
 - Added a workspace coordination health baseline: active worktree claims and same-workspace worktree collisions are now reported from the warmed session projection through `GetDaemonHealth`.
+- Added initial `WorkspaceCoordinator` enforcement for explicit file-writing capabilities. `EditFile` and `StoreTransferredFile` now acquire scoped worktree write claims, reject overlapping same-workspace/worktree writes with a retryable workspace-claim conflict, publish active operation claims through daemon health, and release claims on operation completion.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
 - Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
-- Introduce `WorkspaceCoordinator` claim enforcement policies for worktree/file/port collisions before parallel relay/workflow scale-out.
+- Broaden `WorkspaceCoordinator` claim enforcement to provider prompt lifecycles, workflow node dispatch, file-level scopes, and port claims before parallel relay/workflow scale-out.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.
 
 ## 2026-03-31

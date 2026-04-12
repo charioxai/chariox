@@ -127,7 +127,9 @@ impl DaemonApp {
                         crate::kernel_transport::INBOUND_REQUEST_LIMIT,
                     ),
                     self.session_state_projection_store()
-                        .workspace_coordination_snapshot(),
+                        .workspace_coordination_snapshot(
+                            self.workspace_coordinator().active_claims(),
+                        ),
                 ),
             }),
             LocalDaemonRequest::GetProviderRun(request) => {

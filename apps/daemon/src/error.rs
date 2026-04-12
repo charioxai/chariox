@@ -132,6 +132,15 @@ pub enum DaemonError {
         edge_id: String,
         message: String,
     },
+    #[error("workspace claim conflict in workspace `{workspace_id}` worktree `{worktree_id}`: `{requested_operation}` for session `{requested_session_id}` conflicts with `{existing_operation}` for session `{existing_session_id}`")]
+    WorkspaceClaimConflict {
+        workspace_id: String,
+        worktree_id: String,
+        existing_session_id: String,
+        existing_operation: String,
+        requested_session_id: String,
+        requested_operation: String,
+    },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {
         session_id: String,

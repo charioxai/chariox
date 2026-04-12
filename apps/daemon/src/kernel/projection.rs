@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
+use crate::kernel::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, RuntimeSession};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
@@ -118,7 +119,10 @@ impl SessionStateProjectionStore {
         }
     }
 
-    pub(crate) fn workspace_coordination_snapshot(&self) -> WorkspaceCoordinationHealthSnapshot {
+    pub(crate) fn workspace_coordination_snapshot(
+        &self,
+        active_operation_claims: Vec<WorkspaceOperationClaimSnapshot>,
+    ) -> WorkspaceCoordinationHealthSnapshot {
         let state = self
             .state
             .lock()
@@ -128,7 +132,7 @@ impl SessionStateProjectionStore {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| state.session_states.values().cloned().collect());
-        workspace_coordination_snapshot(sessions)
+        workspace_coordination_snapshot(sessions, active_operation_claims)
     }
 }
 
@@ -421,10 +425,12 @@ pub struct WorktreeClaimSnapshot {
 pub struct WorkspaceCoordinationHealthSnapshot {
     pub active_worktree_claims: Vec<WorktreeClaimSnapshot>,
     pub worktree_collisions: Vec<WorktreeClaimSnapshot>,
+    pub active_operation_claims: Vec<WorkspaceOperationClaimSnapshot>,
 }
 
 fn workspace_coordination_snapshot(
     sessions: Vec<RuntimeSession>,
+    active_operation_claims: Vec<WorkspaceOperationClaimSnapshot>,
 ) -> WorkspaceCoordinationHealthSnapshot {
     let mut claims_by_worktree: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for session in sessions {
@@ -458,6 +464,7 @@ fn workspace_coordination_snapshot(
     WorkspaceCoordinationHealthSnapshot {
         active_worktree_claims,
         worktree_collisions,
+        active_operation_claims,
     }
 }
 
@@ -712,6 +719,7 @@ mod tests {
                     worktree_id: "worktree-1".to_string(),
                     session_ids: vec!["session-1".to_string(), "session-2".to_string()],
                 }],
+                active_operation_claims: Vec::new(),
             },
         );
 
@@ -750,9 +758,10 @@ mod tests {
         let store = SessionStateProjectionStore::default();
         store.update_list(vec![first.clone(), second.clone(), other_workspace]);
 
-        let snapshot = store.workspace_coordination_snapshot();
+        let snapshot = store.workspace_coordination_snapshot(Vec::new());
         assert_eq!(snapshot.active_worktree_claims.len(), 2);
         assert_eq!(snapshot.worktree_collisions.len(), 1);
+        assert!(snapshot.active_operation_claims.is_empty());
         assert_eq!(
             snapshot.worktree_collisions[0].session_ids,
             vec![first.id().to_string(), second.id().to_string()]

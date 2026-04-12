@@ -16,6 +16,7 @@ use crate::kernel::projection::{
     SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response,
@@ -51,6 +52,7 @@ pub(crate) struct CommandRouter {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     transport_health: TransportHealthStore,
+    workspace_coordinator: WorkspaceCoordinator,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -83,6 +85,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -113,6 +116,7 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             transport_health: TransportHealthStore::default(),
+            workspace_coordinator,
             pending_provider_launch_sessions,
         }
     }
@@ -145,6 +149,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -175,6 +180,7 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             transport_health,
+            workspace_coordinator,
             pending_provider_launch_sessions,
         }
     }
@@ -339,7 +345,8 @@ impl CommandRouter {
                 crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
                 crate::kernel_transport::INBOUND_REQUEST_LIMIT,
             ),
-            self.session_projection.workspace_coordination_snapshot(),
+            self.session_projection
+                .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
         )
     }
 
@@ -558,6 +565,7 @@ fn router_projection_stores(
     ProviderCatalogProjectionStore,
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
+    WorkspaceCoordinator,
 ) {
     let app = app
         .try_lock()
@@ -569,6 +577,7 @@ fn router_projection_stores(
         app.provider_catalog_projection_store(),
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
+        app.workspace_coordinator(),
     )
 }
 
