@@ -106,7 +106,6 @@ pub(crate) struct ActivePromptState {
 #[derive(Debug, Clone)]
 pub(crate) struct TrackedProviderProcess {
     pub(crate) process_id: String,
-    pub(crate) provider: String,
     pub(crate) pid: Option<u32>,
     pub(crate) endpoint_mode: crate::provider::AgentEndpointMode,
     pub(crate) process_label: String,

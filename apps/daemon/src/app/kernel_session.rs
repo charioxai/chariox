@@ -190,7 +190,8 @@ impl<'a> KernelSessionService<'a> {
                 crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
             }
         }
-        let ended = self.app.sessions.end_session(session_id)?;
+        let mut ended = self.app.sessions.end_session(session_id)?;
+        ended.set_agents(removed_agents);
         crate::logging::info_with_fields(
             "daemon.session",
             "session ended",
@@ -218,7 +219,8 @@ impl<'a> KernelSessionService<'a> {
             .resolve_session_ref(session_ref, workspace_id)?;
         let session_id = session.id().to_string();
         let ended = self.end_session(&session_id)?;
-        let deleted = self.app.sessions.delete_session(ended.id())?;
+        let mut deleted = self.app.sessions.delete_session(ended.id())?;
+        deleted.set_agents(ended.agents().to_vec());
         self.app.history_projection.remove(deleted.id());
         crate::logging::info_with_fields(
             "daemon.session",

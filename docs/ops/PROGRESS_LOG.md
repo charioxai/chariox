@@ -32,6 +32,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a warmed provider-process projection. Repeated `ListProviderProcesses` reads now return without taking the compatibility `DaemonApp` lock, while provider-run and session lifecycle changes invalidate the projection so teardown-safety metadata is not served stale.
 - Added prompt lifecycle publication into the shared session projection. Prompt submit, complete, cancel, dispatch failure, and queue advancement now update warmed prompt-state snapshots so `GetSessionState` can reflect those transitions without taking the compatibility app lock.
 - Added a TTL-bound provider-catalog projection. Warmed `GetProviderCatalog` reads now return without taking the compatibility app lock, and provider logout/configuration changes invalidate the projection.
+- Fixed projection correctness gaps: provider-process projection now stores a canonical unfiltered snapshot and refreshes after teardown, warmed OpenCode `GetProviderRun` no longer bypasses selection-sync side effects, relay reconfiguration invalidates provider catalog projection state, and agent lanes are removed on agent/session cleanup.
 
 ### Remaining M4.5 work
 

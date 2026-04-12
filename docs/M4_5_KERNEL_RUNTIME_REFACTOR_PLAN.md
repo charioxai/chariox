@@ -52,6 +52,7 @@ Status as of 2026-04-12:
 - Landed: `ProviderProcessProjectionStore` for warmed process-list snapshots. `ListProviderProcesses` can return without taking the compatibility app lock after warm-up, and provider-run/session lifecycle changes invalidate the snapshot so teardown-safety metadata is recomputed before reuse.
 - Landed: prompt-state projection publication. Prompt submit, completion, cancellation, dispatch failure, and queue advancement now publish updated session snapshots into the shared projection, so warmed `GetSessionState` reflects prompt lifecycle transitions without a compatibility-store read.
 - Landed: `ProviderCatalogProjectionStore` for TTL-bound warmed provider catalog snapshots. `GetProviderCatalog` can return without taking the compatibility app lock after warm-up, and provider logout/configuration changes invalidate the projection.
+- Landed: projection correctness hardening. Provider-process snapshots are canonical rather than request-scoped, teardown refreshes affected process/run projections, warmed OpenCode provider-run reads preserve selection-sync side effects, relay reconfiguration invalidates provider-catalog projection state, and agent command lanes are cleaned up on agent/session removal.
 
 Still open:
 

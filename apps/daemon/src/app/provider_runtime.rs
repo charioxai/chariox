@@ -70,7 +70,6 @@ impl DaemonApp {
             .entry(process_key.clone())
             .or_insert_with(|| TrackedProviderProcess {
                 process_id: process_id.clone(),
-                provider: run.provider().to_string(),
                 pid,
                 endpoint_mode: run.endpoint_mode(),
                 process_label: run.process_label().to_string(),
@@ -464,11 +463,14 @@ impl DaemonApp {
         &self,
         provider: Option<&str>,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        let processes = self.provider_process_snapshot();
+        self.update_provider_process_projection(processes.clone());
+        Ok(filter_provider_processes(processes, provider))
+    }
+
+    fn provider_process_snapshot(&self) -> Vec<ProviderProcessInfo> {
         let mut processes = Vec::new();
         for tracked in self.tracked_provider_processes.values() {
-            if provider.is_some_and(|value| tracked.provider != value) {
-                continue;
-            }
             let runs = tracked
                 .owner_provider_run_ids
                 .iter()
@@ -561,8 +563,7 @@ impl DaemonApp {
                 processes.push(process);
             }
         }
-        self.update_provider_process_projection(processes.clone());
-        Ok(processes)
+        processes
     }
 
     pub fn teardown_provider_processes(
@@ -589,12 +590,16 @@ impl DaemonApp {
                 if run.state() == ProviderRunState::Ended {
                     continue;
                 }
-                let _ =
+                if let Ok(terminated_run) =
                     self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
+                {
+                    self.update_provider_run_projection(terminated_run);
+                }
                 let _ = self.remove_tracked_provider_process_for_run(run.id());
             }
         }
+        self.update_provider_process_projection(self.provider_process_snapshot());
         Ok(safe_processes)
     }
 
@@ -792,6 +797,19 @@ fn sanitize_resume_state_for_launch(
 
 fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
+}
+
+fn filter_provider_processes(
+    processes: Vec<ProviderProcessInfo>,
+    provider: Option<&str>,
+) -> Vec<ProviderProcessInfo> {
+    let Some(provider) = provider else {
+        return processes;
+    };
+    processes
+        .into_iter()
+        .filter(|process| process.provider == provider)
+        .collect()
 }
 
 #[cfg(test)]

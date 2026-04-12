@@ -110,7 +110,7 @@ impl DaemonApp {
         request: ConfigureRelayRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.configure_relay(request.relay_url, request.relay_token)?;
-        self.provider_catalog_cache = None;
+        self.invalidate_provider_catalog_cache();
         Ok(LocalDaemonResponse::RelayConfigured {
             status: self.relay_status_snapshot()?,
         })

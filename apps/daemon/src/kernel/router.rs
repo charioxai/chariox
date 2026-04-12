@@ -187,7 +187,9 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
             if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
-                return Ok(LocalDaemonResponse::ProviderRun { provider_run });
+                if provider_run.adapter_key() != "opencode" {
+                    return Ok(LocalDaemonResponse::ProviderRun { provider_run });
+                }
             }
         }
         if let LocalDaemonRequest::ListProviderProcesses(request) = &request {
@@ -232,6 +234,7 @@ impl CommandRouter {
             .await;
         self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
+        self.apply_agent_lane_cleanup(&result).await;
         result
     }
 
@@ -471,6 +474,24 @@ impl CommandRouter {
             | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
                 self.provider_run_projection.update(provider_run.clone());
                 self.provider_process_projection.invalidate();
+            }
+            _ => {}
+        }
+    }
+
+    async fn apply_agent_lane_cleanup(&self, result: &Result<LocalDaemonResponse, DaemonError>) {
+        let Ok(response) = result else {
+            return;
+        };
+        match response {
+            LocalDaemonResponse::AgentDestroyed { agent } => {
+                self.agent_runtime.remove_agent_lane(agent.id()).await;
+            }
+            LocalDaemonResponse::SessionDeleted { session }
+            | LocalDaemonResponse::SessionEnded { session } => {
+                self.agent_runtime
+                    .remove_agent_lanes(session.agents().iter().map(|agent| agent.id()))
+                    .await;
             }
             _ => {}
         }
@@ -998,13 +1019,13 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetProviderCatalogRequest, GetProviderRunRequest,
-        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SpawnAgentRequest, SubmitPromptRequest,
+        AttachToSessionRequest, ConfigureRelayRequest, DeleteSessionRequest, DestroyAgentRequest,
+        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
+        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListProviderProcessesRequest, ListSessionsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
     };
-    use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo};
+    use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
 
@@ -1277,6 +1298,149 @@ mod tests {
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 0);
         assert!(!projection.provider_catalog.cached);
+    }
+
+    #[tokio::test]
+    async fn agent_lane_is_removed_when_session_ends() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-agent-lane-cleanup",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "create agent lane".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-agent-lane-create", None, None, &prompt_request);
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt should create an agent lane");
+        assert!(router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
+
+        let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session_id.clone(),
+        });
+        let end_command =
+            KernelCommand::from_local_request("cmd-agent-lane-end", None, None, &end_request);
+        router
+            .dispatch(end_command, end_request)
+            .await
+            .expect("ending session should clean up agent lane");
+
+        assert!(!router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
+    }
+
+    #[tokio::test]
+    async fn agent_lane_is_removed_when_agent_is_destroyed() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-agent-destroy-lane-cleanup",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "create agent lane".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command = KernelCommand::from_local_request(
+            "cmd-agent-destroy-lane-create",
+            None,
+            None,
+            &prompt_request,
+        );
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt should create an agent lane");
+        assert!(router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
+
+        let destroy_request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id,
+            agent_id: agent_id.clone(),
+        });
+        let destroy_command = KernelCommand::from_local_request(
+            "cmd-agent-destroy-lane-cleanup",
+            None,
+            None,
+            &destroy_request,
+        );
+        router
+            .dispatch(destroy_command, destroy_request)
+            .await
+            .expect("destroying agent should clean up agent lane");
+
+        assert!(!router
+            .daemon_health_projection(0)
+            .await
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id));
     }
 
     #[tokio::test]
@@ -1985,6 +2149,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_provider_run_does_not_bypass_opencode_selection_sync_path() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = RuntimeProviderRun::from_control_capability_inference(
+            "projected-opencode-run",
+            session.id().to_string(),
+            Some(agent.id().to_string()),
+            "opencode".to_string(),
+        );
+        app.update_provider_run_projection(provider_run.clone());
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+        let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+            provider_run_id: provider_run.id().to_string(),
+        });
+        let provider_command = KernelCommand::from_local_request(
+            "cmd-opencode-provider-run-refresh",
+            None,
+            None,
+            &provider_request,
+        );
+        let provider_router = router.clone();
+        let provider_task = tokio::spawn(async move {
+            provider_router
+                .dispatch(provider_command, provider_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !provider_task.is_finished(),
+            "warmed opencode GetProviderRun must not bypass the refresh/sync handler"
+        );
+        drop(app_guard);
+        let _ = provider_task
+            .await
+            .expect("provider task should join after app lock is released");
+    }
+
+    #[tokio::test]
     async fn provider_run_projection_tracks_async_launch_completion() {
         let mut config = DaemonConfig::for_tests();
         config.provider_runtime_init_delay_ms = 25;
@@ -2177,6 +2385,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_process_projection_stores_canonical_unfiltered_snapshot() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        for (idx, provider, model) in [(1, "claude-code", "sonnet"), (2, "codex", "gpt-5.4")] {
+            let (session, agent) = app
+                .create_session(CreateSessionRequest::new(
+                    format!("workspace-{idx}"),
+                    format!("worktree-{idx}"),
+                ))
+                .expect("session should be created");
+            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(agent.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: provider.to_string(),
+                    account_profile: "default".to_string(),
+                    model: model.to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider run should launch");
+        }
+
+        let filtered = app
+            .list_provider_processes(Some("claude-code"))
+            .expect("filtered process list should warm projection");
+        assert_eq!(filtered.len(), 1);
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+        let list_request =
+            LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest {
+                provider: None,
+            });
+        let list_command = KernelCommand::from_local_request(
+            "cmd-process-canonical-projection",
+            None,
+            None,
+            &list_request,
+        );
+        let list_router = router.clone();
+        let list_task =
+            tokio::spawn(async move { list_router.dispatch(list_command, list_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(list_task.is_finished());
+        drop(app_guard);
+
+        let list_response = list_task
+            .await
+            .expect("list task should join")
+            .expect("list should resolve");
+        match list_response {
+            LocalDaemonResponse::ProviderProcessesListed { processes } => {
+                assert_eq!(processes.len(), 2);
+            }
+            _ => panic!("unexpected provider process list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_process_projection_updates_after_teardown() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+        app.list_provider_processes(None)
+            .expect("process list should warm projection");
+        app.teardown_provider_processes(None)
+            .expect("teardown should update projection");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+        let list_request =
+            LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest {
+                provider: None,
+            });
+        let list_command = KernelCommand::from_local_request(
+            "cmd-process-post-teardown-projection",
+            None,
+            None,
+            &list_request,
+        );
+        let list_router = router.clone();
+        let list_task =
+            tokio::spawn(async move { list_router.dispatch(list_command, list_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(list_task.is_finished());
+        drop(app_guard);
+
+        let list_response = list_task
+            .await
+            .expect("list task should join")
+            .expect("list should resolve");
+        match list_response {
+            LocalDaemonResponse::ProviderProcessesListed { processes } => {
+                assert!(processes.is_empty());
+            }
+            _ => panic!("unexpected provider process list response"),
+        }
+    }
+
+    #[tokio::test]
     async fn get_provider_catalog_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         app.cache_provider_catalog(OpenCodeProviderCatalog {
@@ -2224,6 +2552,53 @@ mod tests {
             }
             _ => panic!("unexpected provider catalog response"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relay_configure_invalidates_provider_catalog_projection() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        app.cache_provider_catalog(OpenCodeProviderCatalog {
+            all: vec![OpenCodeProviderInfo {
+                id: "codex".to_string(),
+                name: "Codex".to_string(),
+                remote_machine_aliases: Vec::new(),
+                models: Default::default(),
+            }],
+            default: Default::default(),
+            connected: vec!["codex".to_string()],
+        });
+        app.handle_local_request(LocalDaemonRequest::ConfigureRelay(ConfigureRelayRequest {
+            relay_url: None,
+            relay_token: None,
+        }))
+        .expect("relay configure should invalidate provider catalog projection");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+        let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+        let catalog_command = KernelCommand::from_local_request(
+            "cmd-provider-catalog-invalidated",
+            None,
+            None,
+            &catalog_request,
+        );
+        let catalog_router = router.clone();
+        let catalog_task = tokio::spawn(async move {
+            catalog_router
+                .dispatch(catalog_command, catalog_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !catalog_task.is_finished(),
+            "relay configuration should invalidate warmed provider catalog projection"
+        );
+        drop(app_guard);
+        let _ = catalog_task
+            .await
+            .expect("catalog task should join after app lock is released");
     }
 
     #[tokio::test]

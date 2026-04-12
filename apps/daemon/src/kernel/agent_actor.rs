@@ -185,6 +185,20 @@ impl AgentRuntime {
         snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
         snapshots
     }
+
+    pub(crate) async fn remove_agent_lane(&self, agent_id: &str) {
+        self.lanes.lock().await.remove(agent_id);
+    }
+
+    pub(crate) async fn remove_agent_lanes<'a>(
+        &self,
+        agent_ids: impl IntoIterator<Item = &'a str>,
+    ) {
+        let mut lanes = self.lanes.lock().await;
+        for agent_id in agent_ids {
+            lanes.remove(agent_id);
+        }
+    }
 }
 
 async fn run_agent_command_lane(
