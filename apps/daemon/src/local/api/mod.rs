@@ -38,6 +38,7 @@ impl DaemonApp {
         let agents = self.agents().get_session_agents(session_id);
         session.set_agents(agents);
         self.project_session_runtime_view(&mut session);
+        self.update_session_projection(session.clone());
         Ok(session)
     }
 

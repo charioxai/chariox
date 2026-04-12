@@ -80,6 +80,7 @@ impl DaemonApp {
         if let Err(error) = result {
             let _ = self.sessions.cancel_active_prompt(&session_id, &agent_id);
             flow_control::clear_prompt_activity(self, &provider_run_id);
+            let _ = self.publish_session_projection(&session_id);
             self.record_notice(
                 &session_id,
                 Some(&provider_run_id),
@@ -116,6 +117,7 @@ impl DaemonApp {
             .sessions
             .cancel_active_prompt(&dispatch.session_id, &dispatch.agent_id);
         flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
+        let _ = self.publish_session_projection(&dispatch.session_id);
         self.record_notice(
             &dispatch.session_id,
             Some(&dispatch.provider_run_id),
@@ -428,6 +430,9 @@ impl DaemonApp {
         };
         if started_next.is_none() {
             self.sync_focused_provider_run_if_idle(session_id)?;
+        }
+        if had_active_prompt {
+            self.publish_session_projection(session_id)?;
         }
 
         self.record_notice(

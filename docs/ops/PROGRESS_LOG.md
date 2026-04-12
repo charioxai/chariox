@@ -26,17 +26,18 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
 - Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots exposed through `GetDaemonHealth`.
 - Added a session-owned focused-agent projection shared by `SessionRuntime`, `AgentRuntime`, and the router's agent-lifecycle response path, so untargeted prompt submit/cancel routing can resolve the focused agent without taking the compatibility `DaemonApp` lock once focus is warmed by session commands or local agent spawn/destroy responses.
-- Added the first router-owned session projection store. `GetSessionState` and warmed `ListSessions` now serve projected data without taking the compatibility `DaemonApp` lock; the router refreshes the projection from session-bearing responses, list responses, lifecycle changes, and transitional post-mutation snapshots for prompt/session/agent/poll commands.
+- Added the first shared session projection store. `GetSessionState` and warmed `ListSessions` now serve projected data without taking the compatibility `DaemonApp` lock; the router refreshes the projection from session-bearing responses and list responses.
 - Added a shared session-history projection. `GetSessionHistory` can now load from disk using a warmed session snapshot without taking the compatibility `DaemonApp` lock, and repeated warmed transcript reads are served from memory while successful history appends keep the warmed projection current.
 - Added a shared provider-run projection. Warmed `GetProviderRun` reads now return without taking the compatibility `DaemonApp` lock, and launch/start/finish/fail/park/resume/ended lifecycle updates refresh the warmed projection.
 - Added a warmed provider-process projection. Repeated `ListProviderProcesses` reads now return without taking the compatibility `DaemonApp` lock, while provider-run and session lifecycle changes invalidate the projection so teardown-safety metadata is not served stale.
+- Added prompt lifecycle publication into the shared session projection. Prompt submit, complete, cancel, dispatch failure, and queue advancement now update warmed prompt-state snapshots so `GetSessionState` can reflect those transitions without taking the compatibility app lock.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
-- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process snapshots so prompt state and the remaining provider/read models no longer require synchronous compatibility-store access.
-- Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
+- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
+- Make remaining provider-health reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Expand daemon health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.

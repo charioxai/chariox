@@ -357,6 +357,7 @@ impl DaemonApp {
                 run.resume_state().clone(),
             )?;
             let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            self.publish_session_projection(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());
         Ok(run)

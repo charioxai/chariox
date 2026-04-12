@@ -2,15 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
 use crate::provider::{ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, RuntimeSession};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionMetadata {
@@ -38,7 +36,7 @@ pub struct SessionSnapshotProjection {
 
 #[derive(Clone, Default)]
 pub(crate) struct SessionStateProjectionStore {
-    state: Arc<Mutex<SessionProjectionState>>,
+    state: Arc<StdMutex<SessionProjectionState>>,
 }
 
 #[derive(Default)]
@@ -48,33 +46,46 @@ struct SessionProjectionState {
 }
 
 impl SessionStateProjectionStore {
-    pub(crate) async fn get(&self, session_id: &str) -> Option<RuntimeSession> {
+    pub(crate) fn get(&self, session_id: &str) -> Option<RuntimeSession> {
         self.state
             .lock()
-            .await
+            .expect("session projection lock should not be poisoned")
             .session_states
             .get(session_id)
             .cloned()
     }
 
-    pub(crate) async fn list(&self) -> Option<Vec<RuntimeSession>> {
-        self.state.lock().await.session_list.clone()
+    pub(crate) fn list(&self) -> Option<Vec<RuntimeSession>> {
+        self.state
+            .lock()
+            .expect("session projection lock should not be poisoned")
+            .session_list
+            .clone()
     }
 
-    pub(crate) async fn update(&self, session: RuntimeSession) {
-        let mut state = self.state.lock().await;
+    pub(crate) fn update(&self, session: RuntimeSession) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("session projection lock should not be poisoned");
         upsert_session(&mut state.session_list, session.clone());
         state
             .session_states
             .insert(session.id().to_string(), session);
     }
 
-    pub(crate) async fn update_list(&self, sessions: Vec<RuntimeSession>) {
-        self.state.lock().await.session_list = Some(sessions);
+    pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
+        self.state
+            .lock()
+            .expect("session projection lock should not be poisoned")
+            .session_list = Some(sessions);
     }
 
-    pub(crate) async fn remove(&self, session_id: &str) {
-        let mut state = self.state.lock().await;
+    pub(crate) fn remove(&self, session_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("session projection lock should not be poisoned");
         state.session_states.remove(session_id);
         if let Some(session_list) = state.session_list.as_mut() {
             session_list.retain(|session| session.id() != session_id);

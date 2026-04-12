@@ -37,7 +37,7 @@ use crate::execution_lease::{
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
     page_history_entries, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore,
 };
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
@@ -83,6 +83,7 @@ pub struct DaemonApp {
     pub(crate) prompt_idle_timeout: Duration,
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
+    session_projection: SessionStateProjectionStore,
     history_projection: SessionHistoryProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
@@ -175,6 +176,7 @@ impl DaemonApp {
                 config.session_history_root.clone(),
                 config.session_history_read_delay_ms,
             )?,
+            session_projection: SessionStateProjectionStore::default(),
             history_projection: SessionHistoryProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
@@ -255,6 +257,23 @@ impl DaemonApp {
 
     pub(crate) fn history_store(&self) -> SessionHistoryStore {
         self.history.clone()
+    }
+
+    pub(crate) fn session_state_projection_store(&self) -> SessionStateProjectionStore {
+        self.session_projection.clone()
+    }
+
+    pub(crate) fn update_session_projection(&self, session: RuntimeSession) {
+        self.session_projection.update(session);
+    }
+
+    pub(crate) fn publish_session_projection(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.local_api_session_snapshot(session_id)?;
+        self.update_session_projection(session.clone());
+        Ok(session)
     }
 
     pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {

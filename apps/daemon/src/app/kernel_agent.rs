@@ -199,6 +199,7 @@ impl<'a> KernelAgentService<'a> {
             }
         }
 
+        self.app.publish_session_projection(session_id)?;
         Ok(outcome)
     }
 
@@ -435,6 +436,7 @@ impl<'a> KernelAgentService<'a> {
             if started_next.is_none() {
                 self.app.sync_focused_provider_run_if_idle(session_id)?;
             }
+            self.app.publish_session_projection(session_id)?;
             return Ok(PromptCompletion {
                 completed,
                 started_next,
@@ -481,6 +483,7 @@ impl<'a> KernelAgentService<'a> {
         if started_next.is_none() {
             self.app.sync_focused_provider_run_if_idle(session_id)?;
         }
+        self.app.publish_session_projection(session_id)?;
 
         Ok(PromptCompletion {
             completed,
@@ -594,6 +597,7 @@ impl<'a> KernelAgentService<'a> {
                         self.app, session_id, &active,
                     )?;
                     flow_control::note_prompt_started(self.app, &provider_run_id);
+                    self.app.publish_session_projection(session_id)?;
                     return Ok(Some(active));
                 }
                 self.app.record_notice(
@@ -641,6 +645,7 @@ impl<'a> KernelAgentService<'a> {
             }
             crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
+            self.app.publish_session_projection(session_id)?;
             return Ok(Some(active));
         }
     }
@@ -744,6 +749,7 @@ impl<'a> KernelAgentService<'a> {
                 )?;
             }
             crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
+            self.app.publish_session_projection(session_id)?;
             return Ok(Some(active));
         }
     }
@@ -850,6 +856,7 @@ impl<'a> KernelAgentService<'a> {
             };
             self.app
                 .record_notice(session_id, None, recipients, message);
+            self.app.publish_session_projection(session_id)?;
             return Ok(PromptCancellation {
                 prompt,
                 started_next: None,
@@ -908,6 +915,7 @@ impl<'a> KernelAgentService<'a> {
         };
         self.app
             .record_notice(session_id, Some(&provider_run_id), recipients, message);
+        self.app.publish_session_projection(session_id)?;
 
         Ok(PromptCancellation {
             prompt,
@@ -943,6 +951,7 @@ impl<'a> KernelAgentService<'a> {
         if started_next.is_none() {
             self.app.sync_focused_provider_run_if_idle(session_id)?;
         }
+        self.app.publish_session_projection(session_id)?;
 
         Ok(PromptCancellation {
             prompt,
@@ -1028,6 +1037,7 @@ impl<'a> KernelAgentService<'a> {
                 provider_run.id()
             ),
         );
+        self.app.publish_session_projection(session_id)?;
 
         Ok(KernelPromptCancellation {
             cancellation: PromptCancellation {
