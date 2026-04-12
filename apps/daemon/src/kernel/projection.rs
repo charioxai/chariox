@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
-use crate::provider::{ProviderProcessInfo, RuntimeProviderRun};
+use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, RuntimeSession};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 use serde::{Deserialize, Serialize};
@@ -248,6 +249,50 @@ fn filter_provider_processes(
         .into_iter()
         .filter(|process| process.provider == provider)
         .collect()
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProviderCatalogProjectionStore {
+    catalog: Arc<StdMutex<Option<CachedProviderCatalogProjection>>>,
+}
+
+#[derive(Clone)]
+struct CachedProviderCatalogProjection {
+    cached_at: Instant,
+    catalog: OpenCodeProviderCatalog,
+}
+
+impl ProviderCatalogProjectionStore {
+    pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
+        let cached = self
+            .catalog
+            .lock()
+            .expect("provider catalog projection lock should not be poisoned")
+            .clone()?;
+        if cached.cached_at.elapsed() < ttl {
+            Some(cached.catalog)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn update(&self, catalog: OpenCodeProviderCatalog) {
+        *self
+            .catalog
+            .lock()
+            .expect("provider catalog projection lock should not be poisoned") =
+            Some(CachedProviderCatalogProjection {
+                cached_at: Instant::now(),
+                catalog,
+            });
+    }
+
+    pub(crate) fn invalidate(&self) {
+        *self
+            .catalog
+            .lock()
+            .expect("provider catalog projection lock should not be poisoned") = None;
+    }
 }
 
 impl SessionSnapshotProjection {

@@ -11,14 +11,15 @@ use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
-    page_history_entries, DaemonHealthProjection, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
+    page_history_entries, DaemonHealthProjection, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response,
-    start_provider_login_response,
+    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
     GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
@@ -45,6 +46,7 @@ pub(crate) struct CommandRouter {
     session_projection: SessionStateProjectionStore,
     history_store: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
+    provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
@@ -76,6 +78,7 @@ impl CommandRouter {
             history_store,
             session_projection,
             history_projection,
+            provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
         ) = router_projection_stores(&app);
@@ -103,6 +106,7 @@ impl CommandRouter {
             session_projection,
             history_store,
             history_projection,
+            provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
             pending_provider_launch_sessions,
@@ -120,6 +124,7 @@ impl CommandRouter {
             history_store,
             session_projection,
             history_projection,
+            provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
         ) = router_projection_stores(&app);
@@ -147,6 +152,7 @@ impl CommandRouter {
             session_projection,
             history_store,
             history_projection,
+            provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
             pending_provider_launch_sessions,
@@ -187,6 +193,14 @@ impl CommandRouter {
                 .list(request.provider.as_deref())
             {
                 return Ok(LocalDaemonResponse::ProviderProcessesListed { processes });
+            }
+        }
+        if matches!(request, LocalDaemonRequest::GetProviderCatalog(_)) {
+            if let Some(catalog) = self
+                .provider_catalog_projection
+                .get(PROVIDER_CATALOG_CACHE_TTL)
+            {
+                return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
             }
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
@@ -490,6 +504,7 @@ fn router_projection_stores(
     SessionHistoryStore,
     SessionStateProjectionStore,
     SessionHistoryProjectionStore,
+    ProviderCatalogProjectionStore,
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
 ) {
@@ -500,6 +515,7 @@ fn router_projection_stores(
         app.history_store(),
         app.session_state_projection_store(),
         app.session_history_projection_store(),
+        app.provider_catalog_projection_store(),
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
     )
@@ -976,11 +992,12 @@ mod tests {
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
-        SubmitPromptRequest,
+        GetDaemonHealthRequest, GetProviderCatalogRequest, GetProviderRunRequest,
+        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+        SpawnAgentRequest, SubmitPromptRequest,
     };
+    use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo};
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
 
@@ -2145,6 +2162,56 @@ mod tests {
                 assert_eq!(processes[0].owner_provider_run_ids, vec![provider_run_id]);
             }
             _ => panic!("unexpected provider process list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_provider_catalog_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        app.cache_provider_catalog(OpenCodeProviderCatalog {
+            all: vec![OpenCodeProviderInfo {
+                id: "codex".to_string(),
+                name: "Codex".to_string(),
+                remote_machine_aliases: Vec::new(),
+                models: Default::default(),
+            }],
+            default: Default::default(),
+            connected: vec!["codex".to_string()],
+        });
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let app_guard = app.lock().await;
+        let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+        let catalog_command = KernelCommand::from_local_request(
+            "cmd-provider-catalog-projection",
+            None,
+            None,
+            &catalog_request,
+        );
+        let catalog_router = router.clone();
+        let catalog_task = tokio::spawn(async move {
+            catalog_router
+                .dispatch(catalog_command, catalog_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            catalog_task.is_finished(),
+            "warmed GetProviderCatalog should be served from projection without app lock access"
+        );
+        drop(app_guard);
+
+        let catalog_response = catalog_task
+            .await
+            .expect("catalog task should join")
+            .expect("catalog should resolve");
+        match catalog_response {
+            LocalDaemonResponse::ProviderCatalog { catalog } => {
+                assert_eq!(catalog.connected, vec!["codex"]);
+            }
+            _ => panic!("unexpected provider catalog response"),
         }
     }
 

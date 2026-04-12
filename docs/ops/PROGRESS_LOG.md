@@ -31,14 +31,14 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a shared provider-run projection. Warmed `GetProviderRun` reads now return without taking the compatibility `DaemonApp` lock, and launch/start/finish/fail/park/resume/ended lifecycle updates refresh the warmed projection.
 - Added a warmed provider-process projection. Repeated `ListProviderProcesses` reads now return without taking the compatibility `DaemonApp` lock, while provider-run and session lifecycle changes invalidate the projection so teardown-safety metadata is not served stale.
 - Added prompt lifecycle publication into the shared session projection. Prompt submit, complete, cancel, dispatch failure, and queue advancement now update warmed prompt-state snapshots so `GetSessionState` can reflect those transitions without taking the compatibility app lock.
+- Added a TTL-bound provider-catalog projection. Warmed `GetProviderCatalog` reads now return without taking the compatibility app lock, and provider logout/configuration changes invalidate the projection.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
-- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
-- Make remaining provider-health reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
-- Expand daemon health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
+- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
+- Broaden daemon-health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.
 

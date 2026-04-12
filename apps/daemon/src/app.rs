@@ -36,8 +36,8 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
-    page_history_entries, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore,
+    page_history_entries, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
+    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
 };
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
@@ -85,6 +85,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     session_projection: SessionStateProjectionStore,
     history_projection: SessionHistoryProjectionStore,
+    provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     terminal: TerminalStreamService,
@@ -178,6 +179,7 @@ impl DaemonApp {
             )?,
             session_projection: SessionStateProjectionStore::default(),
             history_projection: SessionHistoryProjectionStore::default(),
+            provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             terminal: TerminalStreamService::new(),
@@ -278,6 +280,18 @@ impl DaemonApp {
 
     pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
         self.history_projection.clone()
+    }
+
+    pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {
+        self.provider_catalog_projection.clone()
+    }
+
+    pub(crate) fn update_provider_catalog_projection(&self, catalog: OpenCodeProviderCatalog) {
+        self.provider_catalog_projection.update(catalog);
+    }
+
+    pub(crate) fn invalidate_provider_catalog_projection(&self) {
+        self.provider_catalog_projection.invalidate();
     }
 
     pub(crate) fn provider_run_projection_store(&self) -> ProviderRunProjectionStore {

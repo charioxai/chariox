@@ -20,7 +20,7 @@ use super::api::{
     StartProviderLoginRequest,
 };
 
-const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
+pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
 impl DaemonApp {
     pub(super) fn handle_launch_provider_run_request(
@@ -83,10 +83,12 @@ impl DaemonApp {
 
     pub(crate) fn cache_provider_catalog(&mut self, catalog: OpenCodeProviderCatalog) {
         self.provider_catalog_cache = Some((Instant::now(), catalog.clone()));
+        self.update_provider_catalog_projection(catalog);
     }
 
     pub(crate) fn invalidate_provider_catalog_cache(&mut self) {
         self.provider_catalog_cache = None;
+        self.invalidate_provider_catalog_projection();
     }
 
     pub(super) fn handle_get_provider_command_catalogs_request(
