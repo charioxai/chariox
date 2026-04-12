@@ -1,10 +1,11 @@
 use super::prompt_lifecycle::{
-    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
+    KernelPromptAbortDispatch, KernelPromptCancellation, KernelPromptDispatch,
+    KernelPromptSubmission,
 };
 use super::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
-use crate::session::{PromptAttachment, PromptCancellation, PromptSubmissionOutcome};
+use crate::session::{PromptAttachment, PromptCancellation, PromptStatus, PromptSubmissionOutcome};
 use crate::transport::flow_control;
 
 pub(crate) struct KernelAgentService<'a> {
@@ -213,6 +214,94 @@ impl<'a> KernelAgentService<'a> {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.app
-            .cancel_active_prompt_for_kernel(session_id, attachment_id)
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent_id = self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        let target_agent = self.app.agents.get_agent(&target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return self
+                .app
+                .cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
+                .map(|cancellation| KernelPromptCancellation {
+                    cancellation,
+                    dispatch: None,
+                });
+        }
+
+        let active_prompt = self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .active_prompt_for_agent(&target_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active_prompt.status() == PromptStatus::Cancelling {
+            return Ok(KernelPromptCancellation {
+                cancellation: PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                dispatch: None,
+            });
+        }
+
+        let provider_run_id = self
+            .app
+            .providers
+            .get_run_for_agent(session_id, &target_agent_id)
+            .map(|run| run.id().to_string())
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let provider_run = self
+            .app
+            .ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        let dispatch = if self
+            .app
+            .providers
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            Some(KernelPromptAbortDispatch {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.clone(),
+            })
+        } else {
+            self.app
+                .send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
+            None
+        };
+
+        let (_session, prompt) = self
+            .app
+            .sessions
+            .begin_cancelling_active_prompt(session_id, &target_agent_id)?;
+        flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
+        self.app.record_notice(
+            session_id,
+            Some(&provider_run_id),
+            self.app.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
+                active_prompt.id(),
+                provider_run.id()
+            ),
+        );
+
+        Ok(KernelPromptCancellation {
+            cancellation: PromptCancellation {
+                prompt,
+                started_next: None,
+            },
+            dispatch,
+        })
     }
 }

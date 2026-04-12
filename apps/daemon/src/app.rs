@@ -739,7 +739,7 @@ impl DaemonApp {
         Ok(attachment)
     }
 
-    fn ensure_provider_run_in_session(
+    pub(crate) fn ensure_provider_run_in_session(
         &self,
         session_id: &str,
         provider_run_id: &str,
