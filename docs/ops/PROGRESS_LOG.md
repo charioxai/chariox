@@ -2,6 +2,33 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-12
+
+### M4.5 kernel runtime refactor progress
+
+- Landed the first substantial kernel responsiveness slices:
+  - `KernelCommand` / `KernelEvent` envelopes and command routing
+  - bounded `EventLog` replay with explicit replay-gap behavior
+  - session snapshot projection metadata
+  - bounded interactive routing and inbound WebSocket admission
+  - safe command-id retry handling with in-flight fanout and conflict rejection
+  - typed CLI replay-gap handling and user-visible refresh notice
+  - local IPC compatibility routing through the same command normalization path
+- Moved structured provider submit, abort, and output polling through provider-run actors.
+- Added runtime slot tombstones/generations so cleanup racing with slow provider I/O cannot restore stale runtime state.
+- Removed provider-family global locks from structured output polling while provider I/O is in progress.
+- Fixed the websocket integration harness port race by reserving listeners through server startup.
+- Added responsiveness/race coverage for slow history, provider catalog, shell capability, provider launch, structured submit/cancel/poll, slow consumers, replay gaps, duplicate command ids, and runtime cleanup races.
+- Introduced `KernelSessionService` and moved session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind that service while keeping `DaemonApp` as a compatibility facade.
+
+### Remaining M4.5 work
+
+- Move prompt queues and per-agent prompt state into real `SessionActor` / `AgentActor` ownership.
+- Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
+- Add daemon health projections for actor queue depths, background jobs, slow consumers, and workspace coordination.
+- Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.
+- Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.
+
 ## 2026-03-31
 
 ### Kernel transport hardening follow-up

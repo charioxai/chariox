@@ -242,6 +242,14 @@ M4.5 implementation contract:
 - projections must expose `projection_version`, `last_event_id`, and `generated_at_ms`
 - worktree/file/port claim coordination belongs to the kernel boundary before parallel remote workflow scale-out
 
+Current M4.5 implementation status:
+
+- `KernelCommand`, `KernelEvent`, `EventLog`, `SessionSnapshotProjection`, `CommandRouter`, bounded interactive routing, typed replay-gap handling, and command-id retry/fanout semantics have landed.
+- WebSocket request admission is bounded before task spawn, and local IPC now normalizes through the same router path for compatibility requests.
+- Provider-run actors now own structured provider submit/cancel/poll execution and guard runtime slots with cleanup tombstones so in-flight provider I/O cannot resurrect cleared runtime state.
+- `KernelSessionService` now owns session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the current compatibility API.
+- `DaemonApp` still remains the compatibility facade for many paths. The next major implementation step is to move prompt queues, session state mutation, and read projections behind real session/agent ownership so request handlers no longer depend on `Arc<Mutex<DaemonApp>>` for hot-path work.
+
 ### 3.3.2 Workflow Model
 
 The kernel should treat workflows as general directed graphs.

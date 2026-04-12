@@ -11,7 +11,7 @@ Current milestone status:
 - M2 completed on 2026-03-18
 - M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
 - M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization, immediate CLI responsiveness, and workflow polish remain open
-- M4.5 is now the kernel runtime refactor phase: the daemon implementation should move from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
+- M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
 
 ## 1. Roadmap Goals
@@ -286,9 +286,11 @@ Exit criteria:
 
 Status:
 
-- planned after the current UX-focused M4 stabilization slice
+- in progress as of 2026-04-12
 - architectural target is documented in [ARCHITECTURE.md](/Users/miguel/arroba/docs/ARCHITECTURE.md)
 - implementation plan is documented in [M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md](/Users/miguel/arroba/docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md)
+- first implementation slices are landed: kernel command/event envelopes, event replay gaps, projection metadata, command routing, bounded interactive routing, typed CLI replay-gap handling, command-id retry/fanout safety, inbound WebSocket admission bounds, provider-run actor runtime isolation, reserved-listener websocket tests, and `KernelSessionService` ownership for session lifecycle/focus/resize operations
+- remaining work is still substantial: true `SessionActor`/`AgentActor` state ownership, projection-first reads, workspace coordination, daemon health projections, and removal of remaining hot-path `Arc<Mutex<DaemonApp>>` dependencies
 
 Problem statement:
 

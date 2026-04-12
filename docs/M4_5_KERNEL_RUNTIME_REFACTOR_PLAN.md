@@ -14,11 +14,40 @@ The target is not "more locks." The target is explicit ownership:
 
 ## Current Baseline
 
-The current primary CLI path uses the kernel WebSocket transport, but that transport still delegates most request handling through `Arc<Mutex<DaemonApp>>`. The Unix-socket IPC surface remains for harnesses, compatibility, and local management paths.
+The current primary CLI path uses the kernel WebSocket transport. The first M4.5 slices now normalize requests through `KernelCommand`, route them through `CommandRouter`, publish bounded replay events through `EventLog`, and keep the responsiveness-critical operations on a bounded `InteractiveCommandLane`.
+
+The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, and session lifecycle/focus/resize behavior is collected under `KernelSessionService`.
+
+Important caveat: the implementation still has a compatibility `DaemonApp`, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
 
 Current event replay is a bounded in-memory recent-event buffer. It supports reconnect-friendly local behavior, but it is not yet a durable event log.
 
 Current multi-agent reliability work has already established one important invariant: focus is UI state, while prompt execution and provider-run liveness are per-agent. M4.5 must preserve that invariant by treating session-global active prompt/run fields as compatibility projections, not as ownership.
+
+## Implementation Status
+
+Status as of 2026-04-12:
+
+- Landed: `KernelCommand` and `KernelEvent` envelopes with command ids, causation/correlation metadata, and priority classification.
+- Landed: `EventLog` service with daemon-local event ids, stream sequence ids, bounded replay windows, and explicit replay-gap reporting.
+- Landed: `SessionSnapshotProjection` skeleton with projection metadata for client boot/reconciliation.
+- Landed: `CommandRouter` facade and bounded `InteractiveCommandLane` for prompt submit/cancel, focus/cycle, attach/detach, resize, and related session commands.
+- Landed: safe command-id retry handling, including in-flight duplicate fanout and duplicate-conflict rejection when a reused command id carries a different request fingerprint.
+- Landed: CLI typed `replay_gap` handling with a concise user-visible refresh notice.
+- Landed: inbound WebSocket request admission bounds before task spawn.
+- Landed: local IPC compatibility routing through the kernel command normalization path.
+- Landed: provider-run actors for structured provider submit, abort, and output polling, including runtime-slot tombstones/generations that prevent cleanup races from restoring stale provider runtime state.
+- Landed: provider output polling no longer holds provider-family global locks while performing provider I/O.
+- Landed: reserved-listener WebSocket integration harness startup to remove the observed free-port race.
+- Landed: `KernelSessionService` now owns attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the public `DaemonApp` compatibility methods.
+
+Still open:
+
+- move prompt queues and per-agent prompt state out of `DaemonApp` into real `SessionActor`/`AgentActor` ownership
+- make session/list/transcript/provider-health reads projection-first on the hot path
+- remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
+- add `DaemonHealthProjection` counters for actor queues, background jobs, slow consumers, and workspace coordination
+- introduce `WorkspaceCoordinator` claim enforcement for worktree/file/port collisions
 
 ## Non-Goals
 
@@ -251,6 +280,8 @@ Rules:
 - Move session lifecycle/focus/attachment ownership into `SessionActor`.
 - Move prompt queues, per-agent prompt states, and provider-run binding into `AgentActor`.
 - Preserve the multi-agent invariant that focus does not park/resume/terminate another live run.
+
+Current status: session lifecycle/focus/resize behavior has been consolidated behind `KernelSessionService` and the `SessionActor` surface delegates through that service, but true actor-owned session state is not complete until prompt queues and compatibility session fields stop requiring `DaemonApp`.
 
 ### Phase 5. ProviderRunActor and Output Fanout
 
