@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -13,7 +14,8 @@ use crate::local::provider_requests::{
     provider_command_catalogs_response, start_provider_login_response,
 };
 use crate::local::{
-    GetSessionHistoryRequest, LocalDaemonRequest, LocalDaemonResponse, RelayStatus,
+    GetSessionHistoryRequest, ListProviderProcessesRequest, LocalDaemonRequest,
+    LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
 use crate::session_history_page::paginate_session_history;
 
@@ -212,6 +214,12 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
             app.invalidate_provider_catalog_cache();
             Ok(response)
         }
+        LocalDaemonRequest::ListProviderProcesses(request) => {
+            execute_list_provider_processes_request(app, request).await
+        }
+        LocalDaemonRequest::TeardownProviderProcesses(request) => {
+            execute_teardown_provider_processes_request(app, request).await
+        }
         request if is_capability_request(&request) => execute_capability_request(app, request)
             .await
             .unwrap_or_else(|| {
@@ -277,6 +285,32 @@ async fn execute_provider_catalog_request(
     Ok(LocalDaemonResponse::ProviderCatalog { catalog })
 }
 
+async fn execute_list_provider_processes_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: ListProviderProcessesRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (processes, delay_ms) = {
+        let app = app.lock().await;
+        (
+            app.list_provider_processes(request.provider.as_deref())?,
+            app.config().provider_process_list_delay_ms,
+        )
+    };
+    if delay_ms > 0 {
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
+    Ok(LocalDaemonResponse::ProviderProcessesListed { processes })
+}
+
+async fn execute_teardown_provider_processes_request(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: TeardownProviderProcessesRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let mut app = app.lock().await;
+    let processes = app.teardown_provider_processes(request.provider.as_deref())?;
+    Ok(LocalDaemonResponse::ProviderProcessesTornDown { processes })
+}
+
 async fn execute_session_history_request(
     app: &Arc<Mutex<DaemonApp>>,
     request: GetSessionHistoryRequest,
@@ -321,8 +355,6 @@ fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetProviderAuthStatus(_)
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::LogoutProvider(_)
-            | LocalDaemonRequest::ListProviderProcesses(_)
-            | LocalDaemonRequest::TeardownProviderProcesses(_)
             | LocalDaemonRequest::GetSessionHistory(_)
             | LocalDaemonRequest::RunShellCommand(_)
             | LocalDaemonRequest::ReadDirectoryTree(_)

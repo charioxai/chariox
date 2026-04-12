@@ -33,6 +33,7 @@ pub struct DaemonConfig {
     pub session_history_root: PathBuf,
     pub session_history_read_delay_ms: u64,
     pub provider_catalog_read_delay_ms: u64,
+    pub provider_process_list_delay_ms: u64,
 }
 
 impl DaemonConfig {
@@ -75,6 +76,10 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
             provider_catalog_read_delay_ms: env::var("ARROBA_PROVIDER_CATALOG_READ_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+            provider_process_list_delay_ms: env::var("ARROBA_PROVIDER_PROCESS_LIST_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
@@ -155,6 +160,7 @@ impl DaemonConfig {
             session_history_root: Self::default_session_history_root(),
             session_history_read_delay_ms: 0,
             provider_catalog_read_delay_ms: 0,
+            provider_process_list_delay_ms: 0,
             daemon_id,
             host_machine_id: host_machine_id.into(),
             host_machine_alias: None,
