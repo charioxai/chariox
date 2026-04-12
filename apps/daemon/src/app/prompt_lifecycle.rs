@@ -6,9 +6,7 @@ use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
 };
 use crate::transport::flow_control;
-use crate::transport::relay_client::send_peer_request_via_temporary_connection;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RelayPromptAttachment};
-use arroba_relay::protocol::ClientTarget;
+use crate::transport::relay_peer::RelayPromptAttachment;
 use base64::Engine;
 use std::fs;
 use std::time::Duration;
@@ -278,116 +276,8 @@ impl DaemonApp {
         agent_id: &str,
         attachment_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
-        let active_prompt = self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        if active_prompt.status() == PromptStatus::Cancelling {
-            return Ok(PromptCancellation {
-                prompt: active_prompt,
-                started_next: None,
-            });
-        }
-        let target_agent = self.agents.get_agent(agent_id)?;
-        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
-            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &self.config,
-                ClientTarget {
-                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                    daemon_alias: None,
-                },
-                RelayPeerRequest::CancelLeasedPrompt {
-                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                },
-            ))? {
-                RelayPeerResponse::LeasedPromptCancelled { .. } => {}
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "cancel remote prompt",
-                        message: format!(
-                            "unexpected remote prompt cancellation response: {other:?}"
-                        ),
-                    });
-                }
-            }
-            let (_session, prompt) = self
-                .sessions
-                .begin_cancelling_active_prompt(session_id, agent_id)?;
-            let recipients = match attachment_id {
-                Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
-                None => self.attachments.list_session_attachment_ids(session_id),
-            };
-            let message = match attachment_id {
-                Some(attachment_id) => format!(
-                    "Attachment `{attachment_id}` requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
-                    active_prompt.id(),
-                    remote_execution.worker_kernel_id
-                ),
-                None => format!(
-                    "Arroba requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
-                    active_prompt.id(),
-                    remote_execution.worker_kernel_id
-                ),
-            };
-            self.record_notice(session_id, None, recipients, message);
-            return Ok(PromptCancellation {
-                prompt,
-                started_next: None,
-            });
-        }
-        let provider_run_id = self
-            .providers
-            .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string())
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
-
-        let uses_structured_prompt_io = self.providers.run_uses_structured_prompt_io(&provider_run);
-        if !uses_structured_prompt_io {
-            self.send_provider_input(
-                session_id,
-                &provider_run_id,
-                attachment_id.unwrap_or(active_prompt.source_attachment_id()),
-                b"\x03",
-            )?;
-        }
-
-        let (_session, prompt) = self
-            .sessions
-            .begin_cancelling_active_prompt(session_id, agent_id)?;
-        flow_control::note_prompt_settlement_requested(self, &provider_run_id);
-        if uses_structured_prompt_io {
-            self.providers
-                .enqueue_structured_prompt_abort(session_id.to_string(), provider_run_id.clone())?;
-        }
-        let recipients = match attachment_id {
-            Some(attachment_id) => self.other_attachment_ids(session_id, attachment_id),
-            None => self.attachments.list_session_attachment_ids(session_id),
-        };
-        let message = match attachment_id {
-            Some(attachment_id) => format!(
-                "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
-                active_prompt.id(),
-                provider_run.id()
-            ),
-            None => format!(
-                "Arroba requested cancellation of active prompt `{}` on provider run `{}`.",
-                active_prompt.id(),
-                provider_run.id()
-            ),
-        };
-        self.record_notice(session_id, Some(&provider_run_id), recipients, message);
-
-        Ok(PromptCancellation {
-            prompt,
-            started_next: None,
-        })
+        self.kernel_agents()
+            .cancel_active_prompt_internal(session_id, agent_id, attachment_id)
     }
 
     pub(crate) fn advance_next_queued_prompt(
