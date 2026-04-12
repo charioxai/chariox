@@ -5,10 +5,11 @@ use std::time::Duration;
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server_on_listener;
 use arroba_daemon::local::{
-    AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest,
+    AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest, FocusAgentRequest,
     GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    ListSessionsRequest, LocalDaemonRequest, RunShellCapabilityRequest, SubmitPromptRequest,
+    ListSessionsRequest, LocalDaemonRequest, ResizeTerminalRequest, RunShellCapabilityRequest,
+    SpawnAgentRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -1160,6 +1161,50 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
     let provider_run_id = provider_run_id_from_launch_response(&provider_response);
     wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
+    let spawn_response = send_request(
+        &mut socket,
+        "spawn-second-agent",
+        LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("reviewer".to_string()),
+            provider: "dev-stub".to_string(),
+            model: Some("sonnet".to_string()),
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        }),
+    )
+    .await;
+    let second_agent_id = response_variant(&spawn_response, "AgentSpawned")["agent"]["id"]
+        .as_str()
+        .expect("second agent id should be present")
+        .to_string();
+    let second_provider_response = send_request(
+        &mut socket,
+        "launch-second-provider",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(second_agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "slow-structured".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+    let second_provider_run_id = provider_run_id_from_launch_response(&second_provider_response);
+    wait_for_provider_run_state(&mut socket, &second_provider_run_id, "Running").await;
+    let _focus_first_response = send_request(
+        &mut socket,
+        "focus-first-agent-before-slow-submit",
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+        }),
+    )
+    .await;
+
     send_frame(
         &mut socket,
         json!({
@@ -1208,6 +1253,82 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
             ["active_prompt"]
             .is_object(),
         "session state should remain readable while structured submit is slow: {state_response}"
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "focus-during-slow-submit",
+            "request": LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session_id.clone(),
+                agent_id: second_agent_id.clone(),
+            }),
+        }),
+    )
+    .await;
+    let focus_response = wait_for_response_with_timeout(
+        &mut socket,
+        "focus-during-slow-submit",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&focus_response, "AgentFocused")["agent"]["id"].as_str(),
+        Some(second_agent_id.as_str()),
+        "focus should ack while structured submit is slow: {focus_response}"
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "resize-during-slow-submit",
+            "request": LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+                session_id: session_id.clone(),
+                cols: 132,
+                rows: 43,
+            }),
+        }),
+    )
+    .await;
+    let resize_response = wait_for_response_with_timeout(
+        &mut socket,
+        "resize-during-slow-submit",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&resize_response, "TerminalResized")["cols"].as_u64(),
+        Some(132),
+        "resize should ack while structured submit is slow: {resize_response}"
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "second-agent-submit-during-first-slow-submit",
+            "request": LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                target_agent_id: Some(second_agent_id.clone()),
+                prompt: "second agent prompt should ack during another run's provider I/O".to_string(),
+                attachments: Vec::new(),
+            }),
+        }),
+    )
+    .await;
+    let second_submit_response = wait_for_response_with_timeout(
+        &mut socket,
+        "second-agent-submit-during-first-slow-submit",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert!(
+        response_variant(&second_submit_response, "PromptSubmitted")["outcome"]["Started"]
+            .is_object(),
+        "another agent's prompt should ack while the first provider submit is slow: {second_submit_response}"
     );
 
     send_frame(
