@@ -20,10 +20,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Fixed the websocket integration harness port race by reserving listeners through server startup.
 - Added responsiveness/race coverage for slow history, provider catalog, shell capability, provider launch, structured submit/cancel/poll, slow consumers, replay gaps, duplicate command ids, and runtime cleanup races.
 - Introduced `KernelSessionService` and moved session attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind that service while keeping `DaemonApp` as a compatibility facade.
+- Introduced `KernelAgentService` and moved prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind that service while keeping `DaemonApp` as a compatibility facade.
 
 ### Remaining M4.5 work
 
-- Move prompt queues and per-agent prompt state into real `SessionActor` / `AgentActor` ownership.
+- Convert `KernelSessionService` and `KernelAgentService` into real `SessionActor` / `AgentActor` mailbox ownership.
+- Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
 - Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Add daemon health projections for actor queue depths, background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.
