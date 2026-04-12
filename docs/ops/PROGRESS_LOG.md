@@ -25,11 +25,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, resize, end, and delete admission so session UI/lifecycle commands are isolated from the generic interactive queue and from unrelated sessions.
 - Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
 - Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots exposed through `GetDaemonHealth`.
+- Added a session-owned focused-agent projection shared by `SessionRuntime` and `AgentRuntime`, so untargeted prompt submit/cancel routing can resolve the focused agent without taking the compatibility `DaemonApp` lock once session focus has been warmed through the session mailbox.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
+- Expand actor-owned projections beyond focused-agent routing so prompt state, session snapshots, and provider/read models no longer require synchronous compatibility-store access.
 - Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Expand daemon health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.

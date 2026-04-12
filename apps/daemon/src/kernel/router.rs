@@ -9,7 +9,7 @@ use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::DaemonHealthProjection;
-use crate::kernel::session_actor::{SessionActor, SessionRuntime};
+use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
     provider_auth_status_response, provider_command_catalogs_response,
@@ -60,8 +60,17 @@ impl CommandRouter {
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
-        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes);
-        let session_runtime = SessionRuntime::with_queue_limit(Arc::clone(&app), session_capacity);
+        let focus_projection = FocusedAgentProjection::default();
+        let agent_runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            provider_runtime_lanes,
+            focus_projection.clone(),
+        );
+        let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            Arc::clone(&app),
+            session_capacity,
+            focus_projection,
+        );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             interactive_rx,
@@ -80,8 +89,17 @@ impl CommandRouter {
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
-        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes.clone());
-        let session_runtime = SessionRuntime::new(Arc::clone(&app));
+        let focus_projection = FocusedAgentProjection::default();
+        let agent_runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            provider_runtime_lanes.clone(),
+            focus_projection.clone(),
+        );
+        let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            Arc::clone(&app),
+            crate::kernel::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
+            focus_projection,
+        );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             interactive_rx,
@@ -507,7 +525,8 @@ mod tests {
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
+        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -877,6 +896,112 @@ mod tests {
             crate::local::LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {
                     assert_eq!(prompt.target_agent_id(), agent_id);
+                }
+                _ => panic!("expected prompt to start"),
+            },
+            _ => panic!("unexpected prompt response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_submit_uses_session_focus_projection_without_app_lock_for_routing() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let focused_agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session_id.clone(),
+                alias: Some("focused".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                effort: None,
+                worktree_id: None,
+                machine_ref: None,
+            }))
+            .expect("focused agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected spawn response"),
+        };
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(focused_agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let focus_request = focus_request(&session_id, focused_agent.id());
+        let focus_command =
+            KernelCommand::from_local_request("cmd-focus-projection", None, None, &focus_request);
+        router
+            .dispatch(focus_command, focus_request)
+            .await
+            .expect("focus should populate the projection");
+
+        let app_guard = app.lock().await;
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
+            prompt: "hello through projected focus".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-prompt-projection", None, None, &prompt_request);
+        let prompt_router = router.clone();
+        let prompt_task =
+            tokio::spawn(
+                async move { prompt_router.dispatch(prompt_command, prompt_request).await },
+            );
+
+        let mut focused_agent_lane_created = false;
+        for _ in 0..50 {
+            let projection = router.daemon_health_projection(0).await;
+            if projection
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == focused_agent.id())
+            {
+                focused_agent_lane_created = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            focused_agent_lane_created,
+            "prompt submit should resolve focused agent from the session projection before touching the app lock"
+        );
+        assert!(
+            !prompt_task.is_finished(),
+            "agent worker should still wait on the deliberately held app lock"
+        );
+
+        drop(app_guard);
+        let prompt_response = prompt_task
+            .await
+            .expect("prompt task should join")
+            .expect("prompt should submit");
+        match prompt_response {
+            LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+                PromptSubmissionOutcome::Started { prompt } => {
+                    assert_eq!(prompt.target_agent_id(), focused_agent.id());
                 }
                 _ => panic!("expected prompt to start"),
             },

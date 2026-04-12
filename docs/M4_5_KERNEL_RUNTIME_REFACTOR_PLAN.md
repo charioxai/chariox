@@ -16,7 +16,7 @@ The target is not "more locks." The target is explicit ownership:
 
 The current primary CLI path uses the kernel WebSocket transport. The first M4.5 slices now normalize requests through `KernelCommand`, route them through `CommandRouter`, publish bounded replay events through `EventLog`, and keep the responsiveness-critical operations on a bounded `InteractiveCommandLane`.
 
-The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, and session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue.
+The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue, and the session runtime publishes a focused-agent projection used by agent routing once focus is warm.
 
 Important caveat: the implementation still has a compatibility `DaemonApp`, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
 
@@ -45,11 +45,13 @@ Status as of 2026-04-12:
 - Landed: `SessionRuntime` per-session command mailboxes for attach/detach/focus/cycle/resize/end/delete admission, so session-scoped UI and lifecycle commands are isolated from the generic interactive queue and from other sessions.
 - Landed: session mailbox cleanup on successful end/delete, so closed session lanes do not stay registered indefinitely.
 - Landed: `DaemonHealthProjection` skeleton with session/agent mailbox queue snapshots exposed through `GetDaemonHealth`.
+- Landed: `FocusedAgentProjection` shared by `SessionRuntime` and `AgentRuntime`, so focus changes captured by the session mailbox let untargeted prompt submit/cancel route to the focused agent without synchronously taking the compatibility app lock for focus lookup.
 
 Still open:
 
 - move `KernelSessionService` and `KernelAgentService` state out of the compatibility facade and into the new `SessionRuntime`/`AgentRuntime` mailbox owners
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
+- broaden actor-owned projections beyond focused-agent routing so session snapshots, prompt state, and provider/read models can be served without compatibility-store reads on the hot path
 - make session/list/transcript/provider-health reads projection-first on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
 - expand `DaemonHealthProjection` beyond actor queues to include background jobs, slow consumers, and workspace coordination
@@ -287,7 +289,7 @@ Rules:
 - Move prompt queues, per-agent prompt states, and provider-run binding into `AgentActor`.
 - Preserve the multi-agent invariant that focus does not park/resume/terminate another live run.
 
-Current status: session lifecycle/focus/resize/end/delete behavior has been consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior has been consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` now provide bounded per-session/per-agent mailboxes for responsiveness-critical command admission, and session mailboxes are deregistered after successful end/delete. The mailbox workers still delegate mutation through the compatibility services, so true actor-owned state is not complete until prompt queues, per-agent prompt states, and compatibility session fields stop requiring shared `DaemonApp` access.
+Current status: session lifecycle/focus/resize/end/delete behavior has been consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior has been consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` now provide bounded per-session/per-agent mailboxes for responsiveness-critical command admission, session mailboxes are deregistered after successful end/delete, and focused-agent routing has its first session-owned projection. The mailbox workers still delegate most mutation through the compatibility services, so true actor-owned state is not complete until prompt queues, per-agent prompt states, and compatibility session fields stop requiring shared `DaemonApp` access.
 
 ### Phase 5. ProviderRunActor and Output Fanout
 

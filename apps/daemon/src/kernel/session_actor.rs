@@ -9,7 +9,34 @@ use crate::error::DaemonError;
 use crate::kernel::projection::ActorQueueSnapshot;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 
-const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
+pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
+
+#[derive(Clone, Default)]
+pub(crate) struct FocusedAgentProjection {
+    focused_agents: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl FocusedAgentProjection {
+    pub(crate) async fn update(&self, session_id: &str, agent_id: Option<&str>) {
+        let mut focused_agents = self.focused_agents.lock().await;
+        match agent_id {
+            Some(agent_id) => {
+                focused_agents.insert(session_id.to_string(), agent_id.to_string());
+            }
+            None => {
+                focused_agents.remove(session_id);
+            }
+        }
+    }
+
+    pub(crate) async fn remove(&self, session_id: &str) {
+        self.focused_agents.lock().await.remove(session_id);
+    }
+
+    pub(crate) async fn focused_agent_id(&self, session_id: &str) -> Option<String> {
+        self.focused_agents.lock().await.get(session_id).cloned()
+    }
+}
 
 #[derive(Debug)]
 struct SessionCommandEnvelope {
@@ -23,18 +50,20 @@ struct SessionCommandEnvelope {
 pub(crate) struct SessionRuntime {
     app: Arc<Mutex<DaemonApp>>,
     queue_limit: usize,
+    focus_projection: FocusedAgentProjection,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
 }
 
 impl SessionRuntime {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self::with_queue_limit(app, SESSION_COMMAND_QUEUE_LIMIT)
-    }
-
-    pub(crate) fn with_queue_limit(app: Arc<Mutex<DaemonApp>>, queue_limit: usize) -> Self {
+    pub(crate) fn with_queue_limit_and_focus_projection(
+        app: Arc<Mutex<DaemonApp>>,
+        queue_limit: usize,
+        focus_projection: FocusedAgentProjection,
+    ) -> Self {
         Self {
             app,
             queue_limit,
+            focus_projection,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -113,6 +142,7 @@ impl SessionRuntime {
         lanes.insert(session_id.to_string(), tx.clone());
         tokio::spawn(run_session_command_lane(
             Arc::clone(&self.app),
+            self.focus_projection.clone(),
             session_id.to_string(),
             rx,
         ));
@@ -179,6 +209,7 @@ impl SessionRuntime {
 
 async fn run_session_command_lane(
     app: Arc<Mutex<DaemonApp>>,
+    focus_projection: FocusedAgentProjection,
     session_id: String,
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
@@ -192,18 +223,51 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = {
+        let (result, focused_agent_id) = {
             let mut app = app.lock().await;
-            SessionActor::handle_interactive_command(&mut app, envelope.request).unwrap_or_else(
-                || {
+            let result = SessionActor::handle_interactive_command(&mut app, envelope.request)
+                .unwrap_or_else(|| {
                     Err(DaemonError::LocalTransport {
                         operation: "execute session kernel command",
                         message: "request is not handled by the session runtime".to_string(),
                     })
-                },
-            )
+                });
+            let focused_agent_id = if result.is_ok() {
+                app.sessions()
+                    .get_session(&session_id)
+                    .ok()
+                    .and_then(|session| session.focused_agent_id().map(str::to_string))
+            } else {
+                None
+            };
+            (result, focused_agent_id)
         };
+        update_focus_projection_after_session_command(
+            &focus_projection,
+            &session_id,
+            &result,
+            focused_agent_id.as_deref(),
+        )
+        .await;
         let _ = envelope.result_tx.send(result);
+    }
+}
+
+async fn update_focus_projection_after_session_command(
+    focus_projection: &FocusedAgentProjection,
+    session_id: &str,
+    result: &Result<LocalDaemonResponse, DaemonError>,
+    focused_agent_id: Option<&str>,
+) {
+    match result {
+        Ok(LocalDaemonResponse::SessionEnded { .. })
+        | Ok(LocalDaemonResponse::SessionDeleted { .. }) => {
+            focus_projection.remove(session_id).await;
+        }
+        Ok(_) => {
+            focus_projection.update(session_id, focused_agent_id).await;
+        }
+        Err(_) => {}
     }
 }
 
