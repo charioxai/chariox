@@ -156,7 +156,8 @@ async fn execute_kernel_prompt_cancel(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {
         let mut app = app.lock().await;
-        app.cancel_active_prompt_for_kernel(&request.session_id, &request.attachment_id)?
+        app.kernel_agents()
+            .cancel_active_prompt_for_kernel(&request.session_id, &request.attachment_id)?
     };
 
     if let Some(dispatch) = prepared.dispatch {
@@ -179,7 +180,7 @@ async fn execute_kernel_prompt_submit(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {
         let mut app = app.lock().await;
-        app.submit_prompt_for_kernel(
+        app.kernel_agents().submit_prompt_for_kernel(
             &request.session_id,
             &request.attachment_id,
             request.target_agent_id.as_deref(),

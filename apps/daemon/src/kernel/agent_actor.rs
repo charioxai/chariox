@@ -11,7 +11,7 @@ impl AgentActor {
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         match request {
             LocalDaemonRequest::SubmitPrompt(request) => Some((|| {
-                let outcome = app.submit_prompt(
+                let outcome = app.kernel_agents().submit_prompt(
                     &request.session_id,
                     &request.attachment_id,
                     request.target_agent_id.as_deref(),
@@ -22,7 +22,8 @@ impl AgentActor {
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
             })()),
             LocalDaemonRequest::CancelActivePrompt(request) => Some(
-                app.cancel_active_prompt(&request.session_id, &request.attachment_id)
+                app.kernel_agents()
+                    .cancel_active_prompt(&request.session_id, &request.attachment_id)
                     .map(|cancellation| LocalDaemonResponse::PromptCancelled { cancellation }),
             ),
             _ => None,

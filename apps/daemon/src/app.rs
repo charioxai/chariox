@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use tokio::runtime::{Handle, Runtime};
 
+mod kernel_agent;
 mod kernel_session;
 mod prompt_lifecycle;
 mod provider_runtime;
@@ -55,6 +56,7 @@ use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RelayPromptAttachment,
 };
+pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::KernelSessionService;
 
 pub struct DaemonApp {
@@ -105,6 +107,10 @@ pub(crate) struct TrackedProviderProcess {
 }
 
 impl DaemonApp {
+    pub(crate) fn kernel_agents(&mut self) -> KernelAgentService<'_> {
+        KernelAgentService::new(self)
+    }
+
     pub(crate) fn kernel_sessions(&mut self) -> KernelSessionService<'_> {
         KernelSessionService::new(self)
     }
