@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use arroba_daemon::attachment::ClientCapabilityLevel;
-use arroba_daemon::kernel_transport::run_kernel_websocket_server;
+use arroba_daemon::kernel_transport::run_kernel_websocket_server_on_listener;
 use arroba_daemon::local::{
     AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest,
     GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
@@ -23,14 +23,19 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -116,16 +121,21 @@ async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflows() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.kernel_websocket_queue_capacity = 4;
     config.kernel_websocket_write_delay_ms = 200;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -204,14 +214,19 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -288,14 +303,19 @@ async fn kernel_websocket_reports_replay_gap_when_resume_cursor_is_not_retained(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -348,14 +368,19 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -425,14 +450,19 @@ async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -486,15 +516,20 @@ async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.kernel_websocket_queue_capacity = 64;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -565,15 +600,20 @@ async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.session_history_read_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -686,15 +726,20 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.provider_catalog_read_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -796,15 +841,20 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.provider_process_list_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -909,15 +959,20 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.provider_runtime_init_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -1036,14 +1091,19 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -1184,14 +1244,19 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_reports_async_provider_launch_failure() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -1286,15 +1351,20 @@ async fn kernel_websocket_reports_async_provider_launch_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_replaces_starting_provider_launch() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     config.provider_runtime_init_delay_ms = 500;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -1365,14 +1435,19 @@ async fn kernel_websocket_replaces_starting_provider_launch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
     let mut config = DaemonConfig::for_tests();
-    config.kernel_websocket_port = free_port();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -1484,12 +1559,13 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         .expect("kernel websocket server should shut down cleanly");
 }
 
-fn free_port() -> u16 {
+fn reserved_kernel_listener() -> (u16, TcpListener) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
-    listener
+    let port = listener
         .local_addr()
         .expect("listener address should exist")
-        .port()
+        .port();
+    (port, listener)
 }
 
 async fn connect_with_retry(url: &str) -> WebSocketStream<MaybeTlsStream<TcpStream>> {

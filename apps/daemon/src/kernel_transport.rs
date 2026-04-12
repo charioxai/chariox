@@ -2,6 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -237,6 +238,46 @@ where
             operation: "bind kernel websocket",
             message: error.to_string(),
         })?;
+    run_kernel_websocket_server_with_bound_listener(app, listener, provider_runtime_lanes, shutdown)
+        .await
+}
+
+pub async fn run_kernel_websocket_server_on_listener<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    listener: StdTcpListener,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "configure kernel websocket listener",
+            message: error.to_string(),
+        })?;
+    let listener =
+        TcpListener::from_std(listener).map_err(|error| DaemonError::LocalTransport {
+            operation: "adopt kernel websocket listener",
+            message: error.to_string(),
+        })?;
+    let provider_runtime_lanes = {
+        let app = app.lock().await;
+        app.provider_run_operation_lanes()
+    };
+    run_kernel_websocket_server_with_bound_listener(app, listener, provider_runtime_lanes, shutdown)
+        .await
+}
+
+async fn run_kernel_websocket_server_with_bound_listener<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    listener: TcpListener,
+    provider_runtime_lanes: crate::provider::ProviderRunOperationLanes,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
     let pump_app = Arc::clone(&app);
     let runtime = Arc::new(KernelTransportRuntime::default());
     let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
