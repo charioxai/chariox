@@ -58,6 +58,10 @@ enum ProviderRunActorCommand {
         provider_run_id: String,
         run: RuntimeProviderRun,
     },
+    Terminate {
+        provider_run_id: String,
+        run: RuntimeProviderRun,
+    },
     Stop,
 }
 
@@ -181,18 +185,7 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn clear_runtime(&self, run_id: &str) {
         self.clear_structured_prompt_io_in_flight(run_id);
-        self.codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .remove(run_id);
-        if let Some(state) = self
-            .opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .remove(run_id)
-        {
-            state.stop();
-        }
+        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id);
     }
 
     pub(crate) fn spawn_submit(
@@ -243,6 +236,41 @@ impl ProviderRunActorMailbox {
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "structured prompt abort command enqueue failed",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    pub(crate) fn spawn_terminate(&self, provider_run_id: String, run: RuntimeProviderRun) {
+        self.operation_lanes.forget(&provider_run_id);
+        let sender = {
+            let mut workers = self
+                .workers
+                .lock()
+                .expect("provider run actor worker map poisoned");
+            workers.remove(&provider_run_id).unwrap_or_else(|| {
+                Self::spawn_worker(
+                    provider_run_id.clone(),
+                    Arc::clone(&self.codex_runs),
+                    Arc::clone(&self.opencode_runs),
+                    Arc::clone(&self.structured_prompt_submissions),
+                    Arc::clone(&self.finished_submits),
+                    Arc::clone(&self.finished_aborts),
+                )
+            })
+        };
+        if let Err(error) = sender.send(ProviderRunActorCommand::Terminate {
+            provider_run_id: provider_run_id.clone(),
+            run,
+        }) {
+            self.clear_structured_prompt_io_in_flight(&provider_run_id);
+            self.clear_runtime(&provider_run_id);
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run actor terminate command enqueue failed",
                 serde_json::json!({
                     "provider_run_id": provider_run_id,
                     "error": error.to_string(),
@@ -372,6 +400,29 @@ impl ProviderRunActorMailbox {
                             result,
                         };
                         push_finished_abort(&finished_aborts, finished);
+                    }
+                    ProviderRunActorCommand::Terminate {
+                        provider_run_id,
+                        run,
+                    } => {
+                        if let Err(error) =
+                            execute_terminate_command(&codex_runs, &opencode_runs, run)
+                        {
+                            crate::logging::error_with_fields(
+                                "daemon.provider_run_actor",
+                                "structured provider termination abort failed",
+                                serde_json::json!({
+                                    "provider_run_id": provider_run_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                        clear_structured_prompt_io_in_flight(
+                            &structured_prompt_submissions,
+                            &provider_run_id,
+                        );
+                        clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id);
+                        break;
                     }
                     ProviderRunActorCommand::Stop => break,
                 }
@@ -557,6 +608,31 @@ fn execute_abort_command(
     result
 }
 
+fn execute_terminate_command(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run: RuntimeProviderRun,
+) -> Result<(), DaemonError> {
+    let run_id = run.id().to_string();
+    if run.adapter_key() == "codex"
+        && !codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .contains_key(&run_id)
+    {
+        return Ok(());
+    }
+    if run.adapter_key() == "opencode"
+        && !opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .contains_key(&run_id)
+    {
+        return Ok(());
+    }
+    execute_abort_command(codex_runs, opencode_runs, run)
+}
+
 fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
     run_id: &str,
@@ -565,6 +641,24 @@ fn clear_structured_prompt_io_in_flight(
         .lock()
         .expect("structured prompt submission set poisoned")
         .remove(run_id);
+}
+
+fn clear_runtime_state(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run_id: &str,
+) {
+    codex_runs
+        .lock()
+        .expect("codex runtime map poisoned")
+        .remove(run_id);
+    if let Some(state) = opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .remove(run_id)
+    {
+        state.stop();
+    }
 }
 
 fn push_finished_abort(

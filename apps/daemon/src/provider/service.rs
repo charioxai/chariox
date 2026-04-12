@@ -3,12 +3,10 @@ use crate::session::{PromptAttachment, SessionService};
 use std::collections::BTreeMap;
 
 use super::{
-    codex_runtime::{
-        abort_codex_turn, drain_codex_events, initialize_codex_runtime, CodexRuntimeBinding,
-    },
+    codex_runtime::{drain_codex_events, initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{
-        abort_opencode_session, initialize_opencode_runtime, runtime_is_healthy,
-        sync_opencode_run_selection, OpenCodeRunSelection, OpenCodeRuntimeBinding,
+        initialize_opencode_runtime, runtime_is_healthy, sync_opencode_run_selection,
+        OpenCodeRunSelection, OpenCodeRuntimeBinding,
     },
     opencode_runtime::drain_opencode_events,
     LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
@@ -252,7 +250,6 @@ impl ProviderProcessService {
             });
         }
 
-        let _ = self.abort_structured_runtime(run_id);
         let adapter = self.adapter_for(run_snapshot.adapter_key())?;
         adapter.terminate(&run_snapshot);
 
@@ -263,7 +260,8 @@ impl ProviderProcessService {
         if active_run_id.as_deref() == Some(run_id) {
             sessions.set_active_provider_run(session_id, None)?;
         }
-        self.clear_runtime(run_id);
+        self.run_actor_mailbox
+            .spawn_terminate(run_id.to_string(), run.clone());
 
         Ok(run)
     }
@@ -512,36 +510,6 @@ impl ProviderProcessService {
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
         self.run_actor_mailbox.clear_runtime(provider_run_id);
         self.run_actor_mailbox.stop_run(provider_run_id);
-    }
-
-    pub fn abort_structured_runtime(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        let run = self.get_run(provider_run_id)?;
-        if run.adapter_key() == "codex" {
-            self.run_actor_mailbox
-                .with_codex_runtime_mut(provider_run_id, |state| {
-                    abort_codex_turn(provider_run_id, state)
-                })
-                .ok_or_else(|| DaemonError::ProviderProtocol {
-                    provider_run_id: provider_run_id.to_string(),
-                    operation: "codex_thread_missing",
-                    message: "no Codex thread is bound to this provider run".to_string(),
-                })??;
-            return Ok(true);
-        }
-        if run.adapter_key() != "opencode" {
-            return Ok(false);
-        }
-
-        self.run_actor_mailbox
-            .with_opencode_runtime(provider_run_id, |state| {
-                abort_opencode_session(provider_run_id, state)
-            })
-            .ok_or_else(|| DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "opencode_session_missing",
-                message: "no OpenCode session is bound to this provider run".to_string(),
-            })??;
-        Ok(true)
     }
 
     pub(crate) fn enqueue_structured_prompt_submit(

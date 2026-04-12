@@ -834,6 +834,14 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
         .expect("session should end cleanly");
 
     assert_eq!(ended.status(), SessionStatus::Ended);
+    let deadline = Instant::now() + Duration::from_millis(output_timeout_ms().max(4_000));
+    while mock_server.abort_count() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for run actor to abort OpenCode session during cleanup"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
     assert_eq!(mock_server.abort_count(), 1);
     assert_eq!(
         app.providers()
