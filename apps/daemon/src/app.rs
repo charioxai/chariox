@@ -62,7 +62,7 @@ pub struct DaemonApp {
     started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
     pub(crate) agents: AgentService,
-    attachments: AttachmentService,
+    pub(crate) attachments: AttachmentService,
     capabilities: ShellCommandService,
     directory_tree: DirectoryTreeService,
     file_capabilities: FileCapabilityService,
