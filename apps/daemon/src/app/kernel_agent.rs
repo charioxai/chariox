@@ -5,7 +5,9 @@ use super::prompt_lifecycle::{
 use super::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
-use crate::session::{PromptAttachment, PromptCancellation, PromptStatus, PromptSubmissionOutcome};
+use crate::session::{
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
+};
 use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -363,6 +365,126 @@ impl<'a> KernelAgentService<'a> {
             outcome,
             session,
             dispatch,
+        })
+    }
+
+    pub(crate) fn complete_active_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        let target_agent = self.app.agents.get_agent(agent_id)?;
+        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            let remote_provider_run_id =
+                match self
+                    .app
+                    .block_on_relay_future(send_peer_request_via_temporary_connection(
+                        self.app.config(),
+                        ClientTarget {
+                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::CompleteLeasedPrompt {
+                            leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        },
+                    ))? {
+                    RelayPeerResponse::LeasedPromptCompleted {
+                        provider_run_id, ..
+                    } => provider_run_id,
+                    other => {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: format!(
+                                "unexpected remote prompt completion response: {other:?}"
+                            ),
+                        });
+                    }
+                };
+            let (_session, completed) = self
+                .app
+                .sessions
+                .complete_active_prompt_only(session_id, agent_id)?;
+            let recipient_attachment_ids =
+                self.app.attachments.list_session_attachment_ids(session_id);
+            self.app.record_assistant_message_completion(
+                session_id,
+                remote_provider_run_id
+                    .as_deref()
+                    .unwrap_or("remote-provider-run-completed"),
+                recipient_attachment_ids,
+                &format!("prompt-complete:{}", completed.id()),
+                crate::session::unix_epoch_ms(),
+            );
+            let started_next = if self
+                .app
+                .sessions
+                .get_session(session_id)?
+                .active_prompt_for_agent(agent_id)
+                .is_none()
+            {
+                self.app.advance_next_queued_prompt_remote(
+                    session_id,
+                    agent_id,
+                    &remote_execution.worker_kernel_id,
+                    &remote_execution.leased_agent_id,
+                )?
+            } else {
+                None
+            };
+            if started_next.is_none() {
+                self.app.sync_focused_provider_run_if_idle(session_id)?;
+            }
+            return Ok(PromptCompletion {
+                completed,
+                started_next,
+            });
+        }
+        let (_session, completed) = self
+            .app
+            .sessions
+            .complete_active_prompt_only(session_id, agent_id)?;
+        if !flow_control::prompt_completion_recorded(self.app, provider_run_id.unwrap_or(agent_id))
+        {
+            let recipient_attachment_ids =
+                self.app.attachments.list_session_attachment_ids(session_id);
+            let completion_provider_run_id = provider_run_id.unwrap_or("provider-run-completed");
+            self.app.record_assistant_message_completion(
+                session_id,
+                completion_provider_run_id,
+                recipient_attachment_ids,
+                &format!("prompt-complete:{}", completed.id()),
+                crate::session::unix_epoch_ms(),
+            );
+            flow_control::mark_prompt_completion_recorded(self.app, completion_provider_run_id);
+        }
+        crate::scheduler::runtime::on_workflow_prompt_completed(
+            self.app,
+            session_id,
+            &completed,
+            provider_run_id,
+        )?;
+        if let Some(provider_run_id) = provider_run_id {
+            flow_control::clear_prompt_activity(self.app, provider_run_id);
+        }
+        let started_next = if self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .active_prompt_for_agent(agent_id)
+            .is_none()
+        {
+            self.app.advance_next_queued_prompt(session_id, agent_id)?
+        } else {
+            None
+        };
+        if started_next.is_none() {
+            self.app.sync_focused_provider_run_if_idle(session_id)?;
+        }
+
+        Ok(PromptCompletion {
+            completed,
+            started_next,
         })
     }
 
