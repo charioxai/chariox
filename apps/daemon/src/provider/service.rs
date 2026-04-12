@@ -17,8 +17,8 @@ use super::{
     },
     opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
     LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox, ProviderRunState,
-    RuntimeProviderRun,
+    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox,
+    ProviderRunOperationLanes, ProviderRunState, RuntimeProviderRun,
 };
 
 pub struct ProviderProcessService {
@@ -608,6 +608,10 @@ impl ProviderProcessService {
 
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.structured_prompt_submissions.contains(provider_run_id)
+    }
+
+    pub(crate) fn run_operation_lanes(&self) -> ProviderRunOperationLanes {
+        self.run_actor_mailbox.operation_lanes()
     }
 
     pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {

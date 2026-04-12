@@ -34,7 +34,8 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::provider::{
-    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService, RuntimeProviderRun,
+    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService,
+    ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
 use crate::session::{
@@ -166,6 +167,10 @@ impl DaemonApp {
             relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
             config,
         })
+    }
+
+    pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {
+        self.providers.run_operation_lanes()
     }
 
     /// Create a new session with a default agent

@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
 
@@ -10,8 +13,14 @@ use super::{
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
+    operation_lanes: ProviderRunOperationLanes,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProviderRunOperationLanes {
+    lanes: Arc<AsyncMutex<BTreeMap<String, Arc<Semaphore>>>>,
 }
 
 pub(crate) struct FinishedProviderPromptSubmitJob {
@@ -29,7 +38,28 @@ pub(crate) struct FinishedProviderPromptAbortJob {
     pub(crate) result: Result<(), DaemonError>,
 }
 
+impl ProviderRunOperationLanes {
+    pub(crate) async fn acquire(&self, provider_run_id: &str) -> OwnedSemaphorePermit {
+        let semaphore = {
+            let mut lanes = self.lanes.lock().await;
+            Arc::clone(
+                lanes
+                    .entry(provider_run_id.to_string())
+                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
+            )
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .expect("provider run operation lane semaphore closed")
+    }
+}
+
 impl ProviderRunActorMailbox {
+    pub(crate) fn operation_lanes(&self) -> ProviderRunOperationLanes {
+        self.operation_lanes.clone()
+    }
+
     pub(crate) fn spawn_submit(
         &self,
         session_id: String,

@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
@@ -19,6 +18,7 @@ use crate::local::{
     GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
     LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
+use crate::provider::ProviderRunOperationLanes;
 use crate::session_history_page::paginate_session_history;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -36,39 +36,25 @@ pub(crate) struct CommandRouter {
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
 }
 
-#[derive(Clone, Default)]
-struct ProviderRuntimeIoLanes {
-    lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
-}
-
-impl ProviderRuntimeIoLanes {
-    async fn acquire(&self, provider_run_id: &str) -> OwnedSemaphorePermit {
-        let semaphore = {
-            let mut lanes = self.lanes.lock().await;
-            Arc::clone(
-                lanes
-                    .entry(provider_run_id.to_string())
-                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
-            )
-        };
-        semaphore
-            .acquire_owned()
-            .await
-            .expect("provider runtime I/O lane semaphore closed")
-    }
-}
-
 impl CommandRouter {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self::with_interactive_capacity(app, INTERACTIVE_COMMAND_QUEUE_LIMIT)
-    }
-
+    #[cfg(test)]
     pub(crate) fn with_interactive_capacity(
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
     ) -> Self {
+        Self::with_interactive_capacity_and_provider_lanes(
+            app,
+            interactive_capacity,
+            ProviderRunOperationLanes::default(),
+        )
+    }
+
+    pub(crate) fn with_interactive_capacity_and_provider_lanes(
+        app: Arc<Mutex<DaemonApp>>,
+        interactive_capacity: usize,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
-        let provider_runtime_lanes = ProviderRuntimeIoLanes::default();
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
@@ -120,7 +106,7 @@ impl CommandRouter {
 
 async fn run_interactive_command_lane(
     app: Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: ProviderRuntimeIoLanes,
+    provider_runtime_lanes: ProviderRunOperationLanes,
     mut rx: mpsc::Receiver<InteractiveCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
@@ -144,7 +130,7 @@ async fn run_interactive_command_lane(
 
 async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRuntimeIoLanes,
+    provider_runtime_lanes: &ProviderRunOperationLanes,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if let LocalDaemonRequest::SubmitPrompt(request) = request {
@@ -165,7 +151,7 @@ async fn execute_interactive_request(
 
 async fn execute_kernel_prompt_cancel(
     app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRuntimeIoLanes,
+    provider_runtime_lanes: &ProviderRunOperationLanes,
     request: crate::local::CancelActivePromptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {
@@ -207,7 +193,7 @@ async fn execute_kernel_prompt_cancel(
 
 async fn execute_kernel_prompt_submit(
     app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRuntimeIoLanes,
+    provider_runtime_lanes: &ProviderRunOperationLanes,
     request: crate::local::SubmitPromptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {

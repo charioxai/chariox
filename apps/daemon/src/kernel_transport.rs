@@ -223,11 +223,12 @@ pub async fn run_kernel_websocket_server<F>(
 where
     F: Future<Output = ()>,
 {
-    let (bind_host, bind_port) = {
+    let (bind_host, bind_port, provider_runtime_lanes) = {
         let app = app.lock().await;
         (
             app.config().kernel_websocket_host.clone(),
             app.config().kernel_websocket_port,
+            app.provider_run_operation_lanes(),
         )
     };
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
@@ -238,7 +239,11 @@ where
         })?;
     let pump_app = Arc::clone(&app);
     let runtime = Arc::new(KernelTransportRuntime::default());
-    let router = Arc::new(CommandRouter::new(Arc::clone(&app)));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+        Arc::clone(&app),
+        crate::kernel::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        provider_runtime_lanes,
+    ));
 
     tokio::pin!(shutdown);
 

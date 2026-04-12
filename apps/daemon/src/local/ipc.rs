@@ -65,8 +65,13 @@ where
             message: error.to_string(),
         })?;
     harden_socket_permissions(&socket_path)?;
+    let provider_runtime_lanes = app.provider_run_operation_lanes();
     let app = Arc::new(Mutex::new(app));
-    let router = Arc::new(CommandRouter::new(Arc::clone(&app)));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+        Arc::clone(&app),
+        crate::kernel::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        provider_runtime_lanes,
+    ));
     let command_sequence = Arc::new(AtomicU64::new(1));
 
     tokio::pin!(shutdown);
