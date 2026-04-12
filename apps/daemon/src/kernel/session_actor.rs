@@ -10,32 +10,37 @@ impl SessionActor {
         app: &mut DaemonApp,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        let mut sessions = app.kernel_sessions();
         match request {
             LocalDaemonRequest::AttachToSession(request) => Some(
-                app.attach(AttachRequest::new(
-                    request.session_id,
-                    request.client_id,
-                    request.capability_level,
-                ))
-                .map(|attachment| LocalDaemonResponse::SessionAttached { attachment }),
+                sessions
+                    .attach(AttachRequest::new(
+                        request.session_id,
+                        request.client_id,
+                        request.capability_level,
+                    ))
+                    .map(|attachment| LocalDaemonResponse::SessionAttached { attachment }),
             ),
             LocalDaemonRequest::DetachFromSession(request) => Some(
-                app.detach(&request.attachment_id)
+                sessions
+                    .detach(&request.attachment_id)
                     .map(|attachment| LocalDaemonResponse::SessionDetached { attachment }),
             ),
             LocalDaemonRequest::FocusAgent(request) => Some(
-                app.focus_agent(&request.session_id, &request.agent_id)
+                sessions
+                    .focus_agent(&request.session_id, &request.agent_id)
                     .map(|agent| LocalDaemonResponse::AgentFocused { agent }),
             ),
             LocalDaemonRequest::CycleAgentFocus(request) => Some(
-                app.cycle_agent_focus(&request.session_id)
+                sessions
+                    .cycle_agent_focus(&request.session_id)
                     .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent }),
             ),
             LocalDaemonRequest::ResizeTerminal(request) => {
                 let session_id = request.session_id;
                 let cols = request.cols;
                 let rows = request.rows;
-                Some(app.resize_terminal(&session_id, cols, rows).map(|()| {
+                Some(sessions.resize_terminal(&session_id, cols, rows).map(|()| {
                     LocalDaemonResponse::TerminalResized {
                         session_id,
                         cols,

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use tokio::runtime::{Handle, Runtime};
 
+mod kernel_session;
 mod prompt_lifecycle;
 mod provider_runtime;
 mod session_runtime;
@@ -54,6 +55,7 @@ use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RelayPromptAttachment,
 };
+pub(crate) use kernel_session::KernelSessionService;
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -103,6 +105,10 @@ pub(crate) struct TrackedProviderProcess {
 }
 
 impl DaemonApp {
+    pub(crate) fn kernel_sessions(&mut self) -> KernelSessionService<'_> {
+        KernelSessionService::new(self)
+    }
+
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
         attachment_id
             .chars()
