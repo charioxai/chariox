@@ -6,6 +6,7 @@ use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,9 @@ use tokio::time::timeout;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::kernel::command::{KernelCommand, KernelCommandSource};
+use crate::kernel::router::CommandRouter;
+use crate::session::unix_epoch_ms;
 
 use super::{LocalDaemonRequest, LocalDaemonResponse};
 
@@ -62,6 +66,8 @@ where
         })?;
     harden_socket_permissions(&socket_path)?;
     let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::new(Arc::clone(&app)));
+    let command_sequence = Arc::new(AtomicU64::new(1));
 
     tokio::pin!(shutdown);
 
@@ -77,9 +83,10 @@ where
                     operation: "accept local socket connection",
                     message: error.to_string(),
                 })?;
-                let app = Arc::clone(&app);
+                let router = Arc::clone(&router);
+                let command_sequence = Arc::clone(&command_sequence);
                 tokio::spawn(async move {
-                    let _ = handle_connection(app, stream).await;
+                    let _ = handle_connection(router, command_sequence, stream).await;
                 });
             }
         }
@@ -134,7 +141,8 @@ pub fn send_local_ipc_request(
 }
 
 async fn handle_connection(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
+    command_sequence: Arc<AtomicU64>,
     mut stream: tokio::net::UnixStream,
 ) -> Result<(), DaemonError> {
     let request_bytes = match read_async_frame(&mut stream).await {
@@ -157,7 +165,7 @@ async fn handle_connection(
 
     let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
         Ok(request) => {
-            let response = handle_local_request_with_async_boundaries(&app, request).await;
+            let response = dispatch_local_ipc_request(&router, &command_sequence, request).await;
             match response {
                 Ok(response) => IpcResponseEnvelope {
                     response: Some(response),
@@ -225,49 +233,21 @@ async fn handle_connection(
     }
 }
 
-async fn handle_local_request_with_async_boundaries(
-    app: &Arc<Mutex<DaemonApp>>,
+async fn dispatch_local_ipc_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    if is_blocking_local_request(&request) {
-        let app = Arc::clone(app);
-        let handle = tokio::runtime::Handle::current();
-        return tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                let mut app = app.lock().await;
-                app.handle_local_request(request)
-            })
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "run blocking local request",
-            message: error.to_string(),
-        })?;
-    }
-
-    let mut app = app.lock().await;
-    app.handle_local_request(request)
-}
-
-fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
-            | LocalDaemonRequest::GetProviderAuthStatus(_)
-            | LocalDaemonRequest::StartProviderLogin(_)
-            | LocalDaemonRequest::LogoutProvider(_)
-            | LocalDaemonRequest::ListProviderProcesses(_)
-            | LocalDaemonRequest::TeardownProviderProcesses(_)
-            | LocalDaemonRequest::GetSessionHistory(_)
-            | LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
-            | LocalDaemonRequest::ReadFile(_)
-            | LocalDaemonRequest::EditFile(_)
-            | LocalDaemonRequest::InspectGit(_)
-            | LocalDaemonRequest::CaptureScreenshot(_)
-            | LocalDaemonRequest::StoreTransferredFile(_)
-    )
+    let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
+    let command_id = format!("ipc-{}-{sequence}", unix_epoch_ms());
+    let command = KernelCommand::from_local_request_with_source(
+        command_id,
+        KernelCommandSource::LocalIpc,
+        None,
+        None,
+        &request,
+    );
+    router.dispatch(command, request).await
 }
 
 fn prepare_socket_path(socket_path: &Path) -> Result<(), DaemonError> {
@@ -455,7 +435,8 @@ mod tests {
     };
     use crate::local::{
         AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
-        PumpTerminalOutputRequest, SpawnAgentRequest, SubmitPromptRequest,
+        PumpTerminalOutputRequest, RunShellCapabilityRequest, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -538,6 +519,126 @@ mod tests {
 
         let output = wait_for_output(&client, session.id(), attachment.id()).await;
         assert!(output.contains("ipc smoke"));
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should stop cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_ipc_prompt_submit_acks_while_shell_capability_is_slow() {
+        let _guard = local_ipc_test_guard();
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+            run_local_ipc_server(app, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        wait_for_socket(&socket_path).await;
+
+        let client = LocalIpcClient::new(socket_path.clone());
+        let cwd = std::env::current_dir()
+            .expect("current directory should be available")
+            .to_string_lossy()
+            .to_string();
+        let session = match client
+            .send(&LocalDaemonRequest::CreateSession(
+                CreateSessionRequest::new(cwd.as_str(), cwd.as_str()),
+            ))
+            .expect("session create should succeed")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected response: {other:?}"),
+        };
+        let agent_id = session
+            .agents()
+            .first()
+            .expect("default agent should exist")
+            .id()
+            .to_string();
+        let attachment = match client
+            .send(&LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "ipc-responsive-client".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        client
+            .send(&LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(agent_id.clone()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "dev-stub".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "default".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("launch should succeed");
+
+        let slow_client = LocalIpcClient::new(socket_path.clone());
+        let slow_session_id = session.id().to_string();
+        let slow_attachment_id = attachment.id().to_string();
+        let slow_task = tokio::task::spawn_blocking(move || {
+            slow_client.send(&LocalDaemonRequest::RunShellCommand(
+                RunShellCapabilityRequest {
+                    session_id: slow_session_id,
+                    attachment_id: slow_attachment_id,
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), "sleep 0.5".to_string()],
+                    working_directory: None,
+                    timeout_ms: Some(1_000),
+                },
+            ))
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let submit_client = LocalIpcClient::new(socket_path.clone());
+        let submit_session_id = session.id().to_string();
+        let submit_attachment_id = attachment.id().to_string();
+        let submit_agent_id = agent_id.clone();
+        let submit_task = tokio::task::spawn_blocking(move || {
+            submit_client.send(&LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: submit_session_id,
+                attachment_id: submit_attachment_id,
+                target_agent_id: Some(submit_agent_id),
+                prompt: "ipc prompt should ack while shell command is still running".to_string(),
+                attachments: Vec::new(),
+            }))
+        });
+        let submit_response = tokio::time::timeout(Duration::from_millis(250), submit_task)
+            .await
+            .expect("prompt submit should not wait for slow shell")
+            .expect("prompt submit task should join")
+            .expect("prompt submit should succeed");
+        assert!(matches!(
+            submit_response,
+            LocalDaemonResponse::PromptSubmitted { .. }
+        ));
+
+        let shell_response = slow_task
+            .await
+            .expect("slow shell task should join")
+            .expect("slow shell request should succeed");
+        assert!(matches!(
+            shell_response,
+            LocalDaemonResponse::ShellCommandCompleted { .. }
+        ));
 
         let _ = shutdown_tx.send(());
         server

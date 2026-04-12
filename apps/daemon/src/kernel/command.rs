@@ -48,6 +48,22 @@ impl KernelCommand {
         causation_id: Option<String>,
         request: &LocalDaemonRequest,
     ) -> Self {
+        Self::from_local_request_with_source(
+            command_id,
+            KernelCommandSource::LocalCli,
+            correlation_id,
+            causation_id,
+            request,
+        )
+    }
+
+    pub fn from_local_request_with_source(
+        command_id: impl Into<String>,
+        source: KernelCommandSource,
+        correlation_id: Option<String>,
+        causation_id: Option<String>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
         let command_id = command_id.into();
         let payload = serde_json::to_value(request).unwrap_or(Value::Null);
         let metadata = local_request_metadata(request);
@@ -55,7 +71,7 @@ impl KernelCommand {
             command_id: command_id.clone(),
             command_type: metadata.command_type.to_string(),
             submitted_at_ms: unix_epoch_ms(),
-            source: KernelCommandSource::LocalCli,
+            source,
             session_id: metadata.session_id,
             attachment_id: metadata.attachment_id,
             agent_id: metadata.agent_id,
@@ -282,7 +298,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::attachment::ClientCapabilityLevel;
-    use crate::kernel::command::{KernelCommand, KernelCommandPriority};
+    use crate::kernel::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
     use crate::local::{
         AttachToSessionRequest, FocusAgentRequest, LocalDaemonRequest, SubmitPromptRequest,
     };
@@ -339,5 +355,28 @@ mod tests {
         assert_eq!(focus.command_type, "agent.focus");
         assert_eq!(focus.priority, KernelCommandPriority::Interactive);
         assert_eq!(focus.agent_id.as_deref(), Some("agent-2"));
+    }
+
+    #[test]
+    fn can_normalize_local_ipc_commands_with_ipc_source() {
+        let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            target_agent_id: Some("agent-1".to_string()),
+            prompt: "hello".to_string(),
+            attachments: Vec::new(),
+        });
+        let command = KernelCommand::from_local_request_with_source(
+            "ipc-1",
+            KernelCommandSource::LocalIpc,
+            None,
+            None,
+            &request,
+        );
+
+        assert_eq!(command.source, KernelCommandSource::LocalIpc);
+        assert_eq!(command.command_type, "prompt.submit");
+        assert_eq!(command.priority, KernelCommandPriority::Interactive);
+        assert_eq!(command.correlation_id, "ipc-1");
     }
 }
