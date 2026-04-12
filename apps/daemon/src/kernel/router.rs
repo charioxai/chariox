@@ -160,30 +160,11 @@ async fn execute_kernel_prompt_cancel(
     };
 
     if let Some(dispatch) = prepared.dispatch {
-        let app = Arc::clone(app);
-        let provider_runtime_lanes = provider_runtime_lanes.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            let job = loop {
-                let mut app = app.lock().await;
-                match app.take_kernel_prompt_abort_job(&dispatch) {
-                    Ok(job) => break job,
-                    Err(_) if app.structured_prompt_io_in_flight(&dispatch.provider_run_id) => {
-                        drop(app);
-                        sleep(Duration::from_millis(25)).await;
-                        continue;
-                    }
-                    Err(error) => {
-                        let _ = app.fail_kernel_prompt_abort(dispatch, error);
-                        return;
-                    }
-                }
-            };
-            let mut app = app.lock().await;
-            app.spawn_kernel_prompt_abort_job(dispatch, job);
-        });
+        DaemonApp::spawn_kernel_prompt_abort_operation(
+            Arc::clone(app),
+            provider_runtime_lanes.clone(),
+            dispatch,
+        );
     }
 
     Ok(LocalDaemonResponse::PromptCancelled {
@@ -208,45 +189,11 @@ async fn execute_kernel_prompt_submit(
     };
 
     if let Some(dispatch) = prepared.dispatch {
-        let app = Arc::clone(app);
-        let provider_runtime_lanes = provider_runtime_lanes.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            let job = {
-                let mut app = app.lock().await;
-                match app.take_kernel_prompt_dispatch_job(&dispatch) {
-                    Ok(job) => job,
-                    Err(error) => {
-                        let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
-                        return;
-                    }
-                }
-            };
-            let executed = tokio::task::spawn_blocking(move || job.execute()).await;
-            match executed {
-                Ok((completion, result)) => {
-                    let mut app = app.lock().await;
-                    let _ = app.finish_kernel_prompt_dispatch(
-                        dispatch.session_id,
-                        dispatch.provider_run_id,
-                        dispatch.agent_id,
-                        completion,
-                        result,
-                    );
-                }
-                Err(error) => {
-                    crate::logging::error_with_fields(
-                        "daemon.kernel_router",
-                        "kernel prompt dispatch task failed",
-                        serde_json::json!({
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-        });
+        DaemonApp::spawn_kernel_prompt_dispatch_operation(
+            Arc::clone(app),
+            provider_runtime_lanes.clone(),
+            dispatch,
+        );
     }
 
     Ok(LocalDaemonResponse::PromptSubmitted {

@@ -2,7 +2,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
     ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
-    ProviderPromptSubmitJob, ProviderRunState,
+    ProviderPromptSubmitJob, ProviderRunOperationLanes, ProviderRunState,
 };
 use crate::pty::PtyProcessState;
 use crate::session::{
@@ -448,6 +448,43 @@ impl DaemonApp {
         Err(error)
     }
 
+    pub(crate) fn spawn_kernel_prompt_dispatch_job(
+        &mut self,
+        dispatch: KernelPromptDispatch,
+        job: ProviderPromptSubmitJob,
+    ) {
+        self.providers.spawn_structured_prompt_submit_job(
+            dispatch.session_id,
+            dispatch.provider_run_id,
+            dispatch.agent_id,
+            job,
+        );
+    }
+
+    pub(crate) fn spawn_kernel_prompt_dispatch_operation(
+        app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+        dispatch: KernelPromptDispatch,
+    ) {
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let job = {
+                let mut app = app.lock().await;
+                match app.take_kernel_prompt_dispatch_job(&dispatch) {
+                    Ok(job) => job,
+                    Err(error) => {
+                        let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
+                        return;
+                    }
+                }
+            };
+            let mut app = app.lock().await;
+            app.spawn_kernel_prompt_dispatch_job(dispatch, job);
+        });
+    }
+
     pub(crate) fn spawn_kernel_prompt_abort_job(
         &mut self,
         dispatch: KernelPromptAbortDispatch,
@@ -458,6 +495,35 @@ impl DaemonApp {
             dispatch.provider_run_id,
             job,
         );
+    }
+
+    pub(crate) fn spawn_kernel_prompt_abort_operation(
+        app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+        dispatch: KernelPromptAbortDispatch,
+    ) {
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let job = loop {
+                let mut app = app.lock().await;
+                match app.take_kernel_prompt_abort_job(&dispatch) {
+                    Ok(job) => break job,
+                    Err(_) if app.structured_prompt_io_in_flight(&dispatch.provider_run_id) => {
+                        drop(app);
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = app.fail_kernel_prompt_abort(dispatch, error);
+                        return;
+                    }
+                }
+            };
+            let mut app = app.lock().await;
+            app.spawn_kernel_prompt_abort_job(dispatch, job);
+        });
     }
 
     pub fn complete_active_prompt(
