@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
 
@@ -6,8 +7,8 @@ use arroba_daemon::kernel_transport::run_kernel_websocket_server;
 use arroba_daemon::local::{
     AttachToSessionRequest, DeleteSessionRequest, GetProviderCatalogRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-    ListProviderProcessesRequest, LocalDaemonRequest, RunShellCapabilityRequest,
-    SubmitPromptRequest,
+    ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest,
+    RunShellCapabilityRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -336,6 +337,83 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
         .as_str()
         .expect("retry session id should be present");
     assert_eq!(first_session_id, retry_session_id);
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_fans_out_inflight_duplicate_command_id() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    for request_id in ["create-session-first", "create-session-retry"] {
+        send_frame(
+            &mut socket,
+            json!({
+                "type": "request",
+                "request_id": request_id,
+                "command_id": "inflight-duplicate-create-session",
+                "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                    "workspace-kernel-inflight-idempotent",
+                    "worktree-kernel-inflight-idempotent",
+                )),
+            }),
+        )
+        .await;
+    }
+
+    let mut responses = wait_for_responses(
+        &mut socket,
+        &["create-session-first", "create-session-retry"],
+    )
+    .await;
+    let first_response = responses
+        .remove("create-session-first")
+        .expect("first response should be present");
+    let retry_response = responses
+        .remove("create-session-retry")
+        .expect("retry response should be present");
+    let first_session_id = response_variant(&first_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("first session id should be present");
+    let retry_session_id = response_variant(&retry_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("retry session id should be present");
+    assert_eq!(first_session_id, retry_session_id);
+
+    let sessions_response = send_request(
+        &mut socket,
+        "list-sessions",
+        LocalDaemonRequest::ListSessions(ListSessionsRequest),
+    )
+    .await;
+    let matching_sessions = response_variant(&sessions_response, "SessionsListed")["sessions"]
+        .as_array()
+        .expect("sessions should be listed")
+        .iter()
+        .filter(|session| {
+            session["workspace_id"].as_str() == Some("workspace-kernel-inflight-idempotent")
+        })
+        .count();
+    assert_eq!(
+        matching_sessions, 1,
+        "in-flight duplicate create session should only apply once: {sessions_response}"
+    );
 
     let _ = shutdown_tx.send(());
     server
@@ -956,6 +1034,187 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_reports_async_provider_launch_failure() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-provider-launch-failure",
+            "worktree-provider-launch-failure",
+        )),
+    )
+    .await;
+    let session = &response_variant(&create_response, "SessionCreated")["session"];
+    let session_id = session["id"].as_str().expect("session id").to_string();
+    let agent_id = session["agents"][0]["id"]
+        .as_str()
+        .expect("agent id")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-provider-launch-failure-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-session",
+            "session_id": session_id.clone(),
+            "attachment_id": attachment_id.clone(),
+            "resume_from_event_id": null,
+        }),
+    )
+    .await;
+    let _subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+
+    let launch_response = send_request(
+        &mut socket,
+        "launch-failing-provider",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id),
+            adapter_key: "dev-stub".to_string(),
+            provider: "runtime-init-fail".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+    let provider_run_id = provider_run_id_from_launch_response(&launch_response);
+    assert_eq!(
+        response_variant(&launch_response, "ProviderRunLaunchAccepted")["provider_run"]["state"],
+        "Starting"
+    );
+
+    let notice_event = wait_for_event(&mut socket, "runtime_notices").await;
+    let notices = notice_event["event"]["notices"]
+        .as_array()
+        .expect("runtime notices should be present");
+    assert!(
+        notices.iter().any(|notice| {
+            notice["provider_run_id"].as_str() == Some(provider_run_id.as_str())
+                && notice["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("failed before it became ready"))
+        }),
+        "launch failure should be visible as a runtime notice: {notice_event}"
+    );
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Ended").await;
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_replaces_starting_provider_launch() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    config.provider_runtime_init_delay_ms = 500;
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-provider-launch-replace",
+            "worktree-provider-launch-replace",
+        )),
+    )
+    .await;
+    let session = &response_variant(&create_response, "SessionCreated")["session"];
+    let session_id = session["id"].as_str().expect("session id").to_string();
+    let agent_id = session["agents"][0]["id"]
+        .as_str()
+        .expect("agent id")
+        .to_string();
+
+    let first_launch = send_request(
+        &mut socket,
+        "launch-provider-first",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+    let first_run_id = provider_run_id_from_launch_response(&first_launch);
+    assert_eq!(
+        response_variant(&first_launch, "ProviderRunLaunchAccepted")["provider_run"]["state"],
+        "Starting"
+    );
+
+    let second_launch = send_request(
+        &mut socket,
+        "launch-provider-second",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "opus".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+    let second_run_id = provider_run_id_from_launch_response(&second_launch);
+    assert_ne!(first_run_id, second_run_id);
+    wait_for_provider_run_state(&mut socket, &first_run_id, "Ended").await;
+    wait_for_provider_run_state(&mut socket, &second_run_id, "Running").await;
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
     let mut config = DaemonConfig::for_tests();
     config.kernel_websocket_port = free_port();
@@ -1144,6 +1403,35 @@ async fn wait_for_response(
     .expect("timed out waiting for kernel websocket response")
 }
 
+async fn wait_for_responses(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    request_ids: &[&str],
+) -> BTreeMap<String, Value> {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        let mut responses = BTreeMap::new();
+        while responses.len() < request_ids.len() {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] != "response" {
+                continue;
+            }
+            let Some(request_id) = frame["request_id"].as_str() else {
+                continue;
+            };
+            if request_ids.contains(&request_id) {
+                assert!(
+                    frame["error"].is_null(),
+                    "kernel websocket response should not contain an error: {frame}"
+                );
+                responses.insert(request_id.to_string(), frame);
+            }
+        }
+        responses
+    })
+    .await
+    .expect("timed out waiting for kernel websocket responses")
+}
+
 async fn wait_for_response_with_timeout(
     socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     request_id: &str,
@@ -1242,7 +1530,7 @@ async fn wait_for_provider_run_state(
     timeout(deadline, async {
         let mut attempt = 0_u64;
         loop {
-            let request_id = format!("provider-run-state-{attempt}");
+            let request_id = format!("provider-run-state-{provider_run_id}-{attempt}");
             let frame = send_request(
                 socket,
                 &request_id,

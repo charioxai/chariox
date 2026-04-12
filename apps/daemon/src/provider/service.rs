@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::DaemonError;
 use crate::session::{PromptAttachment, SessionService};
@@ -23,6 +23,7 @@ pub struct ProviderProcessService {
     registry: ProviderRegistry,
     codex_runs: BTreeMap<String, CodexRuntimeState>,
     opencode_runs: BTreeMap<String, OpenCodeRuntimeState>,
+    structured_prompt_submissions: BTreeSet<String>,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
 }
@@ -32,12 +33,64 @@ pub(crate) enum ProviderRuntimeBinding {
     OpenCode(OpenCodeRuntimeBinding),
 }
 
+pub(crate) struct ProviderPromptSubmitJob {
+    run: RuntimeProviderRun,
+    prompt: String,
+    attachments: Vec<PromptAttachment>,
+    inner: ProviderPromptSubmitJobInner,
+}
+
+enum ProviderPromptSubmitJobInner {
+    Codex(CodexRuntimeState),
+    OpenCode(OpenCodeRuntimeState),
+}
+
+pub(crate) struct ProviderPromptSubmitCompletion {
+    run_id: String,
+    inner: ProviderPromptSubmitJobInner,
+}
+
+impl ProviderPromptSubmitJob {
+    pub(crate) fn execute(self) -> (ProviderPromptSubmitCompletion, Result<(), DaemonError>) {
+        let ProviderPromptSubmitJob {
+            run,
+            prompt,
+            attachments,
+            inner,
+        } = self;
+        let run_id = run.id().to_string();
+        match inner {
+            ProviderPromptSubmitJobInner::Codex(mut state) => {
+                let result = submit_codex_prompt(&run, &mut state, &prompt, &attachments);
+                (
+                    ProviderPromptSubmitCompletion {
+                        run_id,
+                        inner: ProviderPromptSubmitJobInner::Codex(state),
+                    },
+                    result,
+                )
+            }
+            ProviderPromptSubmitJobInner::OpenCode(state) => {
+                let result = submit_opencode_prompt(&run, &state, &prompt, &attachments);
+                (
+                    ProviderPromptSubmitCompletion {
+                        run_id,
+                        inner: ProviderPromptSubmitJobInner::OpenCode(state),
+                    },
+                    result,
+                )
+            }
+        }
+    }
+}
+
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
             registry: ProviderRegistry::new(),
             codex_runs: BTreeMap::new(),
             opencode_runs: BTreeMap::new(),
+            structured_prompt_submissions: BTreeSet::new(),
             runs: BTreeMap::new(),
             next_run_number: 0,
         }
@@ -70,11 +123,20 @@ impl ProviderProcessService {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             let active_run = self.get_run(active_run_id)?;
-            if active_run.state() == ProviderRunState::Ended {
-                sessions.set_active_provider_run(&request.session_id, None)?;
-                self.clear_runtime(active_run_id);
-            } else {
-                self.park_run(sessions, &request.session_id, active_run_id)?;
+            match active_run.state() {
+                ProviderRunState::Ended => {
+                    sessions.set_active_provider_run(&request.session_id, None)?;
+                    self.clear_runtime(active_run_id);
+                }
+                ProviderRunState::Starting => {
+                    self.terminate_run(sessions, &request.session_id, active_run_id)?;
+                }
+                ProviderRunState::Running => {
+                    self.park_run(sessions, &request.session_id, active_run_id)?;
+                }
+                ProviderRunState::Parked => {
+                    sessions.set_active_provider_run(&request.session_id, None)?;
+                }
             }
         }
 
@@ -288,6 +350,13 @@ impl ProviderProcessService {
         run_id: &str,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let run = self.get_run_mut(run_id)?;
+        if run.state() != ProviderRunState::Starting {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run_id.to_string(),
+                state: run.state(),
+                operation: "finish launch",
+            });
+        }
         run.mark_running();
         Ok(run.clone())
     }
@@ -400,6 +469,13 @@ impl ProviderProcessService {
     pub(crate) fn initialize_runtime_binding(
         run: &RuntimeProviderRun,
     ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        if run.adapter_key() == "dev-stub" && run.provider() == "runtime-init-fail" {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "dev_stub_runtime_init",
+                message: "forced dev-stub runtime initialization failure".to_string(),
+            });
+        }
         if run.adapter_key() == "codex" {
             return initialize_codex_runtime(run)
                 .map(ProviderRuntimeBinding::Codex)
@@ -471,6 +547,7 @@ impl ProviderProcessService {
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
+        self.structured_prompt_submissions.remove(provider_run_id);
         self.codex_runs.remove(provider_run_id);
         if let Some(state) = self.opencode_runs.remove(provider_run_id) {
             state.stop();
@@ -540,6 +617,69 @@ impl ProviderProcessService {
         Ok(true)
     }
 
+    pub(crate) fn take_structured_prompt_submit_job(
+        &mut self,
+        run: &RuntimeProviderRun,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<Option<ProviderPromptSubmitJob>, DaemonError> {
+        let _ = self.record_run_activity(run.id());
+        if run.adapter_key() == "codex" {
+            let state =
+                self.codex_runs
+                    .remove(run.id())
+                    .ok_or_else(|| DaemonError::ProviderProtocol {
+                        provider_run_id: run.id().to_string(),
+                        operation: "codex_thread_missing",
+                        message: "no Codex thread is bound to this provider run".to_string(),
+                    })?;
+            self.structured_prompt_submissions
+                .insert(run.id().to_string());
+            return Ok(Some(ProviderPromptSubmitJob {
+                run: run.clone(),
+                prompt: prompt.to_string(),
+                attachments: attachments.to_vec(),
+                inner: ProviderPromptSubmitJobInner::Codex(state),
+            }));
+        }
+        if run.adapter_key() != "opencode" {
+            return Ok(None);
+        }
+
+        let state =
+            self.opencode_runs
+                .remove(run.id())
+                .ok_or_else(|| DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "opencode_session_missing",
+                    message: "no OpenCode session is bound to this provider run".to_string(),
+                })?;
+        self.structured_prompt_submissions
+            .insert(run.id().to_string());
+        Ok(Some(ProviderPromptSubmitJob {
+            run: run.clone(),
+            prompt: prompt.to_string(),
+            attachments: attachments.to_vec(),
+            inner: ProviderPromptSubmitJobInner::OpenCode(state),
+        }))
+    }
+
+    pub(crate) fn finish_structured_prompt_submit_job(
+        &mut self,
+        completion: ProviderPromptSubmitCompletion,
+    ) {
+        self.structured_prompt_submissions
+            .remove(&completion.run_id);
+        match completion.inner {
+            ProviderPromptSubmitJobInner::Codex(state) => {
+                self.codex_runs.insert(completion.run_id, state);
+            }
+            ProviderPromptSubmitJobInner::OpenCode(state) => {
+                self.opencode_runs.insert(completion.run_id, state);
+            }
+        }
+    }
+
     pub fn poll_structured_output(
         &mut self,
         provider_run_id: &str,
@@ -547,6 +687,11 @@ impl ProviderProcessService {
         let _ = self.record_run_activity(provider_run_id);
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "codex" {
+            if self.structured_prompt_submissions.contains(provider_run_id)
+                && !self.codex_runs.contains_key(provider_run_id)
+            {
+                return Ok(None);
+            }
             let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
                 DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
@@ -578,6 +723,11 @@ impl ProviderProcessService {
             }));
         }
         if run.adapter_key() != "opencode" {
+            return Ok(None);
+        }
+        if self.structured_prompt_submissions.contains(provider_run_id)
+            && !self.opencode_runs.contains_key(provider_run_id)
+        {
             return Ok(None);
         }
 

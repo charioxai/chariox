@@ -119,6 +119,9 @@ async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if let LocalDaemonRequest::SubmitPrompt(request) = request {
+        return execute_kernel_prompt_submit(app, request).await;
+    }
     let mut app = app.lock().await;
     if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
         return result;
@@ -127,6 +130,62 @@ async fn execute_interactive_request(
         return result;
     }
     app.handle_local_request(request)
+}
+
+async fn execute_kernel_prompt_submit(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: crate::local::SubmitPromptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let prepared = {
+        let mut app = app.lock().await;
+        app.submit_prompt_for_kernel(
+            &request.session_id,
+            &request.attachment_id,
+            request.target_agent_id.as_deref(),
+            &request.prompt,
+            request.attachments,
+        )?
+    };
+
+    if let Some(dispatch) = prepared.dispatch {
+        let app = Arc::clone(app);
+        tokio::spawn(async move {
+            let executed = tokio::task::spawn_blocking(move || {
+                let session_id = dispatch.session_id;
+                let provider_run_id = dispatch.provider_run_id;
+                let agent_id = dispatch.agent_id;
+                let (completion, result) = dispatch.job.execute();
+                (session_id, provider_run_id, agent_id, completion, result)
+            })
+            .await;
+            match executed {
+                Ok((session_id, provider_run_id, agent_id, completion, result)) => {
+                    let mut app = app.lock().await;
+                    let _ = app.finish_kernel_prompt_dispatch(
+                        session_id,
+                        provider_run_id,
+                        agent_id,
+                        completion,
+                        result,
+                    );
+                }
+                Err(error) => {
+                    crate::logging::error_with_fields(
+                        "daemon.kernel_router",
+                        "kernel prompt dispatch task failed",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    Ok(LocalDaemonResponse::PromptSubmitted {
+        outcome: prepared.outcome,
+        session: prepared.session,
+    })
 }
 
 pub(crate) async fn execute_local_request_with_async_boundaries(

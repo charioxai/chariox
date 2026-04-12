@@ -281,6 +281,19 @@ impl DaemonApp {
                 "error": error.to_string(),
             }),
         );
+        let recipients = self
+            .attachments
+            .list_session_attachment_ids(started.run.session_id());
+        self.record_notice(
+            started.run.session_id(),
+            Some(started.run.id()),
+            recipients,
+            format!(
+                "Provider launch `{}` failed before it became ready: {}",
+                started.run.id(),
+                error
+            ),
+        );
         let _ = self.remove_tracked_provider_process_for_run(started.run.id());
         self.providers.clear_runtime(started.run.id());
         let _ = self.providers.terminate_run(

@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
@@ -94,6 +94,15 @@ struct CachedCommandResult {
     error: Option<KernelTransportError>,
 }
 
+#[derive(Debug)]
+enum CommandResultEntry {
+    Pending {
+        fingerprint: CommandFingerprint,
+        waiters: Vec<oneshot::Sender<CachedCommandResult>>,
+    },
+    Completed(CachedCommandResult),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommandFingerprint {
     command_type: String,
@@ -120,10 +129,9 @@ impl CommandFingerprint {
     }
 }
 
-#[derive(Debug, Clone)]
-enum CachedCommandLookup {
-    Miss,
-    Match(CachedCommandResult),
+enum CommandReservation {
+    Dispatch,
+    Wait(oneshot::Receiver<CachedCommandResult>),
     Conflict,
 }
 
@@ -183,7 +191,7 @@ struct KernelSubscription {
 #[derive(Debug)]
 struct KernelTransportRuntime {
     event_log: EventLog<KernelEvent>,
-    command_results: Mutex<BTreeMap<String, CachedCommandResult>>,
+    command_results: Mutex<BTreeMap<String, CommandResultEntry>>,
     command_result_order: Mutex<VecDeque<String>>,
 }
 
@@ -445,23 +453,51 @@ async fn handle_incoming_payload(
                 &request,
             );
             let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
-            match cached_command_result(runtime, &command.command_id, &fingerprint).await {
-                CachedCommandLookup::Match(cached) => {
-                    let _ = try_send_outgoing_frame(
-                        outgoing_tx,
-                        close_tx,
-                        close_requested,
-                        KernelOutgoingFrame::Response {
-                            request_id,
-                            response: cached.response,
-                            error: cached.error,
-                        },
-                        command.session_id.as_deref(),
-                        command.attachment_id.as_deref(),
-                    );
+            match reserve_command_result(runtime, &command.command_id, &fingerprint).await {
+                CommandReservation::Wait(wait_rx) => {
+                    let outgoing_tx = outgoing_tx.clone();
+                    let close_tx = close_tx.clone();
+                    let close_requested = Arc::clone(close_requested);
+                    let session_id = command.session_id.clone();
+                    let attachment_id = command.attachment_id.clone();
+                    tokio::spawn(async move {
+                        let Ok(cached) = wait_rx.await else {
+                            let _ = try_send_outgoing_frame(
+                                &outgoing_tx,
+                                &close_tx,
+                                &close_requested,
+                                KernelOutgoingFrame::Response {
+                                    request_id,
+                                    response: Box::new(None),
+                                    error: Some(KernelTransportError {
+                                        code: "duplicate_command_unavailable".to_string(),
+                                        message:
+                                            "original duplicate command result was unavailable"
+                                                .to_string(),
+                                        retryable: true,
+                                    }),
+                                },
+                                session_id.as_deref(),
+                                attachment_id.as_deref(),
+                            );
+                            return;
+                        };
+                        let _ = try_send_outgoing_frame(
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelOutgoingFrame::Response {
+                                request_id,
+                                response: cached.response,
+                                error: cached.error,
+                            },
+                            session_id.as_deref(),
+                            attachment_id.as_deref(),
+                        );
+                    });
                     return;
                 }
-                CachedCommandLookup::Conflict => {
+                CommandReservation::Conflict => {
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
@@ -483,11 +519,12 @@ async fn handle_incoming_payload(
                     );
                     return;
                 }
-                CachedCommandLookup::Miss => {}
+                CommandReservation::Dispatch => {}
             };
             let permit = match Arc::clone(inbound_request_permits).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(error) => {
+                    forget_pending_command_result(&runtime, &command.command_id).await;
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
@@ -548,7 +585,7 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
-                cache_command_result(&runtime, command_id, fingerprint, &outgoing).await;
+                complete_command_result(&runtime, command_id, fingerprint, &outgoing).await;
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,
@@ -1175,28 +1212,48 @@ async fn emit_replay_gap_snapshot(
     }
 }
 
-async fn cached_command_result(
+async fn reserve_command_result(
     runtime: &Arc<KernelTransportRuntime>,
     command_id: &str,
     fingerprint: &CommandFingerprint,
-) -> CachedCommandLookup {
-    let Some(cached) = runtime
-        .command_results
-        .lock()
-        .await
-        .get(command_id)
-        .cloned()
-    else {
-        return CachedCommandLookup::Miss;
-    };
-    if cached.fingerprint == *fingerprint {
-        CachedCommandLookup::Match(cached)
-    } else {
-        CachedCommandLookup::Conflict
+) -> CommandReservation {
+    let mut results = runtime.command_results.lock().await;
+    match results.get_mut(command_id) {
+        Some(CommandResultEntry::Completed(cached)) => {
+            if cached.fingerprint == *fingerprint {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(cached.clone());
+                CommandReservation::Wait(rx)
+            } else {
+                CommandReservation::Conflict
+            }
+        }
+        Some(CommandResultEntry::Pending {
+            fingerprint: existing,
+            waiters,
+        }) => {
+            if existing == fingerprint {
+                let (tx, rx) = oneshot::channel();
+                waiters.push(tx);
+                CommandReservation::Wait(rx)
+            } else {
+                CommandReservation::Conflict
+            }
+        }
+        None => {
+            results.insert(
+                command_id.to_string(),
+                CommandResultEntry::Pending {
+                    fingerprint: fingerprint.clone(),
+                    waiters: Vec::new(),
+                },
+            );
+            CommandReservation::Dispatch
+        }
     }
 }
 
-async fn cache_command_result(
+async fn complete_command_result(
     runtime: &Arc<KernelTransportRuntime>,
     command_id: String,
     fingerprint: CommandFingerprint,
@@ -1208,16 +1265,23 @@ async fn cache_command_result(
     else {
         return;
     };
-    {
+    let cached = CachedCommandResult {
+        fingerprint,
+        response: response.clone(),
+        error: error.clone(),
+    };
+    let waiters = {
         let mut results = runtime.command_results.lock().await;
-        results.insert(
+        match results.insert(
             command_id.clone(),
-            CachedCommandResult {
-                fingerprint,
-                response: response.clone(),
-                error: error.clone(),
-            },
-        );
+            CommandResultEntry::Completed(cached.clone()),
+        ) {
+            Some(CommandResultEntry::Pending { waiters, .. }) => waiters,
+            _ => Vec::new(),
+        }
+    };
+    for waiter in waiters {
+        let _ = waiter.send(cached.clone());
     }
     let mut order = runtime.command_result_order.lock().await;
     order.push_back(command_id);
@@ -1225,6 +1289,16 @@ async fn cache_command_result(
         if let Some(expired) = order.pop_front() {
             runtime.command_results.lock().await.remove(&expired);
         }
+    }
+}
+
+async fn forget_pending_command_result(runtime: &Arc<KernelTransportRuntime>, command_id: &str) {
+    let mut results = runtime.command_results.lock().await;
+    if matches!(
+        results.get(command_id),
+        Some(CommandResultEntry::Pending { .. })
+    ) {
+        results.remove(command_id);
     }
 }
 
