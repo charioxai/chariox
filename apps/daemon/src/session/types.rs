@@ -2387,6 +2387,17 @@ impl RuntimeSession {
         }
     }
 
+    pub fn queue_prompt(&mut self, prompt: PromptQueueItem) -> PromptSubmissionOutcome {
+        let agent_id = prompt.target_agent_id().to_string();
+        let prompt_state = self.prompt_states.entry(agent_id).or_default();
+        let mut queued = prompt;
+        queued.set_status(PromptStatus::Queued);
+        prompt_state.queued_prompts.push_back(queued.clone());
+        self.refresh_prompt_projection();
+        self.refresh_scheduler_state();
+        PromptSubmissionOutcome::Queued { prompt: queued }
+    }
+
     pub fn complete_active_prompt(&mut self, agent_id: &str) -> Option<PromptCompletion> {
         let prompt_state = self.prompt_states.get_mut(agent_id)?;
         let mut completed = prompt_state.active_prompt.take()?;

@@ -240,6 +240,36 @@ impl SessionService {
         Ok((session.clone(), outcome))
     }
 
+    pub fn queue_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: &str,
+        prompt: impl Into<String>,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let prompt_id = self.next_prompt_id();
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        )
+        .with_attachments(attachments);
+        let session = self.get_session_mut_for_operation(session_id, "queue prompt")?;
+
+        if !session.has_attachment(attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let outcome = session.queue_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
     pub fn submit_workflow_prompt(
         &mut self,
         session_id: &str,

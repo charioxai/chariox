@@ -791,7 +791,8 @@ mod tests {
             ))
             .expect("provider run launch should succeed")
         {
-            LocalDaemonResponse::ProviderRunLaunched { .. } => {}
+            LocalDaemonResponse::ProviderRunLaunched { .. }
+            | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
             other => panic!("unexpected response: {other:?}"),
         }
 

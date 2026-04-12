@@ -52,6 +52,17 @@ impl ProviderProcessService {
         sessions: &mut SessionService,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.start_run(sessions, request)?;
+        let run = self.mark_run_running(run.id())?;
+        sessions.set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
+        Ok(run)
+    }
+
+    pub(crate) fn start_run(
+        &mut self,
+        sessions: &mut SessionService,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
         let active_run_id = sessions
             .get_session(&request.session_id)?
             .active_provider_run_id()
@@ -75,8 +86,7 @@ impl ProviderProcessService {
 
         let run_id = self.next_run_id();
         let launch_result = adapter.connect(&request)?;
-        let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
-        run.mark_running();
+        let run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
 
         self.runs.insert(run_id.clone(), run.clone());
         sessions.set_active_provider_run(&request.session_id, Some(run_id))?;
@@ -271,6 +281,15 @@ impl ProviderProcessService {
         let run = self.get_run_mut(run_id)?;
         run.touch_activity();
         Ok(())
+    }
+
+    pub(crate) fn mark_run_running(
+        &mut self,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.mark_running();
+        Ok(run.clone())
     }
 
     pub fn get_run_for_agent(

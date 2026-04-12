@@ -182,7 +182,7 @@ impl DaemonApp {
         let recipients = self
             .attachments
             .list_session_attachment_ids(&request.session_id);
-        let run = self.providers.launch_run(&mut self.sessions, request)?;
+        let run = self.providers.start_run(&mut self.sessions, request)?;
         crate::logging::info_with_fields(
             "daemon.app",
             "prepared provider run endpoint metadata",
@@ -301,6 +301,9 @@ impl DaemonApp {
         &mut self,
         run: &RuntimeProviderRun,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.providers.mark_run_running(run.id())?;
+        self.sessions
+            .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         crate::logging::info_with_fields(
             "daemon.app",
             "initializing provider runtime",
@@ -317,7 +320,6 @@ impl DaemonApp {
                 "session_id": run.session_id(),
             }),
         );
-        let run = self.providers.get_run(run.id())?;
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
             let _ = self.agents.set_agent_runtime_profile(
@@ -327,6 +329,7 @@ impl DaemonApp {
                 run.variant().map(str::to_string),
                 run.resume_state().clone(),
             )?;
+            let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
         }
         Ok(run)
     }

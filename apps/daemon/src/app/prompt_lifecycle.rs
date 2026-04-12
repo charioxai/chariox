@@ -1,5 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::provider::ProviderRunState;
 use crate::pty::PtyProcessState;
 use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
@@ -43,6 +44,10 @@ impl DaemonApp {
         } else {
             Some(self.ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)?)
         };
+        let provider_run_is_starting = provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.providers.get_run(provider_run_id).ok())
+            .is_some_and(|run| run.state() == ProviderRunState::Starting);
 
         self.append_user_prompt_history(
             session_id,
@@ -52,13 +57,23 @@ impl DaemonApp {
             &attachments,
         );
 
-        let (_session, outcome) = self.sessions.submit_prompt(
-            session_id,
-            attachment_id,
-            &target_agent_id,
-            prompt,
-            attachments.clone(),
-        )?;
+        let (_session, outcome) = if provider_run_is_starting {
+            self.sessions.queue_prompt(
+                session_id,
+                attachment_id,
+                &target_agent_id,
+                prompt,
+                attachments.clone(),
+            )?
+        } else {
+            self.sessions.submit_prompt(
+                session_id,
+                attachment_id,
+                &target_agent_id,
+                prompt,
+                attachments.clone(),
+            )?
+        };
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {

@@ -4,7 +4,7 @@ use std::time::Duration;
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server;
 use arroba_daemon::local::{
-    AttachToSessionRequest, DeleteSessionRequest, GetProviderCatalogRequest,
+    AttachToSessionRequest, DeleteSessionRequest, GetProviderCatalogRequest, GetProviderRunRequest,
     GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
     ListProviderProcessesRequest, LocalDaemonRequest, RunShellCapabilityRequest,
     SubmitPromptRequest,
@@ -535,7 +535,7 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
         .expect("attachment id should be present")
         .to_string();
 
-    let _provider_response = send_request(
+    let provider_response = send_request(
         &mut socket,
         "launch-provider",
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
@@ -549,6 +549,8 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
         }),
     )
     .await;
+    let provider_run_id = provider_run_id_from_launch_response(&provider_response);
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
     send_frame(
         &mut socket,
@@ -566,7 +568,6 @@ async fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
         }),
     )
     .await;
-    sleep(Duration::from_millis(50)).await;
 
     send_frame(
         &mut socket,
@@ -655,7 +656,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         .expect("attachment id should be present")
         .to_string();
 
-    let _provider_response = send_request(
+    let provider_response = send_request(
         &mut socket,
         "launch-provider",
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
@@ -669,6 +670,8 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         }),
     )
     .await;
+    let provider_run_id = provider_run_id_from_launch_response(&provider_response);
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
     send_frame(
         &mut socket,
@@ -679,7 +682,6 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         }),
     )
     .await;
-    sleep(Duration::from_millis(50)).await;
 
     send_frame(
         &mut socket,
@@ -764,7 +766,7 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
         .expect("attachment id should be present")
         .to_string();
 
-    let _provider_response = send_request(
+    let provider_response = send_request(
         &mut socket,
         "launch-provider",
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
@@ -778,6 +780,8 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
         }),
     )
     .await;
+    let provider_run_id = provider_run_id_from_launch_response(&provider_response);
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
     send_frame(
         &mut socket,
@@ -790,7 +794,6 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow
         }),
     )
     .await;
-    sleep(Duration::from_millis(50)).await;
 
     send_frame(
         &mut socket,
@@ -893,7 +896,18 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
         }),
     )
     .await;
-    sleep(Duration::from_millis(50)).await;
+    let launch_response = wait_for_response_with_timeout(
+        &mut socket,
+        "slow-provider-launch",
+        Duration::from_millis(250),
+    )
+    .await;
+    let accepted_run =
+        &response_variant(&launch_response, "ProviderRunLaunchAccepted")["provider_run"];
+    assert_eq!(
+        accepted_run["state"], "Starting",
+        "launch should ack with a starting provider run before runtime initialization completes: {launch_response}"
+    );
 
     send_frame(
         &mut socket,
@@ -914,11 +928,25 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
         wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
             .await;
     assert!(
-        response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
-        "prompt should start before the delayed provider launch completes: {submit_response}"
+        response_variant(&submit_response, "PromptSubmitted")["outcome"]["Queued"].is_object(),
+        "prompt should queue while the accepted provider launch is still starting: {submit_response}"
     );
 
-    let _launch_response = wait_for_request_completion(&mut socket, "slow-provider-launch").await;
+    sleep(Duration::from_millis(600)).await;
+    let state_response = send_request(
+        &mut socket,
+        "session-state-after-launch",
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
+    )
+    .await;
+    assert!(
+        response_variant(&state_response, "SessionState")["session"]["prompt_states"][&agent_id]
+            ["active_prompt"]
+            .is_object(),
+        "queued prompt should start after provider launch finishes: {state_response}"
+    );
 
     let _ = shutdown_tx.send(());
     server
@@ -978,7 +1006,7 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         .expect("attachment id should be present")
         .to_string();
 
-    let _provider_response = send_request(
+    let provider_response = send_request(
         &mut socket,
         "launch-provider",
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
@@ -992,6 +1020,8 @@ async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         }),
     )
     .await;
+    let provider_run_id = provider_run_id_from_launch_response(&provider_response);
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
 
     send_frame(
         &mut socket,
@@ -1188,6 +1218,48 @@ async fn wait_for_request_completion(
     })
     .await
     .expect("timed out waiting for kernel websocket request completion")
+}
+
+fn provider_run_id_from_launch_response(frame: &Value) -> String {
+    let response = &frame["response"];
+    let provider_run = response
+        .get("ProviderRunLaunched")
+        .or_else(|| response.get("ProviderRunLaunchAccepted"))
+        .and_then(|value| value.get("provider_run"))
+        .unwrap_or_else(|| panic!("expected provider launch response, got: {frame}"));
+    provider_run["id"]
+        .as_str()
+        .expect("provider run id should be present")
+        .to_string()
+}
+
+async fn wait_for_provider_run_state(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    provider_run_id: &str,
+    expected_state: &str,
+) -> Value {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        let mut attempt = 0_u64;
+        loop {
+            let request_id = format!("provider-run-state-{attempt}");
+            let frame = send_request(
+                socket,
+                &request_id,
+                LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+                    provider_run_id: provider_run_id.to_string(),
+                }),
+            )
+            .await;
+            if response_variant(&frame, "ProviderRun")["provider_run"]["state"] == expected_state {
+                return frame;
+            }
+            attempt += 1;
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for provider run state")
 }
 
 async fn wait_for_event(

@@ -7080,7 +7080,9 @@ async function launchProviderRun(
   agentId?: string | null,
 ): Promise<RuntimeProviderRun> {
   const response = await client.send<Record<string, unknown>>(launchProviderRunRequest(sessionId, provider, accountProfile, model, effort, agentId))
-  const payload = expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
+  const payload = "ProviderRunLaunched" in response
+    ? expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunched")
+    : expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRunLaunchAccepted")
   return payload.provider_run
 }
 

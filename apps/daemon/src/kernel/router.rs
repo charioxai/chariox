@@ -301,30 +301,38 @@ async fn execute_launch_provider_run_request(
             app.config().provider_runtime_init_delay_ms,
         )
     };
-    if runtime_init_delay_ms > 0 {
-        sleep(Duration::from_millis(runtime_init_delay_ms)).await;
-    }
-    let run = started.run.clone();
-    let binding =
-        tokio::task::spawn_blocking(move || DaemonApp::initialize_provider_runtime_binding(&run))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "initialize provider runtime",
-                message: error.to_string(),
-            })?;
+    let accepted = started.run.clone();
+    let app = Arc::clone(app);
+    tokio::spawn(async move {
+        if runtime_init_delay_ms > 0 {
+            sleep(Duration::from_millis(runtime_init_delay_ms)).await;
+        }
+        let run = started.run.clone();
+        let binding = tokio::task::spawn_blocking(move || {
+            DaemonApp::initialize_provider_runtime_binding(&run)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "initialize provider runtime",
+            message: error.to_string(),
+        });
 
-    match binding {
-        Ok(binding) => {
-            let mut app = app.lock().await;
-            app.finish_provider_launch(&started, binding)
-                .map(|provider_run| LocalDaemonResponse::ProviderRunLaunched { provider_run })
+        match binding {
+            Ok(Ok(binding)) => {
+                let mut app = app.lock().await;
+                if let Err(error) = app.finish_provider_launch(&started, binding) {
+                    app.fail_provider_launch(&started, &error);
+                }
+            }
+            Ok(Err(error)) | Err(error) => {
+                let mut app = app.lock().await;
+                app.fail_provider_launch(&started, &error);
+            }
         }
-        Err(error) => {
-            let mut app = app.lock().await;
-            app.fail_provider_launch(&started, &error);
-            Err(error)
-        }
-    }
+    });
+    Ok(LocalDaemonResponse::ProviderRunLaunchAccepted {
+        provider_run: accepted,
+    })
 }
 
 async fn execute_list_provider_processes_request(

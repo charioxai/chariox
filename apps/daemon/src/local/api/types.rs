@@ -654,6 +654,9 @@ pub enum LocalDaemonResponse {
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,
     },
+    ProviderRunLaunchAccepted {
+        provider_run: RuntimeProviderRun,
+    },
     SessionsListed {
         sessions: Vec<RuntimeSession>,
     },
