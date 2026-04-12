@@ -11,8 +11,8 @@ use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
-    page_history_entries, DaemonHealthProjection, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore,
+    page_history_entries, DaemonHealthProjection, ProviderProcessProjectionStore,
+    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
@@ -46,6 +46,7 @@ pub(crate) struct CommandRouter {
     history_store: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
+    provider_process_projection: ProviderProcessProjectionStore,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -72,8 +73,12 @@ impl CommandRouter {
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
-        let (history_store, history_projection, provider_run_projection) =
-            router_projection_stores(&app);
+        let (
+            history_store,
+            history_projection,
+            provider_run_projection,
+            provider_process_projection,
+        ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -99,6 +104,7 @@ impl CommandRouter {
             history_store,
             history_projection,
             provider_run_projection,
+            provider_process_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -111,8 +117,12 @@ impl CommandRouter {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
-        let (history_store, history_projection, provider_run_projection) =
-            router_projection_stores(&app);
+        let (
+            history_store,
+            history_projection,
+            provider_run_projection,
+            provider_process_projection,
+        ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -138,6 +148,7 @@ impl CommandRouter {
             history_store,
             history_projection,
             provider_run_projection,
+            provider_process_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -168,6 +179,14 @@ impl CommandRouter {
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
             if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
                 return Ok(LocalDaemonResponse::ProviderRun { provider_run });
+            }
+        }
+        if let LocalDaemonRequest::ListProviderProcesses(request) = &request {
+            if let Some(processes) = self
+                .provider_process_projection
+                .list(request.provider.as_deref())
+            {
+                return Ok(LocalDaemonResponse::ProviderProcessesListed { processes });
             }
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
@@ -397,6 +416,10 @@ impl CommandRouter {
             }
         }
 
+        if !matches!(refresh, SessionProjectionRefresh::None) || !refreshed_session_ids.is_empty() {
+            self.provider_process_projection.invalidate();
+        }
+
         refreshed_session_ids.sort();
         refreshed_session_ids.dedup();
         for session_id in refreshed_session_ids {
@@ -426,6 +449,7 @@ impl CommandRouter {
             | Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
             | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
                 self.provider_run_projection.update(provider_run.clone());
+                self.provider_process_projection.invalidate();
             }
             _ => {}
         }
@@ -466,6 +490,7 @@ fn router_projection_stores(
     SessionHistoryStore,
     SessionHistoryProjectionStore,
     ProviderRunProjectionStore,
+    ProviderProcessProjectionStore,
 ) {
     let app = app
         .try_lock()
@@ -474,6 +499,7 @@ fn router_projection_stores(
         app.history_store(),
         app.session_history_projection_store(),
         app.provider_run_projection_store(),
+        app.provider_process_projection_store(),
     )
 }
 
@@ -949,8 +975,9 @@ mod tests {
     use crate::local::{
         AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
         GetDaemonHealthRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -1946,6 +1973,92 @@ mod tests {
                 );
             }
             _ => panic!("unexpected provider response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_provider_processes_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let launch_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        });
+        let launch_command = KernelCommand::from_local_request(
+            "cmd-process-provider-launch",
+            None,
+            None,
+            &launch_request,
+        );
+        let provider_run_id = match router
+            .dispatch(launch_command, launch_request)
+            .await
+            .expect("provider launch should be accepted")
+        {
+            LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+                provider_run.id().to_string()
+            }
+            _ => panic!("unexpected launch response"),
+        };
+
+        let list_request =
+            LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest {
+                provider: None,
+            });
+        let list_command =
+            KernelCommand::from_local_request("cmd-process-list-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial provider process list should warm projection");
+
+        let app_guard = app.lock().await;
+        let projected_list_request =
+            LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest {
+                provider: None,
+            });
+        let projected_list_command = KernelCommand::from_local_request(
+            "cmd-process-list-projection",
+            None,
+            None,
+            &projected_list_request,
+        );
+        let list_router = router.clone();
+        let list_task = tokio::spawn(async move {
+            list_router
+                .dispatch(projected_list_command, projected_list_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            list_task.is_finished(),
+            "warmed ListProviderProcesses should be served from projection without app lock access"
+        );
+        drop(app_guard);
+
+        let list_response = list_task
+            .await
+            .expect("process list task should join")
+            .expect("process list should resolve");
+        match list_response {
+            LocalDaemonResponse::ProviderProcessesListed { processes } => {
+                assert_eq!(processes.len(), 1);
+                assert_eq!(processes[0].owner_provider_run_ids, vec![provider_run_id]);
+            }
+            _ => panic!("unexpected provider process list response"),
         }
     }
 

@@ -16,7 +16,7 @@ The target is not "more locks." The target is explicit ownership:
 
 The current primary CLI path uses the kernel WebSocket transport. The first M4.5 slices now normalize requests through `KernelCommand`, route them through `CommandRouter`, publish bounded replay events through `EventLog`, and keep the responsiveness-critical operations on a bounded `InteractiveCommandLane`.
 
-The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue, and the session runtime publishes a focused-agent projection used by agent routing once focus is warm. Agent lifecycle responses that change focus refresh the same projection. The router also has the first projection stores for warmed `GetSessionState`, `ListSessions`, `GetSessionHistory`, and `GetProviderRun` reads.
+The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue, and the session runtime publishes a focused-agent projection used by agent routing once focus is warm. Agent lifecycle responses that change focus refresh the same projection. The router also has the first projection stores for warmed `GetSessionState`, `ListSessions`, `GetSessionHistory`, `GetProviderRun`, and `ListProviderProcesses` reads.
 
 Important caveat: the implementation still has a compatibility `DaemonApp`, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
 
@@ -49,13 +49,14 @@ Status as of 2026-04-12:
 - Landed: `SessionStateProjectionStore` for warmed session/list snapshots. `GetSessionState` and warmed `ListSessions` can return projected session data without taking the compatibility app lock after the projection has been warmed by list responses, prompt/session/agent/workflow responses, or transitional post-mutation snapshots.
 - Landed: `SessionHistoryProjectionStore` for warmed transcript history. `GetSessionHistory` can use a warmed session snapshot to load disk history without taking the compatibility app lock, then serve repeated warmed transcript reads from memory while successful appends keep the warmed projection current.
 - Landed: `ProviderRunProjectionStore` for warmed provider-run snapshots. `GetProviderRun` can return without taking the compatibility app lock after launch/read warm-up, and start/finish/fail/park/resume/end lifecycle updates refresh the shared projection.
+- Landed: `ProviderProcessProjectionStore` for warmed process-list snapshots. `ListProviderProcesses` can return without taking the compatibility app lock after warm-up, and provider-run/session lifecycle changes invalidate the snapshot so teardown-safety metadata is recomputed before reuse.
 
 Still open:
 
 - move `KernelSessionService` and `KernelAgentService` state out of the compatibility facade and into the new `SessionRuntime`/`AgentRuntime` mailbox owners
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
-- broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run snapshots so prompt state and remaining provider/read models can be served without compatibility-store reads on the hot path
-- make the remaining provider-health, provider-process, and prompt-state reads projection-first on the hot path
+- broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process snapshots so prompt state and remaining provider/read models can be served without compatibility-store reads on the hot path
+- make the remaining provider-health and prompt-state reads projection-first on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
 - expand `DaemonHealthProjection` beyond actor queues to include background jobs, slow consumers, and workspace coordination
 - introduce `WorkspaceCoordinator` claim enforcement for worktree/file/port collisions

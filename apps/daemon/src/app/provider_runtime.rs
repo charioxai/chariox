@@ -560,6 +560,7 @@ impl DaemonApp {
                 processes.push(process);
             }
         }
+        self.update_provider_process_projection(processes.clone());
         Ok(processes)
     }
 

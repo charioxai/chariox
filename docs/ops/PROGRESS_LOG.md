@@ -29,12 +29,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added the first router-owned session projection store. `GetSessionState` and warmed `ListSessions` now serve projected data without taking the compatibility `DaemonApp` lock; the router refreshes the projection from session-bearing responses, list responses, lifecycle changes, and transitional post-mutation snapshots for prompt/session/agent/poll commands.
 - Added a shared session-history projection. `GetSessionHistory` can now load from disk using a warmed session snapshot without taking the compatibility `DaemonApp` lock, and repeated warmed transcript reads are served from memory while successful history appends keep the warmed projection current.
 - Added a shared provider-run projection. Warmed `GetProviderRun` reads now return without taking the compatibility `DaemonApp` lock, and launch/start/finish/fail/park/resume/ended lifecycle updates refresh the warmed projection.
+- Added a warmed provider-process projection. Repeated `ListProviderProcesses` reads now return without taking the compatibility `DaemonApp` lock, while provider-run and session lifecycle changes invalidate the projection so teardown-safety metadata is not served stale.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
-- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run snapshots so prompt state and the remaining provider/read models no longer require synchronous compatibility-store access.
+- Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process snapshots so prompt state and the remaining provider/read models no longer require synchronous compatibility-store access.
 - Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Expand daemon health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.

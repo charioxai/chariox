@@ -36,10 +36,11 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
-    page_history_entries, ProviderRunProjectionStore, SessionHistoryProjectionStore,
+    page_history_entries, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    SessionHistoryProjectionStore,
 };
 use crate::provider::{
-    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService,
+    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
@@ -84,6 +85,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
+    provider_process_projection: ProviderProcessProjectionStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -175,6 +177,7 @@ impl DaemonApp {
             )?,
             history_projection: SessionHistoryProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
+            provider_process_projection: ProviderProcessProjectionStore::default(),
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -262,8 +265,17 @@ impl DaemonApp {
         self.provider_run_projection.clone()
     }
 
+    pub(crate) fn provider_process_projection_store(&self) -> ProviderProcessProjectionStore {
+        self.provider_process_projection.clone()
+    }
+
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {
         self.provider_run_projection.update(run);
+        self.provider_process_projection.invalidate();
+    }
+
+    pub(crate) fn update_provider_process_projection(&self, processes: Vec<ProviderProcessInfo>) {
+        self.provider_process_projection.update_list(processes);
     }
 
     pub fn sessions_mut(&mut self) -> &mut SessionService {

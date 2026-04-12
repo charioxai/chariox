@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, RuntimeSession};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 
@@ -194,6 +194,49 @@ impl ProviderRunProjectionStore {
             .expect("provider run projection lock should not be poisoned")
             .insert(run.id().to_string(), run);
     }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProviderProcessProjectionStore {
+    processes: Arc<StdMutex<Option<Vec<ProviderProcessInfo>>>>,
+}
+
+impl ProviderProcessProjectionStore {
+    pub(crate) fn list(&self, provider: Option<&str>) -> Option<Vec<ProviderProcessInfo>> {
+        let processes = self
+            .processes
+            .lock()
+            .expect("provider process projection lock should not be poisoned")
+            .clone()?;
+        Some(filter_provider_processes(processes, provider))
+    }
+
+    pub(crate) fn update_list(&self, processes: Vec<ProviderProcessInfo>) {
+        *self
+            .processes
+            .lock()
+            .expect("provider process projection lock should not be poisoned") = Some(processes);
+    }
+
+    pub(crate) fn invalidate(&self) {
+        *self
+            .processes
+            .lock()
+            .expect("provider process projection lock should not be poisoned") = None;
+    }
+}
+
+fn filter_provider_processes(
+    processes: Vec<ProviderProcessInfo>,
+    provider: Option<&str>,
+) -> Vec<ProviderProcessInfo> {
+    let Some(provider) = provider else {
+        return processes;
+    };
+    processes
+        .into_iter()
+        .filter(|process| process.provider == provider)
+        .collect()
 }
 
 impl SessionSnapshotProjection {
