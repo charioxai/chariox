@@ -11,6 +11,9 @@ import {
 import WebSocket from "ws"
 
 const IPC_TIMEOUT_MS = 120_000
+const DEFAULT_KERNEL_EVENT_STALE_MS = 0
+const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
+const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
 
 type IpcEnvelope<TResponse> = {
   response: TResponse | null
@@ -197,9 +200,12 @@ type KernelSubscriptionState = {
 }
 
 type LocalIpcClientOptions = {
-  relayAuthToken?: string
-  targetDaemonId?: string
-  targetDaemonAlias?: string
+  relayAuthToken?: string | undefined
+  targetDaemonId?: string | undefined
+  targetDaemonAlias?: string | undefined
+  kernelEventStaleMs?: number | undefined
+  kernelPingIntervalMs?: number | undefined
+  kernelMaxMissedPongs?: number | undefined
 }
 
 export class LocalIpcClient {
@@ -214,11 +220,22 @@ export class LocalIpcClient {
   private reconnectTimeout: NodeJS.Timeout | null = null
   private reconnectDelayMs = 250
   private lastReceivedEventId: number | null = null
+  private lastKernelEventAtMs = 0
+  private kernelEventWatchdog: NodeJS.Timeout | null = null
+  private kernelHeartbeat: NodeJS.Timeout | null = null
+  private missedKernelPongs = 0
   private suppressNextCloseEvent = false
   private relayDaemonPublicKey: string | null = null
+  private readonly kernelEventStaleMs: number
+  private readonly kernelPingIntervalMs: number
+  private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
     this.socketPath = endpoint
+    const staleMs = options.kernelEventStaleMs ?? DEFAULT_KERNEL_EVENT_STALE_MS
+    this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0
+    this.kernelPingIntervalMs = Math.max(options.kernelPingIntervalMs ?? DEFAULT_KERNEL_PING_INTERVAL_MS, 250)
+    this.kernelMaxMissedPongs = Math.max(options.kernelMaxMissedPongs ?? DEFAULT_KERNEL_MAX_MISSED_PONGS, 1)
     this.relayAuthToken = options.relayAuthToken?.trim() || null
     this.relayTarget = this.relayAuthToken
       ? {
@@ -267,6 +284,7 @@ export class LocalIpcClient {
         })
       }
       this.clearReconnectState()
+      this.markKernelEventReceived()
     } catch (error) {
       this.scheduleReconnect()
       throw error
@@ -280,6 +298,7 @@ export class LocalIpcClient {
     const subscription = this.activeKernelSubscription
     this.activeKernelSubscription = null
     this.clearReconnectState()
+    this.clearKernelEventWatchdog()
     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
       return
     }
@@ -302,6 +321,8 @@ export class LocalIpcClient {
       return
     }
     this.clearReconnectState()
+    this.clearKernelEventWatchdog()
+    this.clearKernelHeartbeat()
     if (this.websocket && this.websocket.readyState !== WebSocket.CLOSED) {
       this.suppressNextCloseEvent = true
       this.websocket.terminate()
@@ -326,6 +347,8 @@ export class LocalIpcClient {
   async close(): Promise<void> {
     this.activeKernelSubscription = null
     this.clearReconnectState()
+    this.clearKernelEventWatchdog()
+    this.clearKernelHeartbeat()
     const socket = this.websocket
     this.websocket = null
     this.websocketConnectPromise = null
@@ -482,6 +505,7 @@ export class LocalIpcClient {
     if (!subscription?.relaySubscriptionId) {
       throw new LocalIpcError("write relay subscribe", "relay subscription state is missing")
     }
+    const subscriptionId = subscription.relaySubscriptionId
     const keypair = createRelayKeypair()
     subscription.relayPrivateKey = keypair.privateKey
 
@@ -502,7 +526,7 @@ export class LocalIpcClient {
         const frame: RelaySubscribeFrame = {
           kind: "client_subscribe",
           request_id: requestId,
-          subscription_id: subscription.relaySubscriptionId,
+          subscription_id: subscriptionId,
           target: requireRelayTarget(this.relayTarget),
           session_id: sessionId,
           attachment_id: attachmentId,
@@ -579,14 +603,19 @@ export class LocalIpcClient {
           this.websocket = socket
           this.websocketConnectPromise = null
           this.suppressNextCloseEvent = false
+          this.startKernelHeartbeat(socket)
           socket.on("message", (data: WebSocket.RawData) => {
             this.handleWebSocketMessage(data)
+          })
+          socket.on("pong", () => {
+            this.missedKernelPongs = 0
           })
           socket.once("close", (code: number, reason: Buffer) => {
             const suppressed = this.suppressNextCloseEvent
             this.suppressNextCloseEvent = false
             this.rejectPending("kernel websocket closed")
             this.websocket = null
+            this.clearKernelHeartbeat()
             const closeMessage = reason.length > 0
               ? reason.toString("utf8")
               : `kernel websocket closed${code ? ` (${code})` : ""}`
@@ -603,6 +632,7 @@ export class LocalIpcClient {
             this.suppressNextCloseEvent = false
             this.rejectPending(error.message)
             this.websocket = null
+            this.clearKernelHeartbeat()
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",
@@ -680,6 +710,7 @@ export class LocalIpcClient {
 
     if ("type" in frame && frame.type === "event") {
       this.lastReceivedEventId = frame.event_id
+      this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
         handler(frame.event)
       }
@@ -700,6 +731,7 @@ export class LocalIpcClient {
         const decrypted = decryptRelayPayload(subscription.relayPrivateKey, frame.encrypted_event)
         const event = JSON.parse(decrypted) as KernelEvent
         this.lastReceivedEventId = frame.event_id
+        this.markKernelEventReceived()
         this.emitSyntheticEvent(event)
       } catch (error) {
         this.rejectPending(error instanceof Error ? error.message : String(error))
@@ -767,6 +799,83 @@ export class LocalIpcClient {
     this.reconnectDelayMs = 250
   }
 
+  private markKernelEventReceived() {
+    this.lastKernelEventAtMs = Date.now()
+    this.armKernelEventWatchdog()
+  }
+
+  private armKernelEventWatchdog() {
+    this.clearKernelEventWatchdog()
+    if (!this.kernelEventStaleMs || !this.activeKernelSubscription || this.eventHandlers.size === 0) {
+      return
+    }
+    this.kernelEventWatchdog = setTimeout(() => {
+      const elapsedMs = Date.now() - this.lastKernelEventAtMs
+      if (!this.activeKernelSubscription || this.eventHandlers.size === 0) {
+        return
+      }
+      if (elapsedMs < this.kernelEventStaleMs) {
+        this.armKernelEventWatchdog()
+        return
+      }
+      this.emitSyntheticEvent({
+        event: "transport_closed",
+        message: `kernel event stream stalled for ${elapsedMs}ms; reconnecting`,
+      })
+      void this.restartKernelEventStream()
+    }, this.kernelEventStaleMs)
+  }
+
+  private clearKernelEventWatchdog() {
+    if (this.kernelEventWatchdog) {
+      clearTimeout(this.kernelEventWatchdog)
+      this.kernelEventWatchdog = null
+    }
+  }
+
+  private startKernelHeartbeat(socket: WebSocket) {
+    this.clearKernelHeartbeat()
+    this.missedKernelPongs = 0
+    this.kernelHeartbeat = setInterval(() => {
+      if (socket !== this.websocket || socket.readyState !== WebSocket.OPEN) {
+        this.clearKernelHeartbeat()
+        return
+      }
+      if (this.missedKernelPongs >= this.kernelMaxMissedPongs) {
+        this.emitSyntheticEvent({
+          event: "transport_closed",
+          message: "kernel websocket heartbeat missed; reconnecting",
+        })
+        this.suppressNextCloseEvent = true
+        socket.terminate()
+        this.websocket = null
+        this.scheduleReconnect()
+        return
+      }
+      this.missedKernelPongs += 1
+      try {
+        socket.ping()
+      } catch {
+        this.emitSyntheticEvent({
+          event: "transport_closed",
+          message: "kernel websocket heartbeat failed; reconnecting",
+        })
+        this.suppressNextCloseEvent = true
+        socket.terminate()
+        this.websocket = null
+        this.scheduleReconnect()
+      }
+    }, this.kernelPingIntervalMs)
+  }
+
+  private clearKernelHeartbeat() {
+    if (this.kernelHeartbeat) {
+      clearInterval(this.kernelHeartbeat)
+      this.kernelHeartbeat = null
+    }
+    this.missedKernelPongs = 0
+  }
+
   private scheduleReconnect(delayMs = this.reconnectDelayMs) {
     if (!this.activeKernelSubscription || this.eventHandlers.size === 0 || this.reconnectTimeout) {
       return
@@ -803,6 +912,7 @@ export class LocalIpcClient {
         })
       }
       this.clearReconnectState()
+      this.markKernelEventReceived()
       this.emitSyntheticEvent({
         event: "transport_resumed",
         session_id: subscription.sessionId,

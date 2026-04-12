@@ -152,6 +152,15 @@ export function findVisibleTurnToggle(
   })
 }
 
+export function resolveVisibleTurnToggle(
+  entries: TranscriptEntry[],
+  turnId: number | null | undefined,
+  preferredToggleEntryId?: number,
+) {
+  return findVisibleTurnToggle(entries, turnId, preferredToggleEntryId)
+    ?? findVisibleTurnToggle(entries, turnId)
+}
+
 function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number | null) {
   if (entry.role === "user" || entry.role === "reasoning" || entry.role === "turn_toggle" || entry.role === "assistant") {
     return false

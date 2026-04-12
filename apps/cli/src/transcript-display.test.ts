@@ -4,6 +4,7 @@ import test from "node:test"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   applyTranscriptDisplayState,
+  resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
 
@@ -90,6 +91,15 @@ test("setTranscriptBlobCollapsed expands an individual blob without disturbing t
   assert.equal(toolEntry?.blobCollapsible, true)
   assert.equal(toolEntry?.blobCollapsed, false)
   assert.equal(entries.find((entry) => entry.role === "turn_toggle")?.text, "click to collapse")
+})
+
+test("resolveVisibleTurnToggle falls back when a synthetic toggle id was regenerated", () => {
+  const entries = applyTranscriptDisplayState(baseTurnEntries())
+  const toggle = resolveVisibleTurnToggle(entries, 1, 999)
+
+  assert.equal(toggle?.role, "turn_toggle")
+  assert.equal(toggle?.turnId, 1)
+  assert.equal(toggle?.toggleMode, "collapse")
 })
 
 test("applyTranscriptDisplayState never marks assistant entries as blob-collapsible", () => {

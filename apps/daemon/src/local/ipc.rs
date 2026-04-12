@@ -157,10 +157,7 @@ async fn handle_connection(
 
     let envelope = match serde_json::from_slice::<LocalDaemonRequest>(&request_bytes) {
         Ok(request) => {
-            let response = {
-                let mut app = app.lock().await;
-                app.handle_local_request(request)
-            };
+            let response = handle_local_request_with_async_boundaries(&app, request).await;
             match response {
                 Ok(response) => IpcResponseEnvelope {
                     response: Some(response),
@@ -226,6 +223,51 @@ async fn handle_connection(
             Err(error)
         }
     }
+}
+
+async fn handle_local_request_with_async_boundaries(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if is_blocking_local_request(&request) {
+        let app = Arc::clone(app);
+        let handle = tokio::runtime::Handle::current();
+        return tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let mut app = app.lock().await;
+                app.handle_local_request(request)
+            })
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run blocking local request",
+            message: error.to_string(),
+        })?;
+    }
+
+    let mut app = app.lock().await;
+    app.handle_local_request(request)
+}
+
+fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
+    matches!(
+        request,
+        LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+            | LocalDaemonRequest::GetProviderAuthStatus(_)
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::LogoutProvider(_)
+            | LocalDaemonRequest::ListProviderProcesses(_)
+            | LocalDaemonRequest::TeardownProviderProcesses(_)
+            | LocalDaemonRequest::GetSessionHistory(_)
+            | LocalDaemonRequest::RunShellCommand(_)
+            | LocalDaemonRequest::ReadDirectoryTree(_)
+            | LocalDaemonRequest::ReadFile(_)
+            | LocalDaemonRequest::EditFile(_)
+            | LocalDaemonRequest::InspectGit(_)
+            | LocalDaemonRequest::CaptureScreenshot(_)
+            | LocalDaemonRequest::StoreTransferredFile(_)
+    )
 }
 
 fn prepare_socket_path(socket_path: &Path) -> Result<(), DaemonError> {

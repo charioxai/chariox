@@ -1,13 +1,8 @@
 import type { SplitPaneGeometry } from "./response-panes.js"
+export { requestRenderableTreeRender } from "./render-scheduler.js"
 
 type RenderRequester = {
   requestRender?: () => void
-}
-
-type RenderableTreeNode = RenderRequester & {
-  id?: string | number | undefined
-  requestRebuild?: (() => void) | undefined
-  getChildren?: (() => RenderableTreeNode[]) | undefined
 }
 
 type LayoutBoxRenderable = RenderRequester & {
@@ -78,27 +73,6 @@ export type ApplyResponseLayoutRenderablesOptions = {
 
 function resolveLayoutValue<T>(value: T | "auto"): T | undefined {
   return value === "auto" ? undefined : value
-}
-
-export function requestRenderableTreeRender(
-  renderable: RenderableTreeNode | null | undefined,
-  seen: Set<string | number> = new Set(),
-) {
-  if (!renderable) {
-    return
-  }
-  const renderableId = renderable.id
-  if (renderableId !== undefined) {
-    if (seen.has(renderableId)) {
-      return
-    }
-    seen.add(renderableId)
-  }
-  renderable.requestRebuild?.()
-  renderable.requestRender?.()
-  for (const child of renderable.getChildren?.() ?? []) {
-    requestRenderableTreeRender(child, seen)
-  }
 }
 
 export function syncAuxiliaryPane<TChild extends AuxiliaryPaneChild, TScrollbox extends AuxiliaryPaneScrollbox<TChild>>(options: {
@@ -225,7 +199,7 @@ export function applyResponseLayoutRenderables(options: ApplyResponseLayoutRende
     renderables.responseTertiaryScrollbox.requestRender?.()
   }
   if (renderables.responsePrimaryFooterBox) {
-    renderables.responsePrimaryFooterBox.visible = split
+    renderables.responsePrimaryFooterBox.visible = true
     renderables.responsePrimaryFooterBox.backgroundColor = primaryBackground
     renderables.responsePrimaryFooterBox.requestRender?.()
   }

@@ -321,5 +321,6 @@ test("applyResponseLayoutRenderables clears auto-sized pane widths", () => {
   assert.equal(renderables.responseTopRowBox.flexBasis, undefined)
   assert.equal(renderables.responsePrimaryPane.width, undefined)
   assert.equal(renderables.responsePrimaryPane.flexBasis, undefined)
+  assert.equal(renderables.responsePrimaryFooterBox.visible, true)
   assert.equal(renderables.responseTertiaryPane.width, undefined)
 })

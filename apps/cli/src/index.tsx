@@ -64,7 +64,7 @@ import { refreshAgentPaneState, selectCurrentAgentPaneEntries, trimAgentPaneEntr
 import { parseProviderNamespaceCommand } from "./provider-command-catalog.js"
 import { copyTextToClipboard } from "./clipboard.js"
 import { HOTKEY_TOGGLE_LABEL, matchHotkeysToggleEvent } from "./hotkeys.js"
-import { clampScrollTop, computeAnchoredScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
+import { clampScrollTop, computePrependedHistoryScrollTop, findTurnPromptScrollTarget } from "./history-viewport.js"
 import { KernelEvent, LocalIpcClient } from "./ipc.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import {
@@ -197,7 +197,7 @@ import { createSessionAttachmentController } from "./session-attachment-controll
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import {
   applyTranscriptDisplayState,
-  findVisibleTurnToggle,
+  resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
 import {
@@ -218,11 +218,12 @@ import {
 } from "./sessions.js"
 import {
   agentPaneStatusBadge,
-  formatSplitPaneFooter,
+  formatSplitPaneFooterParts,
   reflectedDistance,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
-import { requestRenderableTreeRender, syncAuxiliaryPane } from "./response-layout-render.js"
+import { syncAuxiliaryPane } from "./response-layout-render.js"
+import { createRenderScheduler } from "./render-scheduler.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { createTranscriptSyntaxStyle, EmptyBorder, SplitBorder, theme } from "./theme.js"
 import {
@@ -268,6 +269,7 @@ import {
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
 } from "./transcript-render.js"
+import { reconcileMountedTranscriptPane } from "./transcript-pane-reconcile.js"
 import {
   buildEmptyTranscriptRenderable,
   buildLoadingTranscriptRenderable,
@@ -386,6 +388,16 @@ type PendingPromptAttachment = {
 type FooterFlash = {
   message: string
   tone: "info" | "error"
+}
+
+type SplitPaneFooterTextGroup = {
+  agentText?: TextRenderable
+  agentDividerText?: TextRenderable
+  providerText?: TextRenderable
+  providerDividerText?: TextRenderable
+  modelText?: TextRenderable
+  modelDividerText?: TextRenderable
+  variantText?: TextRenderable
 }
 
 const DEBUG_LOGS_ENABLED = (process.env.ARROBA_LOG_LEVEL ?? "").toLowerCase() === "debug"
@@ -597,8 +609,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const responseAuxiliaryScrollboxes: Array<ScrollBoxRenderable | undefined> = []
   let responsePrimaryFooterBox: BoxRenderable | undefined
   const responseAuxiliaryFooterBoxes: Array<BoxRenderable | undefined> = []
-  let responsePrimaryFooterText: TextRenderable | undefined
-  const responseAuxiliaryFooterTexts: Array<TextRenderable | undefined> = []
+  let responsePrimaryFooterParts: SplitPaneFooterTextGroup = {}
+  const responseAuxiliaryFooterParts: Array<SplitPaneFooterTextGroup> = []
   let responsePrimaryFooterBadgeTexts: TextRenderable[] = []
   const responseAuxiliaryFooterBadgeTexts: Array<TextRenderable[]> = []
   const responseAuxiliaryAgentIds: Array<string | null> = []
@@ -647,7 +659,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingSessionChromeUpdate = false
   let pendingSessionChromeFlush: ReturnType<typeof startTimeout> | undefined
   let pendingTranscriptRender = false
-  let pendingResponsePaneRepaint = 0
   let pendingSplitPaneRefresh = 0
   let uiBatchDepth = 0
   let pendingTerminalRecordFlush: ReturnType<typeof startTimeout> | undefined
@@ -677,6 +688,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let pendingPromptDraftSessionId: string | null = null
   let pendingPromptDraftValue = ""
   let submittingAgentId: string | null = null
+  const renderScheduler = createRenderScheduler({
+    schedule: (callback) => startTimeout(callback, 0),
+    clearSchedule: clearTimeout,
+    requestRootRender: () => {
+      ;(renderer as { requestRender?: () => void }).requestRender?.()
+    },
+  })
 
   const isAttached = () => attachmentState() !== null
   const focusedAgentId = () => sessionState().focused_agent_id ?? sessionState().agents[0]?.id ?? null
@@ -709,19 +727,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     return resolveTranscriptSurfaceTone(splitAgentResponseMode(), Boolean(agentId) && agentId === focusedAgentId())
   }
   const scheduleResponsePaneRepaint = () => {
-    const repaintToken = ++pendingResponsePaneRepaint
-    const repaint = () => {
-      if (repaintToken !== pendingResponsePaneRepaint) {
-        return
-      }
-      const seen = new Set<string | number>()
-      requestRenderableTreeRender(responseLayoutBox, seen)
-      requestRenderableTreeRender(historyLoadingBox, seen)
-      ;(renderer as { requestRender?: () => void }).requestRender?.()
-    }
-    repaint()
-    startTimeout(repaint, 0)
-    startTimeout(repaint, 16)
+    renderScheduler.requestTree(responseLayoutBox)
+    renderScheduler.requestTree(historyLoadingBox)
+    renderScheduler.requestRoot()
   }
   const shouldRefreshAgentPanesForSessionChange = (nextSession: RuntimeSession) => {
     const previousAgentSignature = sessionState().agents.map((agent) => agent.id).join(",")
@@ -2595,8 +2603,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const currentEntries = entries.filter(Boolean)
-    const toggleEntry = findVisibleTurnToggle(entries.filter(Boolean), turnId, toggleEntryId)
-    if (toggleEntryId !== undefined && !toggleEntry) {
+    const toggleEntry = resolveVisibleTurnToggle(currentEntries, turnId, toggleEntryId)
+    if (!toggleEntry) {
       return
     }
     const agentId = visibleTranscriptAgentId()
@@ -2628,14 +2636,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
       return
     }
+    const currentEntries = entries.filter(Boolean)
     const nextId = entryCounter() + 1
     const nextEntry: TranscriptEntry = { id: nextId, ...entry }
     if (nextEntry.turnId === undefined && currentTurnId !== null) {
       nextEntry.turnId = currentTurnId
     }
-    const nextEntries = applyVisibleTranscriptState([...entries.filter(Boolean), nextEntry])
+    const nextEntries = applyVisibleTranscriptState([...currentEntries, nextEntry])
     persistVisibleTranscriptEntries(nextEntries)
-    rebuildTranscript()
+    reconcileMountedTranscript(currentEntries, nextEntries)
     enforceTranscriptRetention()
   }
 
@@ -2951,7 +2960,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     cancelPendingTurnCompletion()
     setWorking(true)
     setSubmitting(false)
-    const nextEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
+    const currentEntries = entries.filter(Boolean).map((entry) => ({ ...entry }))
+    const nextEntries = currentEntries.map((entry) => ({ ...entry }))
     let merged = false
     let mergedEntryId: number | null = null
     let mergedEntryText: string | null = null
@@ -3023,7 +3033,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     const preparedEntries = applyVisibleTranscriptState(nextEntries)
     persistVisibleTranscriptEntries(preparedEntries)
-    rebuildTranscript()
+    reconcileMountedTranscript(currentEntries, preparedEntries)
     const loggedEntry = [...preparedEntries].reverse().find((entry) => entry.role === role && (mergeKey ? entry.mergeKey === mergeKey : true))
     logVisibleTranscriptOutput(role, loggedEntry?.text ?? normalized, merged, mergeKey)
     enforceTranscriptRetention()
@@ -3110,12 +3120,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
   const ensureSplitPaneFooterRenderables = (
     footerBox: BoxRenderable | undefined,
-    infoText: TextRenderable | undefined,
     badgeTexts: TextRenderable[],
-    assignInfoText: (value: TextRenderable) => void,
+    parts: SplitPaneFooterTextGroup,
+    assignParts: (value: SplitPaneFooterTextGroup) => void,
     assignBadgeTexts: (value: TextRenderable[]) => void,
   ) => {
-    if (!footerBox || infoText) {
+    if (!footerBox || parts.agentText) {
       return
     }
     footerBox.flexDirection = "row"
@@ -3124,14 +3134,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       flexDirection: "row",
       flexShrink: 0,
     })
+    const infoBox = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      flexShrink: 0,
+    })
     const nextBadgeTexts = Array.from({ length: STATUS_BADGE_WIDTH }, () => new TextRenderable(renderer, { wrapMode: "none" }))
     for (const text of nextBadgeTexts) {
       badgeBox.add(text)
     }
-    const nextInfoText = new TextRenderable(renderer, { fg: theme.textMuted, wrapMode: "none" })
+    const nextParts: SplitPaneFooterTextGroup = {
+      agentText: new TextRenderable(renderer, { wrapMode: "none" }),
+      agentDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      providerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      providerDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      modelText: new TextRenderable(renderer, { wrapMode: "none" }),
+      modelDividerText: new TextRenderable(renderer, { wrapMode: "none" }),
+      variantText: new TextRenderable(renderer, { wrapMode: "none" }),
+    }
+    infoBox.add(nextParts.agentText)
+    infoBox.add(nextParts.agentDividerText)
+    infoBox.add(nextParts.providerText)
+    infoBox.add(nextParts.providerDividerText)
+    infoBox.add(nextParts.modelText)
+    infoBox.add(nextParts.modelDividerText)
+    infoBox.add(nextParts.variantText)
     footerBox.add(badgeBox)
-    footerBox.add(nextInfoText)
-    assignInfoText(nextInfoText)
+    footerBox.add(infoBox)
+    assignParts(nextParts)
     assignBadgeTexts(nextBadgeTexts)
   }
 
@@ -3173,13 +3202,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
 
   const renderSplitPaneFooters = () => {
-    const showSplitFooters = !workflowScreenActive() && splitAgentResponseMode() && sessionState().agents.length > 1
+    const showAgentFooters = isAttached() && !workflowScreenActive() && responseVisibleAgents().length > 0
     ensureSplitPaneFooterRenderables(
       responsePrimaryFooterBox,
-      responsePrimaryFooterText,
       responsePrimaryFooterBadgeTexts,
+      responsePrimaryFooterParts,
       (value) => {
-        responsePrimaryFooterText = value
+        responsePrimaryFooterParts = value
       },
       (value) => {
         responsePrimaryFooterBadgeTexts = value
@@ -3188,10 +3217,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
       ensureSplitPaneFooterRenderables(
         responseAuxiliaryFooterBoxes[slotIndex],
-        responseAuxiliaryFooterTexts[slotIndex],
         responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
+        responseAuxiliaryFooterParts[slotIndex] ?? {},
         (value) => {
-          responseAuxiliaryFooterTexts[slotIndex] = value
+          responseAuxiliaryFooterParts[slotIndex] = value
         },
         (value) => {
           responseAuxiliaryFooterBadgeTexts[slotIndex] = value
@@ -3199,13 +3228,26 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       )
     }
 
-    if (!showSplitFooters) {
+    if (!showAgentFooters) {
       renderStatusBadgeTexts(responsePrimaryFooterBadgeTexts, "", "idle")
-      setTextRenderable(responsePrimaryFooterText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.agentText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.agentDividerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.providerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.providerDividerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.modelText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.modelDividerText, "", theme.textMuted)
+      setTextRenderable(responsePrimaryFooterParts.variantText, "", theme.textMuted)
       responsePrimaryFooterBox?.requestRender()
       for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
         renderStatusBadgeTexts(responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [], "", "idle")
-        setTextRenderable(responseAuxiliaryFooterTexts[slotIndex], "", theme.textMuted)
+        const parts = responseAuxiliaryFooterParts[slotIndex]
+        setTextRenderable(parts?.agentText, "", theme.textMuted)
+        setTextRenderable(parts?.agentDividerText, "", theme.textMuted)
+        setTextRenderable(parts?.providerText, "", theme.textMuted)
+        setTextRenderable(parts?.providerDividerText, "", theme.textMuted)
+        setTextRenderable(parts?.modelText, "", theme.textMuted)
+        setTextRenderable(parts?.modelDividerText, "", theme.textMuted)
+        setTextRenderable(parts?.variantText, "", theme.textMuted)
         responseAuxiliaryFooterBoxes[slotIndex]?.requestRender()
       }
       return
@@ -3216,9 +3258,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const renderFooter = (
       agent: AgentInstance | null | undefined,
       footerBox: BoxRenderable | undefined,
-      footerText: TextRenderable | undefined,
+      parts: SplitPaneFooterTextGroup | undefined,
       badgeTexts: TextRenderable[],
     ) => {
+      const selectionOverride = agent?.id === focusedAgentId()
+        ? currentProviderSelection()
+        : null
       const badge = agentPaneStatusBadge(
         agent ?? null,
         agent ? agentActivityLabels()[agent.id] ?? null : null,
@@ -3232,23 +3277,48 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         ? {
             agentInstanceId: providerRun.agent_instance_id,
             model: providerRun.model,
+            variant: providerRun.variant,
           }
         : null
-      setTextRenderable(
-        footerText,
-        formatSplitPaneFooter(agent ?? null, providerCatalogState(), activeRun, null),
-        focused ? theme.text : theme.textMuted,
-        focused ? TextAttributes.BOLD : TextAttributes.NONE,
+      const nextParts = formatSplitPaneFooterParts(
+        agent ?? null,
+        activeRun,
+        null,
+        selectionOverride
+          ? { model: selectionOverride.model, variant: selectionOverride.effort }
+          : undefined,
       )
+      const partTones = nextParts.map((part) => part.tone)
+      const partTexts = nextParts.map((part) => part.text)
+      const setPart = (
+        text: TextRenderable | undefined,
+        content: string,
+        tone: PromptMetaTone | undefined,
+        bold = false,
+      ) => {
+        setTextRenderable(
+          text,
+          content,
+          tone ? promptMetaToneColor(tone) : theme.textMuted,
+          bold ? TextAttributes.BOLD : TextAttributes.NONE,
+        )
+      }
+      setPart(parts?.agentText, partTexts[0] ?? "", partTones[0], focused)
+      setTextRenderable(parts?.agentDividerText, partTexts[1] ? " • " : "", theme.textMuted)
+      setPart(parts?.providerText, partTexts[1] ?? "", partTones[1], focused)
+      setTextRenderable(parts?.providerDividerText, partTexts[2] ? " • " : "", theme.textMuted)
+      setPart(parts?.modelText, partTexts[2] ?? "", partTones[2], focused)
+      setTextRenderable(parts?.modelDividerText, partTexts[3] ? " • " : "", theme.textMuted)
+      setPart(parts?.variantText, partTexts[3] ?? "", partTones[3], focused)
       footerBox?.requestRender()
     }
 
-    renderFooter(visibleAgents[0] ?? null, responsePrimaryFooterBox, responsePrimaryFooterText, responsePrimaryFooterBadgeTexts)
+    renderFooter(visibleAgents[0] ?? null, responsePrimaryFooterBox, responsePrimaryFooterParts, responsePrimaryFooterBadgeTexts)
     for (let slotIndex = 0; slotIndex < maxAgentsPerScreen() - 1; slotIndex += 1) {
       renderFooter(
         visibleAgents[slotIndex + 1] ?? null,
         responseAuxiliaryFooterBoxes[slotIndex],
-        responseAuxiliaryFooterTexts[slotIndex],
+        responseAuxiliaryFooterParts[slotIndex],
         responseAuxiliaryFooterBadgeTexts[slotIndex] ?? [],
       )
     }
@@ -3258,70 +3328,48 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const promptMetaToneColor = (tone: PromptMetaTone) => theme[tone]
 
   const setPromptMetaRenderables = (parts: PromptMetaPart[]) => {
+    const usage = promptUsageMeta()
+    const renderUsageMeta = () => {
+      setTextRenderable(promptMetaUsageDividerText, "", theme.textMuted)
+      setTextRenderable(
+        promptMetaUsageTokensText,
+        usage?.tokensLabel ?? "",
+        usage ? theme.secondary : theme.textMuted,
+        usage ? TextAttributes.BOLD : TextAttributes.NONE,
+      )
+      setTextRenderable(promptMetaUsageBarOpenText, usage?.usageLabel ? " [" : "", theme.textMuted)
+      setTextRenderable(
+        promptMetaUsageBarFilledText,
+        usage?.barFilled ?? "",
+        theme.primary,
+        usage?.barFilled ? TextAttributes.BOLD : TextAttributes.NONE,
+      )
+      setTextRenderable(promptMetaUsageBarEmptyText, usage?.usageLabel ? (usage?.barEmpty ?? "") : "", theme.textMuted)
+      setTextRenderable(promptMetaUsageBarCloseText, usage?.usageLabel ? "]" : "", theme.textMuted)
+      setTextRenderable(
+        promptMetaUsagePercentText,
+        usage?.usageLabel ? ` ${usage.usageLabel}` : "",
+        usage?.usageLabel ? theme.info : theme.textMuted,
+        usage?.usageLabel ? TextAttributes.BOLD : TextAttributes.NONE,
+      )
+    }
+
     if (parts.length === 0) {
       setTextRenderable(promptMetaProviderText, " ", theme.textMuted)
       setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
       setTextRenderable(promptMetaModelText, "", theme.textMuted)
       setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
       setTextRenderable(promptMetaVariantText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsageDividerText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsageTokensText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsageBarOpenText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsageBarFilledText, "", theme.primary)
-      setTextRenderable(promptMetaUsageBarEmptyText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsageBarCloseText, "", theme.textMuted)
-      setTextRenderable(promptMetaUsagePercentText, "", theme.textMuted)
+      renderUsageMeta()
       return
     }
 
-    const providerPart = parts[0]
-    const modelPart = parts[1]
-    const variantPart = parts[2]
-
-    setTextRenderable(
-      promptMetaProviderText,
-      providerPart?.text ?? "",
-      providerPart ? promptMetaToneColor(providerPart.tone) : theme.textMuted,
-      providerPart ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(promptMetaProviderDividerText, modelPart ? " • " : "", theme.textMuted)
-    setTextRenderable(
-      promptMetaModelText,
-      modelPart?.text ?? "",
-      modelPart ? promptMetaToneColor(modelPart.tone) : theme.textMuted,
-      modelPart ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(promptMetaModelDividerText, variantPart ? " • " : "", theme.textMuted)
-    setTextRenderable(
-      promptMetaVariantText,
-      variantPart?.text ?? "",
-      variantPart ? promptMetaToneColor(variantPart.tone) : theme.textMuted,
-      variantPart ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-
-    const usage = promptUsageMeta()
-    setTextRenderable(promptMetaUsageDividerText, usage ? " • " : "", theme.textMuted)
-    setTextRenderable(
-      promptMetaUsageTokensText,
-      usage?.tokensLabel ?? "",
-      usage ? theme.secondary : theme.textMuted,
-      usage ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(promptMetaUsageBarOpenText, usage?.usageLabel ? " [" : "", theme.textMuted)
-    setTextRenderable(
-      promptMetaUsageBarFilledText,
-      usage?.barFilled ?? "",
-      theme.primary,
-      usage?.barFilled ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
-    setTextRenderable(promptMetaUsageBarEmptyText, usage?.usageLabel ? (usage?.barEmpty ?? "") : "", theme.textMuted)
-    setTextRenderable(promptMetaUsageBarCloseText, usage?.usageLabel ? "]" : "", theme.textMuted)
-    setTextRenderable(
-      promptMetaUsagePercentText,
-      usage?.usageLabel ? ` ${usage.usageLabel}` : "",
-      usage?.usageLabel ? theme.info : theme.textMuted,
-      usage?.usageLabel ? TextAttributes.BOLD : TextAttributes.NONE,
-    )
+    setTextRenderable(promptMetaProviderText, usage ? "" : " ", theme.textMuted)
+    setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
+    setTextRenderable(promptMetaModelText, "", theme.textMuted)
+    setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
+    setTextRenderable(promptMetaVariantText, "", theme.textMuted)
+    renderUsageMeta()
   }
 
   const renderHistoryLoadingIndicator = () => {
@@ -3368,11 +3416,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pendingTranscriptRender = true
       return
     }
-    const seen = new Set<string | number>()
-    requestRenderableTreeRender(responseLayoutBox ?? transcriptScrollbox, seen)
-    requestRenderableTreeRender(historyLoadingBox, seen)
-    transcriptScrollbox?.requestRender()
-    ;(renderer as { requestRender?: () => void }).requestRender?.()
+    renderScheduler.requestRenderable(transcriptScrollbox)
   }
 
   const flushScheduledSessionChromeUpdate = () => {
@@ -3390,11 +3434,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const flushDeferredUiUpdates = () => {
     if (pendingTranscriptRender) {
       pendingTranscriptRender = false
-      const seen = new Set<string | number>()
-      requestRenderableTreeRender(responseLayoutBox ?? transcriptScrollbox, seen)
-      requestRenderableTreeRender(historyLoadingBox, seen)
-      transcriptScrollbox?.requestRender()
-      ;(renderer as { requestRender?: () => void }).requestRender?.()
+      renderScheduler.requestRenderable(transcriptScrollbox)
     }
     if (pendingSessionChromeUpdate) {
       pendingSessionChromeUpdate = false
@@ -3484,7 +3524,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pane.backgroundColor = visible && split
         ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
         : defaultBackground
-      footerBox && (footerBox.visible = visible && split && showFooter)
+      footerBox && (footerBox.visible = visible && showFooter)
       if (scrollbox) {
         scrollbox.backgroundColor = pane.backgroundColor
         scrollbox.requestRender?.()
@@ -3640,7 +3680,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
 
     refresh()
     startTimeout(refresh, 0)
-    startTimeout(refresh, 16)
   }
 
   const applySessionChromeUpdate = () => {
@@ -3778,33 +3817,34 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       [agentId]: persistedEntries,
     }))
     setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
-    if (splitAgentResponseMode()) {
-      scheduleResponsePaneRepaint()
-    }
   }
 
   const setAgentTranscriptEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
     const previousPaneEntries = agentPaneEntries()[agentId] ?? []
     const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(agentId))
-    setAgentPaneEntries((current) => ({
-      ...current,
-      [agentId]: sanitizedEntries,
-    }))
-    setAgentPanePreview(agentId, formatTranscriptPreview(sanitizedEntries))
+    commitAgentPaneEntries(agentId, sanitizedEntries)
     if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
       replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
     }
-    if (splitAgentResponseMode() && splitPaneAuxiliaryAgentIds(
-      sessionState().agents,
-      focusedAgentId(),
-      true,
-      maxAgentsPerScreen(),
-    ).includes(agentId)) {
+    if (splitAgentResponseMode() && visibleAuxiliaryAgentIds().includes(agentId)) {
       reconcileMountedAuxiliaryTranscript(agentId, previousPaneEntries, sanitizedEntries)
     }
-    if (splitAgentResponseMode()) {
-      scheduleResponsePaneRepaint()
-    }
+  }
+
+  const visibleAuxiliaryAgentIds = () => splitPaneAuxiliaryAgentIds(
+    sessionState().agents,
+    focusedAgentId(),
+    true,
+    maxAgentsPerScreen(),
+  )
+
+  const commitAgentPaneEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
+    const persistedEntries = nextEntries.map((entry) => ({ ...entry }))
+    setAgentPaneEntries((current) => ({
+      ...current,
+      [agentId]: persistedEntries,
+    }))
+    setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
   }
 
   const auxiliaryAgentPaneRenderables = (agentId: string) => {
@@ -3844,42 +3884,25 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
     const currentEntries = currentAgentPaneEntries(agentId)
-    const toggleEntry = findVisibleTurnToggle(currentEntries, turnId, toggleEntryId)
-    if (toggleEntryId !== undefined && !toggleEntry) {
+    const toggleEntry = resolveVisibleTurnToggle(currentEntries, turnId, toggleEntryId)
+    if (!toggleEntry) {
       return
     }
     const expanding = toggleEntry?.toggleMode === "expand"
-    const scrollbox = agentTranscriptScrollboxes.get(agentId)
-    const anchor = captureTranscriptScrollAnchor(
-      scrollbox,
-      auxiliaryAgentPaneRenderables(agentId),
-      currentEntries.find((entry) => entry.turnId === turnId && entry.role === "user")?.id
-        ?? currentEntries.find((entry) => entry.turnId === turnId && entry.role !== "turn_toggle")?.id
-        ?? null,
-    )
     setExpandedTurnState(agentId, turnId, expanding)
-    setAgentTranscriptEntries(
-      agentId,
-      applyTranscriptDisplayState(currentEntries, expanding
-        ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
-        : [...expandedTurnIdsForAgent(agentId), turnId]),
-    )
-    restoreTranscriptScrollAnchor(anchor, auxiliaryAgentPaneRenderables(agentId))
+    const nextEntries = applyTranscriptDisplayState(currentEntries, expanding
+      ? expandedTurnIdsForAgent(agentId).filter((value) => value !== turnId)
+      : [...expandedTurnIdsForAgent(agentId), turnId])
+    commitAgentPaneEntries(agentId, nextEntries)
+    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
     retainPromptFocus()
   }
 
   const toggleAuxiliaryPaneBlob = (agentId: string, entryId: number, collapsed: boolean) => {
     const currentEntries = currentAgentPaneEntries(agentId)
-    const anchor = captureTranscriptScrollAnchor(
-      agentTranscriptScrollboxes.get(agentId),
-      auxiliaryAgentPaneRenderables(agentId),
-      entryId,
-    )
-    setAgentTranscriptEntries(
-      agentId,
-      setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed),
-    )
-    restoreTranscriptScrollAnchor(anchor, auxiliaryAgentPaneRenderables(agentId))
+    const nextEntries = setTranscriptBlobCollapsed(currentEntries, entryId, expandedTurnIdsForAgent(agentId), collapsed)
+    commitAgentPaneEntries(agentId, nextEntries)
+    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
     retainPromptFocus()
   }
 
@@ -3958,70 +3981,80 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
+  const updateAuxiliaryTranscriptEntry = (agentId: string, nextEntry: TranscriptEntry) => {
+    const renderable = auxiliaryAgentPaneRenderables(agentId).get(nextEntry.id)
+    if (!renderable) {
+      rebuildAuxiliaryAgentPane(agentId)
+      return
+    }
+    const previousMode = transcriptRenderMode(renderable.entry)
+    if (transcriptRenderMode(nextEntry) !== previousMode) {
+      rebuildAuxiliaryAgentPane(agentId)
+      return
+    }
+    renderable.entry = nextEntry
+    renderable.update(nextEntry)
+    renderScheduler.requestRenderable(agentTranscriptScrollboxes.get(agentId))
+  }
+
+  const trimLiveAgentPaneEntries = (agentId: string, nextEntries: TranscriptEntry[]) => trimAgentPaneEntries({
+    entries: nextEntries,
+    maxEntries: LIVE_TRANSCRIPT_LIMIT,
+    maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
+    onTrimmedMergeKey: (mergeKey) => {
+      auxiliaryAgentPaneTools(agentId).delete(mergeKey)
+    },
+  })
+
+  const commitStreamingAgentPaneEntry = (
+    agentId: string,
+    currentEntries: TranscriptEntry[],
+    nextEntries: TranscriptEntry[],
+    updatedEntryId: number,
+  ) => {
+    const sanitizedEntries = applyTranscriptDisplayState(
+      trimLiveAgentPaneEntries(agentId, nextEntries).filter(Boolean),
+      expandedTurnIdsForAgent(agentId),
+    )
+    commitAgentPaneEntries(agentId, sanitizedEntries)
+    if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
+      replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
+      return
+    }
+    if (!splitAgentResponseMode() || !visibleAuxiliaryAgentIds().includes(agentId)) {
+      return
+    }
+    const updatedEntry = sanitizedEntries.find((entry) => entry.id === updatedEntryId)
+    if (updatedEntry) {
+      updateAuxiliaryTranscriptEntry(agentId, updatedEntry)
+      return
+    }
+    reconcileMountedAuxiliaryTranscript(agentId, currentEntries, sanitizedEntries)
+  }
+
   const reconcileMountedAuxiliaryTranscript = (
     agentId: string,
     currentEntries: TranscriptEntry[],
     nextEntries: TranscriptEntry[],
   ) => {
-    const scrollbox = agentTranscriptScrollboxes.get(agentId)
-    if (!scrollbox || nextEntries.length === 0) {
-      rebuildAuxiliaryAgentPane(agentId)
-      return
-    }
-
-    const empty = agentEmptyTranscriptRenderables.get(agentId)
-    if (empty) {
-      scrollbox.remove(empty.id)
-      empty.destroyRecursively()
-      agentEmptyTranscriptRenderables.delete(agentId)
-    }
-
-    const renderables = auxiliaryAgentPaneRenderables(agentId)
-    const previousScrollTop = scrollbox.scrollTop
-    const previousVisibleEntries = currentEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
-    const nextVisibleEntries = nextEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
-
-    let preservedPrefixLength = 0
-    while (
-      preservedPrefixLength < previousVisibleEntries.length
-      && preservedPrefixLength < nextVisibleEntries.length
-      && transcriptEntriesShareMountedPrefix(
-        previousVisibleEntries[preservedPrefixLength]!,
-        nextVisibleEntries[preservedPrefixLength]!,
-      )
-    ) {
-      const previousEntry = previousVisibleEntries[preservedPrefixLength]!
-      const nextEntry = nextVisibleEntries[preservedPrefixLength]!
-      const renderable = renderables.get(previousEntry.id)
-      if (renderable) {
-        if (previousEntry.id !== nextEntry.id) {
-          renderables.delete(previousEntry.id)
-          renderables.set(nextEntry.id, renderable)
+    reconcileMountedTranscriptPane({
+      scrollbox: agentTranscriptScrollboxes.get(agentId),
+      currentEntries,
+      nextEntries,
+      renderables: auxiliaryAgentPaneRenderables(agentId),
+      clampScrollTop,
+      rebuild: () => rebuildAuxiliaryAgentPane(agentId),
+      removeEmptyRenderable: () => {
+        const empty = agentEmptyTranscriptRenderables.get(agentId)
+        if (!empty) {
+          return
         }
-        renderable.entry = nextEntry
-      }
-      preservedPrefixLength += 1
-    }
-
-    for (const entry of previousVisibleEntries.slice(preservedPrefixLength)) {
-      const renderable = renderables.get(entry.id)
-      if (!renderable) {
-        continue
-      }
-      scrollbox.remove(renderable.wrapper.id)
-      renderable.wrapper.destroyRecursively()
-      renderables.delete(entry.id)
-    }
-
-    for (const entry of nextVisibleEntries.slice(preservedPrefixLength)) {
-      mountAuxiliaryTranscriptEntry(agentId, entry, false)
-    }
-
-    scrollbox.scrollTo({
-      x: scrollbox.scrollLeft,
-      y: clampScrollTop(previousScrollTop, scrollbox.scrollHeight, scrollbox.height),
+        agentTranscriptScrollboxes.get(agentId)?.remove(empty.id)
+        empty.destroyRecursively()
+        agentEmptyTranscriptRenderables.delete(agentId)
+      },
+      mountEntry: (entry, requestRender) => mountAuxiliaryTranscriptEntry(agentId, entry, requestRender),
     })
-    scrollbox.requestRender()
   }
 
   const pruneAuxiliaryAgentPanes = (session: RuntimeSession) => {
@@ -4097,14 +4130,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     setAgentTranscriptEntries(
       agentId,
-      trimAgentPaneEntries({
-        entries: [...currentEntries, nextEntry],
-        maxEntries: LIVE_TRANSCRIPT_LIMIT,
-        maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-        onTrimmedMergeKey: (mergeKey) => {
-          auxiliaryAgentPaneTools(agentId).delete(mergeKey)
-        },
-      }),
+      trimLiveAgentPaneEntries(agentId, [...currentEntries, nextEntry]),
     )
   }
 
@@ -4140,14 +4166,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             candidate.sourceText = normalizedSource
           }
         }
-        setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
-          entries: nextEntries,
-          maxEntries: LIVE_TRANSCRIPT_LIMIT,
-          maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-          onTrimmedMergeKey: (mergeKey) => {
-            auxiliaryAgentPaneTools(agentId).delete(mergeKey)
-          },
-        }))
+        commitStreamingAgentPaneEntry(agentId, currentEntries, nextEntries, candidate.id)
         return
       }
     }
@@ -4155,14 +4174,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const last = [...nextEntries].reverse().find((entry) => entry.role !== "turn_toggle")
     if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
       last.text += normalized
-      setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
-        entries: nextEntries,
-        maxEntries: LIVE_TRANSCRIPT_LIMIT,
-        maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-        onTrimmedMergeKey: (mergeKey) => {
-          auxiliaryAgentPaneTools(agentId).delete(mergeKey)
-        },
-      }))
+      commitStreamingAgentPaneEntry(agentId, currentEntries, nextEntries, last.id)
       return
     }
 
@@ -4174,14 +4186,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       ...(mergeKey ? { mergeKey } : {}),
       ...(normalizedSource !== undefined ? { sourceText: normalizedSource } : {}),
     })
-    setAgentTranscriptEntries(agentId, trimAgentPaneEntries({
-      entries: nextEntries,
-      maxEntries: LIVE_TRANSCRIPT_LIMIT,
-      maxChars: LIVE_TRANSCRIPT_MAX_CHARS,
-      onTrimmedMergeKey: (mergeKey) => {
-        auxiliaryAgentPaneTools(agentId).delete(mergeKey)
-      },
-    }))
+    setAgentTranscriptEntries(agentId, trimLiveAgentPaneEntries(agentId, nextEntries))
   }
 
   const appendToolUpdateToAgentPane = (agentId: string, chunk: string) => {
@@ -4296,90 +4301,31 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
   }
 
-  const transcriptEntriesEqual = (left: TranscriptEntry, right: TranscriptEntry) => (
-    left.id === right.id
-    && left.role === right.role
-    && left.text === right.text
-    && left.sourceText === right.sourceText
-    && left.emphasis === right.emphasis
-    && left.hidden === right.hidden
-    && left.toggleMode === right.toggleMode
-    && left.blobCollapsible === right.blobCollapsible
-    && left.blobCollapsed === right.blobCollapsed
-    && left.blobTitle === right.blobTitle
-    && left.blobSummary === right.blobSummary
-  )
-
-  const transcriptEntriesShareMountedPrefix = (left: TranscriptEntry, right: TranscriptEntry) => {
-    if (left.role !== right.role) {
-      return false
-    }
-    if (left.role === "turn_toggle") {
-      return left.turnId === right.turnId
-        && left.toggleMode === right.toggleMode
-        && left.text === right.text
-    }
-    return transcriptEntriesEqual(left, right)
-  }
-
   const reconcileMountedTranscript = (currentEntries: TranscriptEntry[], nextEntries: TranscriptEntry[]) => {
-    if (!transcriptScrollbox || workflowScreenActive() || nextEntries.length === 0) {
+    if (workflowScreenActive()) {
       rebuildTranscript()
       return
     }
-
-    if (emptyTranscriptRenderable) {
-      transcriptScrollbox.remove(emptyTranscriptRenderable.id)
-      emptyTranscriptRenderable.destroyRecursively()
-      emptyTranscriptRenderable = undefined
-    }
-
-    const previousScrollTop = transcriptScrollbox.scrollTop
-    const previousVisibleEntries = currentEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
-    const nextVisibleEntries = nextEntries.filter((entry) => !entry.hidden && !entry.historyDeferred)
-
-    let preservedPrefixLength = 0
-    while (
-      preservedPrefixLength < previousVisibleEntries.length
-      && preservedPrefixLength < nextVisibleEntries.length
-      && transcriptEntriesShareMountedPrefix(
-        previousVisibleEntries[preservedPrefixLength]!,
-        nextVisibleEntries[preservedPrefixLength]!,
-      )
-    ) {
-      const previousEntry = previousVisibleEntries[preservedPrefixLength]!
-      const nextEntry = nextVisibleEntries[preservedPrefixLength]!
-      const renderable = transcriptRenderables.get(previousEntry.id)
-      if (renderable) {
-        if (previousEntry.id !== nextEntry.id) {
-          transcriptRenderables.delete(previousEntry.id)
-          transcriptRenderables.set(nextEntry.id, renderable)
+    reconcileMountedTranscriptPane({
+      scrollbox: transcriptScrollbox,
+      currentEntries,
+      nextEntries,
+      renderables: transcriptRenderables,
+      clampScrollTop,
+      rebuild: rebuildTranscript,
+      removeEmptyRenderable: () => {
+        if (!emptyTranscriptRenderable || !transcriptScrollbox) {
+          return
         }
-        renderable.entry = nextEntry
-      }
-      preservedPrefixLength += 1
-    }
-
-    for (const entry of previousVisibleEntries.slice(preservedPrefixLength)) {
-      const renderable = transcriptRenderables.get(entry.id)
-      if (!renderable) {
-        continue
-      }
-      transcriptScrollbox.remove(renderable.wrapper.id)
-      renderable.wrapper.destroyRecursively()
-      transcriptRenderables.delete(entry.id)
-    }
-
-    for (const entry of nextVisibleEntries.slice(preservedPrefixLength)) {
-      mountTranscriptEntry(entry, false)
-    }
-
-    transcriptScrollbox.scrollTo({
-      x: transcriptScrollbox.scrollLeft,
-      y: clampScrollTop(previousScrollTop, transcriptScrollbox.scrollHeight, transcriptScrollbox.height),
+        transcriptScrollbox.remove(emptyTranscriptRenderable.id)
+        emptyTranscriptRenderable.destroyRecursively()
+        emptyTranscriptRenderable = undefined
+      },
+      mountEntry: mountTranscriptEntry,
+      onScrollTop: (scrollTop) => {
+        lastTranscriptScrollTop = scrollTop
+      },
     })
-    lastTranscriptScrollTop = transcriptScrollbox.scrollTop
-    requestTranscriptRender()
   }
 
   const updateTranscriptEntry = (entryId: number, text: string, sourceText?: string) => {
@@ -4399,72 +4345,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
     renderable.update(renderable.entry)
     requestTranscriptRender()
-  }
-
-  const captureTranscriptScrollAnchor = (
-    scrollbox: ScrollBoxRenderable | undefined,
-    renderables: Map<number, TranscriptEntryRenderable>,
-    entryId: number | null | undefined,
-  ) => {
-    if (!scrollbox || !entryId) {
-      return null
-    }
-    const renderable = renderables.get(entryId)
-    if (!renderable) {
-      return null
-    }
-    return {
-      scrollbox,
-      entryId,
-      offset: Math.max(0, renderable.wrapper.y - scrollbox.scrollTop),
-    }
-  }
-
-  const restoreTranscriptScrollAnchor = (
-    anchor: { scrollbox: ScrollBoxRenderable; entryId: number; offset: number } | null,
-    renderables: Map<number, TranscriptEntryRenderable>,
-  ) => {
-    if (!anchor) {
-      return
-    }
-    const restoreToken = ++pendingHistoryScrollRestore
-    const restoreScroll = (remainingAttempts: number, lastY = Number.NaN, stableFrames = 0) => {
-      if (restoreToken !== pendingHistoryScrollRestore) {
-        pendingHistoryScrollRestore = 0
-        return
-      }
-      const renderable = renderables.get(anchor.entryId)
-      const nextY = renderable?.wrapper.y
-      if (nextY === undefined) {
-        pendingHistoryScrollRestore = 0
-        return
-      }
-      const nextScrollTop = computeAnchoredScrollTop(
-        anchor.offset,
-        nextY,
-        anchor.scrollbox.scrollHeight,
-        anchor.scrollbox.height,
-      )
-      if (nextScrollTop === null) {
-        pendingHistoryScrollRestore = 0
-        return
-      }
-      const nextStableFrames = nextY === lastY ? stableFrames + 1 : 0
-      if (nextStableFrames >= 1 || remainingAttempts <= 1) {
-        anchor.scrollbox.scrollTo({ x: anchor.scrollbox.scrollLeft, y: nextScrollTop })
-        anchor.scrollbox.requestRender()
-        if (anchor.scrollbox === transcriptScrollbox) {
-          lastTranscriptScrollTop = anchor.scrollbox.scrollTop
-        }
-        pendingHistoryScrollRestore = 0
-        return
-      }
-      anchor.scrollbox.requestRender()
-      startTimeout(() => restoreScroll(remainingAttempts - 1, nextY, nextStableFrames), 16)
-    }
-
-    anchor.scrollbox.requestRender()
-    startTimeout(() => restoreScroll(4), 0)
   }
 
   const rebuildTranscript = () => {

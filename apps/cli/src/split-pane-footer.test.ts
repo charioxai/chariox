@@ -1,17 +1,15 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
   agentPaneStatusBadge,
   buildSplitPaneFooterState,
   formatSplitPaneFooter,
+  formatSplitPaneFooterParts,
   reflectedDistance,
   type SplitPaneFooterActiveRun,
   type SplitPaneFooterAgent,
 } from "./split-pane-footer.js"
-
-const catalog = fallbackProviderCatalog()
 
 const primaryAgent: SplitPaneFooterAgent = {
   id: "agent-a",
@@ -71,14 +69,14 @@ test("agentPaneStatusBadge stays working while the local busy latch is active", 
   })
 })
 
-test("formatSplitPaneFooter uses alias and catalog model name", () => {
+test("formatSplitPaneFooter uses alias and prompt-style model metadata", () => {
   assert.equal(
-    formatSplitPaneFooter(primaryAgent, catalog, null, null),
-    "Planner • GPT-5.4",
+    formatSplitPaneFooter(primaryAgent, null, null),
+    "Planner • OpenAI • GPT-5.4",
   )
   assert.equal(
-    formatSplitPaneFooter(secondaryAgent, catalog, null, "gpt-5.4"),
-    "agent-b • GPT-5.4",
+    formatSplitPaneFooter(secondaryAgent, null, "gpt-5.4"),
+    "agent-b • OpenAI • GPT-5.4",
   )
 })
 
@@ -86,17 +84,41 @@ test("formatSplitPaneFooter prefers the active run model for the matching agent"
   const activeRun: SplitPaneFooterActiveRun = {
     agentInstanceId: "agent-a",
     model: "openai/gpt-5.4",
+    variant: "high",
   }
 
   assert.equal(
     formatSplitPaneFooter(
       { ...primaryAgent, provider: "opencode", model: "openai/gpt-5.3-codex-spark" },
-      catalog,
       activeRun,
       null,
     ),
-    "Planner • GPT-5.4",
+    "Planner • OpenAI • GPT-5.4 • High",
   )
+})
+
+test("formatSplitPaneFooter prefers an override variant when idle", () => {
+  assert.equal(
+    formatSplitPaneFooter(primaryAgent, null, null, { variant: "high" }),
+    "Planner • OpenAI • GPT-5.4 • High",
+  )
+})
+
+test("formatSplitPaneFooterParts mirrors the prompt footer order with an agent prefix", () => {
+  const parts = formatSplitPaneFooterParts(primaryAgent, null, null)
+  assert.deepEqual(
+    parts.map((part) => ({
+      kind: part.kind,
+      text: part.text,
+    })),
+    [
+      { kind: "agent", text: "Planner" },
+      { kind: "provider", text: "OpenAI" },
+      { kind: "model", text: "GPT-5.4" },
+    ],
+  )
+  assert.equal(parts[1]?.tone, "info")
+  assert.equal(parts[2]?.tone, "secondary")
 })
 
 test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected", () => {
@@ -113,7 +135,6 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
       "agent-a": "thinking",
       "agent-b": "patching",
     },
-    catalog,
     activeRun: null,
     fallbackModel: "gpt-5.4",
   })
@@ -121,7 +142,7 @@ test("buildSplitPaneFooterState keeps disconnected panes uniformly disconnected"
   assert.deepEqual(state.primary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.deepEqual(state.secondary.badge, { label: "DISCONNECTED", tone: "disconnected" })
   assert.equal(state.secondary.focused, true)
-  assert.equal(state.secondary.info, "agent-b • GPT-5.4")
+  assert.equal(state.secondary.info, "agent-b • OpenAI • GPT-5.4")
 })
 
 test("buildSplitPaneFooterState uses activity labels and focus per pane", () => {
@@ -142,10 +163,10 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
       "agent-a": false,
       "agent-b": true,
     },
-    catalog,
     activeRun: {
       agentInstanceId: "agent-a",
       model: "openai/gpt-5.4",
+      variant: "high",
     },
     fallbackModel: "gpt-5.4",
   })
@@ -153,7 +174,7 @@ test("buildSplitPaneFooterState uses activity labels and focus per pane", () => 
   assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })
   assert.deepEqual(state.secondary.badge, { label: "READING", tone: "working" })
   assert.equal(state.primary.focused, true)
-  assert.equal(state.primary.info, "Planner • GPT-5.4")
+  assert.equal(state.primary.info, "Planner • OpenAI • GPT-5.4 • High")
 })
 
 test("buildSplitPaneFooterState keeps a pane working while its busy latch is set", () => {
@@ -177,7 +198,6 @@ test("buildSplitPaneFooterState keeps a pane working while its busy latch is set
     busyLatchesByAgent: {
       "agent-a": true,
     },
-    catalog,
     activeRun: null,
     fallbackModel: "gpt-5.4",
   })

@@ -132,8 +132,10 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                               flexShrink={0}
                               flexDirection="row"
                               gap={1}
+                              overflow="hidden"
                               paddingLeft={1}
                               paddingRight={1}
+                              paddingBottom={1}
                             />
                           </box>
                         )
@@ -184,8 +186,10 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                               flexShrink={0}
                               flexDirection="row"
                               gap={1}
+                              overflow="hidden"
                               paddingLeft={1}
                               paddingRight={1}
+                              paddingBottom={1}
                             />
                           </box>
                         )

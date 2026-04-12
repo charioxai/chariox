@@ -141,15 +141,9 @@ export function deriveAttachedFooterSummary(options: {
   hotkeyToggleLabel: string
   focusedHasPromptWork?: boolean
 }): string {
-  const focusedAgent = options.session.agents.find(
-    (agent) => agent.id === options.session.focused_agent_id,
-  )
-  const agentInfo = focusedAgent
-    ? ` • Agent: ${formatAgentLabel(focusedAgent)}${(focusedAgent.is_processing || options.focusedHasPromptWork) ? " [working]" : ""}`
-    : ""
   const navigationInfo = options.multiAgentMode ? " • Tab cycles focus • Ctrl+P opens workflow" : ""
 
-  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${options.session.agents.length} ${options.session.agents.length === 1 ? "agent" : "agents"} in session${agentInfo}${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
+  return `Session ${options.session.alias ?? options.session.id} • ${options.connectedClientCount} ${options.connectedClientCount === 1 ? "CLI" : "CLIs"} connected • ${options.session.agents.length} ${options.session.agents.length === 1 ? "agent" : "agents"} in session${options.sessionStatusMode === "working" ? " • Ctrl+C to stop" : ""}${navigationInfo} • ${options.hotkeyToggleLabel} hotkeys`
 }
 
 function resolveProviderModelContextLimit(
@@ -177,10 +171,6 @@ function splitProviderModelRef(modelRef: string) {
     providerId: parts.at(-2)!,
     modelId: parts.at(-1)!,
   }
-}
-
-function formatAgentLabel(agent: RuntimeSession["agents"][number]) {
-  return `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
 }
 
 function normalizeProvider(provider?: string | null) {

@@ -12,14 +12,27 @@ use crate::provider::{
 };
 
 impl DaemonApp {
-    pub(crate) fn project_session_runtime_view(&self, session: &mut crate::session::RuntimeSession) {
-        let projected_run_id = session
-            .focused_agent_id()
-            .and_then(|agent_id| {
-                self.providers
-                    .get_run_for_agent(session.id(), agent_id)
-                    .map(|run| run.id().to_string())
-            });
+    pub(crate) fn project_session_runtime_view(
+        &self,
+        session: &mut crate::session::RuntimeSession,
+    ) {
+        if let Some(active_provider_run_id) = session.active_provider_run_id() {
+            if let Ok(active_run) = self.providers.get_run(active_provider_run_id) {
+                let active_run_agent_id = active_run.agent_instance_id();
+                let active_prompt_is_running = active_run_agent_id
+                    .and_then(|agent_id| session.active_prompt_for_agent(agent_id))
+                    .is_some();
+                if active_run.state() == ProviderRunState::Running && active_prompt_is_running {
+                    return;
+                }
+            }
+        }
+
+        let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
+            self.providers
+                .get_run_for_agent(session.id(), agent_id)
+                .map(|run| run.id().to_string())
+        });
         session.set_active_provider_run(projected_run_id);
     }
 
@@ -564,9 +577,8 @@ impl DaemonApp {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {
                 if session.active_prompt().is_none() {
-                    let current_active_run_id = session
-                        .active_provider_run_id()
-                        .map(str::to_string);
+                    let current_active_run_id =
+                        session.active_provider_run_id().map(str::to_string);
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
                         let active_run = self.providers.get_run(current_active_run_id)?;
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())

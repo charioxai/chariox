@@ -2172,7 +2172,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let focused_run = match app
+    let _focused_run = match app
         .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
             LaunchProviderRunRequest {
                 session_id: session.id().to_string(),
@@ -2239,7 +2239,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
     assert_eq!(
         session_state.active_provider_run_id(),
-        Some(focused_run.id())
+        Some(_default_run.id())
     );
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2276,6 +2276,109 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             .is_some(),
         "background prompt should remain owned by the original agent while unfocused"
     );
+}
+
+#[test]
+fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let default_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(default_agent.id()),
+        )
+        .expect("provider run should launch");
+
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(default_agent.id()),
+        "keep working\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    let spawned = match app
+        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("observer".to_string()),
+            provider: "claude-code".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        }))
+        .expect("spawn should succeed")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+
+    let session_state = match app
+        .handle_local_request(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { session } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(default_run.id()),
+        "snapshots must keep the still-running provider visible for recovery and stream routing"
+    );
+}
+
+#[test]
+fn terminal_output_drain_survives_missing_focused_provider_run() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = app
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.terminal_mut().fan_out_output(
+        session.id(),
+        "provider-run-stale",
+        Some(default_agent.id()),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        vec![attachment.id().to_string()],
+        b"late output\n",
+    );
+
+    let records = app
+        .pump_terminal_output(session.id(), attachment.id())
+        .expect("draining buffered output should not require an active focused provider run");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].bytes, b"late output\n");
 }
 
 #[test]

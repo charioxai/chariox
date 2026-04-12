@@ -1,5 +1,5 @@
-import type { ProviderCatalog } from "./provider-catalog.js"
 import { getSessionStatusLabel } from "./runtime.js"
+import { formatPromptMetaParts, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
 
 export type StatusBadgeTone = "idle" | "working" | "disconnected" | "error"
 
@@ -11,6 +11,7 @@ export type SplitPaneFooterAgent = {
   alias: string | null
   provider: string
   model: string | null
+  effort?: string | null
   state: "Idle" | "Working" | "Focused" | "Error"
   is_processing: boolean
 }
@@ -18,6 +19,18 @@ export type SplitPaneFooterAgent = {
 export type SplitPaneFooterActiveRun = {
   agentInstanceId: string | null
   model: string | null
+  variant: string | null
+}
+
+export type SplitPaneFooterOverride = {
+  model?: string | null
+  variant?: string | null
+}
+
+export type SplitPaneFooterPart = PromptMetaPart | {
+  kind: "agent"
+  text: string
+  tone: PromptMetaTone
 }
 
 export type SplitPaneFooterPaneState = {
@@ -74,42 +87,47 @@ export function agentPaneStatusBadge(
   return { label: "IDLE", tone: "idle" as const }
 }
 
-export function resolveAgentModelLabel(
-  catalog: ProviderCatalog,
-  agent: SplitPaneFooterAgent | null,
-  activeRun?: SplitPaneFooterActiveRun | null,
-  fallbackModel?: string | null,
-) {
-  if (!agent) {
-    return "No model"
-  }
-
-  const effectiveModel = activeRun?.model && activeRun.agentInstanceId === agent.id
-    ? activeRun.model
-    : agent.model ?? fallbackModel ?? null
-  const normalizedModel = effectiveModel?.trim() ?? ""
-  if (!normalizedModel || normalizedModel === "default") {
-    return "Default model"
-  }
-
-  const parsed = splitProviderModelRef(normalizedModel)
-  const provider = catalog.all.find((entry) => entry.id === (parsed?.providerId ?? agent.provider))
-  const model = provider?.models?.[parsed?.modelId ?? normalizedModel]
-  return model?.name ?? normalizedModel
-}
-
 export function formatSplitPaneFooter(
   agent: SplitPaneFooterAgent | null,
-  catalog: ProviderCatalog,
   activeRun?: SplitPaneFooterActiveRun | null,
   fallbackModel?: string | null,
+  override?: SplitPaneFooterOverride,
 ) {
+  return formatSplitPaneFooterParts(agent, activeRun, fallbackModel, override)
+    .map((part) => part.text)
+    .join(" • ")
+}
+
+export function formatSplitPaneFooterParts(
+  agent: SplitPaneFooterAgent | null,
+  activeRun?: SplitPaneFooterActiveRun | null,
+  fallbackModel?: string | null,
+  override?: SplitPaneFooterOverride,
+): SplitPaneFooterPart[] {
   if (!agent) {
-    return ""
+    return []
   }
+
   const aliasLabel = agent.alias?.trim() || agent.agent_ref
-  const modelLabel = resolveAgentModelLabel(catalog, agent, activeRun, fallbackModel)
-  return `${aliasLabel} • ${modelLabel}`
+  const hasActiveRun = activeRun?.agentInstanceId === agent.id
+  const effectiveModel = hasActiveRun
+    ? activeRun.model
+    : override?.model ?? agent.model ?? fallbackModel ?? "default"
+  const effectiveVariant = hasActiveRun
+    ? activeRun.variant ?? agent.effort ?? override?.variant ?? ""
+    : override?.variant ?? agent.effort ?? ""
+  const metaRef = splitProviderModelRef(effectiveModel ?? "default")
+  const provider = metaRef?.providerId ?? agent.provider
+  const model = metaRef?.modelId ?? effectiveModel ?? "default"
+
+  return [
+    {
+      kind: "agent",
+      text: aliasLabel,
+      tone: toneForAgent(aliasLabel),
+    },
+    ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
+  ]
 }
 
 export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {
@@ -124,7 +142,6 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
   activityLabels: Record<string, string | null>
   hasPromptWorkByAgent?: Record<string, boolean>
   busyLatchesByAgent?: Record<string, boolean>
-  catalog: ProviderCatalog
   activeRun?: SplitPaneFooterActiveRun | null
   fallbackModel?: string | null
 }): SplitPaneFooterState<T> {
@@ -142,7 +159,7 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     return {
       badge,
       focused,
-      info: formatSplitPaneFooter(agent, options.catalog, options.activeRun, options.fallbackModel),
+      info: formatSplitPaneFooter(agent, options.activeRun, options.fallbackModel),
     }
   }
 
@@ -152,6 +169,19 @@ export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(option
     tertiary: buildPaneState(options.selection.tertiary),
     selection: options.selection,
   }
+}
+
+function toneForAgent(value: string): PromptMetaTone {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) {
+    return "text"
+  }
+  const tones: PromptMetaTone[] = ["primary", "secondary", "accent", "warning", "success", "info"]
+  let hash = 0
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0
+  }
+  return tones[hash % tones.length] ?? "text"
 }
 
 function splitProviderModelRef(modelRef: string) {

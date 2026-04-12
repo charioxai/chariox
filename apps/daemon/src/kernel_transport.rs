@@ -29,6 +29,7 @@ pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
 const STATE_INTERVAL_TICKS: u64 = 4;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
+const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 
@@ -234,8 +235,16 @@ async fn handle_kernel_connection(
     }));
 
     let writer_task = tokio::spawn(async move {
+        let mut transport_ping =
+            tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
+        transport_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                _ = transport_ping.tick() => {
+                    if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                }
                 Some(command) = close_rx.recv() => {
                     let _ = writer.send(Message::Close(Some(CloseFrame {
                         code: CloseCode::Policy,
@@ -368,10 +377,46 @@ async fn handle_local_request_with_async_boundaries(
             })
         }
         request => {
+            if is_blocking_local_request(&request) {
+                let app = Arc::clone(app);
+                let handle = tokio::runtime::Handle::current();
+                return tokio::task::spawn_blocking(move || {
+                    handle.block_on(async move {
+                        let mut app = app.lock().await;
+                        app.handle_local_request(request)
+                    })
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "run blocking kernel request",
+                    message: error.to_string(),
+                })?;
+            }
             let mut app = app.lock().await;
             app.handle_local_request(request)
         }
     }
+}
+
+fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
+    matches!(
+        request,
+        LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+            | LocalDaemonRequest::GetProviderAuthStatus(_)
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::LogoutProvider(_)
+            | LocalDaemonRequest::ListProviderProcesses(_)
+            | LocalDaemonRequest::TeardownProviderProcesses(_)
+            | LocalDaemonRequest::GetSessionHistory(_)
+            | LocalDaemonRequest::RunShellCommand(_)
+            | LocalDaemonRequest::ReadDirectoryTree(_)
+            | LocalDaemonRequest::ReadFile(_)
+            | LocalDaemonRequest::EditFile(_)
+            | LocalDaemonRequest::InspectGit(_)
+            | LocalDaemonRequest::CaptureScreenshot(_)
+            | LocalDaemonRequest::StoreTransferredFile(_)
+    )
 }
 
 async fn handle_incoming_payload(
@@ -411,27 +456,35 @@ async fn handle_incoming_payload(
             request_id,
             request,
         } => {
-            let response = handle_local_request_with_async_boundaries(&app, request).await;
-            let outgoing = match response {
-                Ok(response) => KernelOutgoingFrame::Response {
-                    request_id,
-                    response: Box::new(Some(serde_json::to_value(response).unwrap_or(Value::Null))),
-                    error: None,
-                },
-                Err(error) => KernelOutgoingFrame::Response {
-                    request_id,
-                    response: Box::new(None),
-                    error: Some(map_kernel_error(&error)),
-                },
-            };
-            let _ = try_send_outgoing_frame(
-                outgoing_tx,
-                close_tx,
-                close_requested,
-                outgoing,
-                None,
-                None,
-            );
+            let app = Arc::clone(app);
+            let outgoing_tx = outgoing_tx.clone();
+            let close_tx = close_tx.clone();
+            let close_requested = Arc::clone(close_requested);
+            tokio::spawn(async move {
+                let response = handle_local_request_with_async_boundaries(&app, request).await;
+                let outgoing = match response {
+                    Ok(response) => KernelOutgoingFrame::Response {
+                        request_id,
+                        response: Box::new(Some(
+                            serde_json::to_value(response).unwrap_or(Value::Null),
+                        )),
+                        error: None,
+                    },
+                    Err(error) => KernelOutgoingFrame::Response {
+                        request_id,
+                        response: Box::new(None),
+                        error: Some(map_kernel_error(&error)),
+                    },
+                };
+                let _ = try_send_outgoing_frame(
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    outgoing,
+                    None,
+                    None,
+                );
+            });
         }
         KernelIncomingFrame::Subscribe {
             request_id,

@@ -51,6 +51,9 @@ type KernelEventControllerDeps = {
 }
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
+  let lastTransportNoticeMessage: string | null = null
+  let lastTransportNoticeAtMs = 0
+
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
     deps.recordDaemonActivity("terminal_record")
     deps.recordTurnActivity("terminal_record")
@@ -217,7 +220,12 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setDaemonDisconnected(true)
     deps.setStatusLine("Lost connection to the Arroba kernel.")
     deps.updateSessionChrome()
-    deps.appendNotice(message, "warning")
+    const now = Date.now()
+    if (message !== lastTransportNoticeMessage || now - lastTransportNoticeAtMs > 10_000) {
+      lastTransportNoticeMessage = message
+      lastTransportNoticeAtMs = now
+      deps.appendNotice(message, "warning")
+    }
   }
 
   const applyTransportResumed = () => {
@@ -225,7 +233,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setDaemonDisconnected(false)
     deps.setStatusLine(deps.connectedStatusLine)
     deps.updateSessionChrome()
-    deps.appendNotice("Reconnected to the Arroba kernel.")
+    if (lastTransportNoticeMessage !== null) {
+      deps.appendNotice("Reconnected to the Arroba kernel.")
+    }
+    lastTransportNoticeMessage = null
+    lastTransportNoticeAtMs = 0
   }
 
   const applyAssistantMessageCompleted = (event: {

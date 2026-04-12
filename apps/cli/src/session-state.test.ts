@@ -139,7 +139,7 @@ test("agentPromptState tolerates daemon payloads that omit empty queued prompts"
           prompt: "hello",
           status: "running",
         },
-      } as RuntimeSession["prompt_states"][string],
+      } as NonNullable<RuntimeSession["prompt_states"]>[string],
     },
   })
 

@@ -438,11 +438,14 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     )
     : undefined
 
-  return {
+  const normalized: RuntimeSession = {
     ...session,
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
-    prompt_states: promptStates,
   }
+  if (promptStates) {
+    normalized.prompt_states = promptStates
+  }
+  return normalized
 }
 
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {

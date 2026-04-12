@@ -69,8 +69,6 @@ export async function bootstrapSession(
   let session: RuntimeSession | null = null
 
   const sessions = await deps.listSessions(client)
-  let providerCatalog = await deps.getProviderCatalog(client, deps.logger)
-  let providerCommandCatalogs = await deps.getProviderCommandCatalogs(client, deps.logger)
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)
   switch (decision.action) {
     case "create":
@@ -90,7 +88,11 @@ export async function bootstrapSession(
       session = existing as RuntimeSession
       break
     }
-    case "none":
+    case "none": {
+      const [providerCatalog, providerCommandCatalogs] = await Promise.all([
+        deps.getProviderCatalog(client, deps.logger),
+        deps.getProviderCommandCatalogs(client, deps.logger),
+      ])
       return {
         client,
         binding: null,
@@ -100,9 +102,14 @@ export async function bootstrapSession(
         options,
         preferences,
       }
+    }
   }
 
   if (!session) {
+    const [providerCatalog, providerCommandCatalogs] = await Promise.all([
+      deps.getProviderCatalog(client, deps.logger),
+      deps.getProviderCommandCatalogs(client, deps.logger),
+    ])
     return {
       client,
       binding: null,
@@ -135,15 +142,25 @@ export async function bootstrapSession(
   } else {
     providerRun = await deps.tryGetProviderRun(client, attachedSession.active_provider_run_id, deps.logger)
   }
-  providerCatalog = await deps.getProviderCatalog(client, deps.logger)
-  providerCommandCatalogs = await deps.getProviderCommandCatalogs(client, deps.logger)
+  const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
+  const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
-  const historyPage = visibleAgentId
-    ? await deps.getSessionHistory(client, session.id, null, visibleAgentId)
-    : { entries: [], next_cursor: null }
-  const promptHistoryEntries = await loadSessionPromptHistory(client, session.id, deps)
+  const historyPagePromise = visibleAgentId
+    ? deps.getSessionHistory(client, session.id, null, visibleAgentId)
+    : Promise.resolve({ entries: [], next_cursor: null })
+  const [
+    providerCatalog,
+    providerCommandCatalogs,
+    historyPage,
+    promptHistoryEntries,
+  ] = await Promise.all([
+    providerCatalogPromise,
+    providerCommandCatalogsPromise,
+    historyPagePromise,
+    loadSessionPromptHistory(client, session.id, deps),
+  ])
 
   return {
     client,

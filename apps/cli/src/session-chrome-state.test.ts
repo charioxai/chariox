@@ -134,7 +134,7 @@ test("deriveSessionStatusMode and footer hint reflect prompt and failure state",
   )
 })
 
-test("deriveAttachedFooterSummary includes focused agent, view mode, and hotkey hint", () => {
+test("deriveAttachedFooterSummary includes view mode and hotkey hint without focused agent details", () => {
   const summary = deriveAttachedFooterSummary({
     session: session({
       alias: "feature-refactor",
@@ -158,7 +158,7 @@ test("deriveAttachedFooterSummary includes focused agent, view mode, and hotkey 
 
   assert.equal(
     summary,
-    "Session feature-refactor • 2 CLIs connected • 2 agents in session • Agent: review (QA) [working] • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys",
+    "Session feature-refactor • 2 CLIs connected • 2 agents in session • Ctrl+C to stop • Tab cycles focus • Ctrl+P opens workflow • Ctrl+T hotkeys",
   )
 })
 
