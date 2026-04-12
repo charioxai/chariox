@@ -61,7 +61,7 @@ pub struct DaemonApp {
     config: DaemonConfig,
     started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
-    agents: AgentService,
+    pub(crate) agents: AgentService,
     attachments: AttachmentService,
     capabilities: ShellCommandService,
     directory_tree: DirectoryTreeService,
@@ -70,13 +70,13 @@ pub struct DaemonApp {
     screenshot_capabilities: ScreenshotCapabilityService,
     transfer_capabilities: FileTransferService,
     pty: PtyManager,
-    providers: ProviderProcessService,
+    pub(crate) providers: ProviderProcessService,
     pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
     pub(crate) tracked_provider_processes: BTreeMap<String, TrackedProviderProcess>,
     pub(crate) tracked_provider_run_processes: BTreeMap<String, String>,
     pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
     pub(crate) prompt_idle_timeout: Duration,
-    sessions: SessionService,
+    pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
@@ -321,19 +321,7 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .agents
-            .focus_agent(session_id, agent_id, &mut self.sessions)?;
-        if self.agents.get_session_agents(session_id).len() > 1 {
-            if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
-                self.sync_active_provider_run_for_agent(session_id, agent_id)?;
-            }
-            return Ok(agent);
-        }
-        if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
-            self.sync_active_provider_run_for_agent(session_id, agent_id)?;
-        }
-        Ok(agent)
+        self.kernel_sessions().focus_agent(session_id, agent_id)
     }
 
     /// Cycle focus to next agent in session
@@ -341,21 +329,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<AgentInstance>, DaemonError> {
-        let agent = self.agents.cycle_focus(session_id, &mut self.sessions)?;
-        if let Some(focused) = agent.as_ref() {
-            if self.agents.get_session_agents(session_id).len() > 1 {
-                if !self
-                    .should_defer_provider_run_sync_for_focus_change(session_id, focused.id())?
-                {
-                    self.sync_active_provider_run_for_agent(session_id, focused.id())?;
-                }
-                return Ok(agent);
-            }
-            if !self.should_defer_provider_run_sync_for_focus_change(session_id, focused.id())? {
-                self.sync_active_provider_run_for_agent(session_id, focused.id())?;
-            }
-        }
-        Ok(agent)
+        self.kernel_sessions().cycle_agent_focus(session_id)
     }
 
     /// Get all agents in a session
@@ -607,22 +581,8 @@ impl DaemonApp {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-
-        if provider_run.state() == crate::provider::ProviderRunState::Ended {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: provider_run_id.to_string(),
-                state: provider_run.state(),
-                operation: "resize terminal",
-            });
-        }
-
-        if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
-            return Ok(());
-        }
-
-        self.pty.resize(provider_run_id, cols, rows)
+        self.kernel_sessions()
+            .resize_provider_terminal(session_id, provider_run_id, cols, rows)
     }
 
     pub fn resize_terminal(
@@ -631,16 +591,8 @@ impl DaemonApp {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-
-        self.resize_provider_terminal(session_id, &provider_run_id, cols, rows)
+        self.kernel_sessions()
+            .resize_terminal(session_id, cols, rows)
     }
 
     pub fn pump_terminal_output(
