@@ -112,7 +112,16 @@ impl DaemonApp {
                 Ok(LocalDaemonResponse::SessionState { session })
             }
             LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
-                projection: DaemonHealthProjection::new(0, Vec::new(), Vec::new()),
+                projection: DaemonHealthProjection::new(
+                    0,
+                    Vec::new(),
+                    Vec::new(),
+                    self.provider_run_operation_lanes().queue_snapshots(),
+                    self.session_state_projection_store().health_snapshot(),
+                    self.provider_catalog_projection_store().health_snapshot(
+                        crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL,
+                    ),
+                ),
             }),
             LocalDaemonRequest::GetProviderRun(request) => {
                 self.handle_get_provider_run_request(request)

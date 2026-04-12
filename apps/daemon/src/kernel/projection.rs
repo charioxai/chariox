@@ -92,6 +92,30 @@ impl SessionStateProjectionStore {
             session_list.retain(|session| session.id() != session_id);
         }
     }
+
+    pub(crate) fn health_snapshot(&self) -> SessionProjectionHealthSnapshot {
+        let state = self
+            .state
+            .lock()
+            .expect("session projection lock should not be poisoned");
+        let sessions = state.session_states.values().collect::<Vec<_>>();
+        let active_prompts = sessions
+            .iter()
+            .flat_map(|session| session.prompt_states().values())
+            .filter(|state| state.active_prompt().is_some())
+            .count();
+        let queued_prompts = sessions
+            .iter()
+            .flat_map(|session| session.prompt_states().values())
+            .map(|state| state.queued_prompts().len())
+            .sum();
+        SessionProjectionHealthSnapshot {
+            projected_sessions: state.session_states.len(),
+            projected_session_list_entries: state.session_list.as_ref().map(Vec::len),
+            active_prompts,
+            queued_prompts,
+        }
+    }
 }
 
 fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) {
@@ -293,6 +317,29 @@ impl ProviderCatalogProjectionStore {
             .lock()
             .expect("provider catalog projection lock should not be poisoned") = None;
     }
+
+    pub(crate) fn health_snapshot(&self, ttl: Duration) -> ProviderCatalogHealthSnapshot {
+        let cached = self
+            .catalog
+            .lock()
+            .expect("provider catalog projection lock should not be poisoned")
+            .clone();
+        let Some(cached) = cached else {
+            return ProviderCatalogHealthSnapshot {
+                cached: false,
+                expired: false,
+                age_ms: None,
+                ttl_ms: ttl.as_millis() as u64,
+            };
+        };
+        let age = cached.cached_at.elapsed();
+        ProviderCatalogHealthSnapshot {
+            cached: true,
+            expired: age >= ttl,
+            age_ms: Some(age.as_millis() as u64),
+            ttl_ms: ttl.as_millis() as u64,
+        }
+    }
 }
 
 impl SessionSnapshotProjection {
@@ -334,10 +381,29 @@ impl ActorQueueSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionProjectionHealthSnapshot {
+    pub projected_sessions: usize,
+    pub projected_session_list_entries: Option<usize>,
+    pub active_prompts: usize,
+    pub queued_prompts: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCatalogHealthSnapshot {
+    pub cached: bool,
+    pub expired: bool,
+    pub age_ms: Option<u64>,
+    pub ttl_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonHealthProjection {
     pub metadata: ProjectionMetadata,
     pub session_command_lanes: Vec<ActorQueueSnapshot>,
     pub agent_command_lanes: Vec<ActorQueueSnapshot>,
+    pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
+    pub session_projection: SessionProjectionHealthSnapshot,
+    pub provider_catalog: ProviderCatalogHealthSnapshot,
 }
 
 impl DaemonHealthProjection {
@@ -345,11 +411,17 @@ impl DaemonHealthProjection {
         last_event_id: u64,
         session_command_lanes: Vec<ActorQueueSnapshot>,
         agent_command_lanes: Vec<ActorQueueSnapshot>,
+        provider_runtime_lanes: Vec<ActorQueueSnapshot>,
+        session_projection: SessionProjectionHealthSnapshot,
+        provider_catalog: ProviderCatalogHealthSnapshot,
     ) -> Self {
         Self {
             metadata: ProjectionMetadata::new(1, last_event_id),
             session_command_lanes,
             agent_command_lanes,
+            provider_runtime_lanes,
+            session_projection,
+            provider_catalog,
         }
     }
 }
@@ -357,7 +429,8 @@ impl DaemonHealthProjection {
 #[cfg(test)]
 mod tests {
     use crate::kernel::projection::{
-        ActorQueueSnapshot, DaemonHealthProjection, SessionSnapshotProjection,
+        ActorQueueSnapshot, DaemonHealthProjection, ProviderCatalogHealthSnapshot,
+        SessionProjectionHealthSnapshot, SessionSnapshotProjection,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -384,6 +457,19 @@ mod tests {
             7,
             vec![ActorQueueSnapshot::new("session-1", 128, 2)],
             vec![ActorQueueSnapshot::new("agent-1", 128, 1)],
+            vec![ActorQueueSnapshot::new("provider-run-1", 1, 1)],
+            SessionProjectionHealthSnapshot {
+                projected_sessions: 3,
+                projected_session_list_entries: Some(3),
+                active_prompts: 1,
+                queued_prompts: 2,
+            },
+            ProviderCatalogHealthSnapshot {
+                cached: true,
+                expired: false,
+                age_ms: Some(10),
+                ttl_ms: 5_000,
+            },
         );
 
         assert_eq!(projection.metadata.last_event_id, 7);
@@ -391,5 +477,11 @@ mod tests {
         assert_eq!(projection.session_command_lanes[0].queued_commands, 2);
         assert_eq!(projection.agent_command_lanes[0].lane_id, "agent-1");
         assert_eq!(projection.agent_command_lanes[0].queued_commands, 1);
+        assert_eq!(
+            projection.provider_runtime_lanes[0].lane_id,
+            "provider-run-1"
+        );
+        assert_eq!(projection.session_projection.active_prompts, 1);
+        assert!(projection.provider_catalog.cached);
     }
 }

@@ -6,6 +6,7 @@ use std::thread;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
+use crate::kernel::projection::ActorQueueSnapshot;
 use crate::session::PromptAttachment;
 
 use super::{
@@ -118,6 +119,25 @@ impl ProviderRunOperationLanes {
             .lock()
             .expect("provider run operation lane map poisoned");
         lanes.remove(provider_run_id);
+    }
+
+    pub(crate) fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
+        let lanes = self
+            .lanes
+            .lock()
+            .expect("provider run operation lane map poisoned");
+        let mut snapshots = lanes
+            .iter()
+            .map(|(provider_run_id, semaphore)| {
+                ActorQueueSnapshot::new(
+                    provider_run_id.clone(),
+                    1,
+                    usize::from(semaphore.available_permits() == 0),
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
+        snapshots
     }
 }
 

@@ -44,7 +44,7 @@ Status as of 2026-04-12:
 - Landed: `AgentRuntime` per-agent command mailboxes for prompt submit/cancel admission, so agent-scoped prompt commands are not rejected behind unrelated generic interactive work.
 - Landed: `SessionRuntime` per-session command mailboxes for attach/detach/focus/cycle/resize/end/delete admission, so session-scoped UI and lifecycle commands are isolated from the generic interactive queue and from other sessions.
 - Landed: session mailbox cleanup on successful end/delete, so closed session lanes do not stay registered indefinitely.
-- Landed: `DaemonHealthProjection` skeleton with session/agent mailbox queue snapshots exposed through `GetDaemonHealth`.
+- Landed: `DaemonHealthProjection` with session/agent mailbox queue snapshots, provider runtime operation-lane pressure, session projection counts, active/queued prompt counts, and provider-catalog cache status exposed through `GetDaemonHealth`.
 - Landed: `FocusedAgentProjection` shared by `SessionRuntime`, `AgentRuntime`, and router-side agent lifecycle refreshes, so focus changes captured by the session mailbox or local agent spawn/destroy responses let untargeted prompt submit/cancel route to the focused agent without synchronously taking the compatibility app lock for focus lookup.
 - Landed: `SessionStateProjectionStore` for warmed session/list/prompt-state snapshots. `GetSessionState` and warmed `ListSessions` can return projected session data without taking the compatibility app lock after the projection has been warmed by list responses, prompt/session/agent/workflow responses, prompt lifecycle publications, or transitional post-mutation snapshots.
 - Landed: `SessionHistoryProjectionStore` for warmed transcript history. `GetSessionHistory` can use a warmed session snapshot to load disk history without taking the compatibility app lock, then serve repeated warmed transcript reads from memory while successful appends keep the warmed projection current.
@@ -58,9 +58,8 @@ Still open:
 - move `KernelSessionService` and `KernelAgentService` state out of the compatibility facade and into the new `SessionRuntime`/`AgentRuntime` mailbox owners
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
 - broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models can be served without compatibility-store reads on the hot path
-- broaden daemon-health projections beyond queue snapshots so the health path reports more runtime/background state without compatibility-store reads
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
-- expand `DaemonHealthProjection` beyond actor queues to include background jobs, slow consumers, and workspace coordination
+- expand `DaemonHealthProjection` beyond actor/projection/cache state to include slow consumers and workspace coordination
 - introduce `WorkspaceCoordinator` claim enforcement for worktree/file/port collisions
 
 ## Non-Goals

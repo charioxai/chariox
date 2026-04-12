@@ -42,6 +42,7 @@ pub(crate) struct CommandRouter {
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
+    provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     history_store: SessionHistoryStore,
@@ -85,7 +86,7 @@ impl CommandRouter {
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
-            provider_runtime_lanes,
+            provider_runtime_lanes.clone(),
             focus_projection.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
@@ -102,6 +103,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            provider_runtime_lanes,
             focus_projection,
             session_projection,
             history_store,
@@ -148,6 +150,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            provider_runtime_lanes,
             focus_projection,
             session_projection,
             history_store,
@@ -307,6 +310,10 @@ impl CommandRouter {
             last_event_id,
             self.session_runtime.queue_snapshots().await,
             self.agent_runtime.queue_snapshots().await,
+            self.provider_runtime_lanes.queue_snapshots(),
+            self.session_projection.health_snapshot(),
+            self.provider_catalog_projection
+                .health_snapshot(PROVIDER_CATALOG_CACHE_TTL),
         )
     }
 
@@ -1266,6 +1273,10 @@ mod tests {
             .agent_command_lanes
             .iter()
             .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
+        assert_eq!(projection.session_projection.projected_sessions, 1);
+        assert_eq!(projection.session_projection.active_prompts, 1);
+        assert_eq!(projection.session_projection.queued_prompts, 0);
+        assert!(!projection.provider_catalog.cached);
     }
 
     #[tokio::test]
