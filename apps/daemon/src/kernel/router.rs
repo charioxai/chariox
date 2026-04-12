@@ -37,6 +37,7 @@ pub(crate) struct CommandRouter {
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
+    focus_projection: FocusedAgentProjection,
 }
 
 impl CommandRouter {
@@ -69,7 +70,7 @@ impl CommandRouter {
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
             session_capacity,
-            focus_projection,
+            focus_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -80,6 +81,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            focus_projection,
         }
     }
 
@@ -98,7 +100,7 @@ impl CommandRouter {
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
             crate::kernel::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
-            focus_projection,
+            focus_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -109,6 +111,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            focus_projection,
         }
     }
 
@@ -117,18 +120,22 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let focus_refresh = focus_projection_refresh(&request);
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
             });
         }
 
-        match command.priority {
+        let result = match command.priority {
             KernelCommandPriority::Interactive => self.dispatch_interactive(command, request).await,
             KernelCommandPriority::Normal | KernelCommandPriority::Background => {
                 execute_local_request_with_async_boundaries(&self.app, request).await
             }
-        }
+        };
+        self.apply_focus_projection_refresh(focus_refresh, &result)
+            .await;
+        result
     }
 
     #[allow(dead_code)]
@@ -188,6 +195,55 @@ impl CommandRouter {
                     })?;
             }
         }
+    }
+
+    async fn apply_focus_projection_refresh(
+        &self,
+        refresh: FocusProjectionRefresh,
+        result: &Result<LocalDaemonResponse, DaemonError>,
+    ) {
+        if result.is_err() {
+            return;
+        }
+        match refresh {
+            FocusProjectionRefresh::None => {}
+            FocusProjectionRefresh::AgentSpawn => {
+                if let Ok(LocalDaemonResponse::AgentSpawned { agent }) = result {
+                    self.focus_projection
+                        .update(agent.session_id(), Some(agent.id()))
+                        .await;
+                }
+            }
+            FocusProjectionRefresh::SnapshotSession { session_id } => {
+                let focused_agent_id = {
+                    let app = self.app.lock().await;
+                    app.sessions()
+                        .get_session(&session_id)
+                        .ok()
+                        .and_then(|session| session.focused_agent_id().map(str::to_string))
+                };
+                self.focus_projection
+                    .update(&session_id, focused_agent_id.as_deref())
+                    .await;
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FocusProjectionRefresh {
+    None,
+    AgentSpawn,
+    SnapshotSession { session_id: String },
+}
+
+fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefresh {
+    match request {
+        LocalDaemonRequest::SpawnAgent(_) => FocusProjectionRefresh::AgentSpawn,
+        LocalDaemonRequest::DestroyAgent(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
+        _ => FocusProjectionRefresh::None,
     }
 }
 
@@ -1002,6 +1058,113 @@ mod tests {
             LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {
                     assert_eq!(prompt.target_agent_id(), focused_agent.id());
+                }
+                _ => panic!("expected prompt to start"),
+            },
+            _ => panic!("unexpected prompt response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("spawned".to_string()),
+            provider: "claude-code".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        });
+        let spawn_command =
+            KernelCommand::from_local_request("cmd-spawn-projection", None, None, &spawn_request);
+        let spawned_agent = match router
+            .dispatch(spawn_command, spawn_request)
+            .await
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected spawn response"),
+        };
+
+        {
+            let mut app = app.lock().await;
+            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session_id.clone(),
+                    agent_id: Some(spawned_agent.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider run should launch");
+        }
+
+        let app_guard = app.lock().await;
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
+            prompt: "hello after spawn".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command = KernelCommand::from_local_request(
+            "cmd-prompt-after-spawn",
+            None,
+            None,
+            &prompt_request,
+        );
+        let prompt_router = router.clone();
+        let prompt_task =
+            tokio::spawn(
+                async move { prompt_router.dispatch(prompt_command, prompt_request).await },
+            );
+
+        let mut spawned_agent_lane_created = false;
+        for _ in 0..50 {
+            let projection = router.daemon_health_projection(0).await;
+            if projection
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == spawned_agent.id())
+            {
+                spawned_agent_lane_created = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            spawned_agent_lane_created,
+            "spawn should refresh focused-agent projection before followup prompt routing"
+        );
+
+        drop(app_guard);
+        let prompt_response = prompt_task
+            .await
+            .expect("prompt task should join")
+            .expect("prompt should submit");
+        match prompt_response {
+            LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+                PromptSubmissionOutcome::Started { prompt } => {
+                    assert_eq!(prompt.target_agent_id(), spawned_agent.id());
                 }
                 _ => panic!("expected prompt to start"),
             },

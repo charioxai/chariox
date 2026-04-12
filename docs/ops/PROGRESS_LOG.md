@@ -25,7 +25,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, resize, end, and delete admission so session UI/lifecycle commands are isolated from the generic interactive queue and from unrelated sessions.
 - Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
 - Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots exposed through `GetDaemonHealth`.
-- Added a session-owned focused-agent projection shared by `SessionRuntime` and `AgentRuntime`, so untargeted prompt submit/cancel routing can resolve the focused agent without taking the compatibility `DaemonApp` lock once session focus has been warmed through the session mailbox.
+- Added a session-owned focused-agent projection shared by `SessionRuntime`, `AgentRuntime`, and the router's agent-lifecycle response path, so untargeted prompt submit/cancel routing can resolve the focused agent without taking the compatibility `DaemonApp` lock once focus is warmed by session commands or local agent spawn/destroy responses.
 
 ### Remaining M4.5 work
 
