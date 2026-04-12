@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::kernel::projection::ActorQueueSnapshot;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 
@@ -28,9 +29,11 @@ struct AgentCommandEnvelope {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct AgentRuntime {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
 
@@ -42,6 +45,7 @@ impl AgentRuntime {
         Self {
             app,
             provider_runtime_lanes,
+            queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -153,6 +157,23 @@ impl AgentRuntime {
             rx,
         ));
         tx
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
+        let lanes = self.lanes.lock().await;
+        let mut snapshots = lanes
+            .iter()
+            .map(|(agent_id, sender)| {
+                ActorQueueSnapshot::new(
+                    agent_id.clone(),
+                    self.queue_limit,
+                    self.queue_limit.saturating_sub(sender.capacity()),
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
+        snapshots
     }
 }
 

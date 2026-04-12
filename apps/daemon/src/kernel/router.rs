@@ -8,6 +8,7 @@ use crate::error::DaemonError;
 use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
+use crate::kernel::projection::DaemonHealthProjection;
 use crate::kernel::session_actor::{SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
@@ -104,6 +105,18 @@ impl CommandRouter {
                 execute_local_request_with_async_boundaries(&self.app, request).await
             }
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn daemon_health_projection(
+        &self,
+        last_event_id: u64,
+    ) -> DaemonHealthProjection {
+        DaemonHealthProjection::new(
+            last_event_id,
+            self.session_runtime.queue_snapshots().await,
+            self.agent_runtime.queue_snapshots().await,
+        )
     }
 
     async fn dispatch_interactive(
@@ -686,6 +699,69 @@ mod tests {
             !router.session_runtime.has_lane(&session_id).await,
             "ending a session should remove its mailbox registration"
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_health_projection_reports_session_and_agent_mailboxes() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let focus_request = focus_request(&session_id, &agent_id);
+        let focus_command =
+            KernelCommand::from_local_request("cmd-focus", None, None, &focus_request);
+        router
+            .dispatch(focus_command, focus_request)
+            .await
+            .expect("focus should create a session lane");
+
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "hello from health projection test".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt should create an agent lane");
+
+        let projection = router.daemon_health_projection(99).await;
+        assert_eq!(projection.metadata.last_event_id, 99);
+        assert!(projection
+            .session_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
+        assert!(projection
+            .agent_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
     }
 
     #[tokio::test]

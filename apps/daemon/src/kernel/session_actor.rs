@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::attachment::AttachRequest;
 use crate::error::DaemonError;
+use crate::kernel::projection::ActorQueueSnapshot;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 
 const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -121,6 +122,23 @@ impl SessionRuntime {
     async fn remove_session_lane(&self, session_id: &str) {
         let mut lanes = self.lanes.lock().await;
         lanes.remove(session_id);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
+        let lanes = self.lanes.lock().await;
+        let mut snapshots = lanes
+            .iter()
+            .map(|(session_id, sender)| {
+                ActorQueueSnapshot::new(
+                    session_id.clone(),
+                    self.queue_limit,
+                    self.queue_limit.saturating_sub(sender.capacity()),
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
+        snapshots
     }
 
     #[cfg(test)]

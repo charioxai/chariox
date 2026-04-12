@@ -50,9 +50,49 @@ impl SessionSnapshotProjection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorQueueSnapshot {
+    pub lane_id: String,
+    pub queue_limit: usize,
+    pub queued_commands: usize,
+}
+
+impl ActorQueueSnapshot {
+    pub fn new(lane_id: impl Into<String>, queue_limit: usize, queued_commands: usize) -> Self {
+        Self {
+            lane_id: lane_id.into(),
+            queue_limit,
+            queued_commands,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonHealthProjection {
+    pub metadata: ProjectionMetadata,
+    pub session_command_lanes: Vec<ActorQueueSnapshot>,
+    pub agent_command_lanes: Vec<ActorQueueSnapshot>,
+}
+
+impl DaemonHealthProjection {
+    pub fn new(
+        last_event_id: u64,
+        session_command_lanes: Vec<ActorQueueSnapshot>,
+        agent_command_lanes: Vec<ActorQueueSnapshot>,
+    ) -> Self {
+        Self {
+            metadata: ProjectionMetadata::new(1, last_event_id),
+            session_command_lanes,
+            agent_command_lanes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::kernel::projection::SessionSnapshotProjection;
+    use crate::kernel::projection::{
+        ActorQueueSnapshot, DaemonHealthProjection, SessionSnapshotProjection,
+    };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
@@ -70,5 +110,20 @@ mod tests {
         assert_eq!(projection.metadata.last_event_id, 42);
         assert_eq!(projection.session.id(), session.id());
         assert_eq!(projection.session.agents().len(), 1);
+    }
+
+    #[test]
+    fn daemon_health_projection_records_actor_queue_snapshots() {
+        let projection = DaemonHealthProjection::new(
+            7,
+            vec![ActorQueueSnapshot::new("session-1", 128, 2)],
+            vec![ActorQueueSnapshot::new("agent-1", 128, 1)],
+        );
+
+        assert_eq!(projection.metadata.last_event_id, 7);
+        assert_eq!(projection.session_command_lanes[0].lane_id, "session-1");
+        assert_eq!(projection.session_command_lanes[0].queued_commands, 2);
+        assert_eq!(projection.agent_command_lanes[0].lane_id, "agent-1");
+        assert_eq!(projection.agent_command_lanes[0].queued_commands, 1);
     }
 }
