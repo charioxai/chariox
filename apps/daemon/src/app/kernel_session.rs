@@ -218,6 +218,7 @@ impl<'a> KernelSessionService<'a> {
         let session_id = session.id().to_string();
         let ended = self.end_session(&session_id)?;
         let deleted = self.app.sessions.delete_session(ended.id())?;
+        self.app.history_projection.remove(deleted.id());
         crate::logging::info_with_fields(
             "daemon.session",
             "session deleted",

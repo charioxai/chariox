@@ -6,10 +6,14 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::history::SessionHistoryStore;
 use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
-use crate::kernel::projection::{DaemonHealthProjection, SessionStateProjectionStore};
+use crate::kernel::projection::{
+    page_history_entries, DaemonHealthProjection, SessionHistoryProjectionStore,
+    SessionStateProjectionStore,
+};
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
@@ -21,7 +25,6 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
-use crate::session_history_page::paginate_session_history;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -40,6 +43,8 @@ pub(crate) struct CommandRouter {
     session_runtime: SessionRuntime,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
+    history_store: SessionHistoryStore,
+    history_projection: SessionHistoryProjectionStore,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -66,6 +71,7 @@ impl CommandRouter {
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
+        let (history_store, history_projection) = router_history_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -88,6 +94,8 @@ impl CommandRouter {
             session_runtime,
             focus_projection,
             session_projection,
+            history_store,
+            history_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -100,6 +108,7 @@ impl CommandRouter {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
+        let (history_store, history_projection) = router_history_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -122,6 +131,8 @@ impl CommandRouter {
             session_runtime,
             focus_projection,
             session_projection,
+            history_store,
+            history_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -144,6 +155,11 @@ impl CommandRouter {
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
         }
+        if let LocalDaemonRequest::GetSessionHistory(request) = &request {
+            if let Some(response) = self.projected_session_history_response(request).await {
+                return Ok(response);
+            }
+        }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
@@ -151,11 +167,18 @@ impl CommandRouter {
         }
 
         let session_refresh = session_projection_refresh(&request);
-        let result = match command.priority {
-            KernelCommandPriority::Interactive => self.dispatch_interactive(command, request).await,
-            KernelCommandPriority::Normal | KernelCommandPriority::Background => {
-                execute_local_request_with_async_boundaries(&self.app, request).await
+        let result = match request {
+            LocalDaemonRequest::GetSessionHistory(request) => {
+                self.execute_session_history_request(request).await
             }
+            request => match command.priority {
+                KernelCommandPriority::Interactive => {
+                    self.dispatch_interactive(command, request).await
+                }
+                KernelCommandPriority::Normal | KernelCommandPriority::Background => {
+                    execute_local_request_with_async_boundaries(&self.app, request).await
+                }
+            },
         };
         self.apply_focus_projection_refresh(focus_refresh, &result)
             .await;
@@ -163,6 +186,72 @@ impl CommandRouter {
             .await;
         self.apply_provider_launch_projection_state(&result).await;
         result
+    }
+
+    async fn projected_session_history_response(
+        &self,
+        request: &GetSessionHistoryRequest,
+    ) -> Option<LocalDaemonResponse> {
+        if let Some(page) = self.history_projection.page(
+            &request.session_id,
+            request.agent_id.as_deref(),
+            request.round_count,
+            request.max_chars,
+            request.before_entry_index,
+            request.before_entry_char_offset,
+        ) {
+            return Some(LocalDaemonResponse::SessionHistory {
+                entries: page.entries,
+                next_cursor: page.next_cursor,
+            });
+        }
+
+        let session = self.session_projection.get(&request.session_id).await?;
+        self.execute_session_history_request_from_session(session, request.clone())
+            .await
+            .ok()
+    }
+
+    async fn execute_session_history_request(
+        &self,
+        request: GetSessionHistoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let session = {
+            let app = self.app.lock().await;
+            app.sessions().get_session(&request.session_id)?
+        };
+        self.execute_session_history_request_from_session(session, request)
+            .await
+    }
+
+    async fn execute_session_history_request_from_session(
+        &self,
+        session: crate::session::RuntimeSession,
+        request: GetSessionHistoryRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let history = self.history_store.clone();
+        let history_projection = self.history_projection.clone();
+        tokio::task::spawn_blocking(move || {
+            let entries = history.load(&session)?;
+            history_projection.update_entries(session.id(), entries.clone());
+            let page = page_history_entries(
+                entries,
+                request.agent_id.as_deref(),
+                request.round_count,
+                request.max_chars,
+                request.before_entry_index,
+                request.before_entry_char_offset,
+            );
+            Ok(LocalDaemonResponse::SessionHistory {
+                entries: page.entries,
+                next_cursor: page.next_cursor,
+            })
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "load session history",
+            message: error.to_string(),
+        })?
     }
 
     #[allow(dead_code)]
@@ -276,6 +365,7 @@ impl CommandRouter {
         }
         for session_id in response_removed_session_ids(response) {
             self.session_projection.remove(session_id).await;
+            self.history_projection.remove(session_id);
             refreshed_session_ids.push(session_id.to_string());
         }
 
@@ -343,6 +433,15 @@ impl CommandRouter {
                 .remove(session_id);
         }
     }
+}
+
+fn router_history_stores(
+    app: &Arc<Mutex<DaemonApp>>,
+) -> (SessionHistoryStore, SessionHistoryProjectionStore) {
+    let app = app
+        .try_lock()
+        .expect("CommandRouter should be created before holding the app lock");
+    (app.history_store(), app.session_history_projection_store())
 }
 
 #[derive(Debug)]
@@ -764,14 +863,10 @@ async fn execute_session_history_request(
     };
 
     tokio::task::spawn_blocking(move || {
-        let mut entries = history.load(&session)?;
-        if let Some(agent_id) = request.agent_id.as_deref() {
-            entries.retain(|entry| {
-                entry.agent_id.is_none() || entry.agent_id.as_deref() == Some(agent_id)
-            });
-        }
-        let page = paginate_session_history(
-            &entries,
+        let entries = history.load(&session)?;
+        let page = page_history_entries(
+            entries,
+            request.agent_id.as_deref(),
             request.round_count,
             request.max_chars,
             request.before_entry_index,
@@ -813,15 +908,16 @@ mod tests {
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
+    use tokio::time::{timeout, Duration};
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-        ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
-        SubmitPromptRequest,
+        GetDaemonHealthRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+        SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -1482,6 +1578,166 @@ mod tests {
                 assert_eq!(session.agents().len(), 1);
             }
             _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_history_load_uses_warmed_session_projection_without_app_lock() {
+        let mut config = DaemonConfig::for_tests();
+        config.session_history_read_delay_ms = 25;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-history-load",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.append_user_prompt_history(
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "history from disk",
+            &[],
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command =
+            KernelCommand::from_local_request("cmd-history-state-warm", None, None, &state_request);
+        router
+            .dispatch(state_command, state_request)
+            .await
+            .expect("state read should warm session projection");
+
+        let app_guard = app.lock().await;
+        let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            round_count: Some(10),
+            max_chars: None,
+            before_entry_index: None,
+            before_entry_char_offset: None,
+        });
+        let history_command = KernelCommand::from_local_request(
+            "cmd-history-without-app-lock",
+            None,
+            None,
+            &history_request,
+        );
+        let history_router = router.clone();
+        let history_task = tokio::spawn(async move {
+            history_router
+                .dispatch(history_command, history_request)
+                .await
+        });
+
+        let history_response = timeout(Duration::from_millis(250), history_task)
+            .await
+            .expect("history load should finish while app lock is held")
+            .expect("history task should join")
+            .expect("history should resolve");
+        drop(app_guard);
+
+        match history_response {
+            LocalDaemonResponse::SessionHistory { entries, .. } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].entry.text.trim_end(), "history from disk");
+            }
+            _ => panic!("unexpected history response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn warmed_session_history_projection_tracks_appends_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-history-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.append_user_prompt_history(&session_id, attachment.id(), &agent_id, "first", &[]);
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            round_count: Some(10),
+            max_chars: None,
+            before_entry_index: None,
+            before_entry_char_offset: None,
+        });
+        let history_command =
+            KernelCommand::from_local_request("cmd-history-warm", None, None, &history_request);
+        router
+            .dispatch(history_command, history_request)
+            .await
+            .expect("initial history read should warm projection");
+
+        {
+            let app = app.lock().await;
+            app.append_user_prompt_history(&session_id, attachment.id(), &agent_id, "second", &[]);
+        }
+
+        let app_guard = app.lock().await;
+        let projected_history_request =
+            LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                round_count: Some(10),
+                max_chars: None,
+                before_entry_index: None,
+                before_entry_char_offset: None,
+            });
+        let projected_history_command = KernelCommand::from_local_request(
+            "cmd-history-projection",
+            None,
+            None,
+            &projected_history_request,
+        );
+        let history_router = router.clone();
+        let history_task = tokio::spawn(async move {
+            history_router
+                .dispatch(projected_history_command, projected_history_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            history_task.is_finished(),
+            "warmed GetSessionHistory should be served from the history projection without app lock access"
+        );
+        drop(app_guard);
+
+        let history_response = history_task
+            .await
+            .expect("history task should join")
+            .expect("history should resolve");
+        match history_response {
+            LocalDaemonResponse::SessionHistory { entries, .. } => {
+                let texts = entries
+                    .into_iter()
+                    .map(|entry| entry.entry.text.trim_end().to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(texts, vec!["first".to_string(), "second".to_string()]);
+            }
+            _ => panic!("unexpected history response"),
         }
     }
 

@@ -35,6 +35,7 @@ use crate::execution_lease::{
     ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::kernel::projection::{page_history_entries, SessionHistoryProjectionStore};
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
@@ -44,7 +45,6 @@ use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptStatus, RuntimeSession, SessionConfigState,
     SessionService,
 };
-use crate::session_history_page::paginate_session_history;
 pub use crate::session_history_page::{
     SessionHistoryCursor, SessionHistoryPage, SessionHistoryPageEntry,
 };
@@ -80,6 +80,7 @@ pub struct DaemonApp {
     pub(crate) prompt_idle_timeout: Duration,
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
+    history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -169,6 +170,7 @@ impl DaemonApp {
                 config.session_history_root.clone(),
                 config.session_history_read_delay_ms,
             )?,
+            history_projection: SessionHistoryProjectionStore::default(),
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -246,6 +248,10 @@ impl DaemonApp {
 
     pub(crate) fn history_store(&self) -> SessionHistoryStore {
         self.history.clone()
+    }
+
+    pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
+        self.history_projection.clone()
     }
 
     pub fn sessions_mut(&mut self) -> &mut SessionService {
@@ -348,7 +354,10 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
-        self.history.load(&session)
+        let entries = self.history.load(&session)?;
+        self.history_projection
+            .update_entries(session.id(), entries.clone());
+        Ok(entries)
     }
 
     pub fn session_history_page(
@@ -360,14 +369,10 @@ impl DaemonApp {
         before_entry_index: Option<usize>,
         before_entry_char_offset: Option<usize>,
     ) -> Result<SessionHistoryPage, DaemonError> {
-        let mut entries = self.session_history(session_id)?;
-        if let Some(agent_id) = agent_id {
-            entries.retain(|entry| {
-                entry.agent_id.is_none() || entry.agent_id.as_deref() == Some(agent_id)
-            });
-        }
-        Ok(paginate_session_history(
-            &entries,
+        let entries = self.session_history(session_id)?;
+        Ok(page_history_entries(
+            entries,
+            agent_id,
             round_count,
             max_chars,
             before_entry_index,
@@ -1107,6 +1112,7 @@ impl DaemonApp {
             .destroy_agent(&agent.backing_agent_id, &mut self.sessions);
         let _ = self.sessions.end_session(&agent.backing_session_id);
         let _ = self.sessions.delete_session(&agent.backing_session_id);
+        self.history_projection.remove(&agent.backing_session_id);
         Ok(agent)
     }
 

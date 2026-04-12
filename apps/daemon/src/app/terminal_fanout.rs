@@ -138,6 +138,8 @@ impl DaemonApp {
                     "error": error.to_string(),
                 }),
             );
+        } else {
+            self.history_projection.append(entry);
         }
     }
     pub(crate) fn echo_prompt_to_other_attachments(
