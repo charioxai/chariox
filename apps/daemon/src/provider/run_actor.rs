@@ -887,6 +887,10 @@ fn execute_output_poll_command(
     run: &RuntimeProviderRun,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
     let run_id = run.id();
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(std::time::Duration::from_millis(750));
+        return Ok(None);
+    }
     if run.adapter_key() == "codex" {
         let (slot, mut state) = match take_codex_runtime(codex_runs, run_id) {
             Ok((slot, state)) => (slot, state),

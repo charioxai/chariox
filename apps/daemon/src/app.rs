@@ -679,7 +679,7 @@ impl DaemonApp {
             return Ok(Vec::new());
         }
 
-        if provider_run.adapter_key() == "opencode" || provider_run.adapter_key() == "codex" {
+        if self.providers.run_uses_structured_prompt_io(&provider_run) {
             return self.pump_structured_output(
                 session_id,
                 provider_run_id,

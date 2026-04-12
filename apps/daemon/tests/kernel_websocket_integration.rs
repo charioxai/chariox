@@ -8,8 +8,8 @@ use arroba_daemon::local::{
     AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest, FocusAgentRequest,
     GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
     GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    ListSessionsRequest, LocalDaemonRequest, ResizeTerminalRequest, RunShellCapabilityRequest,
-    SpawnAgentRequest, SubmitPromptRequest,
+    ListSessionsRequest, LocalDaemonRequest, PumpTerminalOutputRequest, ResizeTerminalRequest,
+    RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -20,6 +20,8 @@ use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+const UX_RESPONSE_BUDGET: Duration = Duration::from_millis(250);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
@@ -1223,7 +1225,7 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
     let submit_response = wait_for_response_with_timeout(
         &mut socket,
         "submit-slow-structured-prompt",
-        Duration::from_millis(250),
+        UX_RESPONSE_BUDGET,
     )
     .await;
     assert!(
@@ -1231,21 +1233,12 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         "prompt should ack before slow structured submit finishes: {submit_response}"
     );
 
-    send_frame(
-        &mut socket,
-        json!({
-            "type": "request",
-            "request_id": "state-during-slow-submit",
-            "request": LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
-                session_id: session_id.clone(),
-            }),
-        }),
-    )
-    .await;
-    let state_response = wait_for_response_with_timeout(
+    let state_response = send_request_with_ux_budget(
         &mut socket,
         "state-during-slow-submit",
-        Duration::from_millis(250),
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
     )
     .await;
     assert!(
@@ -1255,22 +1248,13 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         "session state should remain readable while structured submit is slow: {state_response}"
     );
 
-    send_frame(
-        &mut socket,
-        json!({
-            "type": "request",
-            "request_id": "focus-during-slow-submit",
-            "request": LocalDaemonRequest::FocusAgent(FocusAgentRequest {
-                session_id: session_id.clone(),
-                agent_id: second_agent_id.clone(),
-            }),
-        }),
-    )
-    .await;
-    let focus_response = wait_for_response_with_timeout(
+    let focus_response = send_request_with_ux_budget(
         &mut socket,
         "focus-during-slow-submit",
-        Duration::from_millis(250),
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: second_agent_id.clone(),
+        }),
     )
     .await;
     assert_eq!(
@@ -1279,23 +1263,14 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         "focus should ack while structured submit is slow: {focus_response}"
     );
 
-    send_frame(
-        &mut socket,
-        json!({
-            "type": "request",
-            "request_id": "resize-during-slow-submit",
-            "request": LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
-                session_id: session_id.clone(),
-                cols: 132,
-                rows: 43,
-            }),
-        }),
-    )
-    .await;
-    let resize_response = wait_for_response_with_timeout(
+    let resize_response = send_request_with_ux_budget(
         &mut socket,
         "resize-during-slow-submit",
-        Duration::from_millis(250),
+        LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+            session_id: session_id.clone(),
+            cols: 132,
+            rows: 43,
+        }),
     )
     .await;
     assert_eq!(
@@ -1304,25 +1279,16 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         "resize should ack while structured submit is slow: {resize_response}"
     );
 
-    send_frame(
-        &mut socket,
-        json!({
-            "type": "request",
-            "request_id": "second-agent-submit-during-first-slow-submit",
-            "request": LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session_id.clone(),
-                attachment_id: attachment_id.clone(),
-                target_agent_id: Some(second_agent_id.clone()),
-                prompt: "second agent prompt should ack during another run's provider I/O".to_string(),
-                attachments: Vec::new(),
-            }),
-        }),
-    )
-    .await;
-    let second_submit_response = wait_for_response_with_timeout(
+    let second_submit_response = send_request_with_ux_budget(
         &mut socket,
         "second-agent-submit-during-first-slow-submit",
-        Duration::from_millis(250),
+        LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment_id.clone(),
+            target_agent_id: Some(second_agent_id.clone()),
+            prompt: "second agent prompt should ack during another run's provider I/O".to_string(),
+            attachments: Vec::new(),
+        }),
     )
     .await;
     assert!(
@@ -1331,28 +1297,107 @@ async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_s
         "another agent's prompt should ack while the first provider submit is slow: {second_submit_response}"
     );
 
-    send_frame(
-        &mut socket,
-        json!({
-            "type": "request",
-            "request_id": "cancel-during-slow-submit",
-            "request": LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
-                session_id: session_id.clone(),
-                attachment_id: attachment_id.clone(),
-            }),
-        }),
-    )
-    .await;
-    let cancel_response = wait_for_response_with_timeout(
+    let cancel_response = send_request_with_ux_budget(
         &mut socket,
         "cancel-during-slow-submit",
-        Duration::from_millis(250),
+        LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment_id.clone(),
+        }),
     )
     .await;
     assert!(
         response_variant(&cancel_response, "PromptCancelled")["cancellation"]["prompt"]["status"]
             == "Cancelling",
         "cancel should ack while structured provider abort is slow: {cancel_response}"
+    );
+
+    sleep(Duration::from_millis(800)).await;
+    let state_during_abort_response = send_request_with_ux_budget(
+        &mut socket,
+        "state-during-slow-abort",
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
+    )
+    .await;
+    assert!(
+        response_variant(&state_during_abort_response, "SessionState")["session"].is_object(),
+        "session state should remain readable while structured abort is slow: {state_during_abort_response}"
+    );
+
+    let focus_during_abort_response = send_request_with_ux_budget(
+        &mut socket,
+        "focus-during-slow-abort",
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&focus_during_abort_response, "AgentFocused")["agent"]["id"].as_str(),
+        Some(agent_id.as_str()),
+        "focus should ack while structured abort is slow: {focus_during_abort_response}"
+    );
+
+    let resize_during_abort_response = send_request_with_ux_budget(
+        &mut socket,
+        "resize-during-slow-abort",
+        LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+            session_id: session_id.clone(),
+            cols: 120,
+            rows: 38,
+        }),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&resize_during_abort_response, "TerminalResized")["rows"].as_u64(),
+        Some(38),
+        "resize should ack while structured abort is slow: {resize_during_abort_response}"
+    );
+
+    let poll_response = send_request_with_ux_budget(
+        &mut socket,
+        "start-slow-output-poll",
+        LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment_id.clone(),
+        }),
+    )
+    .await;
+    assert!(
+        response_variant(&poll_response, "TerminalOutput")["records"].is_array(),
+        "terminal output polling should ack before structured output poll finishes: {poll_response}"
+    );
+    sleep(Duration::from_millis(50)).await;
+
+    let state_during_poll_response = send_request_with_ux_budget(
+        &mut socket,
+        "state-during-slow-output-poll",
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
+    )
+    .await;
+    assert!(
+        response_variant(&state_during_poll_response, "SessionState")["session"].is_object(),
+        "session state should remain readable while structured output poll is slow: {state_during_poll_response}"
+    );
+
+    let focus_during_poll_response = send_request_with_ux_budget(
+        &mut socket,
+        "focus-during-slow-output-poll",
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: second_agent_id.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&focus_during_poll_response, "AgentFocused")["agent"]["id"].as_str(),
+        Some(second_agent_id.as_str()),
+        "focus should ack while structured output poll is slow: {focus_during_poll_response}"
     );
 
     let _ = shutdown_tx.send(());
@@ -1718,6 +1763,23 @@ async fn send_request(
     )
     .await;
     wait_for_response(socket, request_id).await
+}
+
+async fn send_request_with_ux_budget(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    request_id: &str,
+    request: LocalDaemonRequest,
+) -> Value {
+    send_frame(
+        socket,
+        json!({
+            "type": "request",
+            "request_id": request_id,
+            "request": request,
+        }),
+    )
+    .await;
+    wait_for_response_with_timeout(socket, request_id, UX_RESPONSE_BUDGET).await
 }
 
 async fn send_frame(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>, frame: Value) {
