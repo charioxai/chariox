@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -8,7 +9,7 @@ use crate::error::DaemonError;
 use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
-use crate::kernel::projection::DaemonHealthProjection;
+use crate::kernel::projection::{DaemonHealthProjection, SessionStateProjectionStore};
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
@@ -19,7 +20,7 @@ use crate::local::{
     GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
     LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
-use crate::provider::ProviderRunOperationLanes;
+use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::session_history_page::paginate_session_history;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -38,6 +39,8 @@ pub(crate) struct CommandRouter {
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
     focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl CommandRouter {
@@ -62,6 +65,8 @@ impl CommandRouter {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
         let focus_projection = FocusedAgentProjection::default();
+        let session_projection = SessionStateProjectionStore::default();
+        let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
             provider_runtime_lanes,
@@ -82,6 +87,8 @@ impl CommandRouter {
             agent_runtime,
             session_runtime,
             focus_projection,
+            session_projection,
+            pending_provider_launch_sessions,
         }
     }
 
@@ -92,6 +99,8 @@ impl CommandRouter {
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let focus_projection = FocusedAgentProjection::default();
+        let session_projection = SessionStateProjectionStore::default();
+        let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
@@ -112,6 +121,8 @@ impl CommandRouter {
             agent_runtime,
             session_runtime,
             focus_projection,
+            session_projection,
+            pending_provider_launch_sessions,
         }
     }
 
@@ -121,12 +132,20 @@ impl CommandRouter {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let focus_refresh = focus_projection_refresh(&request);
+        if let LocalDaemonRequest::GetSessionState(request) = &request {
+            if !self.has_pending_provider_launch(&request.session_id).await {
+                if let Some(session) = self.session_projection.get(&request.session_id).await {
+                    return Ok(LocalDaemonResponse::SessionState { session });
+                }
+            }
+        }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
             });
         }
 
+        let session_refresh = session_projection_refresh(&request);
         let result = match command.priority {
             KernelCommandPriority::Interactive => self.dispatch_interactive(command, request).await,
             KernelCommandPriority::Normal | KernelCommandPriority::Background => {
@@ -135,6 +154,9 @@ impl CommandRouter {
         };
         self.apply_focus_projection_refresh(focus_refresh, &result)
             .await;
+        self.apply_session_projection_refresh(session_refresh, &result)
+            .await;
+        self.apply_provider_launch_projection_state(&result).await;
         result
     }
 
@@ -228,6 +250,91 @@ impl CommandRouter {
             }
         }
     }
+
+    async fn apply_session_projection_refresh(
+        &self,
+        refresh: SessionProjectionRefresh,
+        result: &Result<LocalDaemonResponse, DaemonError>,
+    ) {
+        let response = match result {
+            Ok(response) => response,
+            Err(_) => return,
+        };
+
+        let mut refreshed_session_ids = Vec::new();
+        for session in response_sessions(response) {
+            refreshed_session_ids.push(session.id().to_string());
+            self.session_projection.update(session).await;
+        }
+        for session_id in response_removed_session_ids(response) {
+            self.session_projection.remove(session_id).await;
+            refreshed_session_ids.push(session_id.to_string());
+        }
+
+        let mut snapshot_session_ids = refresh.session_ids(response);
+        snapshot_session_ids.sort();
+        snapshot_session_ids.dedup();
+        for session_id in snapshot_session_ids {
+            let session = {
+                let app = self.app.lock().await;
+                app.local_api_session_snapshot(&session_id).ok()
+            };
+            if let Some(session) = session {
+                refreshed_session_ids.push(session.id().to_string());
+                self.session_projection.update(session).await;
+            } else {
+                self.session_projection.remove(&session_id).await;
+                refreshed_session_ids.push(session_id);
+            }
+        }
+
+        refreshed_session_ids.sort();
+        refreshed_session_ids.dedup();
+        for session_id in refreshed_session_ids {
+            self.clear_provider_launch_pending_if_settled(&session_id)
+                .await;
+        }
+    }
+
+    async fn apply_provider_launch_projection_state(
+        &self,
+        result: &Result<LocalDaemonResponse, DaemonError>,
+    ) {
+        if let Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) = result {
+            self.pending_provider_launch_sessions
+                .lock()
+                .await
+                .insert(provider_run.session_id().to_string());
+        }
+    }
+
+    async fn has_pending_provider_launch(&self, session_id: &str) -> bool {
+        self.pending_provider_launch_sessions
+            .lock()
+            .await
+            .contains(session_id)
+    }
+
+    async fn clear_provider_launch_pending_if_settled(&self, session_id: &str) {
+        if !self.has_pending_provider_launch(session_id).await {
+            return;
+        }
+        let is_still_starting = {
+            let app = self.app.lock().await;
+            app.sessions()
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| session.active_provider_run_id().map(str::to_string))
+                .and_then(|provider_run_id| app.providers().get_run(&provider_run_id).ok())
+                .is_some_and(|run| run.state() == ProviderRunState::Starting)
+        };
+        if !is_still_starting {
+            self.pending_provider_launch_sessions
+                .lock()
+                .await
+                .remove(session_id);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -244,6 +351,129 @@ fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefr
             session_id: request.session_id.clone(),
         },
         _ => FocusProjectionRefresh::None,
+    }
+}
+
+#[derive(Debug)]
+enum SessionProjectionRefresh {
+    None,
+    SnapshotRequestSession { session_id: String },
+    SnapshotAttachmentResponse,
+    SnapshotAgentResponse,
+}
+
+impl SessionProjectionRefresh {
+    fn session_ids(&self, response: &LocalDaemonResponse) -> Vec<String> {
+        match self {
+            SessionProjectionRefresh::None => Vec::new(),
+            SessionProjectionRefresh::SnapshotRequestSession { session_id } => {
+                vec![session_id.clone()]
+            }
+            SessionProjectionRefresh::SnapshotAttachmentResponse => match response {
+                LocalDaemonResponse::SessionAttached { attachment }
+                | LocalDaemonResponse::SessionDetached { attachment } => {
+                    vec![attachment.session_id().to_string()]
+                }
+                _ => Vec::new(),
+            },
+            SessionProjectionRefresh::SnapshotAgentResponse => match response {
+                LocalDaemonResponse::AgentSpawned { agent }
+                | LocalDaemonResponse::AgentDestroyed { agent }
+                | LocalDaemonResponse::AgentFocused { agent } => {
+                    vec![agent.session_id().to_string()]
+                }
+                LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
+                    vec![agent.session_id().to_string()]
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+}
+
+fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
+    match request {
+        LocalDaemonRequest::AttachToSession(_) | LocalDaemonRequest::DetachFromSession(_) => {
+            SessionProjectionRefresh::SnapshotAttachmentResponse
+        }
+        LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::CycleAgentFocus(_)
+        | LocalDaemonRequest::SpawnAgent(_)
+        | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
+        LocalDaemonRequest::CompletePrompt(request) => {
+            SessionProjectionRefresh::SnapshotRequestSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::CancelActivePrompt(request) => {
+            SessionProjectionRefresh::SnapshotRequestSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::PumpTerminalOutput(request) => {
+            SessionProjectionRefresh::SnapshotRequestSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::PollRuntimeNotices(request) => {
+            SessionProjectionRefresh::SnapshotRequestSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        LocalDaemonRequest::ResizeTerminal(request) => {
+            SessionProjectionRefresh::SnapshotRequestSession {
+                session_id: request.session_id.clone(),
+            }
+        }
+        _ => SessionProjectionRefresh::None,
+    }
+}
+
+fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::RuntimeSession> {
+    match response {
+        LocalDaemonResponse::SessionCreated { session, .. }
+        | LocalDaemonResponse::SessionResolved { session }
+        | LocalDaemonResponse::SessionState { session }
+        | LocalDaemonResponse::PromptSubmitted { session, .. }
+        | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::SessionEnded { session }
+        | LocalDaemonResponse::SessionAliased { session }
+        | LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
+        | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
+        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
+        | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
+        | LocalDaemonResponse::WorkflowRunResumed { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
+        | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => vec![session.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
+    match response {
+        LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
+        _ => Vec::new(),
     }
 }
 
@@ -581,8 +811,8 @@ mod tests {
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest,
-        SubmitPromptRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+        SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -1169,6 +1399,80 @@ mod tests {
                 _ => panic!("expected prompt to start"),
             },
             _ => panic!("unexpected prompt response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_session_state_uses_projection_after_prompt_submit_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "warm session projection".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-prompt-state", None, None, &prompt_request);
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt submit should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command =
+            KernelCommand::from_local_request("cmd-state-projection", None, None, &state_request);
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "warm GetSessionState should be served from the session projection without app lock access"
+        );
+
+        drop(app_guard);
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert!(session.active_prompt_for_agent(&agent_id).is_some());
+                assert_eq!(session.agents().len(), 1);
+            }
+            _ => panic!("unexpected state response"),
         }
     }
 

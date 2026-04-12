@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -27,6 +31,28 @@ pub struct SessionSnapshotProjection {
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
     pub provider_run: Option<RuntimeProviderRun>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SessionStateProjectionStore {
+    sessions: Arc<Mutex<HashMap<String, RuntimeSession>>>,
+}
+
+impl SessionStateProjectionStore {
+    pub(crate) async fn get(&self, session_id: &str) -> Option<RuntimeSession> {
+        self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    pub(crate) async fn update(&self, session: RuntimeSession) {
+        self.sessions
+            .lock()
+            .await
+            .insert(session.id().to_string(), session);
+    }
+
+    pub(crate) async fn remove(&self, session_id: &str) {
+        self.sessions.lock().await.remove(session_id);
+    }
 }
 
 impl SessionSnapshotProjection {

@@ -26,12 +26,13 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
 - Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots exposed through `GetDaemonHealth`.
 - Added a session-owned focused-agent projection shared by `SessionRuntime`, `AgentRuntime`, and the router's agent-lifecycle response path, so untargeted prompt submit/cancel routing can resolve the focused agent without taking the compatibility `DaemonApp` lock once focus is warmed by session commands or local agent spawn/destroy responses.
+- Added the first router-owned session state projection store. `GetSessionState` now serves warmed session snapshots from the projection without taking the compatibility `DaemonApp` lock; the router refreshes the projection from session-bearing responses and transitional post-mutation snapshots for prompt/session/agent/poll commands.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
-- Expand actor-owned projections beyond focused-agent routing so prompt state, session snapshots, and provider/read models no longer require synchronous compatibility-store access.
+- Expand actor-owned projections beyond focused-agent routing and warmed session snapshots so prompt state, session lists, transcript pages, and provider/read models no longer require synchronous compatibility-store access.
 - Make session/list/transcript/provider reads projection-first instead of requiring synchronous `DaemonApp` access on the hot path.
 - Expand daemon health projections beyond actor queue depths to background jobs, slow consumers, and workspace coordination.
 - Introduce `WorkspaceCoordinator` claim enforcement before parallel relay/workflow scale-out.
