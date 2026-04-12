@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +18,11 @@ use tokio_tungstenite::{
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus, RemoteMachineRecord};
+use crate::kernel::command::KernelCommand;
+use crate::kernel::event_log::{EventLog, ReplayGap, ReplayOutcome};
+use crate::kernel::projection::SessionSnapshotProjection;
+use crate::kernel::router::CommandRouter;
+use crate::local::{LocalDaemonRequest, RelayStatus, RemoteMachineRecord};
 use crate::provider::RuntimeProviderRun;
 use crate::session::RuntimeSession;
 use crate::terminal::{
@@ -31,6 +35,7 @@ const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
+const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +43,12 @@ const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecti
 enum KernelIncomingFrame {
     Request {
         request_id: String,
+        #[serde(default)]
+        command_id: Option<String>,
+        #[serde(default)]
+        causation_id: Option<String>,
+        #[serde(default)]
+        correlation_id: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -71,6 +82,12 @@ enum KernelOutgoingFrame {
         event_id: u64,
         event: Box<KernelEvent>,
     },
+}
+
+#[derive(Debug, Clone)]
+struct CachedCommandResult {
+    response: Box<Option<Value>>,
+    error: Option<KernelTransportError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +128,13 @@ pub(crate) enum KernelEvent {
         session_id: String,
         resumed_from_event_id: Option<u64>,
     },
+    ReplayGap {
+        session_id: String,
+        requested_from_event_id: u64,
+        first_retained_event_id: Option<u64>,
+        latest_event_id: Option<u64>,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -119,16 +143,21 @@ struct KernelSubscription {
     attachment_id: String,
 }
 
-#[derive(Debug, Clone)]
-struct PersistedKernelEvent {
-    event_id: u64,
-    event: KernelEvent,
+#[derive(Debug)]
+struct KernelTransportRuntime {
+    event_log: EventLog<KernelEvent>,
+    command_results: Mutex<BTreeMap<String, CachedCommandResult>>,
+    command_result_order: Mutex<VecDeque<String>>,
 }
 
-#[derive(Debug, Default)]
-struct KernelTransportRuntime {
-    event_counter: AtomicU64,
-    recent_events: Mutex<BTreeMap<String, VecDeque<PersistedKernelEvent>>>,
+impl Default for KernelTransportRuntime {
+    fn default() -> Self {
+        Self {
+            event_log: EventLog::new(RECENT_EVENT_LIMIT),
+            command_results: Mutex::new(BTreeMap::new()),
+            command_result_order: Mutex::new(VecDeque::new()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -164,6 +193,7 @@ where
         })?;
     let pump_app = Arc::clone(&app);
     let runtime = Arc::new(KernelTransportRuntime::default());
+    let router = Arc::new(CommandRouter::new(Arc::clone(&app)));
 
     tokio::pin!(shutdown);
 
@@ -198,8 +228,9 @@ where
                 })?;
                 let app = Arc::clone(&app);
                 let runtime = Arc::clone(&runtime);
+                let router = Arc::clone(&router);
                 tokio::spawn(async move {
-                    let _ = handle_kernel_connection(app, runtime, stream).await;
+                    let _ = handle_kernel_connection(app, runtime, router, stream).await;
                 });
             }
         }
@@ -209,6 +240,7 @@ where
 async fn handle_kernel_connection(
     app: Arc<Mutex<DaemonApp>>,
     runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
     let socket = accept_async(stream)
@@ -285,6 +317,7 @@ async fn handle_kernel_connection(
                 handle_incoming_payload(
                     &app,
                     &runtime,
+                    &router,
                     &connection_state,
                     &outgoing_tx,
                     &close_tx,
@@ -297,6 +330,7 @@ async fn handle_kernel_connection(
                 handle_incoming_payload(
                     &app,
                     &runtime,
+                    &router,
                     &connection_state,
                     &outgoing_tx,
                     &close_tx,
@@ -322,106 +356,10 @@ async fn handle_kernel_connection(
     Ok(())
 }
 
-async fn handle_local_request_with_async_boundaries(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: LocalDaemonRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    match request {
-        LocalDaemonRequest::RelayStatus(_) => {
-            let (config, relay_state) = {
-                let app = app.lock().await;
-                (app.config().clone(), app.relay_client_state())
-            };
-            let connected = relay_state.read().await.connected();
-            Ok(LocalDaemonResponse::RelayStatus {
-                status: RelayStatus {
-                    configured: config.relay_url.is_some() && config.relay_token.is_some(),
-                    connected,
-                    relay_url: config.relay_url,
-                    relay_token_configured: config.relay_token.is_some(),
-                    daemon_id: config.daemon_id,
-                    machine_id: config.host_machine_id,
-                    machine_alias: config.host_machine_alias,
-                },
-            })
-        }
-        LocalDaemonRequest::ListRemoteMachines(_) => {
-            let config = {
-                let app = app.lock().await;
-                app.config().clone()
-            };
-            let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
-            let machines = crate::local::provider_requests::remote_machine_records(
-                machines,
-                &config.host_machine_id,
-            );
-            Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
-        }
-        LocalDaemonRequest::ListRemoteMachineKernels(request) => {
-            let config = {
-                let app = app.lock().await;
-                app.config().clone()
-            };
-            let machine_ref =
-                crate::local::provider_requests::resolve_registered_or_raw_machine_ref(
-                    &request.machine_ref,
-                );
-            let kernels = crate::transport::relay_discovery::list_live_kernels_for_machine(
-                &config,
-                &machine_ref,
-            )
-            .await?;
-            Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
-                machine_ref,
-                kernels,
-            })
-        }
-        request => {
-            if is_blocking_local_request(&request) {
-                let app = Arc::clone(app);
-                let handle = tokio::runtime::Handle::current();
-                return tokio::task::spawn_blocking(move || {
-                    handle.block_on(async move {
-                        let mut app = app.lock().await;
-                        app.handle_local_request(request)
-                    })
-                })
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "run blocking kernel request",
-                    message: error.to_string(),
-                })?;
-            }
-            let mut app = app.lock().await;
-            app.handle_local_request(request)
-        }
-    }
-}
-
-fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
-            | LocalDaemonRequest::GetProviderAuthStatus(_)
-            | LocalDaemonRequest::StartProviderLogin(_)
-            | LocalDaemonRequest::LogoutProvider(_)
-            | LocalDaemonRequest::ListProviderProcesses(_)
-            | LocalDaemonRequest::TeardownProviderProcesses(_)
-            | LocalDaemonRequest::GetSessionHistory(_)
-            | LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
-            | LocalDaemonRequest::ReadFile(_)
-            | LocalDaemonRequest::EditFile(_)
-            | LocalDaemonRequest::InspectGit(_)
-            | LocalDaemonRequest::CaptureScreenshot(_)
-            | LocalDaemonRequest::StoreTransferredFile(_)
-    )
-}
-
 async fn handle_incoming_payload(
     app: &Arc<Mutex<DaemonApp>>,
     runtime: &Arc<KernelTransportRuntime>,
+    router: &Arc<CommandRouter>,
     connection_state: &Arc<Mutex<ConnectionState>>,
     outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
@@ -454,14 +392,56 @@ async fn handle_incoming_payload(
     match frame {
         KernelIncomingFrame::Request {
             request_id,
+            command_id,
+            causation_id,
+            correlation_id,
             request,
         } => {
-            let app = Arc::clone(app);
+            let command = KernelCommand::from_local_request(
+                command_id.unwrap_or_else(|| request_id.clone()),
+                correlation_id,
+                causation_id,
+                &request,
+            );
+            if let Some(cached) = cached_command_result(runtime, &command.command_id).await {
+                let _ = try_send_outgoing_frame(
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    KernelOutgoingFrame::Response {
+                        request_id,
+                        response: cached.response,
+                        error: cached.error,
+                    },
+                    command.session_id.as_deref(),
+                    command.attachment_id.as_deref(),
+                );
+                return;
+            }
+            crate::logging::info_with_fields(
+                "daemon.kernel_transport",
+                "kernel command accepted",
+                serde_json::json!({
+                    "request_id": request_id,
+                    "command_id": command.command_id,
+                    "command_type": command.command_type,
+                    "correlation_id": command.correlation_id,
+                    "priority": format!("{:?}", command.priority),
+                    "session_id": command.session_id,
+                    "attachment_id": command.attachment_id,
+                    "agent_id": command.agent_id,
+                }),
+            );
+            let runtime = Arc::clone(runtime);
+            let router = Arc::clone(router);
             let outgoing_tx = outgoing_tx.clone();
             let close_tx = close_tx.clone();
             let close_requested = Arc::clone(close_requested);
             tokio::spawn(async move {
-                let response = handle_local_request_with_async_boundaries(&app, request).await;
+                let command_id = command.command_id.clone();
+                let session_id = command.session_id.clone();
+                let attachment_id = command.attachment_id.clone();
+                let response = router.dispatch(command, request).await;
                 let outgoing = match response {
                     Ok(response) => KernelOutgoingFrame::Response {
                         request_id,
@@ -476,13 +456,14 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
+                cache_command_result(&runtime, command_id, &outgoing).await;
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
                     outgoing,
-                    None,
-                    None,
+                    session_id.as_deref(),
+                    attachment_id.as_deref(),
                 );
             });
         }
@@ -501,7 +482,7 @@ async fn handle_incoming_payload(
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
-            replay_recent_events(
+            let replay_result = replay_recent_events(
                 runtime,
                 outgoing_tx,
                 close_tx,
@@ -511,6 +492,22 @@ async fn handle_incoming_payload(
                 resume_from_event_id,
             )
             .await;
+            let replay_gap = match replay_result {
+                ReplaySubscriptionResult::Gap(gap) => {
+                    emit_replay_gap_snapshot(
+                        app,
+                        runtime,
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &session_id,
+                        &attachment_id,
+                    )
+                    .await;
+                    Some(gap)
+                }
+                ReplaySubscriptionResult::Complete | ReplaySubscriptionResult::NoCursor => None,
+            };
             {
                 let mut state = connection_state.lock().await;
                 if let Some(task) = state.watch_task.take() {
@@ -541,6 +538,11 @@ async fn handle_incoming_payload(
                     response: Box::new(Some(serde_json::json!({
                         "ok": true,
                         "resumed_from_event_id": resume_from_event_id,
+                        "replay_gap": replay_gap.as_ref().map(|gap| serde_json::json!({
+                            "requested_from_event_id": gap.requested_from_event_id,
+                            "first_retained_event_id": gap.first_retained_event_id,
+                            "latest_event_id": gap.latest_event_id,
+                        })),
                     }))),
                     error: None,
                 },
@@ -920,18 +922,20 @@ async fn emit_kernel_event(
     session_id: Option<&str>,
     attachment_id: Option<&str>,
 ) -> bool {
-    let event_id = next_event_id(&runtime.event_counter);
-    if let Some(session_id) = event_session_id(&event).or(session_id) {
-        let mut recent_events = runtime.recent_events.lock().await;
-        let entry = recent_events.entry(session_id.to_string()).or_default();
-        entry.push_back(PersistedKernelEvent {
-            event_id,
-            event: event.clone(),
-        });
-        while entry.len() > RECENT_EVENT_LIMIT {
-            entry.pop_front();
-        }
-    }
+    let stream_id = event_stream_id(&event, session_id);
+    let event_id = if let Some(stream_id) = stream_id.as_deref() {
+        runtime
+            .event_log
+            .append(stream_id.to_string(), event.clone())
+            .await
+            .event_id
+    } else {
+        runtime
+            .event_log
+            .append("daemon", event.clone())
+            .await
+            .event_id
+    };
     try_send_outgoing_frame(
         outgoing_tx,
         close_tx,
@@ -945,6 +949,13 @@ async fn emit_kernel_event(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplaySubscriptionResult {
+    NoCursor,
+    Complete,
+    Gap(ReplayGap),
+}
+
 async fn replay_recent_events(
     runtime: &Arc<KernelTransportRuntime>,
     outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
@@ -953,19 +964,37 @@ async fn replay_recent_events(
     session_id: &str,
     attachment_id: &str,
     resume_from_event_id: Option<u64>,
-) {
+) -> ReplaySubscriptionResult {
     let Some(cursor) = resume_from_event_id else {
-        return;
+        return ReplaySubscriptionResult::NoCursor;
     };
-    let recent_events = runtime.recent_events.lock().await;
-    let Some(events) = recent_events.get(session_id) else {
-        return;
+    let stream_id = session_stream_id(session_id);
+    let replay = runtime.event_log.replay_after(&stream_id, cursor).await;
+
+    let events = match replay {
+        ReplayOutcome::Replayed(events) => events,
+        ReplayOutcome::Gap(gap) => {
+            let _ = emit_kernel_event(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelEvent::ReplayGap {
+                    session_id: session_id.to_string(),
+                    requested_from_event_id: gap.requested_from_event_id,
+                    first_retained_event_id: gap.first_retained_event_id,
+                    latest_event_id: gap.latest_event_id,
+                    message: "Replay cursor is outside the retained kernel event window; refresh the session projection.".to_string(),
+                },
+                Some(session_id),
+                Some(attachment_id),
+            )
+            .await;
+            return ReplaySubscriptionResult::Gap(gap);
+        }
     };
 
     for persisted in events {
-        if persisted.event_id <= cursor {
-            continue;
-        }
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }
@@ -980,7 +1009,7 @@ async fn replay_recent_events(
             Some(session_id),
             Some(attachment_id),
         ) {
-            return;
+            return ReplaySubscriptionResult::Complete;
         }
     }
 
@@ -989,7 +1018,17 @@ async fn replay_recent_events(
         close_tx,
         close_requested,
         KernelOutgoingFrame::Event {
-            event_id: next_event_id(&runtime.event_counter),
+            event_id: runtime
+                .event_log
+                .append(
+                    stream_id,
+                    KernelEvent::TransportResumed {
+                        session_id: session_id.to_string(),
+                        resumed_from_event_id: Some(cursor),
+                    },
+                )
+                .await
+                .event_id,
             event: Box::new(KernelEvent::TransportResumed {
                 session_id: session_id.to_string(),
                 resumed_from_event_id: Some(cursor),
@@ -998,6 +1037,92 @@ async fn replay_recent_events(
         Some(session_id),
         Some(attachment_id),
     );
+    ReplaySubscriptionResult::Complete
+}
+
+async fn emit_replay_gap_snapshot(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    session_id: &str,
+    attachment_id: &str,
+) {
+    let snapshot = {
+        let mut app = app.lock().await;
+        build_session_snapshot(&mut app, session_id)
+    };
+    match snapshot {
+        Ok((session, provider_run)) => {
+            let _ = emit_kernel_event(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelEvent::SessionSnapshot {
+                    session: Box::new(session),
+                    provider_run: Box::new(provider_run),
+                },
+                Some(session_id),
+                Some(attachment_id),
+            )
+            .await;
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.kernel_transport",
+                "kernel replay gap snapshot failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "attachment_id": attachment_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+async fn cached_command_result(
+    runtime: &Arc<KernelTransportRuntime>,
+    command_id: &str,
+) -> Option<CachedCommandResult> {
+    runtime
+        .command_results
+        .lock()
+        .await
+        .get(command_id)
+        .cloned()
+}
+
+async fn cache_command_result(
+    runtime: &Arc<KernelTransportRuntime>,
+    command_id: String,
+    frame: &KernelOutgoingFrame,
+) {
+    let KernelOutgoingFrame::Response {
+        response, error, ..
+    } = frame
+    else {
+        return;
+    };
+    {
+        let mut results = runtime.command_results.lock().await;
+        results.insert(
+            command_id.clone(),
+            CachedCommandResult {
+                response: response.clone(),
+                error: error.clone(),
+            },
+        );
+    }
+    let mut order = runtime.command_result_order.lock().await;
+    order.push_back(command_id);
+    while order.len() > COMMAND_RESULT_CACHE_LIMIT {
+        if let Some(expired) = order.pop_front() {
+            runtime.command_results.lock().await.remove(&expired);
+        }
+    }
 }
 
 fn try_send_outgoing_frame(
@@ -1045,7 +1170,19 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
     }
+}
+
+fn event_stream_id(event: &KernelEvent, fallback_session_id: Option<&str>) -> Option<String> {
+    event_session_id(event)
+        .or(fallback_session_id)
+        .map(session_stream_id)
+        .or_else(|| Some("daemon".to_string()))
+}
+
+fn session_stream_id(session_id: &str) -> String {
+    format!("session:{session_id}")
 }
 
 pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
@@ -1074,7 +1211,8 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RelayStatusChanged { .. }
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::Heartbeat { .. }
-        | KernelEvent::TransportResumed { .. } => true,
+        | KernelEvent::TransportResumed { .. }
+        | KernelEvent::ReplayGap { .. } => true,
     }
 }
 
@@ -1120,14 +1258,8 @@ fn build_session_snapshot(
     app: &mut DaemonApp,
     session_id: &str,
 ) -> Result<(RuntimeSession, Option<RuntimeProviderRun>), DaemonError> {
-    let mut session = app.sessions().get_session(session_id)?;
-    let agents = app.agents().get_session_agents(session_id);
-    session.set_agents(agents);
-    app.project_session_runtime_view(&mut session);
-    let provider_run = session
-        .active_provider_run_id()
-        .and_then(|provider_run_id| app.providers().get_run(provider_run_id).ok());
-    Ok((session, provider_run))
+    let projection = SessionSnapshotProjection::from_daemon_app(app, session_id, 0)?;
+    Ok((projection.session, projection.provider_run))
 }
 
 fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
@@ -1135,8 +1267,4 @@ fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
         operation: "serialize kernel websocket frame",
         message: error.to_string(),
     })
-}
-
-fn next_event_id(counter: &AtomicU64) -> u64 {
-    counter.fetch_add(1, Ordering::Relaxed) + 1
 }

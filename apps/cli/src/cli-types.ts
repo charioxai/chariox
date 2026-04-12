@@ -409,6 +409,18 @@ export type SessionBinding = {
   nextHistoryCursor: SessionHistoryCursor | null
 }
 
+export type BootstrapDeferredState = {
+  providerCatalog?: Promise<ProviderCatalog>
+  providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
+  attachedHistory?: Promise<{
+    sessionId: string
+    visibleAgentId: string | null
+    historyEntries: TranscriptEntry[]
+    promptHistoryEntries: string[]
+    nextHistoryCursor: SessionHistoryCursor | null
+  }>
+}
+
 export type BootstrapState = {
   client: LocalIpcClient
   binding: SessionBinding | null
@@ -417,6 +429,7 @@ export type BootstrapState = {
   providerCommandCatalogs: ProviderCommandCatalogs
   options: CliOptions
   preferences: ArrobaPreferences
+  deferred?: BootstrapDeferredState
 }
 
 export function normalizeAgentPromptState(

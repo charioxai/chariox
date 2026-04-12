@@ -80,6 +80,8 @@ Architecturally, the daemon is now better thought of as a node runtime:
 - it will eventually route both local and relay-attached members in the same session domain
 - it will eventually own workspace coordination to reduce edit/integration conflicts between top-level agents
 
+The primary CLI path now uses the kernel WebSocket event stream. The longer-term daemon implementation target is an actor/event/projection kernel: commands enter through a router, actors own mutation, ordered kernel events drive recovery and replay, and clients read projections. The current `DaemonApp` shape should be treated as a compatibility facade while that refactor lands, not as the long-term concurrency model.
+
 The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
 
 ### `apps/cli`
@@ -113,6 +115,7 @@ The Prisma schema is the initial persistence model for the same core entities de
 - `docs/RUNNING_LOCAL.md`: how to run the current local daemon + CLI path
 - `docs/LOGGING.md`: shared logging setup, configuration, and inspection
 - `docs/ROADMAP.md`: milestone plan
+- `docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md`: implementation plan for the actor/event/projection kernel refactor
 - `docs/CONTRIBUTING.md`: contributor workflow and testing expectations
 - `docs/M0_IMPLEMENTATION_CHECKLIST.md`: M0 definition of done and execution checklist
 - `docs/M1_IMPLEMENTATION_CHECKLIST.md`: detailed execution checklist for the core session runtime milestone

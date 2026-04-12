@@ -149,8 +149,11 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
-  assert.deepEqual(bootstrap.binding?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
-  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, ["hi"])
+  assert.deepEqual(bootstrap.binding?.historyEntries, [])
+  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
+  const deferredHistory = await bootstrap.deferred?.attachedHistory
+  assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
 })
 
 test("bootstrapSession reattaches and hydrates missed output from history catch-up", async () => {
@@ -260,8 +263,10 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
 
   assert.deepEqual(calls, ["attach", "session", "load-run", "catchup", "session"])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
-  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, ["hello"])
-  assert.equal(bootstrap.binding?.historyEntries[0]?.role, "assistant")
-  assert.equal(bootstrap.binding?.historyEntries[0]?.text, "while you were away")
-  assert.equal(bootstrap.binding?.historyEntries[0]?.historyDeferred, true)
+  assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
+  const deferredHistory = await bootstrap.deferred?.attachedHistory
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hello"])
+  assert.equal(deferredHistory?.historyEntries[0]?.role, "assistant")
+  assert.equal(deferredHistory?.historyEntries[0]?.text, "while you were away")
+  assert.equal(deferredHistory?.historyEntries[0]?.historyDeferred, true)
 })

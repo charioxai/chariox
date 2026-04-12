@@ -22,6 +22,8 @@ A lightweight, repo-native task board so contributors and future agents can cont
     - long-idle heartbeat/liveness validation on the kernel WebSocket path
 - [ ] **M4-005** Add multi-machine session ownership and resume behavior on the OpenCode-first path
   - Note: Close machine reassignment/resume semantics before moving to multi-platform clients or more providers.
+- [ ] **M4.5-001** Implement the kernel runtime refactor
+  - Note: Move hot-path daemon work from the global `DaemonApp` mutex toward the actor/event/projection kernel described in `docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md`. Start with command/event contracts, replay-gap behavior, projections, and the interactive command lane before migrating actors and relay/runtime background work.
 
 ## Backlog
 

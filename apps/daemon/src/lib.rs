@@ -7,6 +7,7 @@ pub(crate) mod env_lock;
 pub mod error;
 pub mod execution_lease;
 pub mod history;
+pub mod kernel;
 pub mod kernel_transport;
 pub mod local;
 pub mod logging;

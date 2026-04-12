@@ -1,8 +1,8 @@
 import type { ArrobaLogger } from "./logging.js"
 import type { ArrobaPreferences } from "./preferences.js"
 import { extractPromptHistoryEntries, pushPromptHistoryEntry } from "./prompt-history.js"
-import type { ProviderCatalog } from "./provider-catalog.js"
-import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
+import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
 
 import type {
@@ -142,25 +142,18 @@ export async function bootstrapSession(
   } else {
     providerRun = await deps.tryGetProviderRun(client, attachedSession.active_provider_run_id, deps.logger)
   }
-  const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
-  const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
-  const historyPagePromise = visibleAgentId
-    ? deps.getSessionHistory(client, session.id, null, visibleAgentId)
-    : Promise.resolve({ entries: [], next_cursor: null })
-  const [
-    providerCatalog,
-    providerCommandCatalogs,
-    historyPage,
-    promptHistoryEntries,
-  ] = await Promise.all([
-    providerCatalogPromise,
-    providerCommandCatalogsPromise,
-    historyPagePromise,
-    loadSessionPromptHistory(client, session.id, deps),
-  ])
+  const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
+  const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
+  const attachedHistoryPromise = hydrateAttachedHistory(
+    client,
+    session.id,
+    visibleAgentId,
+    hydratedSession,
+    deps,
+  )
 
   return {
     client,
@@ -169,15 +162,43 @@ export async function bootstrapSession(
       attachment,
       providerRun,
       createdSession,
-      historyEntries: deps.prepareHistoryEntries(historyPage.entries, hydratedSession),
-      promptHistoryEntries,
-      nextHistoryCursor: historyPage.next_cursor,
+      historyEntries: [],
+      promptHistoryEntries: [],
+      nextHistoryCursor: null,
     },
     sessions,
-    providerCatalog,
-    providerCommandCatalogs,
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
     options,
     preferences,
+    deferred: {
+      providerCatalog: providerCatalogPromise,
+      providerCommandCatalogs: providerCommandCatalogsPromise,
+      attachedHistory: attachedHistoryPromise,
+    },
+  }
+}
+
+async function hydrateAttachedHistory(
+  client: LocalIpcClient,
+  sessionId: string,
+  visibleAgentId: string | null,
+  session: RuntimeSession,
+  deps: Pick<BootstrapDeps, "getSessionHistory" | "prepareHistoryEntries">,
+) {
+  const historyPagePromise = visibleAgentId
+    ? deps.getSessionHistory(client, sessionId, null, visibleAgentId)
+    : Promise.resolve({ entries: [], next_cursor: null })
+  const [historyPage, promptHistoryEntries] = await Promise.all([
+    historyPagePromise,
+    loadSessionPromptHistory(client, sessionId, deps),
+  ])
+  return {
+    sessionId,
+    visibleAgentId,
+    historyEntries: deps.prepareHistoryEntries(historyPage.entries, session),
+    promptHistoryEntries,
+    nextHistoryCursor: historyPage.next_cursor,
   }
 }
 

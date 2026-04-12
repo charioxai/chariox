@@ -10,7 +10,8 @@ Current milestone status:
 - M1 completed on 2026-03-17
 - M2 completed on 2026-03-18
 - M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
-- M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization and workflow polish remain open
+- M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization, immediate CLI responsiveness, and workflow polish remain open
+- M4.5 is now the kernel runtime refactor phase: the daemon implementation should move from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
 
 ## 1. Roadmap Goals
@@ -32,6 +33,7 @@ Current milestone status:
 - M2: End-to-End Local OpenCode Baseline
 - M3: OpenCode Completion and Local Capability Hardening
 - M4: OpenCode Local Runtime Completion
+- M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M6: Remote Agents and Machine Membership
 - M7: Additional Clients
@@ -47,6 +49,7 @@ Rollout priority:
 
 - first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
 - then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, workflow runtime behavior, and local hardening
+- then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then add remote agents and machine membership on top of relay
 - then add additional clients on the same daemon/protocol model
@@ -160,7 +163,7 @@ Status:
   - kernel-facing WebSocket transport for the TypeScript CLI
   - managed vs external OpenCode endpoint binding
 - kernel-CLI transport hardening is now part of the delivered slice:
-  - durable pushed `event_id` values
+  - monotonic pushed `event_id` values with bounded in-process replay
   - resumable subscribe via `resume_from_event_id`
   - heartbeat/liveness events
   - client reconnect/resubscribe behavior
@@ -278,6 +281,41 @@ Exit criteria:
 - the one-provider development cycle can be considered closed without depending on a second provider for validation
 - the primary kernel/CLI path has transport-contract, daemon-integration, and live smoke coverage strong enough that transport refactors do not depend on compile-only verification
 - local workflow runtime behavior is stable enough that remote transport work does not need to also solve local runtime ambiguity
+
+## M4.5 - Kernel Runtime Refactor
+
+Status:
+
+- planned after the current UX-focused M4 stabilization slice
+- architectural target is documented in [ARCHITECTURE.md](/Users/miguel/arroba/docs/ARCHITECTURE.md)
+- implementation plan is documented in [M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md](/Users/miguel/arroba/docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md)
+
+Problem statement:
+
+- the daemon is already the correct authority boundary, but too much live implementation still flows through a coarse shared application object
+- a global `DaemonApp` lock is incompatible with an operating-system-like agent orchestration runtime where prompt submit, cancel, focus, resize, relay resume, provider output, workflow scheduling, history scans, capability jobs, and health inspection all run concurrently
+- splitting the lock into many smaller locks is not enough; the runtime needs clear ownership, ordered events, and read projections
+
+Outcomes:
+
+- introduce `DaemonKernel` as the composition root for command routing, event logging, projection updates, actor lifecycle, transport gateways, and background executors
+- define first-class `KernelCommand`, `KernelEvent`, command ids, event sequence ids, causation ids, and correlation ids for local and future relay paths
+- move prompt submit, cancel, focus, attach, detach, resize, and subscription resume onto an `InteractiveCommandLane`
+- create actor or mailbox ownership for sessions, agents, provider runs, workflow runs, capability execution, and relay runtime state
+- introduce a projection store for session lists, session snapshots, transcript pages, workflow inspection, provider process ledgers, and daemon health snapshots
+- retire `Arc<Mutex<DaemonApp>>` from hot request paths; keep a compatibility facade only while handlers migrate
+- keep provider catalog discovery, history hydration, capability jobs, provider process inspection, and relay bookkeeping off the interactive command path
+- add explicit bounded queues and backpressure policies for slow consumers and background work
+- make replay-window and replay-gap behavior explicit before relay scale-out
+- introduce daemon-owned worktree/collision coordination as part of the kernel boundary
+
+Exit criteria:
+
+- prompt submit, cancel, focus, terminal resize, attach, detach, and event subscription resume do not wait behind history reads, capability jobs, provider discovery, provider output fanout, or relay background work
+- the primary CLI reads projections and reconciles pushed events without requiring synchronous whole-session refreshes on the hot path
+- daemon tests cover command ordering, idempotent command retry, actor isolation, projection consistency, reconnect/replay gaps, slow consumers, worktree collision, and backpressure
+- live CLI drills show immediate local feedback and stable daemon responsiveness while background work is intentionally slowed
+- the relay milestone can build on the same command/event/projection model without turning relay into workspace authority
 
 ## M5 - Relay and Remote Transport
 

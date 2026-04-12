@@ -6,6 +6,12 @@ This document defines the target first-class control subsystem for Arroba and re
 
 Today, control behavior exists, but it is split across prompt lifecycle, workflow runtime tools, provider adapters, and scheduler mailboxing. The goal of this plan is to converge those pieces into one explicit transport-owned control channel.
 
+Terminology note:
+
+- This document's `ControlService` is the provider/runtime control subsystem.
+- The M4.5 kernel refactor separately defines an `InteractiveCommandLane` for prompt submit, cancel, focus, attach, detach, resize, and subscription resume.
+- Do not use "control lane" for that interactive kernel command priority lane; reserve "control" for the operations in this document.
+
 ## Target Model
 
 Arroba should have one structured control subsystem with these properties:

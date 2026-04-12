@@ -2685,7 +2685,10 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const appendUserPrompt = (text: string, agentId?: string | null) => {
     recordTurnActivity("prompt_submit")
     turnCompletionConfirmed = false
+    cancelPendingTurnCompletion()
     const targetAgentId = agentId ?? focusedAgentId()
+    submittingAgentId = targetAgentId
+    setStreamingAgentId(targetAgentId)
     markAgentBusy(targetAgentId)
     clearExpandedTurnsForAgent(targetAgentId)
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
@@ -2709,19 +2712,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setWorking(true)
     renderSessionChromeBoundary()
     scrollTranscriptToBottom()
-  }
-
-  const beginPromptSubmission = (agentId?: string | null) => {
-    recordTurnActivity("prompt_submit")
-    turnCompletionConfirmed = false
-    cancelPendingTurnCompletion()
-    const targetAgentId = agentId ?? focusedAgentId()
-    submittingAgentId = targetAgentId
-    markAgentBusy(targetAgentId)
-    setStreamingAgentId(targetAgentId)
-    setSubmitting(true)
-    setWorking(true)
-    renderSessionChromeBoundary()
   }
 
   const appendNotice = (text: string, emphasis: TranscriptEntry["emphasis"] = "muted") => {
@@ -4676,6 +4666,68 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setNextHistoryCursor(historyPage.next_cursor)
   }
 
+  const applyDeferredBootstrap = () => {
+    const deferred = props.bootstrap.deferred
+    if (!deferred) {
+      return
+    }
+
+    void deferred.providerCatalog?.then((catalog) => {
+      setProviderCatalogState(catalog)
+      updateSessionChrome()
+    }).catch((error) => {
+      appLogger?.warn("failed to hydrate provider catalog after bootstrap", {
+        error: formatError(error),
+      })
+    })
+
+    void deferred.providerCommandCatalogs?.then((catalogs) => {
+      setProviderCommandCatalogState(catalogs)
+    }).catch((error) => {
+      appLogger?.warn("failed to hydrate provider command catalog after bootstrap", {
+        error: formatError(error),
+      })
+    })
+
+    void deferred.attachedHistory?.then(async (history) => {
+      if (attachmentState()?.session_id !== history.sessionId) {
+        return
+      }
+      setPromptHistoryEntries(history.promptHistoryEntries)
+      setPromptHistoryIndex(null)
+      setPromptHistoryDraft(null)
+      if (!history.visibleAgentId) {
+        setNextHistoryCursor(history.nextHistoryCursor)
+        return
+      }
+      const visibleAgentId = history.visibleAgentId
+      const preparedEntries = history.historyEntries.map((entry) => ({ ...entry }))
+      if (preparedEntries.length === 0) {
+        setNextHistoryCursor(history.nextHistoryCursor)
+        return
+      }
+      setAgentPaneEntries((current) => ({
+        ...current,
+        [visibleAgentId]: preparedEntries.map((entry) => ({ ...entry })),
+      }))
+      setAgentPanePreview(visibleAgentId, formatTranscriptPreview(preparedEntries))
+      if (entries.filter(Boolean).length === 0) {
+        replaceTranscriptEntries(preparedEntries, visibleAgentId)
+      } else {
+        await prependTranscriptEntries(reindexTranscriptEntries(preparedEntries, entryCounter()))
+      }
+      setNextHistoryCursor(history.nextHistoryCursor)
+    }).catch((error) => {
+      appLogger?.warn("failed to hydrate attached history after bootstrap", {
+        error: formatError(error),
+      })
+    })
+  }
+
+  onMount(() => {
+    applyDeferredBootstrap()
+  })
+
   const {
     hydrateCurrentAttachedSession,
     finalizeAttachedSessionBinding,
@@ -5462,7 +5514,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           return
         }
         submissionUi = beginSubmittedPromptUi(rawPrompt)
-        beginPromptSubmission(targetAgentId)
+        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), targetAgentId)
         const forwardedPrompt = `${providerNamespaceCommand.forwardedCommand}\n`
         const response = await submitPromptWithRecovery(
           client,
@@ -5479,7 +5531,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
         applySessionState(payload.session)
         setStreamingAgentId(submittedTargetAgentId)
-        appendUserPrompt(renderPromptTranscript(providerNamespaceCommand.raw), submittedTargetAgentId)
         setWorking(true)
         updateSessionChrome()
         recordPromptAreaHistoryEntry(sessionState().id, rawPrompt)
@@ -5572,7 +5623,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
         return
       }
       submissionUi = beginSubmittedPromptUi(rawPrompt)
-      beginPromptSubmission(targetAgentId)
+      appendUserPrompt(renderPromptTranscript(prompt), targetAgentId)
       const response = await submitPromptWithRecovery(
         client,
         sessionState().id,
@@ -5588,7 +5639,6 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       const submittedTargetAgentId = submittedPromptTargetAgentId(payload) ?? targetAgentId
       applySessionState(payload.session)
       setStreamingAgentId(submittedTargetAgentId)
-      appendUserPrompt(renderPromptTranscript(prompt), submittedTargetAgentId)
       setWorking(true)
       updateSessionChrome()
       const outcomeName = firstVariantName(payload.outcome)

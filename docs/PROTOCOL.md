@@ -187,6 +187,7 @@ Common fields:
 - `lane` when applicable (`capability` | `control`)
 - `type` (event/action identifier)
 - `request_id` when request/response matching is needed
+- `command_id` when the message represents a kernel command or a command-caused event
 - `session_id`
 - `agent_id` when agent-scoped
 - `provider_run_id` when provider-scoped
@@ -194,7 +195,7 @@ Common fields:
 - `node_run_id` when node-scoped
 - `target_node_id` or `target_node_run_id` when routing workflow handoffs
 - `payload`
-- `meta` (timestamps, source attachment id, trace id)
+- `meta` (timestamps, source attachment id, causation id, correlation id, trace id)
 
 Future unified node-transport fields should also allow:
 
@@ -224,9 +225,11 @@ Current implementation notes:
 - the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
 - subscriptions carry optional `resume_from_event_id`
-- the kernel emits durable `event_id` values on pushed events
+- the kernel emits monotonic in-process `event_id` values on pushed events
 - heartbeat events are part of the current transport so the CLI can detect and recover stale connections
 - reconnect/resubscribe is now part of the intended local CLI behavior
+- current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
+- event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
 
 Minimum request set:
 
@@ -299,17 +302,16 @@ This local API MUST remain daemon-owned, local-first, and compatible with later 
 
 Architectural note:
 
-- this request/response IPC surface is still the current code path
-- it is now best understood as a bootstrap transport, not the final node protocol shape
+- the WebSocket request/event transport is the primary CLI path
+- the request/response IPC surface remains a bootstrap, harness, and compatibility transport
+- both transports should normalize mutating requests into `KernelCommand` values during the M4.5 refactor
 - future kernel-client and kernel-agent communication should converge on one long-lived event-capable connection model
 
-Current M2 runtime note:
+Current local runtime note:
 
-- the local daemon transport is a daemon-owned Unix-socket IPC path on Unix-like systems
-- the local CLI is a transport client layered on top of this request/response surface rather than owning runtime logic directly
 - the primary local CLI implementation is now a TypeScript OpenTUI client
 - `arroba-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
-- the in-process harness remains useful for daemon smoke coverage, but it is no longer the primary local user path
+- the Unix-socket local transport remains useful for daemon smoke coverage and compatibility shims, but it is no longer the primary local user path
 
 Current session-lifecycle note:
 

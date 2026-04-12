@@ -60,7 +60,7 @@ Current implementation mapping:
 - the kernel currently runs inside the Rust runtime in [apps/daemon](/Users/miguel/arroba/apps/daemon)
 - the primary client is the TypeScript CLI in [apps/cli](/Users/miguel/arroba/apps/cli)
 - the current OpenCode adapter talks to a local OpenCode HTTP + SSE endpoint
-- the current daemon-client transport is still local Unix-socket IPC
+- the primary daemon-client transport is now a kernel WebSocket with pushed events; the local Unix-socket IPC surface remains for harnesses, compatibility, and local management paths
 - relay, directory, and unified node transport are later implementation work, not current code
 - the relay is planned as an independent app, separate from both daemon and CLI
 
@@ -123,7 +123,7 @@ Current implementation note:
 
 - the primary local client is the TypeScript OpenTUI app in [apps/cli](/Users/miguel/arroba/apps/cli)
 - `arroba-cli` is currently a Rust launcher for that client
-- the local transport is still Unix-socket IPC
+- the primary local transport is the kernel WebSocket event stream; local IPC remains as a lower-level compatibility and harness surface
 
 ### 3.2 Machine
 
@@ -189,6 +189,58 @@ Current implementation note:
 - the current OpenCode adapter is already a provider-endpoint integration example
 - the current local CLI transport is now a long-lived WebSocket subscription with pushed kernel events
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
+
+### 3.3.1.1 Target Kernel Runtime Implementation Model
+
+The target daemon implementation should be an actor/event/projection kernel, not a large shared mutable application object protected by one global lock.
+
+Implementation rules:
+
+- transports submit commands and subscribe to events/projections; transports do not directly mutate workspace state
+- every command has a stable command id plus causation and correlation metadata
+- workspace mutation is owned by actors or single-owner services with mailboxes, not by ad hoc lock acquisition from request handlers
+- the event log is the source of truth for ordered runtime facts that matter to clients, recovery, replay, and remote relay resume
+- projections are the primary read API for clients, session lists, transcript views, workflow state, provider/process state, and health snapshots
+- provider runs, capability jobs, history scans, provider catalog discovery, and relay I/O run outside the hot interactive command lane with bounded queues and explicit backpressure
+- prompt submit, cancel, focus, resize, attach, detach, and subscription resume stay on an `InteractiveCommandLane` and must not wait behind slow background work
+- provider/runtime control operations remain owned by the `ControlService`; the interactive command lane is separate from the provider control lane
+
+Target kernel services:
+
+- `DaemonKernel`
+  - composition root for command routing, actors, event log, projection store, transport gateways, and background executors
+- `CommandRouter`
+  - validates and routes `KernelCommand` values to the owning actor/service
+- `EventLog`
+  - append-only ordered stream of `KernelEvent` values with sequence ids, causation ids, and replay windows
+- `ProjectionStore`
+  - materialized read models for client boot, session views, transcripts, workflow inspection, provider process ledgers, and health snapshots
+- `SessionActor`
+  - owns one workspace/session lifecycle, attachments, focused agent, prompt queues, and session-scoped routing
+- `AgentActor`
+  - owns one top-level agent runtime lane, active/queued prompt state, provider run binding, and output fanout
+- `ProviderRunActor`
+  - owns one provider endpoint/run integration and normalizes provider-native events into kernel events
+- `WorkflowRunActor`
+  - owns one workflow run, mailbox delivery, turn activation, output buffering, failure state, and watchdog interaction
+- `CapabilityExecutor`
+  - owns bounded execution of file/tree/screenshot/shell/MCP capability jobs and reports progress through events
+- `RelayRuntime`
+  - owns remote transport sessions and relay registration without becoming workspace authority
+
+`DaemonApp` should become a temporary compatibility facade during the migration and then disappear from hot paths. It can remain as a bootstrap/test adapter while command handlers move to `DaemonKernel`, but request handlers should not hold a global `Arc<Mutex<DaemonApp>>` across I/O, provider work, history scans, or client fanout.
+
+Client UX may use optimistic local projections for immediate feedback, but the kernel remains the authority. When the kernel echo or session projection arrives, the client reconciles by command id, event id, target agent id, and prompt text instead of rendering duplicates.
+
+M4.5 implementation contract:
+
+- `docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md` is the execution plan for the kernel refactor
+- every mutating hot-path request should normalize to a `KernelCommand` before actor dispatch
+- every runtime fact needed for client reconciliation, projection updates, replay, or relay resume should be represented as a `KernelEvent`
+- the first event-log slice may be in-memory, but replay retention and replay-gap behavior must be explicit
+- events should not be described as daemon-restart durable until persisted event streams or equivalent projection checkpoints exist
+- projections must expose `projection_version`, `last_event_id`, and `generated_at_ms`
+- worktree/file/port claim coordination belongs to the kernel boundary before parallel remote workflow scale-out
 
 ### 3.3.2 Workflow Model
 
@@ -849,7 +901,7 @@ This section captures current implementation choices for v1 so engineering work 
 - Unix socket on Unix-like systems remains as a local compatibility and harness path
 - named pipe on Windows remains a later local compatibility follow-up
 
-Current M2 runtime note:
+Current local runtime note:
 
 - the daemon now hosts a kernel WebSocket listener directly and the TypeScript CLI uses that path by default
 - the Unix-socket local transport remains implemented for local harnessing/tests and backward-compatible tooling

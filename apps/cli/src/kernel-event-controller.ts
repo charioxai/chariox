@@ -169,6 +169,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
     switch (record.kind) {
       case "prompt_echo":
+        if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text)) {
+          break
+        }
         deps.appendEntry({ role: "user", text: deps.trimSingleTrailingNewline(text) })
         deps.syncVisibleTranscriptPreview()
         break
