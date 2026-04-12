@@ -19,12 +19,16 @@ use super::{
     RuntimeProviderRun,
 };
 
+type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
+type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
+
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
     workers: Arc<Mutex<BTreeMap<String, mpsc::Sender<ProviderRunActorCommand>>>>,
-    codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: Arc<Mutex<BTreeSet<String>>>,
     structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
     structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
@@ -123,17 +127,25 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .remove(&run_id);
         self.codex_runs
             .lock()
             .expect("codex runtime map poisoned")
-            .insert(run_id, state);
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .remove(&run_id);
         self.opencode_runs
             .lock()
             .expect("opencode runtime map poisoned")
-            .insert(run_id, state);
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
@@ -158,9 +170,13 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn clear_runtime(&self, run_id: &str) {
+        self.cleared_runs
+            .lock()
+            .expect("cleared provider run set poisoned")
+            .insert(run_id.to_string());
         self.clear_structured_prompt_io_in_flight(run_id);
         self.clear_structured_output_poll_in_flight(run_id);
-        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id);
+        clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id, true);
     }
 
     fn mark_structured_output_poll_in_flight(&self, run_id: String) -> bool {
@@ -245,6 +261,7 @@ impl ProviderRunActorMailbox {
                     provider_run_id.clone(),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
+                    Arc::clone(&self.cleared_runs),
                     Arc::clone(&self.structured_prompt_submissions),
                     Arc::clone(&self.structured_output_polls),
                     Arc::clone(&self.finished_submits),
@@ -424,6 +441,7 @@ impl ProviderRunActorMailbox {
                     provider_run_id.to_string(),
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
+                    Arc::clone(&self.cleared_runs),
                     Arc::clone(&self.structured_prompt_submissions),
                     Arc::clone(&self.structured_output_polls),
                     Arc::clone(&self.finished_submits),
@@ -437,8 +455,9 @@ impl ProviderRunActorMailbox {
 
     fn spawn_worker(
         provider_run_id: String,
-        codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-        opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+        codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+        opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+        cleared_runs: Arc<Mutex<BTreeSet<String>>>,
         structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
         structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
         finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
@@ -461,6 +480,7 @@ impl ProviderRunActorMailbox {
                         let result = execute_submit_command(
                             &codex_runs,
                             &opencode_runs,
+                            &cleared_runs,
                             run,
                             prompt,
                             attachments,
@@ -482,7 +502,8 @@ impl ProviderRunActorMailbox {
                         provider_run_id,
                         run,
                     } => {
-                        let result = execute_abort_command(&codex_runs, &opencode_runs, run);
+                        let result =
+                            execute_abort_command(&codex_runs, &opencode_runs, &cleared_runs, run);
                         clear_structured_prompt_io_in_flight(
                             &structured_prompt_submissions,
                             &provider_run_id,
@@ -498,9 +519,12 @@ impl ProviderRunActorMailbox {
                         provider_run_id,
                         run,
                     } => {
-                        if let Err(error) =
-                            execute_terminate_command(&codex_runs, &opencode_runs, run)
-                        {
+                        if let Err(error) = execute_terminate_command(
+                            &codex_runs,
+                            &opencode_runs,
+                            &cleared_runs,
+                            run,
+                        ) {
                             crate::logging::error_with_fields(
                                 "daemon.provider_run_actor",
                                 "structured provider termination abort failed",
@@ -514,7 +538,7 @@ impl ProviderRunActorMailbox {
                             &structured_prompt_submissions,
                             &provider_run_id,
                         );
-                        clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id);
+                        clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id, true);
                         break;
                     }
                     ProviderRunActorCommand::SyncSelection { provider_run_id } => {
@@ -530,7 +554,12 @@ impl ProviderRunActorMailbox {
                         provider_run_id,
                         run,
                     } => {
-                        let result = execute_output_poll_command(&codex_runs, &opencode_runs, &run);
+                        let result = execute_output_poll_command(
+                            &codex_runs,
+                            &opencode_runs,
+                            &cleared_runs,
+                            &run,
+                        );
                         clear_structured_output_poll_in_flight(
                             &structured_output_polls,
                             &provider_run_id,
@@ -613,6 +642,34 @@ mod tests {
             .expect("structured output poll set should not be poisoned")
             .is_empty());
     }
+
+    #[test]
+    fn runtime_tombstone_rejects_stale_state_restore_after_cleanup() {
+        let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let slot = Arc::new(Mutex::new(None));
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .insert("run-1".to_string(), Arc::clone(&slot));
+
+        assert!(runtime_should_restore(&cleared_runs, &runs, "run-1", &slot));
+
+        cleared_runs
+            .lock()
+            .expect("cleared set should not be poisoned")
+            .insert("run-1".to_string());
+        runs.lock()
+            .expect("runtime map should not be poisoned")
+            .remove("run-1");
+
+        assert!(!runtime_should_restore(
+            &cleared_runs,
+            &runs,
+            "run-1",
+            &slot
+        ));
+    }
 }
 
 fn push_finished_submit(
@@ -634,8 +691,9 @@ fn push_finished_submit(
 }
 
 fn execute_submit_command(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     run: RuntimeProviderRun,
     prompt: String,
     attachments: Vec<PromptAttachment>,
@@ -646,46 +704,25 @@ fn execute_submit_command(
         return Ok(());
     }
     if run.adapter_key() == "codex" {
-        let mut state = codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .remove(&run_id)
-            .ok_or_else(|| DaemonError::ProviderProtocol {
-                provider_run_id: run_id.clone(),
-                operation: "codex_thread_missing",
-                message: "no Codex thread is bound to this provider run".to_string(),
-            })?;
+        let (slot, mut state) = take_codex_runtime(codex_runs, &run_id)?;
         let result = submit_codex_prompt(&run, &mut state, &prompt, &attachments);
-        codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .insert(run_id, state);
+        restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
 
-    let state = opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .remove(&run_id)
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.clone(),
-            operation: "opencode_session_missing",
-            message: "no OpenCode session is bound to this provider run".to_string(),
-        })?;
+    let (slot, state) = take_opencode_runtime(opencode_runs, &run_id)?;
     let result = submit_opencode_prompt(&run, &state, &prompt, &attachments);
-    opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .insert(run_id, state);
+    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, &run_id, &slot, state);
     result
 }
 
 fn execute_abort_command(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
@@ -694,102 +731,72 @@ fn execute_abort_command(
         return Ok(());
     }
     if run.adapter_key() == "codex" {
-        let mut state = codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .remove(&run_id)
-            .ok_or_else(|| DaemonError::ProviderProtocol {
-                provider_run_id: run_id.clone(),
-                operation: "codex_thread_missing",
-                message: "no Codex thread is bound to this provider run".to_string(),
-            })?;
+        let (slot, mut state) = take_codex_runtime(codex_runs, &run_id)?;
         let result = abort_codex_turn(&run_id, &mut state);
-        codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .insert(run_id, state);
+        restore_codex_runtime_if_live(codex_runs, cleared_runs, &run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
         return Ok(());
     }
 
-    let state = opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .remove(&run_id)
-        .ok_or_else(|| DaemonError::ProviderProtocol {
-            provider_run_id: run_id.clone(),
-            operation: "opencode_session_missing",
-            message: "no OpenCode session is bound to this provider run".to_string(),
-        })?;
+    let (slot, state) = take_opencode_runtime(opencode_runs, &run_id)?;
     let result = abort_opencode_session(&run_id, &state);
-    opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .insert(run_id, state);
+    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, &run_id, &slot, state);
     result
 }
 
 fn execute_terminate_command(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
-    if run.adapter_key() == "codex"
-        && !codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .contains_key(&run_id)
-    {
+    if run.adapter_key() == "codex" && runtime_slot_missing_or_empty_codex(codex_runs, &run_id) {
         return Ok(());
     }
     if run.adapter_key() == "opencode"
-        && !opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .contains_key(&run_id)
+        && runtime_slot_missing_or_empty_opencode(opencode_runs, &run_id)
     {
         return Ok(());
     }
-    execute_abort_command(codex_runs, opencode_runs, run)
+    execute_abort_command(codex_runs, opencode_runs, cleared_runs, run)
 }
 
 fn execute_selection_sync_command(
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
-    let Some((base_url, session_id)) = opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .get(run_id)
-        .map(|state| (state.base_url().to_string(), state.session_id().to_string()))
-    else {
-        return Err(DaemonError::ProviderProtocol {
-            provider_run_id: run_id.to_string(),
-            operation: "opencode_session_missing",
-            message: "no OpenCode session is bound to this provider run".to_string(),
-        });
+    let slot = opencode_slot(opencode_runs, run_id)?;
+    let (base_url, session_id) = {
+        let guard = slot.lock().expect("opencode runtime slot poisoned");
+        let state = guard
+            .as_ref()
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            })?;
+        (state.base_url().to_string(), state.session_id().to_string())
     };
     sync_opencode_run_selection_for_session(run_id, &base_url, &session_id)
 }
 
 fn execute_output_poll_command(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     run: &RuntimeProviderRun,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
     let run_id = run.id();
     if run.adapter_key() == "codex" {
-        let Some(poll) = codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .get_mut(run_id)
-            .map(|state| drain_codex_events(run_id, state))
-        else {
-            return Ok(None);
+        let (slot, mut state) = match take_codex_runtime(codex_runs, run_id) {
+            Ok((slot, state)) => (slot, state),
+            Err(_) => return Ok(None),
         };
+        let poll = drain_codex_events(run_id, &mut state);
+        restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
         let poll = poll?;
         return Ok(Some(ProviderPromptSignalBatch {
             chunks: poll
@@ -820,14 +827,12 @@ fn execute_output_poll_command(
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
-    let Some(drain) = opencode_runs
-        .lock()
-        .expect("opencode runtime map poisoned")
-        .get_mut(run_id)
-        .map(|state| drain_opencode_events(state, run_id))
-    else {
-        return Ok(None);
+    let (slot, mut state) = match take_opencode_runtime(opencode_runs, run_id) {
+        Ok((slot, state)) => (slot, state),
+        Err(_) => return Ok(None),
     };
+    let drain = drain_opencode_events(&mut state, run_id);
+    restore_opencode_runtime_if_live(opencode_runs, cleared_runs, run_id, &slot, state);
     let drain = drain?;
     Ok(Some(ProviderPromptSignalBatch {
         chunks: drain
@@ -856,6 +861,140 @@ fn execute_output_poll_command(
     }))
 }
 
+fn codex_slot(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<CodexRuntimeSlot, DaemonError> {
+    codex_runs
+        .lock()
+        .expect("codex runtime map poisoned")
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "codex_thread_missing",
+            message: "no Codex thread is bound to this provider run".to_string(),
+        })
+}
+
+fn opencode_slot(
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<OpenCodeRuntimeSlot, DaemonError> {
+    opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "opencode_session_missing",
+            message: "no OpenCode session is bound to this provider run".to_string(),
+        })
+}
+
+fn take_codex_runtime(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<(CodexRuntimeSlot, CodexRuntimeState), DaemonError> {
+    let slot = codex_slot(codex_runs, run_id)?;
+    let state = slot
+        .lock()
+        .expect("codex runtime slot poisoned")
+        .take()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "codex_thread_missing",
+            message: "no Codex thread is bound to this provider run".to_string(),
+        })?;
+    Ok((slot, state))
+}
+
+fn take_opencode_runtime(
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<(OpenCodeRuntimeSlot, OpenCodeRuntimeState), DaemonError> {
+    let slot = opencode_slot(opencode_runs, run_id)?;
+    let state = slot
+        .lock()
+        .expect("opencode runtime slot poisoned")
+        .take()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "opencode_session_missing",
+            message: "no OpenCode session is bound to this provider run".to_string(),
+        })?;
+    Ok((slot, state))
+}
+
+fn runtime_slot_missing_or_empty_codex(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    run_id: &str,
+) -> bool {
+    match codex_slot(codex_runs, run_id) {
+        Ok(slot) => slot.lock().expect("codex runtime slot poisoned").is_none(),
+        Err(_) => true,
+    }
+}
+
+fn runtime_slot_missing_or_empty_opencode(
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    run_id: &str,
+) -> bool {
+    match opencode_slot(opencode_runs, run_id) {
+        Ok(slot) => slot
+            .lock()
+            .expect("opencode runtime slot poisoned")
+            .is_none(),
+        Err(_) => true,
+    }
+}
+
+fn restore_codex_runtime_if_live(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+    slot: &CodexRuntimeSlot,
+    state: CodexRuntimeState,
+) {
+    if runtime_should_restore(cleared_runs, codex_runs, run_id, slot) {
+        *slot.lock().expect("codex runtime slot poisoned") = Some(state);
+    }
+}
+
+fn restore_opencode_runtime_if_live(
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+    slot: &OpenCodeRuntimeSlot,
+    state: OpenCodeRuntimeState,
+) {
+    if runtime_should_restore(cleared_runs, opencode_runs, run_id, slot) {
+        *slot.lock().expect("opencode runtime slot poisoned") = Some(state);
+    } else {
+        state.stop();
+    }
+}
+
+fn runtime_should_restore<T>(
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    runs: &Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<T>>>>>>,
+    run_id: &str,
+    slot: &Arc<Mutex<Option<T>>>,
+) -> bool {
+    if cleared_runs
+        .lock()
+        .expect("cleared provider run set poisoned")
+        .contains(run_id)
+    {
+        return false;
+    }
+    runs.lock()
+        .expect("runtime map poisoned")
+        .get(run_id)
+        .is_some_and(|current_slot| Arc::ptr_eq(current_slot, slot))
+}
+
 fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
     run_id: &str,
@@ -877,20 +1016,29 @@ fn clear_structured_output_poll_in_flight(
 }
 
 fn clear_runtime_state(
-    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
-    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     run_id: &str,
+    stop_opencode: bool,
 ) {
-    codex_runs
+    if let Some(slot) = codex_runs
         .lock()
         .expect("codex runtime map poisoned")
-        .remove(run_id);
-    if let Some(state) = opencode_runs
+        .remove(run_id)
+    {
+        let _ = slot.lock().expect("codex runtime slot poisoned").take();
+    }
+    if let Some(slot) = opencode_runs
         .lock()
         .expect("opencode runtime map poisoned")
         .remove(run_id)
     {
-        state.stop();
+        let state = slot.lock().expect("opencode runtime slot poisoned").take();
+        if let Some(state) = state {
+            if stop_opencode {
+                state.stop();
+            }
+        }
     }
 }
 
