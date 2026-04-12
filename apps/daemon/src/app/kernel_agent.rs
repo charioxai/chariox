@@ -205,7 +205,19 @@ impl<'a> KernelAgentService<'a> {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.app.cancel_active_prompt(session_id, attachment_id)
+        self.app
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent_id = self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        self.app
+            .cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
     }
 
     pub(crate) fn cancel_active_prompt_for_kernel(

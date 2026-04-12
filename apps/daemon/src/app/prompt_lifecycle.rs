@@ -439,16 +439,8 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.ensure_attachment_in_session(session_id, attachment_id)?;
-        let target_agent_id = self
-            .sessions
-            .get_session(session_id)?
-            .focused_agent_id()
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-        self.cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
+        self.kernel_agents()
+            .cancel_active_prompt(session_id, attachment_id)
     }
 
     pub(crate) fn finish_kernel_prompt_abort(
