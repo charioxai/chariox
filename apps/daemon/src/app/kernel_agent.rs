@@ -7,6 +7,9 @@ use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{PromptAttachment, PromptCancellation, PromptStatus, PromptSubmissionOutcome};
 use crate::transport::flow_control;
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use arroba_relay::protocol::ClientTarget;
 
 pub(crate) struct KernelAgentService<'a> {
     app: &'a mut DaemonApp,
@@ -25,13 +28,176 @@ impl<'a> KernelAgentService<'a> {
         prompt: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
-        self.app.submit_prompt(
+        self.app
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let session_before = self.app.sessions.get_session(session_id)?;
+
+        let target_agent_id = target_agent_id
+            .or_else(|| session_before.focused_agent_id())
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "no focused agent".to_string(),
+            })?
+            .to_string();
+        let target_agent = self.app.agents.get_agent(&target_agent_id)?;
+        let remote_execution = target_agent.remote_execution().cloned();
+        let queued_while_active = session_before
+            .active_prompt_for_agent(&target_agent_id)
+            .is_some();
+        let provider_run_id = if remote_execution.is_some() {
+            None
+        } else if queued_while_active {
+            self.app
+                .providers
+                .get_run_for_agent(session_id, &target_agent_id)
+                .map(|run| run.id().to_string())
+        } else {
+            Some(
+                self.app
+                    .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)?,
+            )
+        };
+        let provider_run_is_starting = provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.app.providers.get_run(provider_run_id).ok())
+            .is_some_and(|run| run.state() == ProviderRunState::Starting);
+
+        self.app.append_user_prompt_history(
             session_id,
             attachment_id,
-            target_agent_id,
+            &target_agent_id,
             prompt,
-            attachments,
-        )
+            &attachments,
+        );
+
+        let (_session, outcome) = if provider_run_is_starting {
+            self.app.sessions.queue_prompt(
+                session_id,
+                attachment_id,
+                &target_agent_id,
+                prompt,
+                attachments.clone(),
+            )?
+        } else {
+            self.app.sessions.submit_prompt(
+                session_id,
+                attachment_id,
+                &target_agent_id,
+                prompt,
+                attachments.clone(),
+            )?
+        };
+
+        match &outcome {
+            PromptSubmissionOutcome::Started { prompt } => {
+                if let Some(remote_execution) = remote_execution.as_ref() {
+                    let response =
+                        self.app
+                            .block_on_relay_future(send_peer_request_via_temporary_connection(
+                                self.app.config(),
+                                ClientTarget {
+                                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::SubmitLeasedPrompt {
+                                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                    prompt: prompt.prompt().to_string(),
+                                    attachments: self.app.serialize_remote_prompt_attachments(
+                                        prompt.attachments(),
+                                    )?,
+                                    workflow_context: None,
+                                },
+                            ));
+                    let remote_provider_run_id = match response {
+                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                            provider_run_id, ..
+                        }) => provider_run_id,
+                        Ok(other) => {
+                            let _ = self
+                                .app
+                                .sessions
+                                .cancel_active_prompt(session_id, &target_agent_id);
+                            return Err(DaemonError::LocalTransport {
+                                operation: "submit remote prompt",
+                                message: format!("unexpected remote prompt response: {other:?}"),
+                            });
+                        }
+                        Err(error) => {
+                            let _ = self
+                                .app
+                                .sessions
+                                .cancel_active_prompt(session_id, &target_agent_id);
+                            return Err(error);
+                        }
+                    };
+                    self.app.echo_prompt_to_other_attachments(
+                        session_id,
+                        &remote_provider_run_id,
+                        prompt.source_attachment_id(),
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    );
+                    return Ok(outcome);
+                }
+                let provider_run_id =
+                    provider_run_id
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                            session_id: session_id.to_string(),
+                        })?;
+                self.app.echo_prompt_to_other_attachments(
+                    session_id,
+                    provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                    prompt.attachments(),
+                );
+                if let Err(error) = self.app.dispatch_prompt_to_provider(
+                    session_id,
+                    provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                    prompt.attachments(),
+                ) {
+                    let _ = self
+                        .app
+                        .sessions
+                        .cancel_active_prompt(session_id, &target_agent_id);
+                    flow_control::clear_prompt_activity(self.app, provider_run_id);
+                    return Err(error);
+                }
+                flow_control::note_prompt_started(self.app, provider_run_id);
+            }
+            PromptSubmissionOutcome::Queued { prompt } => {
+                if let Some(provider_run_id) = provider_run_id.as_deref() {
+                    self.app.echo_prompt_to_other_attachments(
+                        session_id,
+                        provider_run_id,
+                        prompt.source_attachment_id(),
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    );
+                }
+                self.app.record_notice(
+                    session_id,
+                    provider_run_id.as_deref(),
+                    self.app.other_attachment_ids(session_id, attachment_id),
+                    format!(
+                        "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
+                        attachment_id,
+                        target_agent_id,
+                        session_id,
+                        prompt.id(),
+                        session_before
+                            .queued_prompts_for_agent(&target_agent_id)
+                            .map(|queue| queue.len())
+                            .unwrap_or(0)
+                            + 1
+                    ),
+                );
+            }
+        }
+
+        Ok(outcome)
     }
 
     pub(crate) fn submit_prompt_for_kernel(
