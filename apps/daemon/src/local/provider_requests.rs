@@ -49,7 +49,9 @@ impl DaemonApp {
         request: GetProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.providers_mut()
-            .sync_run_selection(&request.provider_run_id)?;
+            .apply_finished_provider_run_selection_sync_jobs();
+        self.providers_mut()
+            .enqueue_run_selection_sync(&request.provider_run_id)?;
         let provider_run = self.providers().get_run(&request.provider_run_id)?;
         Ok(LocalDaemonResponse::ProviderRun { provider_run })
     }

@@ -117,19 +117,14 @@ pub(crate) fn initialize_opencode_runtime(
     })
 }
 
-pub(super) fn runtime_is_healthy(provider_run_id: &str, state: &OpenCodeRuntimeState) -> bool {
-    OpenCodeClient::new(provider_run_id, state.base_url())
-        .and_then(|client| client.check_health())
-        .is_ok()
-}
-
-pub(super) fn sync_opencode_run_selection(
+pub(super) fn sync_opencode_run_selection_for_session(
     provider_run_id: &str,
-    state: &OpenCodeRuntimeState,
+    base_url: &str,
+    session_id: &str,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
-    let client = OpenCodeClient::new(provider_run_id, state.base_url())?;
+    let client = OpenCodeClient::new(provider_run_id, base_url)?;
     let defaults = client.configured_defaults()?;
-    let messages = client.messages(state.session_id())?;
+    let messages = client.messages(session_id)?;
 
     Ok(OpenCodeRunSelection {
         model: messages

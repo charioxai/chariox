@@ -741,6 +741,8 @@ impl DaemonApp {
     }
 
     pub(crate) fn reap_structured_prompt_jobs(&mut self) {
+        self.providers
+            .apply_finished_provider_run_selection_sync_jobs();
         let finished_jobs = self
             .providers
             .drain_finished_structured_prompt_submit_jobs();

@@ -4,10 +4,7 @@ use std::collections::BTreeMap;
 
 use super::{
     codex_runtime::{drain_codex_events, initialize_codex_runtime, CodexRuntimeBinding},
-    opencode_binding::{
-        initialize_opencode_runtime, runtime_is_healthy, sync_opencode_run_selection,
-        OpenCodeRunSelection, OpenCodeRuntimeBinding,
-    },
+    opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
     opencode_runtime::drain_opencode_events,
     LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
     ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox,
@@ -457,19 +454,9 @@ impl ProviderProcessService {
                         .map(str::to_string),
                 );
                 self.apply_opencode_run_selection(run_id, binding.selection)?;
-                self.sync_run_selection(run_id)?;
             }
         }
         Ok(())
-    }
-
-    pub fn runtime_is_healthy(&self, run_id: &str) -> bool {
-        if self.run_actor_mailbox.codex_runtime_exists(run_id) {
-            return true;
-        }
-        self.run_actor_mailbox
-            .with_opencode_runtime(run_id, |state| runtime_is_healthy(run_id, state))
-            .unwrap_or(false)
     }
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
@@ -487,24 +474,49 @@ impl ProviderProcessService {
         self.run_actor_mailbox.operation_lanes()
     }
 
-    pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
-        if self.run_actor_mailbox.codex_runtime_exists(provider_run_id) {
+    pub fn enqueue_run_selection_sync(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
+        let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() != "opencode" {
             return Ok(());
         }
-        let Some(selection) = self
-            .run_actor_mailbox
-            .with_opencode_runtime(provider_run_id, |state| {
-                sync_opencode_run_selection(provider_run_id, state)
-            })
-        else {
-            return Ok(());
-        };
-        let selection = selection?;
-        let current_run = self.get_run(provider_run_id)?;
-        self.apply_opencode_run_selection(
-            provider_run_id,
-            Self::merge_opencode_run_selection(&current_run, selection),
-        )
+        self.run_actor_mailbox
+            .spawn_selection_sync(provider_run_id.to_string());
+        Ok(())
+    }
+
+    pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&mut self) {
+        for finished in self.run_actor_mailbox.drain_finished_selection_syncs() {
+            match finished.result {
+                Ok(selection) => {
+                    let Ok(current_run) = self.get_run(&finished.provider_run_id) else {
+                        continue;
+                    };
+                    let selection = Self::merge_opencode_run_selection(&current_run, selection);
+                    if let Err(error) =
+                        self.apply_opencode_run_selection(&finished.provider_run_id, selection)
+                    {
+                        crate::logging::error_with_fields(
+                            "daemon.provider",
+                            "provider run selection sync apply failed",
+                            serde_json::json!({
+                                "provider_run_id": finished.provider_run_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    crate::logging::debug_with_fields(
+                        "daemon.provider",
+                        "provider run selection sync failed",
+                        serde_json::json!({
+                            "provider_run_id": finished.provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {

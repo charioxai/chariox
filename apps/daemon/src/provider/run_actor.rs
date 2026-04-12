@@ -10,7 +10,10 @@ use crate::session::PromptAttachment;
 
 use super::{
     codex_runtime::{abort_codex_turn, submit_codex_prompt},
-    opencode_binding::{abort_opencode_session, submit_opencode_prompt},
+    opencode_binding::{
+        abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
+        OpenCodeRunSelection,
+    },
     opencode_runtime::OpenCodeRuntimeState,
     CodexRuntimeState, RuntimeProviderRun,
 };
@@ -24,6 +27,7 @@ pub(crate) struct ProviderRunActorMailbox {
     structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
+    finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
 }
 
 #[derive(Clone, Default)]
@@ -44,6 +48,11 @@ pub(crate) struct FinishedProviderPromptAbortJob {
     pub(crate) result: Result<(), DaemonError>,
 }
 
+pub(crate) struct FinishedProviderRunSelectionSyncJob {
+    pub(crate) provider_run_id: String,
+    pub(crate) result: Result<OpenCodeRunSelection, DaemonError>,
+}
+
 enum ProviderRunActorCommand {
     Submit {
         session_id: String,
@@ -61,6 +70,9 @@ enum ProviderRunActorCommand {
     Terminate {
         provider_run_id: String,
         run: RuntimeProviderRun,
+    },
+    SyncSelection {
+        provider_run_id: String,
     },
     Stop,
 }
@@ -129,18 +141,6 @@ impl ProviderRunActorMailbox {
             .lock()
             .expect("opencode runtime map poisoned")
             .insert(run_id, state);
-    }
-
-    pub(crate) fn with_opencode_runtime<R>(
-        &self,
-        run_id: &str,
-        f: impl FnOnce(&OpenCodeRuntimeState) -> R,
-    ) -> Option<R> {
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .get(run_id)
-            .map(f)
     }
 
     pub(crate) fn opencode_runtime_exists(&self, run_id: &str) -> bool {
@@ -259,6 +259,7 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.structured_prompt_submissions),
                     Arc::clone(&self.finished_submits),
                     Arc::clone(&self.finished_aborts),
+                    Arc::clone(&self.finished_selection_syncs),
                 )
             })
         };
@@ -271,6 +272,22 @@ impl ProviderRunActorMailbox {
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "provider run actor terminate command enqueue failed",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) {
+        let sender = self.worker_for_run(&provider_run_id);
+        if let Err(error) = sender.send(ProviderRunActorCommand::SyncSelection {
+            provider_run_id: provider_run_id.clone(),
+        }) {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run selection sync command enqueue failed",
                 serde_json::json!({
                     "provider_run_id": provider_run_id,
                     "error": error.to_string(),
@@ -325,6 +342,24 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    pub(crate) fn drain_finished_selection_syncs(
+        &self,
+    ) -> Vec<FinishedProviderRunSelectionSyncJob> {
+        match self.finished_selection_syncs.lock() {
+            Ok(mut jobs) => std::mem::take(&mut *jobs),
+            Err(error) => {
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run selection sync completion queue poisoned",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     fn worker_for_run(&self, provider_run_id: &str) -> mpsc::Sender<ProviderRunActorCommand> {
         let mut workers = self
             .workers
@@ -340,6 +375,7 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.structured_prompt_submissions),
                     Arc::clone(&self.finished_submits),
                     Arc::clone(&self.finished_aborts),
+                    Arc::clone(&self.finished_selection_syncs),
                 )
             })
             .clone()
@@ -352,6 +388,7 @@ impl ProviderRunActorMailbox {
         structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
         finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
         finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
+        finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     ) -> mpsc::Sender<ProviderRunActorCommand> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -423,6 +460,15 @@ impl ProviderRunActorMailbox {
                         );
                         clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id);
                         break;
+                    }
+                    ProviderRunActorCommand::SyncSelection { provider_run_id } => {
+                        let result =
+                            execute_selection_sync_command(&opencode_runs, &provider_run_id);
+                        let finished = FinishedProviderRunSelectionSyncJob {
+                            provider_run_id,
+                            result,
+                        };
+                        push_finished_selection_sync(&finished_selection_syncs, finished);
                     }
                     ProviderRunActorCommand::Stop => break,
                 }
@@ -633,6 +679,25 @@ fn execute_terminate_command(
     execute_abort_command(codex_runs, opencode_runs, run)
 }
 
+fn execute_selection_sync_command(
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run_id: &str,
+) -> Result<OpenCodeRunSelection, DaemonError> {
+    let Some((base_url, session_id)) = opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .get(run_id)
+        .map(|state| (state.base_url().to_string(), state.session_id().to_string()))
+    else {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "opencode_session_missing",
+            message: "no OpenCode session is bound to this provider run".to_string(),
+        });
+    };
+    sync_opencode_run_selection_for_session(run_id, &base_url, &session_id)
+}
+
 fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
     run_id: &str,
@@ -671,6 +736,24 @@ fn push_finished_abort(
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "structured prompt abort completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+fn push_finished_selection_sync(
+    finished_selection_syncs: &Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
+    finished: FinishedProviderRunSelectionSyncJob,
+) {
+    match finished_selection_syncs.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run selection sync completion queue poisoned",
                 serde_json::json!({
                     "error": error.to_string(),
                 }),
