@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
 
@@ -22,7 +22,7 @@ pub(crate) struct ProviderRunActorMailbox {
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunOperationLanes {
-    lanes: Arc<AsyncMutex<BTreeMap<String, Arc<Semaphore>>>>,
+    lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
 }
 
 pub(crate) struct FinishedProviderPromptSubmitJob {
@@ -52,12 +52,16 @@ enum ProviderRunActorCommand {
         provider_run_id: String,
         job: ProviderPromptAbortJob,
     },
+    Stop,
 }
 
 impl ProviderRunOperationLanes {
     pub(crate) async fn acquire(&self, provider_run_id: &str) -> OwnedSemaphorePermit {
         let semaphore = {
-            let mut lanes = self.lanes.lock().await;
+            let mut lanes = self
+                .lanes
+                .lock()
+                .expect("provider run operation lane map poisoned");
             Arc::clone(
                 lanes
                     .entry(provider_run_id.to_string())
@@ -68,6 +72,14 @@ impl ProviderRunOperationLanes {
             .acquire_owned()
             .await
             .expect("provider run operation lane semaphore closed")
+    }
+
+    fn forget(&self, provider_run_id: &str) {
+        let mut lanes = self
+            .lanes
+            .lock()
+            .expect("provider run operation lane map poisoned");
+        lanes.remove(provider_run_id);
     }
 }
 
@@ -121,6 +133,20 @@ impl ProviderRunActorMailbox {
                     "error": error.to_string(),
                 }),
             );
+        }
+    }
+
+    pub(crate) fn stop_run(&self, provider_run_id: &str) {
+        self.operation_lanes.forget(provider_run_id);
+        let sender = {
+            let mut workers = self
+                .workers
+                .lock()
+                .expect("provider run actor worker map poisoned");
+            workers.remove(provider_run_id)
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(ProviderRunActorCommand::Stop);
         }
     }
 
@@ -212,6 +238,7 @@ impl ProviderRunActorMailbox {
                         };
                         push_finished_abort(&finished_aborts, finished);
                     }
+                    ProviderRunActorCommand::Stop => break,
                 }
             }
             crate::logging::info_with_fields(
@@ -223,6 +250,55 @@ impl ProviderRunActorMailbox {
             );
         });
         tx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_run_removes_worker_and_lane_registration() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let _sender = mailbox.worker_for_run("run-1");
+        let _permit = mailbox.operation_lanes.acquire("run-1").await;
+        assert_eq!(
+            mailbox
+                .workers
+                .lock()
+                .expect("worker map should not be poisoned")
+                .len(),
+            1
+        );
+        assert_eq!(
+            mailbox
+                .operation_lanes
+                .lanes
+                .lock()
+                .expect("lane map should not be poisoned")
+                .len(),
+            1
+        );
+
+        mailbox.stop_run("run-1");
+
+        assert_eq!(
+            mailbox
+                .workers
+                .lock()
+                .expect("worker map should not be poisoned")
+                .len(),
+            0
+        );
+        assert_eq!(
+            mailbox
+                .operation_lanes
+                .lanes
+                .lock()
+                .expect("lane map should not be poisoned")
+                .len(),
+            0
+        );
     }
 }
 

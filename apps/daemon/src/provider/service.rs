@@ -635,6 +635,7 @@ impl ProviderProcessService {
         if let Some(state) = self.opencode_runs.remove(provider_run_id) {
             state.stop();
         }
+        self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
     pub fn abort_structured_runtime(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
