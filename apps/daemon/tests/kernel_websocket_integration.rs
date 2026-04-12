@@ -5,10 +5,10 @@ use std::time::Duration;
 use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server;
 use arroba_daemon::local::{
-    AttachToSessionRequest, DeleteSessionRequest, GetProviderCatalogRequest, GetProviderRunRequest,
-    GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-    ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest,
-    RunShellCapabilityRequest, SubmitPromptRequest,
+    AttachToSessionRequest, CancelActivePromptRequest, DeleteSessionRequest,
+    GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
+    ListSessionsRequest, LocalDaemonRequest, RunShellCapabilityRequest, SubmitPromptRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -1024,6 +1024,154 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializi
             ["active_prompt"]
             .is_object(),
         "queued prompt should start after provider launch finishes: {state_response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-structured-io-responsive",
+            "worktree-structured-io-responsive",
+        )),
+    )
+    .await;
+    let session = &response_variant(&create_response, "SessionCreated")["session"];
+    let session_id = session["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+    let agent_id = session["agents"][0]["id"]
+        .as_str()
+        .expect("agent id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-structured-io-responsive-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    let provider_response = send_request(
+        &mut socket,
+        "launch-provider",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "slow-structured".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+    let provider_run_id = provider_run_id_from_launch_response(&provider_response);
+    wait_for_provider_run_state(&mut socket, &provider_run_id, "Running").await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "submit-slow-structured-prompt",
+            "request": LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                target_agent_id: Some(agent_id.clone()),
+                prompt: "slow structured provider submit should not block kernel".to_string(),
+                attachments: Vec::new(),
+            }),
+        }),
+    )
+    .await;
+    let submit_response = wait_for_response_with_timeout(
+        &mut socket,
+        "submit-slow-structured-prompt",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert!(
+        response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
+        "prompt should ack before slow structured submit finishes: {submit_response}"
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "state-during-slow-submit",
+            "request": LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+                session_id: session_id.clone(),
+            }),
+        }),
+    )
+    .await;
+    let state_response = wait_for_response_with_timeout(
+        &mut socket,
+        "state-during-slow-submit",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert!(
+        response_variant(&state_response, "SessionState")["session"]["prompt_states"][&agent_id]
+            ["active_prompt"]
+            .is_object(),
+        "session state should remain readable while structured submit is slow: {state_response}"
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "cancel-during-slow-submit",
+            "request": LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+            }),
+        }),
+    )
+    .await;
+    let cancel_response = wait_for_response_with_timeout(
+        &mut socket,
+        "cancel-during-slow-submit",
+        Duration::from_millis(250),
+    )
+    .await;
+    assert!(
+        response_variant(&cancel_response, "PromptCancelled")["cancellation"]["prompt"]["status"]
+            == "Cancelling",
+        "cancel should ack while structured provider abort is slow: {cancel_response}"
     );
 
     let _ = shutdown_tx.send(());

@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::thread;
+use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::session::{PromptAttachment, SessionService};
@@ -43,6 +45,7 @@ pub(crate) struct ProviderPromptSubmitJob {
 enum ProviderPromptSubmitJobInner {
     Codex(CodexRuntimeState),
     OpenCode(OpenCodeRuntimeState),
+    DevStubSlow { delay: Duration },
 }
 
 pub(crate) struct ProviderPromptSubmitCompletion {
@@ -58,6 +61,7 @@ pub(crate) struct ProviderPromptAbortJob {
 enum ProviderPromptAbortJobInner {
     Codex(CodexRuntimeState),
     OpenCode(OpenCodeRuntimeState),
+    DevStubSlow { delay: Duration },
 }
 
 pub(crate) struct ProviderPromptAbortCompletion {
@@ -95,6 +99,16 @@ impl ProviderPromptSubmitJob {
                     result,
                 )
             }
+            ProviderPromptSubmitJobInner::DevStubSlow { delay } => {
+                thread::sleep(delay);
+                (
+                    ProviderPromptSubmitCompletion {
+                        run_id,
+                        inner: ProviderPromptSubmitJobInner::DevStubSlow { delay },
+                    },
+                    Ok(()),
+                )
+            }
         }
     }
 }
@@ -121,6 +135,16 @@ impl ProviderPromptAbortJob {
                         inner: ProviderPromptAbortJobInner::OpenCode(state),
                     },
                     result,
+                )
+            }
+            ProviderPromptAbortJobInner::DevStubSlow { delay } => {
+                thread::sleep(delay);
+                (
+                    ProviderPromptAbortCompletion {
+                        run_id,
+                        inner: ProviderPromptAbortJobInner::DevStubSlow { delay },
+                    },
+                    Ok(()),
                 )
             }
         }
@@ -630,6 +654,16 @@ impl ProviderProcessService {
         provider_run_id: &str,
     ) -> Result<Option<ProviderPromptAbortJob>, DaemonError> {
         let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+            self.structured_prompt_submissions
+                .insert(provider_run_id.to_string());
+            return Ok(Some(ProviderPromptAbortJob {
+                run_id: provider_run_id.to_string(),
+                inner: ProviderPromptAbortJobInner::DevStubSlow {
+                    delay: Duration::from_millis(750),
+                },
+            }));
+        }
         if run.adapter_key() == "codex" {
             let state = self.codex_runs.remove(provider_run_id).ok_or_else(|| {
                 DaemonError::ProviderProtocol {
@@ -677,6 +711,7 @@ impl ProviderProcessService {
             ProviderPromptAbortJobInner::OpenCode(state) => {
                 self.opencode_runs.insert(completion.run_id, state);
             }
+            ProviderPromptAbortJobInner::DevStubSlow { .. } => {}
         }
     }
 
@@ -722,6 +757,18 @@ impl ProviderProcessService {
         attachments: &[PromptAttachment],
     ) -> Result<Option<ProviderPromptSubmitJob>, DaemonError> {
         let _ = self.record_run_activity(run.id());
+        if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+            self.structured_prompt_submissions
+                .insert(run.id().to_string());
+            return Ok(Some(ProviderPromptSubmitJob {
+                run: run.clone(),
+                prompt: prompt.to_string(),
+                attachments: attachments.to_vec(),
+                inner: ProviderPromptSubmitJobInner::DevStubSlow {
+                    delay: Duration::from_millis(750),
+                },
+            }));
+        }
         if run.adapter_key() == "codex" {
             let state =
                 self.codex_runs
@@ -775,6 +822,7 @@ impl ProviderProcessService {
             ProviderPromptSubmitJobInner::OpenCode(state) => {
                 self.opencode_runs.insert(completion.run_id, state);
             }
+            ProviderPromptSubmitJobInner::DevStubSlow { .. } => {}
         }
     }
 
