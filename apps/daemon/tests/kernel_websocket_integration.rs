@@ -5,6 +5,7 @@ use arroba_daemon::attachment::ClientCapabilityLevel;
 use arroba_daemon::kernel_transport::run_kernel_websocket_server;
 use arroba_daemon::local::{
     AttachToSessionRequest, DeleteSessionRequest, GetSessionStateRequest, LocalDaemonRequest,
+    RunShellCapabilityRequest,
 };
 use arroba_daemon::session::CreateSessionRequest;
 use arroba_daemon::{DaemonApp, DaemonConfig};
@@ -341,6 +342,146 @@ async fn kernel_websocket_reuses_completed_result_for_duplicate_command_id() {
         .expect("kernel websocket server should shut down cleanly");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_rejects_duplicate_command_id_for_different_request() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "create-session-first",
+            "command_id": "conflicting-create-session",
+            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-kernel-conflict-a",
+                "worktree-kernel-conflict-a",
+            )),
+        }),
+    )
+    .await;
+    let _first_response = wait_for_response(&mut socket, "create-session-first").await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "create-session-conflict",
+            "command_id": "conflicting-create-session",
+            "request": LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-kernel-conflict-b",
+                "worktree-kernel-conflict-b",
+            )),
+        }),
+    )
+    .await;
+    let conflict_response = wait_for_error_response(&mut socket, "create-session-conflict").await;
+    assert_eq!(
+        conflict_response["error"]["code"].as_str(),
+        Some("duplicate_command_conflict")
+    );
+    assert_eq!(
+        conflict_response["error"]["retryable"].as_bool(),
+        Some(false)
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    config.kernel_websocket_queue_capacity = 64;
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    let cwd = std::env::current_dir()
+        .expect("current directory should be available")
+        .to_string_lossy()
+        .to_string();
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(cwd.as_str(), cwd.as_str())),
+    )
+    .await;
+    let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-inbound-limit-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    for index in 0..16 {
+        send_frame(
+            &mut socket,
+            json!({
+                "type": "request",
+                "request_id": format!("slow-shell-{index}"),
+                "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+                    session_id: session_id.clone(),
+                    attachment_id: attachment_id.clone(),
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), "sleep 0.2".to_string()],
+                    working_directory: None,
+                    timeout_ms: Some(1_000),
+                }),
+            }),
+        )
+        .await;
+    }
+
+    let overload_response = wait_for_error_code(&mut socket, "kernel_request_overloaded").await;
+    assert_eq!(
+        overload_response["error"]["retryable"].as_bool(),
+        Some(true)
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
     listener
@@ -406,6 +547,44 @@ async fn wait_for_response(
     })
     .await
     .expect("timed out waiting for kernel websocket response")
+}
+
+async fn wait_for_error_response(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    request_id: &str,
+) -> Value {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        loop {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] == "response" && frame["request_id"] == request_id {
+                assert!(
+                    !frame["error"].is_null(),
+                    "kernel websocket response should contain an error: {frame}"
+                );
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for kernel websocket error response")
+}
+
+async fn wait_for_error_code(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    code: &str,
+) -> Value {
+    let deadline = Duration::from_secs(5);
+    timeout(deadline, async {
+        loop {
+            let frame = next_json_frame(socket).await;
+            if frame["type"] == "response" && frame["error"]["code"] == code {
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for kernel websocket error code")
 }
 
 async fn wait_for_event(

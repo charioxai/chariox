@@ -6088,6 +6088,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       case "transport_resumed":
         kernelEventController.applyTransportResumed()
         return
+      case "replay_gap":
+        recordDaemonActivity("kernel_replay_gap")
+        appendNotice("Missed retained kernel events, refreshed session state.", "warning")
+        flashFooter("Missed retained kernel events, refreshed session state.", "info")
+        return
       case "transport_closed":
         kernelEventController.applyTransportClosed(event.message)
         return

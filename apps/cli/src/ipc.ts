@@ -176,6 +176,14 @@ export type KernelEvent =
     resumed_from_event_id: number | null
   }
   | {
+    event: "replay_gap"
+    session_id: string
+    requested_from_event_id: number
+    first_retained_event_id: number | null
+    latest_event_id: number | null
+    message: string
+  }
+  | {
     event: "transport_closed"
     message: string
   }

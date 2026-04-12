@@ -54,6 +54,18 @@ test("LocalIpcClient uses websocket request and subscription frames", async (t) 
           type: "event",
           event_id: 1,
           event: {
+            event: "replay_gap",
+            session_id: frame.session_id,
+            requested_from_event_id: 1,
+            first_retained_event_id: null,
+            latest_event_id: null,
+            message: "Replay cursor is outside the retained kernel event window; refresh the session projection.",
+          },
+        }))
+        socket.send(JSON.stringify({
+          type: "event",
+          event_id: 2,
+          event: {
             event: "session_snapshot",
             session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
             provider_run: null,
@@ -103,6 +115,14 @@ test("LocalIpcClient uses websocket request and subscription frames", async (t) 
   assert.equal(receivedFrames[2]?.type, "unsubscribe")
   assert.equal(receivedFrames[1]?.resume_from_event_id, null)
   assert.deepEqual(events, [
+    {
+      event: "replay_gap",
+      session_id: "session-1",
+      requested_from_event_id: 1,
+      first_retained_event_id: null,
+      latest_event_id: null,
+      message: "Replay cursor is outside the retained kernel event window; refresh the session projection.",
+    },
     {
       event: "session_snapshot",
       session: { id: "session-1", attachment_ids: ["attachment-1"] },

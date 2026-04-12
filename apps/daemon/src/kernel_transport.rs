@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
@@ -37,6 +39,7 @@ const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
+const INBOUND_REQUEST_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -86,8 +89,42 @@ enum KernelOutgoingFrame {
 
 #[derive(Debug, Clone)]
 struct CachedCommandResult {
+    fingerprint: CommandFingerprint,
     response: Box<Option<Value>>,
     error: Option<KernelTransportError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandFingerprint {
+    command_type: String,
+    source: String,
+    session_id: Option<String>,
+    attachment_id: Option<String>,
+    request_hash: u64,
+}
+
+impl CommandFingerprint {
+    fn from_command_and_request(command: &KernelCommand, request: &LocalDaemonRequest) -> Self {
+        let mut hasher = DefaultHasher::new();
+        serde_json::to_vec(request)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        Self {
+            command_type: command.command_type.clone(),
+            source: serde_json::to_string(&command.source)
+                .unwrap_or_else(|_| "unknown".to_string()),
+            session_id: command.session_id.clone(),
+            attachment_id: command.attachment_id.clone(),
+            request_hash: hasher.finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CachedCommandLookup {
+    Miss,
+    Match(CachedCommandResult),
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +298,7 @@ async fn handle_kernel_connection(
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
     let (close_tx, mut close_rx) = mpsc::unbounded_channel::<ConnectionCloseCommand>();
     let close_requested = Arc::new(AtomicBool::new(false));
+    let inbound_request_permits = Arc::new(Semaphore::new(INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         subscription: None,
         watch_task: None,
@@ -319,6 +357,7 @@ async fn handle_kernel_connection(
                     &runtime,
                     &router,
                     &connection_state,
+                    &inbound_request_permits,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
@@ -332,6 +371,7 @@ async fn handle_kernel_connection(
                     &runtime,
                     &router,
                     &connection_state,
+                    &inbound_request_permits,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
@@ -361,6 +401,7 @@ async fn handle_incoming_payload(
     runtime: &Arc<KernelTransportRuntime>,
     router: &Arc<CommandRouter>,
     connection_state: &Arc<Mutex<ConnectionState>>,
+    inbound_request_permits: &Arc<Semaphore>,
     outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
@@ -403,21 +444,71 @@ async fn handle_incoming_payload(
                 causation_id,
                 &request,
             );
-            if let Some(cached) = cached_command_result(runtime, &command.command_id).await {
-                let _ = try_send_outgoing_frame(
-                    outgoing_tx,
-                    close_tx,
-                    close_requested,
-                    KernelOutgoingFrame::Response {
-                        request_id,
-                        response: cached.response,
-                        error: cached.error,
-                    },
-                    command.session_id.as_deref(),
-                    command.attachment_id.as_deref(),
-                );
-                return;
-            }
+            let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
+            match cached_command_result(runtime, &command.command_id, &fingerprint).await {
+                CachedCommandLookup::Match(cached) => {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: cached.response,
+                            error: cached.error,
+                        },
+                        command.session_id.as_deref(),
+                        command.attachment_id.as_deref(),
+                    );
+                    return;
+                }
+                CachedCommandLookup::Conflict => {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(KernelTransportError {
+                                code: "duplicate_command_conflict".to_string(),
+                                message: format!(
+                                    "command_id `{}` was already used for a different request",
+                                    command.command_id
+                                ),
+                                retryable: false,
+                            }),
+                        },
+                        command.session_id.as_deref(),
+                        command.attachment_id.as_deref(),
+                    );
+                    return;
+                }
+                CachedCommandLookup::Miss => {}
+            };
+            let permit = match Arc::clone(inbound_request_permits).try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(KernelTransportError {
+                                code: "kernel_request_overloaded".to_string(),
+                                message: format!(
+                                    "kernel request admission queue overloaded: {error}"
+                                ),
+                                retryable: true,
+                            }),
+                        },
+                        command.session_id.as_deref(),
+                        command.attachment_id.as_deref(),
+                    );
+                    return;
+                }
+            };
             crate::logging::info_with_fields(
                 "daemon.kernel_transport",
                 "kernel command accepted",
@@ -438,6 +529,7 @@ async fn handle_incoming_payload(
             let close_tx = close_tx.clone();
             let close_requested = Arc::clone(close_requested);
             tokio::spawn(async move {
+                let _permit = permit;
                 let command_id = command.command_id.clone();
                 let session_id = command.session_id.clone();
                 let attachment_id = command.attachment_id.clone();
@@ -456,7 +548,7 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
-                cache_command_result(&runtime, command_id, &outgoing).await;
+                cache_command_result(&runtime, command_id, fingerprint, &outgoing).await;
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,
@@ -1086,18 +1178,28 @@ async fn emit_replay_gap_snapshot(
 async fn cached_command_result(
     runtime: &Arc<KernelTransportRuntime>,
     command_id: &str,
-) -> Option<CachedCommandResult> {
-    runtime
+    fingerprint: &CommandFingerprint,
+) -> CachedCommandLookup {
+    let Some(cached) = runtime
         .command_results
         .lock()
         .await
         .get(command_id)
         .cloned()
+    else {
+        return CachedCommandLookup::Miss;
+    };
+    if cached.fingerprint == *fingerprint {
+        CachedCommandLookup::Match(cached)
+    } else {
+        CachedCommandLookup::Conflict
+    }
 }
 
 async fn cache_command_result(
     runtime: &Arc<KernelTransportRuntime>,
     command_id: String,
+    fingerprint: CommandFingerprint,
     frame: &KernelOutgoingFrame,
 ) {
     let KernelOutgoingFrame::Response {
@@ -1111,6 +1213,7 @@ async fn cache_command_result(
         results.insert(
             command_id.clone(),
             CachedCommandResult {
+                fingerprint,
                 response: response.clone(),
                 error: error.clone(),
             },
