@@ -1,6 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{ProviderPromptSubmitCompletion, ProviderPromptSubmitJob, ProviderRunState};
+use crate::provider::{
+    ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
+    ProviderPromptSubmitJob, ProviderRunState,
+};
 use crate::pty::PtyProcessState;
 use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
@@ -23,6 +26,17 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
     pub(crate) job: ProviderPromptSubmitJob,
+}
+
+pub(crate) struct KernelPromptCancellation {
+    pub(crate) cancellation: PromptCancellation,
+    pub(crate) dispatch: Option<KernelPromptAbortDispatch>,
+}
+
+pub(crate) struct KernelPromptAbortDispatch {
+    pub(crate) session_id: String,
+    pub(crate) provider_run_id: String,
+    pub(crate) job: ProviderPromptAbortJob,
 }
 
 impl DaemonApp {
@@ -520,6 +534,115 @@ impl DaemonApp {
             })?
             .to_string();
         self.cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
+    }
+
+    pub(crate) fn cancel_active_prompt_for_kernel(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<KernelPromptCancellation, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent_id = self
+            .sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+        let target_agent = self.agents.get_agent(&target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return self
+                .cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
+                .map(|cancellation| KernelPromptCancellation {
+                    cancellation,
+                    dispatch: None,
+                });
+        }
+
+        let active_prompt = self
+            .sessions
+            .get_session(session_id)?
+            .active_prompt_for_agent(&target_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active_prompt.status() == PromptStatus::Cancelling {
+            return Ok(KernelPromptCancellation {
+                cancellation: PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                dispatch: None,
+            });
+        }
+
+        let provider_run_id = self
+            .providers
+            .get_run_for_agent(session_id, &target_agent_id)
+            .map(|run| run.id().to_string())
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        let dispatch = if let Some(job) = self
+            .providers
+            .take_structured_prompt_abort_job(&provider_run_id)?
+        {
+            Some(KernelPromptAbortDispatch {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.clone(),
+                job,
+            })
+        } else {
+            self.send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
+            None
+        };
+
+        let (_session, prompt) = self
+            .sessions
+            .begin_cancelling_active_prompt(session_id, &target_agent_id)?;
+        flow_control::note_prompt_settlement_requested(self, &provider_run_id);
+        self.record_notice(
+            session_id,
+            Some(&provider_run_id),
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
+                active_prompt.id(),
+                provider_run.id()
+            ),
+        );
+
+        Ok(KernelPromptCancellation {
+            cancellation: PromptCancellation {
+                prompt,
+                started_next: None,
+            },
+            dispatch,
+        })
+    }
+
+    pub(crate) fn finish_kernel_prompt_abort(
+        &mut self,
+        session_id: String,
+        provider_run_id: String,
+        completion: ProviderPromptAbortCompletion,
+        result: Result<(), DaemonError>,
+    ) -> Result<(), DaemonError> {
+        self.providers
+            .finish_structured_prompt_abort_job(completion);
+        if let Err(error) = result {
+            self.record_notice(
+                &session_id,
+                Some(&provider_run_id),
+                self.attachments.list_session_attachment_ids(&session_id),
+                format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel_active_prompt_for_runtime(

@@ -50,6 +50,21 @@ pub(crate) struct ProviderPromptSubmitCompletion {
     inner: ProviderPromptSubmitJobInner,
 }
 
+pub(crate) struct ProviderPromptAbortJob {
+    run_id: String,
+    inner: ProviderPromptAbortJobInner,
+}
+
+enum ProviderPromptAbortJobInner {
+    Codex(CodexRuntimeState),
+    OpenCode(OpenCodeRuntimeState),
+}
+
+pub(crate) struct ProviderPromptAbortCompletion {
+    run_id: String,
+    inner: ProviderPromptAbortJobInner,
+}
+
 impl ProviderPromptSubmitJob {
     pub(crate) fn execute(self) -> (ProviderPromptSubmitCompletion, Result<(), DaemonError>) {
         let ProviderPromptSubmitJob {
@@ -76,6 +91,34 @@ impl ProviderPromptSubmitJob {
                     ProviderPromptSubmitCompletion {
                         run_id,
                         inner: ProviderPromptSubmitJobInner::OpenCode(state),
+                    },
+                    result,
+                )
+            }
+        }
+    }
+}
+
+impl ProviderPromptAbortJob {
+    pub(crate) fn execute(self) -> (ProviderPromptAbortCompletion, Result<(), DaemonError>) {
+        let ProviderPromptAbortJob { run_id, inner } = self;
+        match inner {
+            ProviderPromptAbortJobInner::Codex(mut state) => {
+                let result = abort_codex_turn(&run_id, &mut state);
+                (
+                    ProviderPromptAbortCompletion {
+                        run_id,
+                        inner: ProviderPromptAbortJobInner::Codex(state),
+                    },
+                    result,
+                )
+            }
+            ProviderPromptAbortJobInner::OpenCode(state) => {
+                let result = abort_opencode_session(&run_id, &state);
+                (
+                    ProviderPromptAbortCompletion {
+                        run_id,
+                        inner: ProviderPromptAbortJobInner::OpenCode(state),
                     },
                     result,
                 )
@@ -580,6 +623,61 @@ impl ProviderProcessService {
         })?;
         abort_opencode_session(provider_run_id, state)?;
         Ok(true)
+    }
+
+    pub(crate) fn take_structured_prompt_abort_job(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderPromptAbortJob>, DaemonError> {
+        let run = self.get_run(provider_run_id)?;
+        if run.adapter_key() == "codex" {
+            let state = self.codex_runs.remove(provider_run_id).ok_or_else(|| {
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                }
+            })?;
+            self.structured_prompt_submissions
+                .insert(provider_run_id.to_string());
+            return Ok(Some(ProviderPromptAbortJob {
+                run_id: provider_run_id.to_string(),
+                inner: ProviderPromptAbortJobInner::Codex(state),
+            }));
+        }
+        if run.adapter_key() != "opencode" {
+            return Ok(None);
+        }
+
+        let state = self.opencode_runs.remove(provider_run_id).ok_or_else(|| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            }
+        })?;
+        self.structured_prompt_submissions
+            .insert(provider_run_id.to_string());
+        Ok(Some(ProviderPromptAbortJob {
+            run_id: provider_run_id.to_string(),
+            inner: ProviderPromptAbortJobInner::OpenCode(state),
+        }))
+    }
+
+    pub(crate) fn finish_structured_prompt_abort_job(
+        &mut self,
+        completion: ProviderPromptAbortCompletion,
+    ) {
+        self.structured_prompt_submissions
+            .remove(&completion.run_id);
+        match completion.inner {
+            ProviderPromptAbortJobInner::Codex(state) => {
+                self.codex_runs.insert(completion.run_id, state);
+            }
+            ProviderPromptAbortJobInner::OpenCode(state) => {
+                self.opencode_runs.insert(completion.run_id, state);
+            }
+        }
     }
 
     pub fn submit_structured_prompt(

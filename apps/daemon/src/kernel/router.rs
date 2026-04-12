@@ -122,6 +122,9 @@ async fn execute_interactive_request(
     if let LocalDaemonRequest::SubmitPrompt(request) = request {
         return execute_kernel_prompt_submit(app, request).await;
     }
+    if let LocalDaemonRequest::CancelActivePrompt(request) = request {
+        return execute_kernel_prompt_cancel(app, request).await;
+    }
     let mut app = app.lock().await;
     if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
         return result;
@@ -130,6 +133,53 @@ async fn execute_interactive_request(
         return result;
     }
     app.handle_local_request(request)
+}
+
+async fn execute_kernel_prompt_cancel(
+    app: &Arc<Mutex<DaemonApp>>,
+    request: crate::local::CancelActivePromptRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let prepared = {
+        let mut app = app.lock().await;
+        app.cancel_active_prompt_for_kernel(&request.session_id, &request.attachment_id)?
+    };
+
+    if let Some(dispatch) = prepared.dispatch {
+        let app = Arc::clone(app);
+        tokio::spawn(async move {
+            let executed = tokio::task::spawn_blocking(move || {
+                let session_id = dispatch.session_id;
+                let provider_run_id = dispatch.provider_run_id;
+                let (completion, result) = dispatch.job.execute();
+                (session_id, provider_run_id, completion, result)
+            })
+            .await;
+            match executed {
+                Ok((session_id, provider_run_id, completion, result)) => {
+                    let mut app = app.lock().await;
+                    let _ = app.finish_kernel_prompt_abort(
+                        session_id,
+                        provider_run_id,
+                        completion,
+                        result,
+                    );
+                }
+                Err(error) => {
+                    crate::logging::error_with_fields(
+                        "daemon.kernel_router",
+                        "kernel prompt abort task failed",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    Ok(LocalDaemonResponse::PromptCancelled {
+        cancellation: prepared.cancellation,
+    })
 }
 
 async fn execute_kernel_prompt_submit(
