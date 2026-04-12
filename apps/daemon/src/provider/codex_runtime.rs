@@ -16,6 +16,9 @@ use super::{
     CodexSocket, ProviderResumeState, RuntimeProviderRun,
 };
 
+const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
+const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPollResult {
     pub chunks: Vec<CodexOutputChunk>,
@@ -247,9 +250,9 @@ pub fn drain_codex_events(
         );
     }
 
-    loop {
+    for _ in 0..CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS {
         let Some(notification) =
-            client.read_notification(&mut state.socket, Duration::from_millis(25))?
+            client.read_notification(&mut state.socket, CODEX_EVENT_DRAIN_READ_TIMEOUT)?
         else {
             break;
         };

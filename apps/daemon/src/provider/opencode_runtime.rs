@@ -9,6 +9,7 @@ use super::{OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMe
 const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
+const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeOutputChunk {
     pub kind: TerminalOutputKind,
@@ -118,7 +119,7 @@ pub(super) fn drain_opencode_events(
     let mut resolved_variant = None;
     let mut resolved_usage_tokens_total = None;
 
-    loop {
+    for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
         match state.event_subscription.receiver.try_recv() {
             Ok(OpenCodeEvent::MessageUpdated { info }) => {
                 if resolved_model.is_none() {
