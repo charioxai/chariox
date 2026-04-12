@@ -458,30 +458,10 @@ impl DaemonApp {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
-        let (_session, prompt) = self
-            .sessions
-            .finalize_active_prompt_cancellation(session_id, agent_id)?;
-        crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, &prompt)?;
-        if let Some(provider_run_id) = provider_run_id {
-            flow_control::clear_prompt_activity(self, provider_run_id);
-        }
-        let started_next = if self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
-            .is_none()
-        {
-            self.advance_next_queued_prompt(session_id, agent_id)?
-        } else {
-            None
-        };
-        if started_next.is_none() {
-            self.sync_focused_provider_run_if_idle(session_id)?;
-        }
-
-        Ok(PromptCancellation {
-            prompt,
-            started_next,
-        })
+        self.kernel_agents().finalize_active_prompt_cancellation(
+            session_id,
+            agent_id,
+            provider_run_id,
+        )
     }
 }

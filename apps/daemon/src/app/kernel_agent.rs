@@ -915,6 +915,41 @@ impl<'a> KernelAgentService<'a> {
         })
     }
 
+    pub(crate) fn finalize_active_prompt_cancellation(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<PromptCancellation, DaemonError> {
+        let (_session, prompt) = self
+            .app
+            .sessions
+            .finalize_active_prompt_cancellation(session_id, agent_id)?;
+        crate::scheduler::runtime::on_workflow_prompt_cancelled(self.app, session_id, &prompt)?;
+        if let Some(provider_run_id) = provider_run_id {
+            flow_control::clear_prompt_activity(self.app, provider_run_id);
+        }
+        let started_next = if self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .active_prompt_for_agent(agent_id)
+            .is_none()
+        {
+            self.advance_next_queued_prompt(session_id, agent_id)?
+        } else {
+            None
+        };
+        if started_next.is_none() {
+            self.app.sync_focused_provider_run_if_idle(session_id)?;
+        }
+
+        Ok(PromptCancellation {
+            prompt,
+            started_next,
+        })
+    }
+
     pub(crate) fn cancel_active_prompt_for_kernel(
         &mut self,
         session_id: &str,
