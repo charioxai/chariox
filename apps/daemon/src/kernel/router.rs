@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
@@ -35,6 +36,28 @@ pub(crate) struct CommandRouter {
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
 }
 
+#[derive(Clone, Default)]
+struct ProviderRuntimeIoLanes {
+    lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
+}
+
+impl ProviderRuntimeIoLanes {
+    async fn acquire(&self, provider_run_id: &str) -> OwnedSemaphorePermit {
+        let semaphore = {
+            let mut lanes = self.lanes.lock().await;
+            Arc::clone(
+                lanes
+                    .entry(provider_run_id.to_string())
+                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
+            )
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .expect("provider runtime I/O lane semaphore closed")
+    }
+}
+
 impl CommandRouter {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self::with_interactive_capacity(app, INTERACTIVE_COMMAND_QUEUE_LIMIT)
@@ -45,8 +68,10 @@ impl CommandRouter {
         interactive_capacity: usize,
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
+        let provider_runtime_lanes = ProviderRuntimeIoLanes::default();
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
+            provider_runtime_lanes.clone(),
             interactive_rx,
         ));
         Self {
@@ -95,6 +120,7 @@ impl CommandRouter {
 
 async fn run_interactive_command_lane(
     app: Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: ProviderRuntimeIoLanes,
     mut rx: mpsc::Receiver<InteractiveCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
@@ -110,20 +136,22 @@ async fn run_interactive_command_lane(
                 "agent_id": envelope.command.agent_id,
             }),
         );
-        let result = execute_interactive_request(&app, envelope.request).await;
+        let result =
+            execute_interactive_request(&app, &provider_runtime_lanes, envelope.request).await;
         let _ = envelope.result_tx.send(result);
     }
 }
 
 async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: &ProviderRuntimeIoLanes,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if let LocalDaemonRequest::SubmitPrompt(request) = request {
-        return execute_kernel_prompt_submit(app, request).await;
+        return execute_kernel_prompt_submit(app, provider_runtime_lanes, request).await;
     }
     if let LocalDaemonRequest::CancelActivePrompt(request) = request {
-        return execute_kernel_prompt_cancel(app, request).await;
+        return execute_kernel_prompt_cancel(app, provider_runtime_lanes, request).await;
     }
     let mut app = app.lock().await;
     if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
@@ -137,6 +165,7 @@ async fn execute_interactive_request(
 
 async fn execute_kernel_prompt_cancel(
     app: &Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: &ProviderRuntimeIoLanes,
     request: crate::local::CancelActivePromptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {
@@ -146,20 +175,28 @@ async fn execute_kernel_prompt_cancel(
 
     if let Some(dispatch) = prepared.dispatch {
         let app = Arc::clone(app);
+        let provider_runtime_lanes = provider_runtime_lanes.clone();
         tokio::spawn(async move {
-            let executed = tokio::task::spawn_blocking(move || {
-                let session_id = dispatch.session_id;
-                let provider_run_id = dispatch.provider_run_id;
-                let (completion, result) = dispatch.job.execute();
-                (session_id, provider_run_id, completion, result)
-            })
-            .await;
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let job = {
+                let mut app = app.lock().await;
+                match app.take_kernel_prompt_abort_job(&dispatch) {
+                    Ok(job) => job,
+                    Err(error) => {
+                        let _ = app.fail_kernel_prompt_abort(dispatch, error);
+                        return;
+                    }
+                }
+            };
+            let executed = tokio::task::spawn_blocking(move || job.execute()).await;
             match executed {
-                Ok((session_id, provider_run_id, completion, result)) => {
+                Ok((completion, result)) => {
                     let mut app = app.lock().await;
                     let _ = app.finish_kernel_prompt_abort(
-                        session_id,
-                        provider_run_id,
+                        dispatch.session_id,
+                        dispatch.provider_run_id,
                         completion,
                         result,
                     );
@@ -184,6 +221,7 @@ async fn execute_kernel_prompt_cancel(
 
 async fn execute_kernel_prompt_submit(
     app: &Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: &ProviderRuntimeIoLanes,
     request: crate::local::SubmitPromptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let prepared = {
@@ -199,22 +237,29 @@ async fn execute_kernel_prompt_submit(
 
     if let Some(dispatch) = prepared.dispatch {
         let app = Arc::clone(app);
+        let provider_runtime_lanes = provider_runtime_lanes.clone();
         tokio::spawn(async move {
-            let executed = tokio::task::spawn_blocking(move || {
-                let session_id = dispatch.session_id;
-                let provider_run_id = dispatch.provider_run_id;
-                let agent_id = dispatch.agent_id;
-                let (completion, result) = dispatch.job.execute();
-                (session_id, provider_run_id, agent_id, completion, result)
-            })
-            .await;
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let job = {
+                let mut app = app.lock().await;
+                match app.take_kernel_prompt_dispatch_job(&dispatch) {
+                    Ok(job) => job,
+                    Err(error) => {
+                        let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
+                        return;
+                    }
+                }
+            };
+            let executed = tokio::task::spawn_blocking(move || job.execute()).await;
             match executed {
-                Ok((session_id, provider_run_id, agent_id, completion, result)) => {
+                Ok((completion, result)) => {
                     let mut app = app.lock().await;
                     let _ = app.finish_kernel_prompt_dispatch(
-                        session_id,
-                        provider_run_id,
-                        agent_id,
+                        dispatch.session_id,
+                        dispatch.provider_run_id,
+                        dispatch.agent_id,
                         completion,
                         result,
                     );

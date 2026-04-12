@@ -25,7 +25,8 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
-    pub(crate) job: ProviderPromptSubmitJob,
+    pub(crate) prompt: String,
+    pub(crate) attachments: Vec<PromptAttachment>,
 }
 
 pub(crate) struct KernelPromptCancellation {
@@ -36,7 +37,6 @@ pub(crate) struct KernelPromptCancellation {
 pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
-    pub(crate) job: ProviderPromptAbortJob,
 }
 
 impl DaemonApp {
@@ -303,17 +303,14 @@ impl DaemonApp {
                 );
                 let provider_run =
                     self.prepare_provider_prompt_dispatch(session_id, provider_run_id)?;
-                if let Some(job) = self.providers.take_structured_prompt_submit_job(
-                    &provider_run,
-                    prompt.prompt(),
-                    prompt.attachments(),
-                )? {
+                if self.providers.run_uses_structured_prompt_io(&provider_run) {
                     flow_control::note_prompt_started(self, provider_run_id);
                     dispatch = Some(KernelPromptDispatch {
                         session_id: session_id.to_string(),
                         provider_run_id: provider_run_id.to_string(),
                         agent_id: target_agent_id.clone(),
-                        job,
+                        prompt: prompt.prompt().to_string(),
+                        attachments: prompt.attachments().to_vec(),
                     });
                 } else if let Err(error) = self.send_provider_input(
                     session_id,
@@ -407,6 +404,46 @@ impl DaemonApp {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(crate) fn take_kernel_prompt_dispatch_job(
+        &mut self,
+        dispatch: &KernelPromptDispatch,
+    ) -> Result<ProviderPromptSubmitJob, DaemonError> {
+        let provider_run =
+            self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
+        self.providers
+            .take_structured_prompt_submit_job(
+                &provider_run,
+                &dispatch.prompt,
+                &dispatch.attachments,
+            )?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "prepare structured prompt dispatch",
+                message: format!(
+                    "provider run `{}` does not use structured prompt I/O",
+                    dispatch.provider_run_id
+                ),
+            })
+    }
+
+    pub(crate) fn fail_kernel_prompt_dispatch(
+        &mut self,
+        dispatch: KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        let _ = self
+            .sessions
+            .cancel_active_prompt(&dispatch.session_id, &dispatch.agent_id);
+        flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
+        self.record_notice(
+            &dispatch.session_id,
+            Some(&dispatch.provider_run_id),
+            self.attachments
+                .list_session_attachment_ids(&dispatch.session_id),
+            format!("Prompt dispatch failed after acknowledgement: {error}"),
+        );
+        Err(error)
     }
 
     pub fn complete_active_prompt(
@@ -586,14 +623,10 @@ impl DaemonApp {
                 session_id: session_id.to_string(),
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
-        let dispatch = if let Some(job) = self
-            .providers
-            .take_structured_prompt_abort_job(&provider_run_id)?
-        {
+        let dispatch = if self.providers.run_uses_structured_prompt_io(&provider_run) {
             Some(KernelPromptAbortDispatch {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.clone(),
-                job,
             })
         } else {
             self.send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
@@ -643,6 +676,37 @@ impl DaemonApp {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(crate) fn take_kernel_prompt_abort_job(
+        &mut self,
+        dispatch: &KernelPromptAbortDispatch,
+    ) -> Result<ProviderPromptAbortJob, DaemonError> {
+        self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
+        self.providers
+            .take_structured_prompt_abort_job(&dispatch.provider_run_id)?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "prepare structured prompt abort",
+                message: format!(
+                    "provider run `{}` does not use structured prompt I/O",
+                    dispatch.provider_run_id
+                ),
+            })
+    }
+
+    pub(crate) fn fail_kernel_prompt_abort(
+        &mut self,
+        dispatch: KernelPromptAbortDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.record_notice(
+            &dispatch.session_id,
+            Some(&dispatch.provider_run_id),
+            self.attachments
+                .list_session_attachment_ids(&dispatch.session_id),
+            format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+        );
+        Err(error)
     }
 
     pub(crate) fn cancel_active_prompt_for_runtime(

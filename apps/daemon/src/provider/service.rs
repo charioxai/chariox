@@ -598,6 +598,12 @@ impl ProviderProcessService {
         runtime_is_healthy(run_id, state)
     }
 
+    pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
+        run.adapter_key() == "codex"
+            || run.adapter_key() == "opencode"
+            || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+    }
+
     pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
         if self.codex_runs.contains_key(provider_run_id) {
             return Ok(());
