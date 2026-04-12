@@ -174,6 +174,28 @@ pub(crate) fn page_history_entries(
     )
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ProviderRunProjectionStore {
+    runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
+}
+
+impl ProviderRunProjectionStore {
+    pub(crate) fn get(&self, provider_run_id: &str) -> Option<RuntimeProviderRun> {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .get(provider_run_id)
+            .cloned()
+    }
+
+    pub(crate) fn update(&self, run: RuntimeProviderRun) {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .insert(run.id().to_string(), run);
+    }
+}
+
 impl SessionSnapshotProjection {
     pub fn from_daemon_app(
         app: &mut DaemonApp,

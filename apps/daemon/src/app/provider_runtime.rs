@@ -183,6 +183,11 @@ impl DaemonApp {
             .attachments
             .list_session_attachment_ids(&request.session_id);
         let run = self.providers.start_run(&mut self.sessions, request)?;
+        if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
+            if let Ok(previous_run) = self.providers.get_run(previous_active_run_id) {
+                self.update_provider_run_projection(previous_run);
+            }
+        }
         crate::logging::info_with_fields(
             "daemon.app",
             "prepared provider run endpoint metadata",
@@ -204,9 +209,12 @@ impl DaemonApp {
                         "error": error.to_string(),
                     }),
                 );
-                let _ =
+                if let Ok(terminated_run) =
                     self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
+                {
+                    self.update_provider_run_projection(terminated_run);
+                }
                 if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
                     match self.providers.resume_run(
                         &mut self.sessions,
@@ -214,6 +222,7 @@ impl DaemonApp {
                         previous_active_run_id,
                     ) {
                         Ok(resumed_run) => {
+                            self.update_provider_run_projection(resumed_run.clone());
                             self.record_notice(
                                 run.session_id(),
                                 Some(resumed_run.id()),
@@ -243,6 +252,7 @@ impl DaemonApp {
             }
             self.register_managed_provider_process(&run)?;
         }
+        self.update_provider_run_projection(run.clone());
         Ok(StartedProviderLaunch {
             run,
             previous_active_run_id,
@@ -296,17 +306,21 @@ impl DaemonApp {
         );
         let _ = self.remove_tracked_provider_process_for_run(started.run.id());
         self.providers.clear_runtime(started.run.id());
-        let _ = self.providers.terminate_run(
+        if let Ok(terminated_run) = self.providers.terminate_run(
             &mut self.sessions,
             started.run.session_id(),
             started.run.id(),
-        );
+        ) {
+            self.update_provider_run_projection(terminated_run);
+        }
         if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
-            let _ = self.providers.resume_run(
+            if let Ok(resumed_run) = self.providers.resume_run(
                 &mut self.sessions,
                 started.run.session_id(),
                 previous_active_run_id,
-            );
+            ) {
+                self.update_provider_run_projection(resumed_run);
+            }
         }
     }
 
@@ -344,6 +358,7 @@ impl DaemonApp {
             )?;
             let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
         }
+        self.update_provider_run_projection(run.clone());
         Ok(run)
     }
 
@@ -418,9 +433,12 @@ impl DaemonApp {
         let run = self.providers.launch_run_detached(request)?;
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {
-                let _ =
+                if let Ok(terminated_run) =
                     self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id());
+                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
+                {
+                    self.update_provider_run_projection(terminated_run);
+                }
                 return Err(error);
             }
             self.register_managed_provider_process(&run)?;
@@ -437,6 +455,7 @@ impl DaemonApp {
                 run.resume_state().clone(),
             )?;
         }
+        self.update_provider_run_projection(run.clone());
         Ok(run)
     }
 
@@ -593,8 +612,12 @@ impl DaemonApp {
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
             {
-                self.providers
-                    .park_run(&mut self.sessions, session_id, current_active_run_id)?;
+                let parked_run = self.providers.park_run(
+                    &mut self.sessions,
+                    session_id,
+                    current_active_run_id,
+                )?;
+                self.update_provider_run_projection(parked_run);
             }
         }
 
@@ -605,8 +628,12 @@ impl DaemonApp {
                         .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
                 }
                 ProviderRunState::Parked => {
-                    self.providers
-                        .resume_run(&mut self.sessions, session_id, agent_run.id())?;
+                    let resumed_run = self.providers.resume_run(
+                        &mut self.sessions,
+                        session_id,
+                        agent_run.id(),
+                    )?;
+                    self.update_provider_run_projection(resumed_run);
                 }
                 ProviderRunState::Starting => {
                     self.sessions
@@ -660,11 +687,12 @@ impl DaemonApp {
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
                             && active_run.state() == ProviderRunState::Running
                         {
-                            self.providers.park_run(
+                            let parked_run = self.providers.park_run(
                                 &mut self.sessions,
                                 session_id,
                                 current_active_run_id,
                             )?;
+                            self.update_provider_run_projection(parked_run);
                         }
                     }
                 }
@@ -702,6 +730,7 @@ impl DaemonApp {
                 }
                 ProviderRunState::Parked => {
                     let resumed = self.providers.resume_run_detached(agent_run.id())?;
+                    self.update_provider_run_projection(resumed.clone());
                     Ok(resumed.id().to_string())
                 }
                 ProviderRunState::Ended => Err(DaemonError::NoActiveProviderRun {

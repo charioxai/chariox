@@ -389,6 +389,7 @@ impl DaemonApp {
         let ended_run =
             self.providers
                 .mark_run_ended(&mut self.sessions, session_id, provider_run_id)?;
+        self.update_provider_run_projection(ended_run.clone());
         let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
 
         if had_active_prompt {

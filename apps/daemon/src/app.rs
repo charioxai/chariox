@@ -35,7 +35,9 @@ use crate::execution_lease::{
     ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::kernel::projection::{page_history_entries, SessionHistoryProjectionStore};
+use crate::kernel::projection::{
+    page_history_entries, ProviderRunProjectionStore, SessionHistoryProjectionStore,
+};
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
@@ -81,6 +83,7 @@ pub struct DaemonApp {
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
+    provider_run_projection: ProviderRunProjectionStore,
     terminal: TerminalStreamService,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
@@ -171,6 +174,7 @@ impl DaemonApp {
                 config.session_history_read_delay_ms,
             )?,
             history_projection: SessionHistoryProjectionStore::default(),
+            provider_run_projection: ProviderRunProjectionStore::default(),
             terminal: TerminalStreamService::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
@@ -252,6 +256,14 @@ impl DaemonApp {
 
     pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
         self.history_projection.clone()
+    }
+
+    pub(crate) fn provider_run_projection_store(&self) -> ProviderRunProjectionStore {
+        self.provider_run_projection.clone()
+    }
+
+    pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {
+        self.provider_run_projection.update(run);
     }
 
     pub fn sessions_mut(&mut self) -> &mut SessionService {
@@ -899,6 +911,7 @@ impl DaemonApp {
         self.providers
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        self.update_provider_run_projection(provider_run.clone());
         for notice in &poll_result.notices {
             self.record_notice(
                 session_id,

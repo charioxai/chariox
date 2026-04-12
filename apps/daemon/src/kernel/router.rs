@@ -11,8 +11,8 @@ use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
-    page_history_entries, DaemonHealthProjection, SessionHistoryProjectionStore,
-    SessionStateProjectionStore,
+    page_history_entries, DaemonHealthProjection, ProviderRunProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::local::provider_requests::{
@@ -45,6 +45,7 @@ pub(crate) struct CommandRouter {
     session_projection: SessionStateProjectionStore,
     history_store: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
+    provider_run_projection: ProviderRunProjectionStore,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -71,7 +72,8 @@ impl CommandRouter {
         let provider_runtime_lanes = ProviderRunOperationLanes::default();
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
-        let (history_store, history_projection) = router_history_stores(&app);
+        let (history_store, history_projection, provider_run_projection) =
+            router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -96,6 +98,7 @@ impl CommandRouter {
             session_projection,
             history_store,
             history_projection,
+            provider_run_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -108,7 +111,8 @@ impl CommandRouter {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
         let focus_projection = FocusedAgentProjection::default();
         let session_projection = SessionStateProjectionStore::default();
-        let (history_store, history_projection) = router_history_stores(&app);
+        let (history_store, history_projection, provider_run_projection) =
+            router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
@@ -133,6 +137,7 @@ impl CommandRouter {
             session_projection,
             history_store,
             history_projection,
+            provider_run_projection,
             pending_provider_launch_sessions,
         }
     }
@@ -160,6 +165,11 @@ impl CommandRouter {
                 return Ok(response);
             }
         }
+        if let LocalDaemonRequest::GetProviderRun(request) = &request {
+            if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
+                return Ok(LocalDaemonResponse::ProviderRun { provider_run });
+            }
+        }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
                 projection: self.daemon_health_projection(0).await,
@@ -184,6 +194,7 @@ impl CommandRouter {
             .await;
         self.apply_session_projection_refresh(session_refresh, &result)
             .await;
+        self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
         result
     }
@@ -406,6 +417,20 @@ impl CommandRouter {
         }
     }
 
+    async fn apply_provider_run_projection_refresh(
+        &self,
+        result: &Result<LocalDaemonResponse, DaemonError>,
+    ) {
+        match result {
+            Ok(LocalDaemonResponse::ProviderRun { provider_run })
+            | Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
+            | Ok(LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) => {
+                self.provider_run_projection.update(provider_run.clone());
+            }
+            _ => {}
+        }
+    }
+
     async fn has_pending_provider_launch(&self, session_id: &str) -> bool {
         self.pending_provider_launch_sessions
             .lock()
@@ -435,13 +460,21 @@ impl CommandRouter {
     }
 }
 
-fn router_history_stores(
+fn router_projection_stores(
     app: &Arc<Mutex<DaemonApp>>,
-) -> (SessionHistoryStore, SessionHistoryProjectionStore) {
+) -> (
+    SessionHistoryStore,
+    SessionHistoryProjectionStore,
+    ProviderRunProjectionStore,
+) {
     let app = app
         .try_lock()
         .expect("CommandRouter should be created before holding the app lock");
-    (app.history_store(), app.session_history_projection_store())
+    (
+        app.history_store(),
+        app.session_history_projection_store(),
+        app.provider_run_projection_store(),
+    )
 }
 
 #[derive(Debug)]
@@ -915,9 +948,9 @@ mod tests {
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AttachToSessionRequest, DeleteSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SpawnAgentRequest, SubmitPromptRequest,
+        GetDaemonHealthRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -1738,6 +1771,181 @@ mod tests {
                 assert_eq!(texts, vec!["first".to_string(), "second".to_string()]);
             }
             _ => panic!("unexpected history response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_provider_run_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let launch_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        });
+        let launch_command =
+            KernelCommand::from_local_request("cmd-provider-launch", None, None, &launch_request);
+        let provider_run_id = match router
+            .dispatch(launch_command, launch_request)
+            .await
+            .expect("provider launch should be accepted")
+        {
+            LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+                provider_run.id().to_string()
+            }
+            _ => panic!("unexpected launch response"),
+        };
+
+        let app_guard = app.lock().await;
+        let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+            provider_run_id: provider_run_id.clone(),
+        });
+        let provider_command = KernelCommand::from_local_request(
+            "cmd-provider-projection",
+            None,
+            None,
+            &provider_request,
+        );
+        let provider_router = router.clone();
+        let provider_task = tokio::spawn(async move {
+            provider_router
+                .dispatch(provider_command, provider_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            provider_task.is_finished(),
+            "warmed GetProviderRun should be served from the provider-run projection without app lock access"
+        );
+        drop(app_guard);
+
+        let provider_response = provider_task
+            .await
+            .expect("provider task should join")
+            .expect("provider run should resolve");
+        match provider_response {
+            LocalDaemonResponse::ProviderRun { provider_run } => {
+                assert_eq!(provider_run.id(), provider_run_id);
+            }
+            _ => panic!("unexpected provider response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_run_projection_tracks_async_launch_completion() {
+        let mut config = DaemonConfig::for_tests();
+        config.provider_runtime_init_delay_ms = 25;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let launch_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        });
+        let launch_command = KernelCommand::from_local_request(
+            "cmd-provider-launch-async",
+            None,
+            None,
+            &launch_request,
+        );
+        let provider_run_id = match router
+            .dispatch(launch_command, launch_request)
+            .await
+            .expect("provider launch should be accepted")
+        {
+            LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+                assert_eq!(
+                    provider_run.state(),
+                    crate::provider::ProviderRunState::Starting
+                );
+                provider_run.id().to_string()
+            }
+            _ => panic!("unexpected launch response"),
+        };
+
+        let mut running_seen = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+                provider_run_id: provider_run_id.clone(),
+            });
+            let provider_command = KernelCommand::from_local_request(
+                "cmd-provider-running-poll",
+                None,
+                None,
+                &provider_request,
+            );
+            let response = router
+                .dispatch(provider_command, provider_request)
+                .await
+                .expect("provider run should resolve");
+            if let LocalDaemonResponse::ProviderRun { provider_run } = response {
+                if provider_run.state() == crate::provider::ProviderRunState::Running {
+                    running_seen = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            running_seen,
+            "provider projection should observe async launch completion"
+        );
+
+        let app_guard = app.lock().await;
+        let provider_request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+            provider_run_id: provider_run_id.clone(),
+        });
+        let provider_command = KernelCommand::from_local_request(
+            "cmd-provider-running-projection",
+            None,
+            None,
+            &provider_request,
+        );
+        let provider_router = router.clone();
+        let provider_task = tokio::spawn(async move {
+            provider_router
+                .dispatch(provider_command, provider_request)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(provider_task.is_finished());
+        drop(app_guard);
+
+        let provider_response = provider_task
+            .await
+            .expect("provider task should join")
+            .expect("provider run should resolve");
+        match provider_response {
+            LocalDaemonResponse::ProviderRun { provider_run } => {
+                assert_eq!(
+                    provider_run.state(),
+                    crate::provider::ProviderRunState::Running
+                );
+            }
+            _ => panic!("unexpected provider response"),
         }
     }
 

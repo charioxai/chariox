@@ -41,6 +41,7 @@ impl DaemonApp {
                 "state": provider_run.state().to_string(),
             }),
         );
+        self.update_provider_run_projection(provider_run.clone());
         Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
     }
 
@@ -53,6 +54,7 @@ impl DaemonApp {
         self.providers_mut()
             .enqueue_run_selection_sync(&request.provider_run_id)?;
         let provider_run = self.providers().get_run(&request.provider_run_id)?;
+        self.update_provider_run_projection(provider_run.clone());
         Ok(LocalDaemonResponse::ProviderRun { provider_run })
     }
 
