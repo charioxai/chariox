@@ -189,6 +189,9 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
             }
             metadata
         }
+        LocalDaemonRequest::GetDaemonHealth(_) => {
+            LocalRequestMetadata::new("daemon.health.get", Normal)
+        }
         LocalDaemonRequest::GetProviderRun(request) => {
             LocalRequestMetadata::new("provider_run.get", Normal)
                 .provider_run(&request.provider_run_id)
@@ -296,6 +299,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::CycleAgentFocus(_)
         | LocalDaemonRequest::EndSession(_)
         | LocalDaemonRequest::DeleteSession(_)
+        | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetSessionHistory(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
@@ -306,8 +310,8 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonRequest,
-        SubmitPromptRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        LocalDaemonRequest, SubmitPromptRequest,
     };
 
     #[test]
@@ -378,6 +382,19 @@ mod tests {
         assert_eq!(command.command_type, "session.end");
         assert_eq!(command.priority, KernelCommandPriority::Interactive);
         assert_eq!(command.session_id.as_deref(), Some("session-1"));
+    }
+
+    #[test]
+    fn normalizes_daemon_health_as_normal_command() {
+        let command = KernelCommand::from_local_request(
+            "health-1",
+            None,
+            None,
+            &LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+        );
+
+        assert_eq!(command.command_type, "daemon.health.get");
+        assert_eq!(command.priority, KernelCommandPriority::Normal);
     }
 
     #[test]

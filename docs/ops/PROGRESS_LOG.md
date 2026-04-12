@@ -24,7 +24,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added `AgentRuntime` per-agent mailboxes for prompt submit/cancel admission so agent prompt commands no longer wait behind the generic interactive queue.
 - Added `SessionRuntime` per-session mailboxes for attach, detach, focus/cycle, resize, end, and delete admission so session UI/lifecycle commands are isolated from the generic interactive queue and from unrelated sessions.
 - Added session mailbox deregistration after successful end/delete so closed sessions do not leave stale mailbox registrations behind.
-- Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots.
+- Added the first `DaemonHealthProjection` skeleton with session/agent command mailbox queue snapshots exposed through `GetDaemonHealth`.
 
 ### Remaining M4.5 work
 

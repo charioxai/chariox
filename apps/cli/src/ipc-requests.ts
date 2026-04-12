@@ -75,6 +75,10 @@ export function getSessionStateRequest(sessionId: string) {
   }
 }
 
+export function getDaemonHealthRequest() {
+  return { GetDaemonHealth: null }
+}
+
 export function listProviderProcessesRequest(provider?: string | null) {
   return {
     ListProviderProcesses: {

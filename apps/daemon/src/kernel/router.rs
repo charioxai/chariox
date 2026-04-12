@@ -99,6 +99,12 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
+            return Ok(LocalDaemonResponse::DaemonHealth {
+                projection: self.daemon_health_projection(0).await,
+            });
+        }
+
         match command.priority {
             KernelCommandPriority::Interactive => self.dispatch_interactive(command, request).await,
             KernelCommandPriority::Normal | KernelCommandPriority::Background => {
@@ -500,8 +506,8 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LaunchProviderRunRequest,
-        LocalDaemonRequest, SubmitPromptRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
@@ -752,8 +758,17 @@ mod tests {
             .await
             .expect("prompt should create an agent lane");
 
-        let projection = router.daemon_health_projection(99).await;
-        assert_eq!(projection.metadata.last_event_id, 99);
+        let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let health_command =
+            KernelCommand::from_local_request("cmd-health", None, None, &health_request);
+        let health_response = router
+            .dispatch(health_command, health_request)
+            .await
+            .expect("health projection should be returned");
+        let projection = match health_response {
+            LocalDaemonResponse::DaemonHealth { projection } => projection,
+            _ => panic!("unexpected health response"),
+        };
         assert!(projection
             .session_command_lanes
             .iter()

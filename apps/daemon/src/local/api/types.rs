@@ -61,6 +61,9 @@ pub struct GetSessionStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetDaemonHealthRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderRunRequest {
     pub provider_run_id: String,
 }
@@ -565,6 +568,7 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    GetDaemonHealth(GetDaemonHealthRequest),
     GetProviderRun(GetProviderRunRequest),
     GetProviderCatalog(GetProviderCatalogRequest),
     GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest),
@@ -665,6 +669,9 @@ pub enum LocalDaemonResponse {
     },
     SessionState {
         session: RuntimeSession,
+    },
+    DaemonHealth {
+        projection: DaemonHealthProjection,
     },
     ProviderRun {
         provider_run: RuntimeProviderRun,

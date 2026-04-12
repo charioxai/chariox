@@ -44,7 +44,7 @@ Status as of 2026-04-12:
 - Landed: `AgentRuntime` per-agent command mailboxes for prompt submit/cancel admission, so agent-scoped prompt commands are not rejected behind unrelated generic interactive work.
 - Landed: `SessionRuntime` per-session command mailboxes for attach/detach/focus/cycle/resize/end/delete admission, so session-scoped UI and lifecycle commands are isolated from the generic interactive queue and from other sessions.
 - Landed: session mailbox cleanup on successful end/delete, so closed session lanes do not stay registered indefinitely.
-- Landed: `DaemonHealthProjection` skeleton with session/agent mailbox queue snapshots.
+- Landed: `DaemonHealthProjection` skeleton with session/agent mailbox queue snapshots exposed through `GetDaemonHealth`.
 
 Still open:
 

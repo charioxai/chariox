@@ -11,6 +11,7 @@ use crate::capability::{
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
 };
 use crate::error::DaemonError;
+use crate::kernel::projection::DaemonHealthProjection;
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
     ProviderProcessInfo, RuntimeProviderRun,
@@ -109,6 +110,9 @@ impl DaemonApp {
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::SessionState { session })
             }
+            LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
+                projection: DaemonHealthProjection::new(0, Vec::new(), Vec::new()),
+            }),
             LocalDaemonRequest::GetProviderRun(request) => {
                 self.handle_get_provider_run_request(request)
             }
