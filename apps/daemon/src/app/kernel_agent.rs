@@ -423,7 +423,7 @@ impl<'a> KernelAgentService<'a> {
                 .active_prompt_for_agent(agent_id)
                 .is_none()
             {
-                self.app.advance_next_queued_prompt_remote(
+                self.advance_next_queued_prompt_remote(
                     session_id,
                     agent_id,
                     &remote_execution.worker_kernel_id,
@@ -474,7 +474,7 @@ impl<'a> KernelAgentService<'a> {
             .active_prompt_for_agent(agent_id)
             .is_none()
         {
-            self.app.advance_next_queued_prompt(session_id, agent_id)?
+            self.advance_next_queued_prompt(session_id, agent_id)?
         } else {
             None
         };
@@ -486,6 +486,266 @@ impl<'a> KernelAgentService<'a> {
             completed,
             started_next,
         })
+    }
+
+    pub(crate) fn advance_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        loop {
+            let next_candidate = self
+                .app
+                .sessions
+                .peek_next_queued_prompt(session_id, agent_id)?;
+            let Some(peeked) = next_candidate else {
+                return Ok(None);
+            };
+            let target_agent_id = peeked.target_agent_id().to_string();
+            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
+                peeked.source_attachment_id(),
+            );
+            let provider_run_id = match self
+                .app
+                .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
+            {
+                Ok(provider_run_id) => provider_run_id,
+                Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
+                    match crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+                        self.app,
+                        session_id,
+                        &target_agent_id,
+                    ) {
+                        Ok(provider_run_id) => provider_run_id,
+                        Err(error) => {
+                            self.app.record_notice(
+                                session_id,
+                                None,
+                                self.app.attachments.list_session_attachment_ids(session_id),
+                                format!(
+                                    "Deferred queued workflow prompt `{}` because Arroba could not launch the provider run for agent `{}`: {}",
+                                    peeked.id(),
+                                    target_agent_id,
+                                    error
+                                ),
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.app.record_notice(
+                        session_id,
+                        None,
+                        self.app.attachments.list_session_attachment_ids(session_id),
+                        format!(
+                            "Deferred queued prompt `{}` because Arroba could not activate the provider run for agent `{}`: {}",
+                            peeked.id(),
+                            target_agent_id,
+                            error
+                        ),
+                    );
+                    return Ok(None);
+                }
+            };
+
+            let (_session, next_candidate) = self
+                .app
+                .sessions
+                .activate_next_queued_prompt(session_id, &target_agent_id)?;
+            let Some(next) = next_candidate else {
+                continue;
+            };
+
+            if let Err(error) = self
+                .app
+                .ensure_attachment_in_session(session_id, next.source_attachment_id())
+            {
+                if is_workflow_prompt {
+                    let active = self.app.sessions.activate_prompt(session_id, next)?.1;
+                    if let Err(dispatch_error) = self.app.dispatch_prompt_to_provider(
+                        session_id,
+                        &provider_run_id,
+                        active.source_attachment_id(),
+                        active.prompt(),
+                        active.attachments(),
+                    ) {
+                        let cancelled = self
+                            .app
+                            .sessions
+                            .cancel_active_prompt(session_id, &target_agent_id)?
+                            .1;
+                        crate::scheduler::runtime::on_workflow_prompt_cancelled(
+                            self.app, session_id, &cancelled,
+                        )?;
+                        flow_control::clear_prompt_activity(self.app, &provider_run_id);
+                        return Err(dispatch_error);
+                    }
+                    if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                        (active.workflow_run_id(), active.workflow_node_run_id())
+                    {
+                        self.app.sessions_mut().mark_workflow_turn_dispatched(
+                            session_id,
+                            workflow_run_id,
+                            workflow_node_run_id,
+                        )?;
+                    }
+                    crate::scheduler::runtime::on_workflow_prompt_started(
+                        self.app, session_id, &active,
+                    )?;
+                    flow_control::note_prompt_started(self.app, &provider_run_id);
+                    return Ok(Some(active));
+                }
+                self.app.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.app.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                        next.id(),
+                        error
+                    ),
+                );
+                continue;
+            }
+
+            if let Err(error) = self.app.dispatch_prompt_to_provider(
+                session_id,
+                &provider_run_id,
+                next.source_attachment_id(),
+                next.prompt(),
+                next.attachments(),
+            ) {
+                self.app.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.app.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Skipped queued prompt `{}` after PTY delivery failure: {}",
+                        next.id(),
+                        error
+                    ),
+                );
+                continue;
+            }
+
+            let active = self.app.sessions.activate_prompt(session_id, next)?.1;
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                (active.workflow_run_id(), active.workflow_node_run_id())
+            {
+                self.app.sessions_mut().mark_workflow_turn_dispatched(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+            }
+            crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
+            flow_control::note_prompt_started(self.app, &provider_run_id);
+            return Ok(Some(active));
+        }
+    }
+
+    pub(crate) fn advance_next_queued_prompt_remote(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        loop {
+            let next_candidate = self
+                .app
+                .sessions
+                .peek_next_queued_prompt(session_id, agent_id)?;
+            let Some(peeked) = next_candidate else {
+                return Ok(None);
+            };
+            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
+                peeked.source_attachment_id(),
+            );
+            if let Err(error) = self
+                .app
+                .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
+            {
+                if !is_workflow_prompt {
+                    self.app.record_notice(
+                        session_id,
+                        None,
+                        self.app.attachments.list_session_attachment_ids(session_id),
+                        format!(
+                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                            peeked.id(),
+                            error
+                        ),
+                    );
+                    let _ = self
+                        .app
+                        .sessions
+                        .activate_next_queued_prompt(session_id, agent_id)?;
+                    continue;
+                }
+            }
+            let response =
+                self.app
+                    .block_on_relay_future(send_peer_request_via_temporary_connection(
+                        self.app.config(),
+                        ClientTarget {
+                            daemon_id: Some(worker_kernel_id.to_string()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::SubmitLeasedPrompt {
+                            leased_agent_id: leased_agent_id.to_string(),
+                            prompt: peeked.prompt().to_string(),
+                            attachments: self
+                                .app
+                                .serialize_remote_prompt_attachments(peeked.attachments())?,
+                            workflow_context: if is_workflow_prompt {
+                                Some(self.app.remote_workflow_turn_context_for_prompt(
+                                    session_id, agent_id, &peeked,
+                                )?)
+                            } else {
+                                None
+                            },
+                        },
+                    ));
+            let remote_provider_run_id = match response {
+                Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                    provider_run_id, ..
+                }) => provider_run_id,
+                Ok(other) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "advance remote queued prompt",
+                        message: format!("unexpected remote prompt response: {other:?}"),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            let (_session, next_candidate) = self
+                .app
+                .sessions
+                .activate_next_queued_prompt(session_id, agent_id)?;
+            let Some(active) = next_candidate else {
+                continue;
+            };
+            self.app.echo_prompt_to_other_attachments(
+                session_id,
+                &remote_provider_run_id,
+                active.source_attachment_id(),
+                active.prompt(),
+                active.attachments(),
+            );
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+                (active.workflow_run_id(), active.workflow_node_run_id())
+            {
+                self.app.sessions_mut().mark_workflow_turn_dispatched(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+            }
+            crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
+            return Ok(Some(active));
+        }
     }
 
     pub(crate) fn cancel_active_prompt(
