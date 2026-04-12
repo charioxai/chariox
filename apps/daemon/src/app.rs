@@ -857,16 +857,79 @@ impl DaemonApp {
                 }
             }
         }
-        let poll_result = match self.providers.poll_structured_output(provider_run_id) {
-            Ok(Some(poll_result)) => poll_result,
-            Ok(None) => return Ok(Vec::new()),
-            Err(error) => {
-                if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
-                    return Ok(Vec::new());
-                }
-                return Err(error);
+        let records = self.drain_finished_structured_output_jobs_for_run(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids.clone(),
+        )?;
+        let _ = self
+            .providers
+            .enqueue_structured_output_poll(provider_run_id)?;
+        Ok(records)
+    }
+
+    fn drain_finished_structured_output_jobs_for_run(
+        &mut self,
+        requested_session_id: &str,
+        requested_provider_run_id: &str,
+        requested_recipient_attachment_ids: Vec<String>,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        let mut requested_records = Vec::new();
+        let mut deferred_jobs = Vec::new();
+        for finished in self.providers.drain_finished_structured_output_poll_jobs() {
+            let provider_run_id = finished.provider_run_id.clone();
+            if provider_run_id != requested_provider_run_id {
+                deferred_jobs.push(finished);
+                continue;
             }
-        };
+            let poll_result = match finished.result {
+                Ok(Some(poll_result)) => poll_result,
+                Ok(None) => continue,
+                Err(error) => {
+                    if self.reconcile_provider_run_exit(
+                        requested_session_id,
+                        requested_provider_run_id,
+                    )? {
+                        continue;
+                    }
+                    self.providers
+                        .return_finished_structured_output_poll_jobs(deferred_jobs);
+                    return Err(error);
+                }
+            };
+            let provider_run = match self.providers.get_run(&provider_run_id) {
+                Ok(run) => run,
+                Err(_) => continue,
+            };
+            let session_id = provider_run.session_id().to_string();
+            let recipient_attachment_ids = if provider_run_id == requested_provider_run_id {
+                requested_recipient_attachment_ids.clone()
+            } else {
+                self.attachments.list_session_attachment_ids(&session_id)
+            };
+            let records = self.apply_structured_output_batch(
+                &session_id,
+                &provider_run_id,
+                recipient_attachment_ids,
+                poll_result,
+            )?;
+            requested_records.extend(records);
+        }
+        self.providers
+            .return_finished_structured_output_poll_jobs(deferred_jobs);
+        Ok(requested_records)
+    }
+
+    fn apply_structured_output_batch(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        self.providers
+            .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         for notice in &poll_result.notices {
             self.record_notice(
                 session_id,

@@ -608,6 +608,10 @@ pub struct ProviderPromptSignalBatch {
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
     pub notices: Vec<String>,
+    pub resolved_model: Option<String>,
+    pub resolved_model_source: Option<&'static str>,
+    pub resolved_variant: Option<String>,
+    pub resolved_usage_tokens_total: Option<u64>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

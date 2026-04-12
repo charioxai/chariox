@@ -9,13 +9,14 @@ use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 
 use super::{
-    codex_runtime::{abort_codex_turn, submit_codex_prompt},
+    codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
     opencode_binding::{
         abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
         OpenCodeRunSelection,
     },
-    opencode_runtime::OpenCodeRuntimeState,
-    CodexRuntimeState, RuntimeProviderRun,
+    opencode_runtime::{drain_opencode_events, OpenCodeRuntimeState},
+    CodexRuntimeState, ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    RuntimeProviderRun,
 };
 
 #[derive(Clone, Default)]
@@ -25,9 +26,11 @@ pub(crate) struct ProviderRunActorMailbox {
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
     structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
+    structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
+    finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
 }
 
 #[derive(Clone, Default)]
@@ -53,6 +56,11 @@ pub(crate) struct FinishedProviderRunSelectionSyncJob {
     pub(crate) result: Result<OpenCodeRunSelection, DaemonError>,
 }
 
+pub(crate) struct FinishedProviderOutputPollJob {
+    pub(crate) provider_run_id: String,
+    pub(crate) result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
+}
+
 enum ProviderRunActorCommand {
     Submit {
         session_id: String,
@@ -73,6 +81,10 @@ enum ProviderRunActorCommand {
     },
     SyncSelection {
         provider_run_id: String,
+    },
+    PollOutput {
+        provider_run_id: String,
+        run: RuntimeProviderRun,
     },
     Stop,
 }
@@ -117,49 +129,11 @@ impl ProviderRunActorMailbox {
             .insert(run_id, state);
     }
 
-    pub(crate) fn codex_runtime_exists(&self, run_id: &str) -> bool {
-        self.codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .contains_key(run_id)
-    }
-
-    pub(crate) fn with_codex_runtime_mut<R>(
-        &self,
-        run_id: &str,
-        f: impl FnOnce(&mut CodexRuntimeState) -> R,
-    ) -> Option<R> {
-        self.codex_runs
-            .lock()
-            .expect("codex runtime map poisoned")
-            .get_mut(run_id)
-            .map(f)
-    }
-
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
         self.opencode_runs
             .lock()
             .expect("opencode runtime map poisoned")
             .insert(run_id, state);
-    }
-
-    pub(crate) fn opencode_runtime_exists(&self, run_id: &str) -> bool {
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .contains_key(run_id)
-    }
-
-    pub(crate) fn with_opencode_runtime_mut<R>(
-        &self,
-        run_id: &str,
-        f: impl FnOnce(&mut OpenCodeRuntimeState) -> R,
-    ) -> Option<R> {
-        self.opencode_runs
-            .lock()
-            .expect("opencode runtime map poisoned")
-            .get_mut(run_id)
-            .map(f)
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
@@ -185,7 +159,22 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn clear_runtime(&self, run_id: &str) {
         self.clear_structured_prompt_io_in_flight(run_id);
+        self.clear_structured_output_poll_in_flight(run_id);
         clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id);
+    }
+
+    fn mark_structured_output_poll_in_flight(&self, run_id: String) -> bool {
+        self.structured_output_polls
+            .lock()
+            .expect("structured output poll set poisoned")
+            .insert(run_id)
+    }
+
+    fn clear_structured_output_poll_in_flight(&self, run_id: &str) {
+        self.structured_output_polls
+            .lock()
+            .expect("structured output poll set poisoned")
+            .remove(run_id);
     }
 
     pub(crate) fn spawn_submit(
@@ -257,9 +246,11 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.structured_prompt_submissions),
+                    Arc::clone(&self.structured_output_polls),
                     Arc::clone(&self.finished_submits),
                     Arc::clone(&self.finished_aborts),
                     Arc::clone(&self.finished_selection_syncs),
+                    Arc::clone(&self.finished_output_polls),
                 )
             })
         };
@@ -294,6 +285,33 @@ impl ProviderRunActorMailbox {
                 }),
             );
         }
+    }
+
+    pub(crate) fn spawn_output_poll(
+        &self,
+        provider_run_id: String,
+        run: RuntimeProviderRun,
+    ) -> bool {
+        if !self.mark_structured_output_poll_in_flight(provider_run_id.clone()) {
+            return false;
+        }
+        let sender = self.worker_for_run(&provider_run_id);
+        if let Err(error) = sender.send(ProviderRunActorCommand::PollOutput {
+            provider_run_id: provider_run_id.clone(),
+            run,
+        }) {
+            self.clear_structured_output_poll_in_flight(&provider_run_id);
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run output poll command enqueue failed",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+            return false;
+        }
+        true
     }
 
     pub(crate) fn stop_run(&self, provider_run_id: &str) {
@@ -360,6 +378,40 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    pub(crate) fn drain_finished_output_polls(&self) -> Vec<FinishedProviderOutputPollJob> {
+        match self.finished_output_polls.lock() {
+            Ok(mut jobs) => std::mem::take(&mut *jobs),
+            Err(error) => {
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run output poll completion queue poisoned",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    pub(crate) fn return_finished_output_polls(&self, jobs: Vec<FinishedProviderOutputPollJob>) {
+        if jobs.is_empty() {
+            return;
+        }
+        match self.finished_output_polls.lock() {
+            Ok(mut existing_jobs) => existing_jobs.extend(jobs),
+            Err(error) => {
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run output poll completion queue poisoned while restoring jobs",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
     fn worker_for_run(&self, provider_run_id: &str) -> mpsc::Sender<ProviderRunActorCommand> {
         let mut workers = self
             .workers
@@ -373,9 +425,11 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.codex_runs),
                     Arc::clone(&self.opencode_runs),
                     Arc::clone(&self.structured_prompt_submissions),
+                    Arc::clone(&self.structured_output_polls),
                     Arc::clone(&self.finished_submits),
                     Arc::clone(&self.finished_aborts),
                     Arc::clone(&self.finished_selection_syncs),
+                    Arc::clone(&self.finished_output_polls),
                 )
             })
             .clone()
@@ -386,9 +440,11 @@ impl ProviderRunActorMailbox {
         codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
         opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
         structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
+        structured_output_polls: Arc<Mutex<BTreeSet<String>>>,
         finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
         finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
         finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
+        finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     ) -> mpsc::Sender<ProviderRunActorCommand> {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -470,6 +526,21 @@ impl ProviderRunActorMailbox {
                         };
                         push_finished_selection_sync(&finished_selection_syncs, finished);
                     }
+                    ProviderRunActorCommand::PollOutput {
+                        provider_run_id,
+                        run,
+                    } => {
+                        let result = execute_output_poll_command(&codex_runs, &opencode_runs, &run);
+                        clear_structured_output_poll_in_flight(
+                            &structured_output_polls,
+                            &provider_run_id,
+                        );
+                        let finished = FinishedProviderOutputPollJob {
+                            provider_run_id,
+                            result,
+                        };
+                        push_finished_output_poll(&finished_output_polls, finished);
+                    }
                     ProviderRunActorCommand::Stop => break,
                 }
             }
@@ -495,6 +566,7 @@ mod tests {
         let _sender = mailbox.worker_for_run("run-1");
         let _permit = mailbox.operation_lanes.acquire("run-1").await;
         mailbox.mark_structured_prompt_io_in_flight("run-1".to_string());
+        assert!(mailbox.mark_structured_output_poll_in_flight("run-1".to_string()));
         assert_eq!(
             mailbox
                 .workers
@@ -535,6 +607,11 @@ mod tests {
             0
         );
         assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert!(mailbox
+            .structured_output_polls
+            .lock()
+            .expect("structured output poll set should not be poisoned")
+            .is_empty());
     }
 }
 
@@ -698,6 +775,87 @@ fn execute_selection_sync_command(
     sync_opencode_run_selection_for_session(run_id, &base_url, &session_id)
 }
 
+fn execute_output_poll_command(
+    codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    run: &RuntimeProviderRun,
+) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
+    let run_id = run.id();
+    if run.adapter_key() == "codex" {
+        let Some(poll) = codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .get_mut(run_id)
+            .map(|state| drain_codex_events(run_id, state))
+        else {
+            return Ok(None);
+        };
+        let poll = poll?;
+        return Ok(Some(ProviderPromptSignalBatch {
+            chunks: poll
+                .chunks
+                .into_iter()
+                .map(|chunk| ProviderPromptChunk {
+                    kind: chunk.kind,
+                    merge_key: chunk.merge_key,
+                    bytes: chunk.bytes,
+                })
+                .collect(),
+            completions: poll
+                .completions
+                .into_iter()
+                .map(|completion| ProviderAssistantCompletion {
+                    message_id: completion.message_id,
+                    completed_at_ms: completion.completed_at_ms,
+                })
+                .collect(),
+            prompt_completed: poll.prompt_completed,
+            notices: poll.notices,
+            resolved_model: None,
+            resolved_model_source: None,
+            resolved_variant: None,
+            resolved_usage_tokens_total: None,
+        }));
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(None);
+    }
+    let Some(drain) = opencode_runs
+        .lock()
+        .expect("opencode runtime map poisoned")
+        .get_mut(run_id)
+        .map(|state| drain_opencode_events(state, run_id))
+    else {
+        return Ok(None);
+    };
+    let drain = drain?;
+    Ok(Some(ProviderPromptSignalBatch {
+        chunks: drain
+            .chunks
+            .into_iter()
+            .map(|chunk| ProviderPromptChunk {
+                kind: chunk.kind,
+                merge_key: chunk.merge_key,
+                bytes: chunk.bytes,
+            })
+            .collect(),
+        completions: drain
+            .completions
+            .into_iter()
+            .map(|completion| ProviderAssistantCompletion {
+                message_id: completion.message_id,
+                completed_at_ms: completion.completed_at_ms,
+            })
+            .collect(),
+        prompt_completed: drain.prompt_completed,
+        notices: drain.notices,
+        resolved_model: drain.resolved_model,
+        resolved_model_source: drain.resolved_model_source,
+        resolved_variant: drain.resolved_variant,
+        resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
+    }))
+}
+
 fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions: &Arc<Mutex<BTreeSet<String>>>,
     run_id: &str,
@@ -705,6 +863,16 @@ fn clear_structured_prompt_io_in_flight(
     structured_prompt_submissions
         .lock()
         .expect("structured prompt submission set poisoned")
+        .remove(run_id);
+}
+
+fn clear_structured_output_poll_in_flight(
+    structured_output_polls: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+) {
+    structured_output_polls
+        .lock()
+        .expect("structured output poll set poisoned")
         .remove(run_id);
 }
 
@@ -754,6 +922,24 @@ fn push_finished_selection_sync(
             crate::logging::error_with_fields(
                 "daemon.provider_run_actor",
                 "provider run selection sync completion queue poisoned",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+fn push_finished_output_poll(
+    finished_output_polls: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    finished: FinishedProviderOutputPollJob,
+) {
+    match finished_output_polls.lock() {
+        Ok(mut jobs) => jobs.push(finished),
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "daemon.provider_run_actor",
+                "provider run output poll completion queue poisoned",
                 serde_json::json!({
                     "error": error.to_string(),
                 }),

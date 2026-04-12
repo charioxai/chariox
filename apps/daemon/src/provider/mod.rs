@@ -29,8 +29,8 @@ pub use opencode_client::{
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob, ProviderRunActorMailbox,
-    ProviderRunOperationLanes,
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub use service::ProviderProcessService;
 pub(crate) use service::ProviderRuntimeBinding;

@@ -3,11 +3,9 @@ use crate::session::{PromptAttachment, SessionService};
 use std::collections::BTreeMap;
 
 use super::{
-    codex_runtime::{drain_codex_events, initialize_codex_runtime, CodexRuntimeBinding},
+    codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
-    opencode_runtime::drain_opencode_events,
-    LaunchProviderRequest, ProviderAssistantCompletion, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox,
+    LaunchProviderRequest, ProviderPromptSignalBatch, ProviderRegistry, ProviderRunActorMailbox,
     ProviderRunOperationLanes, ProviderRunState, RuntimeProviderRun,
 };
 
@@ -584,88 +582,80 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_aborts()
     }
 
-    pub fn poll_structured_output(
+    pub fn enqueue_structured_output_poll(
         &mut self,
         provider_run_id: &str,
-    ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let _ = self.record_run_activity(provider_run_id);
         let run = self.get_run(provider_run_id)?;
-        if run.adapter_key() == "codex" {
-            if !self.run_actor_mailbox.codex_runtime_exists(provider_run_id) {
-                return Ok(None);
-            }
-            let Some(poll) = self
-                .run_actor_mailbox
-                .with_codex_runtime_mut(provider_run_id, |state| {
-                    drain_codex_events(provider_run_id, state)
-                })
-            else {
-                return Ok(None);
-            };
-            let poll = poll?;
-            return Ok(Some(ProviderPromptSignalBatch {
-                chunks: poll
-                    .chunks
-                    .into_iter()
-                    .map(|chunk| ProviderPromptChunk {
-                        kind: chunk.kind,
-                        merge_key: chunk.merge_key,
-                        bytes: chunk.bytes,
-                    })
-                    .collect(),
-                completions: poll
-                    .completions
-                    .into_iter()
-                    .map(|completion| ProviderAssistantCompletion {
-                        message_id: completion.message_id,
-                        completed_at_ms: completion.completed_at_ms,
-                    })
-                    .collect(),
-                prompt_completed: poll.prompt_completed,
-                notices: poll.notices,
-            }));
+        if !self.run_uses_structured_prompt_io(&run) {
+            return Ok(false);
         }
-        if run.adapter_key() != "opencode" {
-            return Ok(None);
-        }
-        if !self
+        Ok(self
             .run_actor_mailbox
-            .opencode_runtime_exists(provider_run_id)
+            .spawn_output_poll(provider_run_id.to_string(), run))
+    }
+
+    pub(crate) fn drain_finished_structured_output_poll_jobs(
+        &mut self,
+    ) -> Vec<super::FinishedProviderOutputPollJob> {
+        self.run_actor_mailbox.drain_finished_output_polls()
+    }
+
+    pub(crate) fn return_finished_structured_output_poll_jobs(
+        &mut self,
+        jobs: Vec<super::FinishedProviderOutputPollJob>,
+    ) {
+        self.run_actor_mailbox.return_finished_output_polls(jobs);
+    }
+
+    pub(crate) fn apply_structured_output_metadata(
+        &mut self,
+        provider_run_id: &str,
+        batch: &ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        if batch.resolved_model.is_none()
+            && batch.resolved_variant.is_none()
+            && batch.resolved_usage_tokens_total.is_none()
         {
-            return Ok(None);
+            return Ok(());
         }
-
-        let drain = match self.drain_opencode_events(provider_run_id) {
-            Ok(drain) => drain,
-            Err(DaemonError::ProviderProtocol { operation, .. })
-                if operation == "opencode_session_missing" =>
-            {
-                return Ok(None);
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = batch.resolved_model.as_deref() {
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode",
+                "resolved provider run model from opencode metadata",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "previous_model": run.model(),
+                    "resolved_model": model,
+                    "source": batch.resolved_model_source,
+                }),
+            );
+            if run.model() != model {
+                run.set_model(model.to_string());
             }
-            Err(error) => return Err(error),
-        };
-
-        Ok(Some(ProviderPromptSignalBatch {
-            chunks: drain
-                .chunks
-                .into_iter()
-                .map(|chunk| ProviderPromptChunk {
-                    kind: chunk.kind,
-                    merge_key: chunk.merge_key,
-                    bytes: chunk.bytes,
-                })
-                .collect(),
-            completions: drain
-                .completions
-                .into_iter()
-                .map(|completion| ProviderAssistantCompletion {
-                    message_id: completion.message_id,
-                    completed_at_ms: completion.completed_at_ms,
-                })
-                .collect(),
-            prompt_completed: drain.prompt_completed,
-            notices: drain.notices,
-        }))
+        }
+        if let Some(variant) = batch.resolved_variant.as_deref() {
+            if run.variant() != Some(variant) {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.opencode",
+                    "resolved provider run variant from opencode metadata",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "previous_variant": run.variant(),
+                        "resolved_variant": variant,
+                    }),
+                );
+                run.set_variant(Some(variant.to_string()));
+            }
+        }
+        if let Some(total_tokens) = batch.resolved_usage_tokens_total {
+            if run.usage_tokens_total() != Some(total_tokens) {
+                run.set_usage_tokens_total(Some(total_tokens));
+            }
+        }
+        Ok(())
     }
 
     pub fn mark_run_ended(
@@ -776,65 +766,6 @@ impl ProviderProcessService {
                 .variant
                 .or_else(|| run.variant().map(str::to_string)),
         }
-    }
-
-    fn drain_opencode_events(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<super::opencode_runtime::OpenCodeEventDrainResult, DaemonError> {
-        let drain = self
-            .run_actor_mailbox
-            .with_opencode_runtime_mut(provider_run_id, |state| {
-                drain_opencode_events(state, provider_run_id)
-            })
-            .ok_or_else(|| DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "opencode_session_missing",
-                message: "no OpenCode session is bound to this provider run".to_string(),
-            })??;
-
-        if drain.resolved_model.is_some()
-            || drain.resolved_variant.is_some()
-            || drain.resolved_usage_tokens_total.is_some()
-        {
-            let run = self.get_run_mut(provider_run_id)?;
-            if let Some(model) = drain.resolved_model.as_deref() {
-                crate::logging::debug_with_fields(
-                    "daemon.provider.opencode",
-                    "resolved provider run model from opencode metadata",
-                    serde_json::json!({
-                        "provider_run_id": provider_run_id,
-                        "previous_model": run.model(),
-                        "resolved_model": model,
-                        "source": drain.resolved_model_source,
-                    }),
-                );
-                if run.model() != model {
-                    run.set_model(model.to_string());
-                }
-            }
-            if let Some(variant) = drain.resolved_variant.as_deref() {
-                if run.variant() != Some(variant) {
-                    crate::logging::debug_with_fields(
-                        "daemon.provider.opencode",
-                        "resolved provider run variant from opencode metadata",
-                        serde_json::json!({
-                            "provider_run_id": provider_run_id,
-                            "previous_variant": run.variant(),
-                            "resolved_variant": variant,
-                        }),
-                    );
-                    run.set_variant(Some(variant.to_string()));
-                }
-            }
-            if let Some(total_tokens) = drain.resolved_usage_tokens_total {
-                if run.usage_tokens_total() != Some(total_tokens) {
-                    run.set_usage_tokens_total(Some(total_tokens));
-                }
-            }
-        }
-
-        Ok(drain)
     }
 }
 
