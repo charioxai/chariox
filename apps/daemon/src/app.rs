@@ -40,7 +40,7 @@ use crate::kernel::projection::{
     ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
     TransportHealthStore,
 };
-use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
+use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
@@ -82,6 +82,7 @@ pub struct DaemonApp {
     pub(crate) tracked_provider_processes: BTreeMap<String, TrackedProviderProcess>,
     pub(crate) tracked_provider_run_processes: BTreeMap<String, String>,
     pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
+    prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
     pub(crate) prompt_idle_timeout: Duration,
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
@@ -180,6 +181,7 @@ impl DaemonApp {
             tracked_provider_processes: BTreeMap::new(),
             tracked_provider_run_processes: BTreeMap::new(),
             prompt_activity: BTreeMap::new(),
+            prompt_workspace_claims: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             sessions: SessionService::new(&config),
             history: SessionHistoryStore::new_with_read_delay(
@@ -319,6 +321,39 @@ impl DaemonApp {
 
     pub(crate) fn workspace_coordinator(&self) -> WorkspaceCoordinator {
         self.workspace_coordinator.clone()
+    }
+
+    pub(crate) fn acquire_prompt_workspace_claim(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        attachment_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if self.prompt_workspace_claims.contains_key(provider_run_id) {
+            return Ok(());
+        }
+        let session = self.sessions.get_session(session_id)?;
+        let workspace_id = session.workspace_id().to_string();
+        let worktree_id = self
+            .agents
+            .get_agent(agent_id)
+            .ok()
+            .and_then(|agent| agent.worktree_id().map(str::to_string))
+            .unwrap_or_else(|| session.worktree_id().to_string());
+        let claim = self.workspace_coordinator.acquire_provider_prompt_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            attachment_id.map(str::to_string),
+        )?;
+        self.prompt_workspace_claims
+            .insert(provider_run_id.to_string(), claim);
+        Ok(())
+    }
+
+    pub(crate) fn release_prompt_workspace_claim(&mut self, provider_run_id: &str) {
+        self.prompt_workspace_claims.remove(provider_run_id);
     }
 
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {

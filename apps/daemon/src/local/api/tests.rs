@@ -3151,6 +3151,162 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
 }
 
 #[test]
+fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session_1, agent_1) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("first session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment_1 = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session_1.id().to_string(),
+                client_id: "client-provider-claim-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("first attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    match app
+        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_1.id().to_string(),
+                agent_id: Some(agent_1.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("first provider run should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    match app
+        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_1.id().to_string(),
+            attachment_id: attachment_1.id().to_string(),
+            target_agent_id: Some(agent_1.id().to_string()),
+            prompt: "first prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("first prompt should start")
+    {
+        LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            _ => panic!("expected first prompt to start"),
+        },
+        _ => panic!("unexpected local response"),
+    }
+
+    let health = app
+        .handle_local_request(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
+        .expect("health should be available while provider prompt is active");
+    match health {
+        LocalDaemonResponse::DaemonHealth { projection } => {
+            assert_eq!(
+                projection
+                    .workspace_coordination
+                    .active_operation_claims
+                    .iter()
+                    .filter(|claim| claim.operation == "provider_prompt")
+                    .count(),
+                1
+            );
+        }
+        _ => panic!("unexpected health response"),
+    }
+
+    let (session_2, agent_2) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("second session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment_2 = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session_2.id().to_string(),
+                client_id: "client-provider-claim-2".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("second attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    match app
+        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_2.id().to_string(),
+                agent_id: Some(agent_2.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("second provider run should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    let error = app
+        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_2.id().to_string(),
+            attachment_id: attachment_2.id().to_string(),
+            target_agent_id: Some(agent_2.id().to_string()),
+            prompt: "second prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect_err("cross-session provider prompt should be rejected");
+    match error {
+        DaemonError::WorkspaceClaimConflict {
+            requested_session_id,
+            existing_session_id,
+            ..
+        } => {
+            assert_eq!(requested_session_id, session_2.id());
+            assert_eq!(existing_session_id, session_1.id());
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+
+    match app
+        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session_1.id().to_string(),
+        }))
+        .expect("first prompt should complete")
+    {
+        LocalDaemonResponse::PromptCompleted { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    assert!(app
+        .workspace_coordinator()
+        .active_claims()
+        .into_iter()
+        .all(|claim| claim.operation != "provider_prompt"));
+}
+
+#[test]
 fn local_request_api_returns_structured_screenshot_unavailable_result() {
     let _guard = crate::env_lock::lock();
     std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");

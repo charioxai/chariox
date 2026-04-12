@@ -36,6 +36,7 @@ pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, provider_run_id:
 
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
     app.prompt_activity.remove(provider_run_id);
+    app.release_prompt_workspace_claim(provider_run_id);
 }
 
 pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run_id: &str) {

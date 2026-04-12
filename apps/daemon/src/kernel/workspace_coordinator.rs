@@ -23,6 +23,7 @@ pub(crate) struct WorkspaceCoordinator {
 #[derive(Debug, Default)]
 struct WorkspaceCoordinatorState {
     claims: BTreeMap<String, WorkspaceOperationClaimSnapshot>,
+    next_claim_number: u64,
 }
 
 #[derive(Debug)]
@@ -46,22 +47,54 @@ impl WorkspaceCoordinator {
         attachment_id: Option<String>,
         operation: &'static str,
     ) -> Result<WorkspaceClaimGuard, DaemonError> {
+        self.acquire_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            attachment_id,
+            operation,
+            WorkspaceClaimConflictPolicy::Exclusive,
+        )
+    }
+
+    pub(crate) fn acquire_provider_prompt_claim(
+        &self,
+        workspace_id: impl Into<String>,
+        worktree_id: impl Into<String>,
+        session_id: impl Into<String>,
+        attachment_id: Option<String>,
+    ) -> Result<WorkspaceClaimGuard, DaemonError> {
+        self.acquire_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            attachment_id,
+            "provider_prompt",
+            WorkspaceClaimConflictPolicy::AllowSameSessionProviderPrompts,
+        )
+    }
+
+    fn acquire_claim(
+        &self,
+        workspace_id: impl Into<String>,
+        worktree_id: impl Into<String>,
+        session_id: impl Into<String>,
+        attachment_id: Option<String>,
+        operation: &'static str,
+        conflict_policy: WorkspaceClaimConflictPolicy,
+    ) -> Result<WorkspaceClaimGuard, DaemonError> {
         let workspace_id = workspace_id.into();
         let worktree_id = worktree_id.into();
         let session_id = session_id.into();
-        let claim_id = format!(
-            "{}:{}:{}:{}",
-            workspace_id, worktree_id, session_id, operation
-        );
         let mut state = self
             .state
             .lock()
             .expect("workspace coordinator lock should not be poisoned");
-        if let Some(conflict) = state
-            .claims
-            .values()
-            .find(|claim| claim.workspace_id == workspace_id && claim.worktree_id == worktree_id)
-        {
+        if let Some(conflict) = state.claims.values().find(|claim| {
+            claim.workspace_id == workspace_id
+                && claim.worktree_id == worktree_id
+                && conflict_policy.conflicts_with(claim, &session_id, operation)
+        }) {
             return Err(DaemonError::WorkspaceClaimConflict {
                 workspace_id,
                 worktree_id,
@@ -71,6 +104,11 @@ impl WorkspaceCoordinator {
                 requested_operation: operation.to_string(),
             });
         }
+        state.next_claim_number += 1;
+        let claim_id = format!(
+            "{}:{}:{}:{}:{}",
+            workspace_id, worktree_id, session_id, operation, state.next_claim_number
+        );
         state.claims.insert(
             claim_id.clone(),
             WorkspaceOperationClaimSnapshot {
@@ -104,6 +142,30 @@ impl WorkspaceCoordinator {
             .expect("workspace coordinator lock should not be poisoned")
             .claims
             .remove(claim_id);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorkspaceClaimConflictPolicy {
+    Exclusive,
+    AllowSameSessionProviderPrompts,
+}
+
+impl WorkspaceClaimConflictPolicy {
+    fn conflicts_with(
+        self,
+        existing: &WorkspaceOperationClaimSnapshot,
+        requested_session_id: &str,
+        requested_operation: &str,
+    ) -> bool {
+        match self {
+            Self::Exclusive => true,
+            Self::AllowSameSessionProviderPrompts => {
+                !(existing.session_id == requested_session_id
+                    && existing.operation == "provider_prompt"
+                    && requested_operation == "provider_prompt")
+            }
+        }
     }
 }
 
@@ -153,5 +215,36 @@ mod tests {
         }
 
         assert!(coordinator.active_claims().is_empty());
+    }
+
+    #[test]
+    fn provider_prompt_claims_allow_same_session_but_reject_cross_session() {
+        let coordinator = WorkspaceCoordinator::default();
+        let _claim = coordinator
+            .acquire_provider_prompt_claim(
+                "workspace",
+                "worktree",
+                "session-1",
+                Some("attachment-1".to_string()),
+            )
+            .expect("first prompt claim should acquire");
+        let _same_session_claim = coordinator
+            .acquire_provider_prompt_claim(
+                "workspace",
+                "worktree",
+                "session-1",
+                Some("attachment-2".to_string()),
+            )
+            .expect("same-session prompt claim should acquire");
+
+        let conflict = coordinator
+            .acquire_provider_prompt_claim(
+                "workspace",
+                "worktree",
+                "session-2",
+                Some("attachment-3".to_string()),
+            )
+            .expect_err("cross-session prompt claim should conflict");
+        assert!(conflict.to_string().contains("workspace claim conflict"));
     }
 }

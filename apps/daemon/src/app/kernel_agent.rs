@@ -22,6 +22,31 @@ impl<'a> KernelAgentService<'a> {
         Self { app }
     }
 
+    fn acquire_provider_prompt_claim(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.app.acquire_prompt_workspace_claim(
+            session_id,
+            provider_run_id,
+            agent_id,
+            Some(attachment_id),
+        )
+    }
+
+    fn cancel_active_after_prompt_start_failure(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) {
+        let _ = self.app.sessions.cancel_active_prompt(session_id, agent_id);
+        flow_control::clear_prompt_activity(self.app, provider_run_id);
+    }
+
     pub(crate) fn submit_prompt(
         &mut self,
         session_id: &str,
@@ -153,6 +178,19 @@ impl<'a> KernelAgentService<'a> {
                     prompt.prompt(),
                     prompt.attachments(),
                 );
+                if let Err(error) = self.acquire_provider_prompt_claim(
+                    session_id,
+                    provider_run_id,
+                    &target_agent_id,
+                    prompt.source_attachment_id(),
+                ) {
+                    self.cancel_active_after_prompt_start_failure(
+                        session_id,
+                        &target_agent_id,
+                        provider_run_id,
+                    );
+                    return Err(error);
+                }
                 if let Err(error) = self.app.dispatch_prompt_to_provider(
                     session_id,
                     provider_run_id,
@@ -160,11 +198,11 @@ impl<'a> KernelAgentService<'a> {
                     prompt.prompt(),
                     prompt.attachments(),
                 ) {
-                    let _ = self
-                        .app
-                        .sessions
-                        .cancel_active_prompt(session_id, &target_agent_id);
-                    flow_control::clear_prompt_activity(self.app, provider_run_id);
+                    self.cancel_active_after_prompt_start_failure(
+                        session_id,
+                        &target_agent_id,
+                        provider_run_id,
+                    );
                     return Err(error);
                 }
                 flow_control::note_prompt_started(self.app, provider_run_id);
@@ -299,9 +337,33 @@ impl<'a> KernelAgentService<'a> {
                     prompt.prompt(),
                     prompt.attachments(),
                 );
-                let provider_run = self
+                if let Err(error) = self.acquire_provider_prompt_claim(
+                    session_id,
+                    provider_run_id,
+                    &target_agent_id,
+                    prompt.source_attachment_id(),
+                ) {
+                    self.cancel_active_after_prompt_start_failure(
+                        session_id,
+                        &target_agent_id,
+                        provider_run_id,
+                    );
+                    return Err(error);
+                }
+                let provider_run = match self
                     .app
-                    .prepare_provider_prompt_dispatch(session_id, provider_run_id)?;
+                    .prepare_provider_prompt_dispatch(session_id, provider_run_id)
+                {
+                    Ok(provider_run) => provider_run,
+                    Err(error) => {
+                        self.cancel_active_after_prompt_start_failure(
+                            session_id,
+                            &target_agent_id,
+                            provider_run_id,
+                        );
+                        return Err(error);
+                    }
+                };
                 if self
                     .app
                     .providers
@@ -551,12 +613,31 @@ impl<'a> KernelAgentService<'a> {
                     return Ok(None);
                 }
             };
+            if let Err(error) = self.acquire_provider_prompt_claim(
+                session_id,
+                &provider_run_id,
+                &target_agent_id,
+                peeked.source_attachment_id(),
+            ) {
+                self.app.record_notice(
+                    session_id,
+                    Some(&provider_run_id),
+                    self.app.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Deferred queued prompt `{}` because worktree coordination rejected provider dispatch: {}",
+                        peeked.id(),
+                        error
+                    ),
+                );
+                return Ok(None);
+            }
 
             let (_session, next_candidate) = self
                 .app
                 .sessions
                 .activate_next_queued_prompt(session_id, &target_agent_id)?;
             let Some(next) = next_candidate else {
+                flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             };
 
@@ -610,6 +691,7 @@ impl<'a> KernelAgentService<'a> {
                         error
                     ),
                 );
+                flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             }
 
@@ -630,6 +712,11 @@ impl<'a> KernelAgentService<'a> {
                         error
                     ),
                 );
+                let _ = self
+                    .app
+                    .sessions
+                    .cancel_active_prompt(session_id, &target_agent_id);
+                flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             }
 

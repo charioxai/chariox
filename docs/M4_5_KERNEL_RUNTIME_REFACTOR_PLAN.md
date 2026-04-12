@@ -56,6 +56,7 @@ Status as of 2026-04-12:
 - Landed: transport health projection. Kernel websocket slow-consumer closes, outgoing queue overflows, inbound overload rejections, replay gaps, request/event counts, active connections, and active subscriptions are now surfaced through `GetDaemonHealth`.
 - Landed: workspace coordination health baseline. `GetDaemonHealth` now reports active worktree claims and same-workspace worktree collisions from the warmed session projection without taking the compatibility app lock.
 - Landed: initial `WorkspaceCoordinator` enforcement. Explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) acquire scoped worktree write claims, reject overlapping writes in the same workspace/worktree with a retryable workspace-claim conflict, expose active operation claims in daemon health, and release claims when the operation completes.
+- Landed: provider prompt lifecycle worktree claims. Active local provider prompts acquire a provider-prompt operation claim before dispatch, release it through the prompt activity cleanup path on completion/cancellation/dispatch failure/session cleanup, and reject cross-session prompt dispatch onto the same workspace/worktree while preserving same-session shared-worktree prompt flows.
 
 Still open:
 
@@ -63,7 +64,7 @@ Still open:
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
 - broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models can be served without compatibility-store reads on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
-- broaden `WorkspaceCoordinator` claim enforcement beyond explicit file-writing capabilities to provider prompt lifecycles, workflow node dispatch, file-level scopes, and port claims
+- broaden `WorkspaceCoordinator` claim enforcement beyond explicit file-writing capabilities and provider prompt lifecycles to workflow node dispatch, file-level scopes, and port claims
 
 ## Non-Goals
 
@@ -262,12 +263,12 @@ Current implementation:
 
 - active session/worktree collisions are visible in `DaemonHealthProjection`
 - explicit file-writing capability operations acquire scoped worktree write claims and reject overlapping writes in the same workspace/worktree
+- active local provider prompts acquire provider-prompt worktree claims before dispatch, reject cross-session same-worktree prompt conflicts, and release claims through prompt completion, cancellation, dispatch failure, and session cleanup
 - active operation claims are visible in `DaemonHealthProjection`
-- claims are released by scoped guards when the capability operation completes
+- file capability claims are released by scoped guards when the capability operation completes; provider prompt claims are held by the prompt lifecycle until the active prompt settles
 
 Still open:
 
-- provider prompt lifecycle claims
 - workflow node dispatch claims
 - file-level claim scopes
 - port claim scopes
