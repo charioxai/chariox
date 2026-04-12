@@ -5,7 +5,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::kernel::agent_actor::AgentActor;
+use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
@@ -34,6 +34,7 @@ struct InteractiveCommandEnvelope {
 pub(crate) struct CommandRouter {
     app: Arc<Mutex<DaemonApp>>,
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
+    agent_runtime: AgentRuntime,
 }
 
 impl CommandRouter {
@@ -55,14 +56,15 @@ impl CommandRouter {
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         let (interactive_tx, interactive_rx) = mpsc::channel(interactive_capacity);
+        let agent_runtime = AgentRuntime::new(Arc::clone(&app), provider_runtime_lanes.clone());
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
-            provider_runtime_lanes.clone(),
             interactive_rx,
         ));
         Self {
             app,
             interactive_tx,
+            agent_runtime,
         }
     }
 
@@ -84,29 +86,44 @@ impl CommandRouter {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (result_tx, result_rx) = oneshot::channel();
-        self.interactive_tx
-            .try_send(InteractiveCommandEnvelope {
-                command,
-                request,
-                result_tx,
-            })
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "enqueue interactive kernel command",
-                message: format!("interactive command lane overloaded: {error}"),
-            })?;
-        result_rx
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "await interactive kernel command",
-                message: error.to_string(),
-            })?
+        match request {
+            LocalDaemonRequest::SubmitPrompt(request) => {
+                return self
+                    .agent_runtime
+                    .dispatch_prompt_submit(&command, request)
+                    .await;
+            }
+            LocalDaemonRequest::CancelActivePrompt(request) => {
+                return self
+                    .agent_runtime
+                    .dispatch_prompt_cancel(&command, request)
+                    .await;
+            }
+            request => {
+                let (result_tx, result_rx) = oneshot::channel();
+                self.interactive_tx
+                    .try_send(InteractiveCommandEnvelope {
+                        command,
+                        request,
+                        result_tx,
+                    })
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "enqueue interactive kernel command",
+                        message: format!("interactive command lane overloaded: {error}"),
+                    })?;
+                return result_rx
+                    .await
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "await interactive kernel command",
+                        message: error.to_string(),
+                    })?;
+            }
+        }
     }
 }
 
 async fn run_interactive_command_lane(
     app: Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: ProviderRunOperationLanes,
     mut rx: mpsc::Receiver<InteractiveCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
@@ -122,23 +139,15 @@ async fn run_interactive_command_lane(
                 "agent_id": envelope.command.agent_id,
             }),
         );
-        let result =
-            execute_interactive_request(&app, &provider_runtime_lanes, envelope.request).await;
+        let result = execute_interactive_request(&app, envelope.request).await;
         let _ = envelope.result_tx.send(result);
     }
 }
 
 async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRunOperationLanes,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    if let LocalDaemonRequest::SubmitPrompt(request) = request {
-        return execute_kernel_prompt_submit(app, provider_runtime_lanes, request).await;
-    }
-    if let LocalDaemonRequest::CancelActivePrompt(request) = request {
-        return execute_kernel_prompt_cancel(app, provider_runtime_lanes, request).await;
-    }
     let mut app = app.lock().await;
     if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
         return result;
@@ -147,60 +156,6 @@ async fn execute_interactive_request(
         return result;
     }
     app.handle_local_request(request)
-}
-
-async fn execute_kernel_prompt_cancel(
-    app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRunOperationLanes,
-    request: crate::local::CancelActivePromptRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let prepared = {
-        let mut app = app.lock().await;
-        app.kernel_agents()
-            .cancel_active_prompt_for_kernel(&request.session_id, &request.attachment_id)?
-    };
-
-    if let Some(dispatch) = prepared.dispatch {
-        DaemonApp::spawn_kernel_prompt_abort_operation(
-            Arc::clone(app),
-            provider_runtime_lanes.clone(),
-            dispatch,
-        );
-    }
-
-    Ok(LocalDaemonResponse::PromptCancelled {
-        cancellation: prepared.cancellation,
-    })
-}
-
-async fn execute_kernel_prompt_submit(
-    app: &Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: &ProviderRunOperationLanes,
-    request: crate::local::SubmitPromptRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let prepared = {
-        let mut app = app.lock().await;
-        app.kernel_agents().submit_prompt_for_kernel(
-            &request.session_id,
-            &request.attachment_id,
-            request.target_agent_id.as_deref(),
-            &request.prompt,
-            request.attachments,
-        )?
-    };
-
-    if let Some(dispatch) = prepared.dispatch {
-        DaemonApp::spawn_kernel_prompt_dispatch_operation(
-            Arc::clone(app),
-            provider_runtime_lanes.clone(),
-            dispatch,
-        );
-    }
-
-    Ok(LocalDaemonResponse::PromptSubmitted {
-        outcome: prepared.outcome,
-        session: prepared.session,
-    })
 }
 
 pub(crate) async fn execute_local_request_with_async_boundaries(
@@ -499,8 +454,11 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
-    use crate::local::{AttachToSessionRequest, LocalDaemonRequest};
-    use crate::session::CreateSessionRequest;
+    use crate::local::{
+        AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
+        SubmitPromptRequest,
+    };
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
 
     #[tokio::test]
@@ -590,11 +548,123 @@ mod tests {
             .expect("second result should resolve");
     }
 
+    #[tokio::test]
+    async fn prompt_submit_uses_agent_lane_when_interactive_lane_is_full() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+
+        let first_request = focus_request(&session_id, &agent_id);
+        let first_command =
+            KernelCommand::from_local_request("cmd-focus-1", None, None, &first_request);
+        let first_router = router.clone();
+        let first_task =
+            tokio::spawn(async move { first_router.dispatch(first_command, first_request).await });
+
+        for _ in 0..10 {
+            if router.interactive_tx.capacity() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let second_request = focus_request(&session_id, &agent_id);
+        let second_command =
+            KernelCommand::from_local_request("cmd-focus-2", None, None, &second_request);
+        let (second_result_tx, second_result_rx) = tokio::sync::oneshot::channel();
+        router
+            .interactive_tx
+            .try_send(super::InteractiveCommandEnvelope {
+                command: second_command,
+                request: second_request,
+                result_tx: second_result_tx,
+            })
+            .expect("second command should fill the interactive lane");
+
+        for _ in 0..10 {
+            if router.interactive_tx.capacity() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "hello from agent lane".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);
+        let prompt_router = router.clone();
+        let prompt_task =
+            tokio::spawn(
+                async move { prompt_router.dispatch(prompt_command, prompt_request).await },
+            );
+
+        tokio::task::yield_now().await;
+        assert!(
+            !prompt_task.is_finished(),
+            "prompt should be admitted to the agent lane instead of failing on the full interactive lane"
+        );
+
+        drop(app_guard);
+        let _ = first_task.await.expect("first focus should join");
+        let _ = second_result_rx.await.expect("second focus should resolve");
+        let prompt_response = prompt_task
+            .await
+            .expect("prompt task should join")
+            .expect("prompt should submit");
+        match prompt_response {
+            crate::local::LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+                PromptSubmissionOutcome::Started { prompt } => {
+                    assert_eq!(prompt.target_agent_id(), agent_id);
+                }
+                _ => panic!("expected prompt to start"),
+            },
+            _ => panic!("unexpected prompt response"),
+        }
+    }
+
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {
         LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
             session_id: session_id.to_string(),
             client_id: client_id.to_string(),
             capability_level: ClientCapabilityLevel::FullTerminal,
+        })
+    }
+
+    fn focus_request(session_id: &str, agent_id: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
         })
     }
 }

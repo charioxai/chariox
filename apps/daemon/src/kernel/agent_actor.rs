@@ -1,6 +1,240 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, oneshot, Mutex};
+
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::provider::ProviderRunOperationLanes;
+
+const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
+
+#[derive(Debug)]
+enum AgentCommand {
+    SubmitPrompt(crate::local::SubmitPromptRequest),
+    CancelActivePrompt {
+        request: crate::local::CancelActivePromptRequest,
+        target_agent_id: String,
+    },
+}
+
+#[derive(Debug)]
+struct AgentCommandEnvelope {
+    command_id: String,
+    command_type: String,
+    command: AgentCommand,
+    result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentRuntime {
+    app: Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: ProviderRunOperationLanes,
+    lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
+}
+
+impl AgentRuntime {
+    pub(crate) fn new(
+        app: Arc<Mutex<DaemonApp>>,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> Self {
+        Self {
+            app,
+            provider_runtime_lanes,
+            lanes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(crate) async fn dispatch_prompt_submit(
+        &self,
+        command: &crate::kernel::command::KernelCommand,
+        mut request: crate::local::SubmitPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agent_id = self
+            .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
+            .await?;
+        request.target_agent_id = Some(agent_id.clone());
+        self.dispatch_to_agent(
+            agent_id,
+            command.command_id.clone(),
+            command.command_type.clone(),
+            AgentCommand::SubmitPrompt(request),
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_prompt_cancel(
+        &self,
+        command: &crate::kernel::command::KernelCommand,
+        request: crate::local::CancelActivePromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agent_id = self.resolve_focused_agent_id(&request.session_id).await?;
+        self.dispatch_to_agent(
+            agent_id.clone(),
+            command.command_id.clone(),
+            command.command_type.clone(),
+            AgentCommand::CancelActivePrompt {
+                request,
+                target_agent_id: agent_id.clone(),
+            },
+        )
+        .await
+    }
+
+    async fn resolve_submit_agent_id(
+        &self,
+        session_id: &str,
+        target_agent_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        if let Some(agent_id) = target_agent_id {
+            return Ok(agent_id.to_string());
+        }
+        let app = self.app.lock().await;
+        app.sessions()
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "no focused agent".to_string(),
+            })
+    }
+
+    async fn resolve_focused_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
+        let app = self.app.lock().await;
+        app.sessions()
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })
+    }
+
+    async fn dispatch_to_agent(
+        &self,
+        agent_id: String,
+        command_id: String,
+        command_type: String,
+        command: AgentCommand,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let lane_key = agent_id;
+        let lane = self.agent_lane(&lane_key).await;
+        let (result_tx, result_rx) = oneshot::channel();
+        lane.try_send(AgentCommandEnvelope {
+            command_id,
+            command_type,
+            command,
+            result_tx,
+        })
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "enqueue agent kernel command",
+            message: format!("agent command lane overloaded: {error}"),
+        })?;
+        result_rx
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "await agent kernel command",
+                message: error.to_string(),
+            })?
+    }
+
+    async fn agent_lane(&self, agent_id: &str) -> mpsc::Sender<AgentCommandEnvelope> {
+        let mut lanes = self.lanes.lock().await;
+        if let Some(lane) = lanes.get(agent_id) {
+            return lane.clone();
+        }
+        let (tx, rx) = mpsc::channel(AGENT_COMMAND_QUEUE_LIMIT);
+        lanes.insert(agent_id.to_string(), tx.clone());
+        tokio::spawn(run_agent_command_lane(
+            Arc::clone(&self.app),
+            self.provider_runtime_lanes.clone(),
+            agent_id.to_string(),
+            rx,
+        ));
+        tx
+    }
+}
+
+async fn run_agent_command_lane(
+    app: Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: ProviderRunOperationLanes,
+    agent_id: String,
+    mut rx: mpsc::Receiver<AgentCommandEnvelope>,
+) {
+    while let Some(envelope) = rx.recv().await {
+        crate::logging::info_with_fields(
+            "daemon.kernel_agent_actor",
+            "agent kernel command dispatched",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "command_id": envelope.command_id,
+                "command_type": envelope.command_type,
+            }),
+        );
+        let result = execute_agent_command(&app, &provider_runtime_lanes, envelope.command).await;
+        let _ = envelope.result_tx.send(result);
+    }
+}
+
+async fn execute_agent_command(
+    app: &Arc<Mutex<DaemonApp>>,
+    provider_runtime_lanes: &ProviderRunOperationLanes,
+    command: AgentCommand,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match command {
+        AgentCommand::SubmitPrompt(request) => {
+            let prepared = {
+                let mut app = app.lock().await;
+                app.kernel_agents().submit_prompt_for_kernel(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.target_agent_id.as_deref(),
+                    &request.prompt,
+                    request.attachments,
+                )?
+            };
+
+            if let Some(dispatch) = prepared.dispatch {
+                DaemonApp::spawn_kernel_prompt_dispatch_operation(
+                    Arc::clone(app),
+                    provider_runtime_lanes.clone(),
+                    dispatch,
+                );
+            }
+
+            Ok(LocalDaemonResponse::PromptSubmitted {
+                outcome: prepared.outcome,
+                session: prepared.session,
+            })
+        }
+        AgentCommand::CancelActivePrompt {
+            request,
+            target_agent_id,
+        } => {
+            let prepared = {
+                let mut app = app.lock().await;
+                app.kernel_agents().cancel_agent_prompt_for_kernel(
+                    &request.session_id,
+                    &target_agent_id,
+                    &request.attachment_id,
+                )?
+            };
+
+            if let Some(dispatch) = prepared.dispatch {
+                DaemonApp::spawn_kernel_prompt_abort_operation(
+                    Arc::clone(app),
+                    provider_runtime_lanes.clone(),
+                    dispatch,
+                );
+            }
+
+            Ok(LocalDaemonResponse::PromptCancelled {
+                cancellation: prepared.cancellation,
+            })
+        }
+    }
+}
 
 pub(crate) struct AgentActor;
 
