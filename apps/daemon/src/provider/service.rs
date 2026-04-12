@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
 
@@ -23,9 +23,6 @@ use super::{
 
 pub struct ProviderProcessService {
     registry: ProviderRegistry,
-    codex_runs: BTreeMap<String, CodexRuntimeState>,
-    opencode_runs: BTreeMap<String, OpenCodeRuntimeState>,
-    structured_prompt_submissions: BTreeSet<String>,
     run_actor_mailbox: ProviderRunActorMailbox,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
@@ -156,9 +153,6 @@ impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
             registry: ProviderRegistry::new(),
-            codex_runs: BTreeMap::new(),
-            opencode_runs: BTreeMap::new(),
-            structured_prompt_submissions: BTreeSet::new(),
             run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
             next_run_number: 0,
@@ -565,7 +559,8 @@ impl ProviderProcessService {
     ) -> Result<(), DaemonError> {
         match binding {
             ProviderRuntimeBinding::Codex(binding) => {
-                self.codex_runs.insert(run_id.to_string(), binding.state);
+                self.run_actor_mailbox
+                    .insert_codex_runtime(run_id.to_string(), binding.state);
                 let run_mut = self.get_run_mut(run_id)?;
                 run_mut.set_resume_state(binding.resume_state.clone());
                 run_mut.set_provider_session_id(
@@ -574,7 +569,8 @@ impl ProviderProcessService {
                 self.apply_codex_run_selection(run_id, binding.selection)?;
             }
             ProviderRuntimeBinding::OpenCode(binding) => {
-                self.opencode_runs.insert(run_id.to_string(), binding.state);
+                self.run_actor_mailbox
+                    .insert_opencode_runtime(run_id.to_string(), binding.state);
                 let run_mut = self.get_run_mut(run_id)?;
                 run_mut.set_resume_state(binding.resume_state.clone());
                 run_mut.set_provider_session_id(
@@ -591,13 +587,12 @@ impl ProviderProcessService {
     }
 
     pub fn runtime_is_healthy(&self, run_id: &str) -> bool {
-        if self.codex_runs.contains_key(run_id) {
+        if self.run_actor_mailbox.codex_runtime_exists(run_id) {
             return true;
         }
-        let Some(state) = self.opencode_runs.get(run_id) else {
-            return false;
-        };
-        runtime_is_healthy(run_id, state)
+        self.run_actor_mailbox
+            .with_opencode_runtime(run_id, |state| runtime_is_healthy(run_id, state))
+            .unwrap_or(false)
     }
 
     pub(crate) fn run_uses_structured_prompt_io(&self, run: &RuntimeProviderRun) -> bool {
@@ -607,7 +602,8 @@ impl ProviderProcessService {
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        self.structured_prompt_submissions.contains(provider_run_id)
+        self.run_actor_mailbox
+            .structured_prompt_io_in_flight(provider_run_id)
     }
 
     pub(crate) fn run_operation_lanes(&self) -> ProviderRunOperationLanes {
@@ -615,14 +611,19 @@ impl ProviderProcessService {
     }
 
     pub fn sync_run_selection(&mut self, provider_run_id: &str) -> Result<(), DaemonError> {
-        if self.codex_runs.contains_key(provider_run_id) {
+        if self.run_actor_mailbox.codex_runtime_exists(provider_run_id) {
             return Ok(());
         }
-        let Some(state) = self.opencode_runs.get(provider_run_id) else {
+        let Some(selection) = self
+            .run_actor_mailbox
+            .with_opencode_runtime(provider_run_id, |state| {
+                sync_opencode_run_selection(provider_run_id, state)
+            })
+        else {
             return Ok(());
         };
+        let selection = selection?;
         let current_run = self.get_run(provider_run_id)?;
-        let selection = sync_opencode_run_selection(provider_run_id, state)?;
         self.apply_opencode_run_selection(
             provider_run_id,
             Self::merge_opencode_run_selection(&current_run, selection),
@@ -630,39 +631,37 @@ impl ProviderProcessService {
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
-        self.structured_prompt_submissions.remove(provider_run_id);
-        self.codex_runs.remove(provider_run_id);
-        if let Some(state) = self.opencode_runs.remove(provider_run_id) {
-            state.stop();
-        }
+        self.run_actor_mailbox.clear_runtime(provider_run_id);
         self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
     pub fn abort_structured_runtime(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "codex" {
-            let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
-                DaemonError::ProviderProtocol {
+            self.run_actor_mailbox
+                .with_codex_runtime_mut(provider_run_id, |state| {
+                    abort_codex_turn(provider_run_id, state)
+                })
+                .ok_or_else(|| DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
                     operation: "codex_thread_missing",
                     message: "no Codex thread is bound to this provider run".to_string(),
-                }
-            })?;
-            abort_codex_turn(provider_run_id, state)?;
+                })??;
             return Ok(true);
         }
         if run.adapter_key() != "opencode" {
             return Ok(false);
         }
 
-        let state = self.opencode_runs.get(provider_run_id).ok_or_else(|| {
-            DaemonError::ProviderProtocol {
+        self.run_actor_mailbox
+            .with_opencode_runtime(provider_run_id, |state| {
+                abort_opencode_session(provider_run_id, state)
+            })
+            .ok_or_else(|| DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
                 operation: "opencode_session_missing",
                 message: "no OpenCode session is bound to this provider run".to_string(),
-            }
-        })?;
-        abort_opencode_session(provider_run_id, state)?;
+            })??;
         Ok(true)
     }
 
@@ -672,8 +671,8 @@ impl ProviderProcessService {
     ) -> Result<Option<ProviderPromptAbortJob>, DaemonError> {
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
-            self.structured_prompt_submissions
-                .insert(provider_run_id.to_string());
+            self.run_actor_mailbox
+                .mark_structured_prompt_io_in_flight(provider_run_id.to_string());
             return Ok(Some(ProviderPromptAbortJob {
                 run_id: provider_run_id.to_string(),
                 inner: ProviderPromptAbortJobInner::DevStubSlow {
@@ -682,15 +681,16 @@ impl ProviderProcessService {
             }));
         }
         if run.adapter_key() == "codex" {
-            let state = self.codex_runs.remove(provider_run_id).ok_or_else(|| {
-                DaemonError::ProviderProtocol {
+            let state = self
+                .run_actor_mailbox
+                .take_codex_runtime(provider_run_id)
+                .ok_or_else(|| DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
                     operation: "codex_thread_missing",
                     message: "no Codex thread is bound to this provider run".to_string(),
-                }
-            })?;
-            self.structured_prompt_submissions
-                .insert(provider_run_id.to_string());
+                })?;
+            self.run_actor_mailbox
+                .mark_structured_prompt_io_in_flight(provider_run_id.to_string());
             return Ok(Some(ProviderPromptAbortJob {
                 run_id: provider_run_id.to_string(),
                 inner: ProviderPromptAbortJobInner::Codex(state),
@@ -700,15 +700,16 @@ impl ProviderProcessService {
             return Ok(None);
         }
 
-        let state = self.opencode_runs.remove(provider_run_id).ok_or_else(|| {
-            DaemonError::ProviderProtocol {
+        let state = self
+            .run_actor_mailbox
+            .take_opencode_runtime(provider_run_id)
+            .ok_or_else(|| DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
                 operation: "opencode_session_missing",
                 message: "no OpenCode session is bound to this provider run".to_string(),
-            }
-        })?;
-        self.structured_prompt_submissions
-            .insert(provider_run_id.to_string());
+            })?;
+        self.run_actor_mailbox
+            .mark_structured_prompt_io_in_flight(provider_run_id.to_string());
         Ok(Some(ProviderPromptAbortJob {
             run_id: provider_run_id.to_string(),
             inner: ProviderPromptAbortJobInner::OpenCode(state),
@@ -719,14 +720,16 @@ impl ProviderProcessService {
         &mut self,
         completion: ProviderPromptAbortCompletion,
     ) {
-        self.structured_prompt_submissions
-            .remove(&completion.run_id);
+        self.run_actor_mailbox
+            .clear_structured_prompt_io_in_flight(&completion.run_id);
         match completion.inner {
             ProviderPromptAbortJobInner::Codex(state) => {
-                self.codex_runs.insert(completion.run_id, state);
+                self.run_actor_mailbox
+                    .insert_codex_runtime(completion.run_id, state);
             }
             ProviderPromptAbortJobInner::OpenCode(state) => {
-                self.opencode_runs.insert(completion.run_id, state);
+                self.run_actor_mailbox
+                    .insert_opencode_runtime(completion.run_id, state);
             }
             ProviderPromptAbortJobInner::DevStubSlow { .. } => {}
         }
@@ -740,30 +743,30 @@ impl ProviderProcessService {
     ) -> Result<bool, DaemonError> {
         let _ = self.record_run_activity(run.id());
         if run.adapter_key() == "codex" {
-            let state =
-                self.codex_runs
-                    .get_mut(run.id())
-                    .ok_or_else(|| DaemonError::ProviderProtocol {
-                        provider_run_id: run.id().to_string(),
-                        operation: "codex_thread_missing",
-                        message: "no Codex thread is bound to this provider run".to_string(),
-                    })?;
-            submit_codex_prompt(run, state, prompt, attachments)?;
+            self.run_actor_mailbox
+                .with_codex_runtime_mut(run.id(), |state| {
+                    submit_codex_prompt(run, state, prompt, attachments)
+                })
+                .ok_or_else(|| DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                })??;
             return Ok(true);
         }
         if run.adapter_key() != "opencode" {
             return Ok(false);
         }
 
-        let state =
-            self.opencode_runs
-                .get(run.id())
-                .ok_or_else(|| DaemonError::ProviderProtocol {
-                    provider_run_id: run.id().to_string(),
-                    operation: "opencode_session_missing",
-                    message: "no OpenCode session is bound to this provider run".to_string(),
-                })?;
-        submit_opencode_prompt(run, state, prompt, attachments)?;
+        self.run_actor_mailbox
+            .with_opencode_runtime(run.id(), |state| {
+                submit_opencode_prompt(run, state, prompt, attachments)
+            })
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            })??;
         Ok(true)
     }
 
@@ -775,8 +778,8 @@ impl ProviderProcessService {
     ) -> Result<Option<ProviderPromptSubmitJob>, DaemonError> {
         let _ = self.record_run_activity(run.id());
         if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
-            self.structured_prompt_submissions
-                .insert(run.id().to_string());
+            self.run_actor_mailbox
+                .mark_structured_prompt_io_in_flight(run.id().to_string());
             return Ok(Some(ProviderPromptSubmitJob {
                 run: run.clone(),
                 prompt: prompt.to_string(),
@@ -787,16 +790,16 @@ impl ProviderProcessService {
             }));
         }
         if run.adapter_key() == "codex" {
-            let state =
-                self.codex_runs
-                    .remove(run.id())
-                    .ok_or_else(|| DaemonError::ProviderProtocol {
-                        provider_run_id: run.id().to_string(),
-                        operation: "codex_thread_missing",
-                        message: "no Codex thread is bound to this provider run".to_string(),
-                    })?;
-            self.structured_prompt_submissions
-                .insert(run.id().to_string());
+            let state = self
+                .run_actor_mailbox
+                .take_codex_runtime(run.id())
+                .ok_or_else(|| DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "codex_thread_missing",
+                    message: "no Codex thread is bound to this provider run".to_string(),
+                })?;
+            self.run_actor_mailbox
+                .mark_structured_prompt_io_in_flight(run.id().to_string());
             return Ok(Some(ProviderPromptSubmitJob {
                 run: run.clone(),
                 prompt: prompt.to_string(),
@@ -808,16 +811,16 @@ impl ProviderProcessService {
             return Ok(None);
         }
 
-        let state =
-            self.opencode_runs
-                .remove(run.id())
-                .ok_or_else(|| DaemonError::ProviderProtocol {
-                    provider_run_id: run.id().to_string(),
-                    operation: "opencode_session_missing",
-                    message: "no OpenCode session is bound to this provider run".to_string(),
-                })?;
-        self.structured_prompt_submissions
-            .insert(run.id().to_string());
+        let state = self
+            .run_actor_mailbox
+            .take_opencode_runtime(run.id())
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            })?;
+        self.run_actor_mailbox
+            .mark_structured_prompt_io_in_flight(run.id().to_string());
         Ok(Some(ProviderPromptSubmitJob {
             run: run.clone(),
             prompt: prompt.to_string(),
@@ -830,14 +833,16 @@ impl ProviderProcessService {
         &mut self,
         completion: ProviderPromptSubmitCompletion,
     ) {
-        self.structured_prompt_submissions
-            .remove(&completion.run_id);
+        self.run_actor_mailbox
+            .clear_structured_prompt_io_in_flight(&completion.run_id);
         match completion.inner {
             ProviderPromptSubmitJobInner::Codex(state) => {
-                self.codex_runs.insert(completion.run_id, state);
+                self.run_actor_mailbox
+                    .insert_codex_runtime(completion.run_id, state);
             }
             ProviderPromptSubmitJobInner::OpenCode(state) => {
-                self.opencode_runs.insert(completion.run_id, state);
+                self.run_actor_mailbox
+                    .insert_opencode_runtime(completion.run_id, state);
             }
             ProviderPromptSubmitJobInner::DevStubSlow { .. } => {}
         }
@@ -921,19 +926,23 @@ impl ProviderProcessService {
         let _ = self.record_run_activity(provider_run_id);
         let run = self.get_run(provider_run_id)?;
         if run.adapter_key() == "codex" {
-            if self.structured_prompt_submissions.contains(provider_run_id)
-                && !self.codex_runs.contains_key(provider_run_id)
+            if self
+                .run_actor_mailbox
+                .structured_prompt_io_in_flight(provider_run_id)
+                && !self.run_actor_mailbox.codex_runtime_exists(provider_run_id)
             {
                 return Ok(None);
             }
-            let state = self.codex_runs.get_mut(provider_run_id).ok_or_else(|| {
-                DaemonError::ProviderProtocol {
+            let poll = self
+                .run_actor_mailbox
+                .with_codex_runtime_mut(provider_run_id, |state| {
+                    drain_codex_events(provider_run_id, state)
+                })
+                .ok_or_else(|| DaemonError::ProviderProtocol {
                     provider_run_id: provider_run_id.to_string(),
                     operation: "codex_thread_missing",
                     message: "no Codex thread is bound to this provider run".to_string(),
-                }
-            })?;
-            let poll = drain_codex_events(provider_run_id, state)?;
+                })??;
             return Ok(Some(ProviderPromptSignalBatch {
                 chunks: poll
                     .chunks
@@ -959,8 +968,13 @@ impl ProviderProcessService {
         if run.adapter_key() != "opencode" {
             return Ok(None);
         }
-        if self.structured_prompt_submissions.contains(provider_run_id)
-            && !self.opencode_runs.contains_key(provider_run_id)
+        if self
+            .run_actor_mailbox
+            .structured_prompt_io_in_flight(provider_run_id)
+            && self
+                .run_actor_mailbox
+                .with_opencode_runtime(provider_run_id, |_| ())
+                .is_none()
         {
             return Ok(None);
         }
@@ -1104,16 +1118,16 @@ impl ProviderProcessService {
         &mut self,
         provider_run_id: &str,
     ) -> Result<super::opencode_runtime::OpenCodeEventDrainResult, DaemonError> {
-        let drain = {
-            let state = self.opencode_runs.get_mut(provider_run_id).ok_or_else(|| {
-                DaemonError::ProviderProtocol {
-                    provider_run_id: provider_run_id.to_string(),
-                    operation: "opencode_session_missing",
-                    message: "no OpenCode session is bound to this provider run".to_string(),
-                }
-            })?;
-            drain_opencode_events(state, provider_run_id)?
-        };
+        let drain = self
+            .run_actor_mailbox
+            .with_opencode_runtime_mut(provider_run_id, |state| {
+                drain_opencode_events(state, provider_run_id)
+            })
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: provider_run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            })??;
 
         if drain.resolved_model.is_some()
             || drain.resolved_variant.is_some()

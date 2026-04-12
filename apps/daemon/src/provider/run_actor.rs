@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -8,14 +8,17 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::error::DaemonError;
 
 use super::{
-    ProviderPromptAbortCompletion, ProviderPromptAbortJob, ProviderPromptSubmitCompletion,
-    ProviderPromptSubmitJob,
+    opencode_runtime::OpenCodeRuntimeState, CodexRuntimeState, ProviderPromptAbortCompletion,
+    ProviderPromptAbortJob, ProviderPromptSubmitCompletion, ProviderPromptSubmitJob,
 };
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
     workers: Arc<Mutex<BTreeMap<String, mpsc::Sender<ProviderRunActorCommand>>>>,
+    codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeState>>>,
+    opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeState>>>,
+    structured_prompt_submissions: Arc<Mutex<BTreeSet<String>>>,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
 }
@@ -86,6 +89,114 @@ impl ProviderRunOperationLanes {
 impl ProviderRunActorMailbox {
     pub(crate) fn operation_lanes(&self) -> ProviderRunOperationLanes {
         self.operation_lanes.clone()
+    }
+
+    pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .insert(run_id, state);
+    }
+
+    pub(crate) fn take_codex_runtime(&self, run_id: &str) -> Option<CodexRuntimeState> {
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .remove(run_id)
+    }
+
+    pub(crate) fn codex_runtime_exists(&self, run_id: &str) -> bool {
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .contains_key(run_id)
+    }
+
+    pub(crate) fn with_codex_runtime_mut<R>(
+        &self,
+        run_id: &str,
+        f: impl FnOnce(&mut CodexRuntimeState) -> R,
+    ) -> Option<R> {
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .get_mut(run_id)
+            .map(f)
+    }
+
+    pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .insert(run_id, state);
+    }
+
+    pub(crate) fn take_opencode_runtime(&self, run_id: &str) -> Option<OpenCodeRuntimeState> {
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .remove(run_id)
+    }
+
+    pub(crate) fn with_opencode_runtime<R>(
+        &self,
+        run_id: &str,
+        f: impl FnOnce(&OpenCodeRuntimeState) -> R,
+    ) -> Option<R> {
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .get(run_id)
+            .map(f)
+    }
+
+    pub(crate) fn with_opencode_runtime_mut<R>(
+        &self,
+        run_id: &str,
+        f: impl FnOnce(&mut OpenCodeRuntimeState) -> R,
+    ) -> Option<R> {
+        self.opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .get_mut(run_id)
+            .map(f)
+    }
+
+    pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
+        self.structured_prompt_submissions
+            .lock()
+            .expect("structured prompt submission set poisoned")
+            .contains(run_id)
+    }
+
+    pub(crate) fn mark_structured_prompt_io_in_flight(&self, run_id: String) {
+        self.structured_prompt_submissions
+            .lock()
+            .expect("structured prompt submission set poisoned")
+            .insert(run_id);
+    }
+
+    pub(crate) fn clear_structured_prompt_io_in_flight(&self, run_id: &str) {
+        self.structured_prompt_submissions
+            .lock()
+            .expect("structured prompt submission set poisoned")
+            .remove(run_id);
+    }
+
+    pub(crate) fn clear_runtime(&self, run_id: &str) {
+        self.clear_structured_prompt_io_in_flight(run_id);
+        self.codex_runs
+            .lock()
+            .expect("codex runtime map poisoned")
+            .remove(run_id);
+        if let Some(state) = self
+            .opencode_runs
+            .lock()
+            .expect("opencode runtime map poisoned")
+            .remove(run_id)
+        {
+            state.stop();
+        }
     }
 
     pub(crate) fn spawn_submit(
@@ -262,6 +373,7 @@ mod tests {
         let mailbox = ProviderRunActorMailbox::default();
         let _sender = mailbox.worker_for_run("run-1");
         let _permit = mailbox.operation_lanes.acquire("run-1").await;
+        mailbox.mark_structured_prompt_io_in_flight("run-1".to_string());
         assert_eq!(
             mailbox
                 .workers
@@ -279,7 +391,9 @@ mod tests {
                 .len(),
             1
         );
+        assert!(mailbox.structured_prompt_io_in_flight("run-1"));
 
+        mailbox.clear_runtime("run-1");
         mailbox.stop_run("run-1");
 
         assert_eq!(
@@ -299,6 +413,7 @@ mod tests {
                 .len(),
             0
         );
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
     }
 }
 
