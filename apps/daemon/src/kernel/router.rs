@@ -4,6 +4,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::kernel::agent_actor::AgentActor;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, RelayStatus};
@@ -109,6 +110,9 @@ async fn execute_interactive_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut app = app.lock().await;
     if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
+        return result;
+    }
+    if let Some(result) = AgentActor::handle_interactive_command(&mut app, request.clone()) {
         return result;
     }
     app.handle_local_request(request)

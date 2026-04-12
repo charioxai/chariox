@@ -1,3 +1,4 @@
+pub mod agent_actor;
 pub mod command;
 pub mod event_log;
 pub mod projection;

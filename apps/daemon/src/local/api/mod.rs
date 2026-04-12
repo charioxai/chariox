@@ -29,7 +29,10 @@ mod types;
 pub use types::*;
 
 impl DaemonApp {
-    fn local_api_session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+    pub(crate) fn local_api_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
         let mut session = self.sessions().get_session(session_id)?;
         let agents = self.agents().get_session_agents(session_id);
         session.set_agents(agents);
