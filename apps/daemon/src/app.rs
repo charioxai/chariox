@@ -404,13 +404,11 @@ impl DaemonApp {
         &self,
         request: RunShellCommandRequest,
     ) -> Result<RunShellCommandResult, DaemonError> {
-        let session = self.sessions.get_session(&request.session_id)?;
-        let attachment =
-            self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-        self.ensure_attachment_can_run_capability(&request.session_id, &attachment, "shell")?;
+        let worktree_root =
+            self.capability_worktree_root(&request.session_id, &request.attachment_id, "shell")?;
 
         let mut request = request;
-        request.worktree_root = std::path::PathBuf::from(session.worktree_id());
+        request.worktree_root = worktree_root;
         self.capabilities.run(request)
     }
 
@@ -421,13 +419,12 @@ impl DaemonApp {
         path: Option<PathBuf>,
         max_depth: usize,
     ) -> Result<ReadDirectoryTreeResult, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "directory_tree")?;
+        let worktree_root =
+            self.capability_worktree_root(session_id, attachment_id, "directory_tree")?;
         self.directory_tree.read_tree(ReadDirectoryTreeRequest::new(
             session_id,
             attachment_id,
-            PathBuf::from(session.worktree_id()),
+            worktree_root,
             path,
             max_depth,
         ))
@@ -439,13 +436,12 @@ impl DaemonApp {
         attachment_id: &str,
         path: PathBuf,
     ) -> Result<ReadFileResult, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "file_read")?;
+        let worktree_root =
+            self.capability_worktree_root(session_id, attachment_id, "file_read")?;
         self.file_capabilities.read_file(ReadFileRequest::new(
             session_id,
             attachment_id,
-            PathBuf::from(session.worktree_id()),
+            worktree_root,
             path,
         ))
     }
@@ -457,13 +453,12 @@ impl DaemonApp {
         path: PathBuf,
         contents: String,
     ) -> Result<EditFileResult, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "file_edit")?;
+        let worktree_root =
+            self.capability_worktree_root(session_id, attachment_id, "file_edit")?;
         self.file_capabilities.edit_file(EditFileRequest::new(
             session_id,
             attachment_id,
-            PathBuf::from(session.worktree_id()),
+            worktree_root,
             path,
             contents,
         ))
@@ -475,13 +470,12 @@ impl DaemonApp {
         attachment_id: &str,
         working_directory: Option<PathBuf>,
     ) -> Result<InspectGitResult, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "git_inspect")?;
+        let worktree_root =
+            self.capability_worktree_root(session_id, attachment_id, "git_inspect")?;
         self.git_capabilities.inspect(InspectGitRequest::new(
             session_id,
             attachment_id,
-            PathBuf::from(session.worktree_id()),
+            worktree_root,
             working_directory,
         ))
     }
@@ -491,9 +485,7 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<CaptureScreenshotResult, DaemonError> {
-        let _session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "screenshot")?;
+        let _ = self.capability_worktree_root(session_id, attachment_id, "screenshot")?;
         self.screenshot_capabilities
             .capture(CaptureScreenshotRequest::new(
                 session_id,
@@ -509,14 +501,13 @@ impl DaemonApp {
         source_path: PathBuf,
         display_name: Option<String>,
     ) -> Result<StoredTransferArtifact, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, "transfer_store")?;
+        let worktree_root =
+            self.capability_worktree_root(session_id, attachment_id, "transfer_store")?;
         self.transfer_capabilities
             .store_file(StoreTransferredFileRequest::new(
                 session_id,
                 attachment_id,
-                PathBuf::from(session.worktree_id()),
+                worktree_root,
                 Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
                 source_path,
                 display_name,
@@ -1571,6 +1562,18 @@ impl DaemonApp {
                 capability,
             })
         }
+    }
+
+    pub(crate) fn capability_worktree_root(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<PathBuf, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        self.ensure_attachment_can_run_capability(session_id, &attachment, capability)?;
+        Ok(PathBuf::from(session.worktree_id()))
     }
 
     pub fn relay_registration(&mut self) -> DaemonRegistration {

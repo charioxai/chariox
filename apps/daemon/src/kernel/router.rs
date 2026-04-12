@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::agent_actor::AgentActor;
+use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::session_actor::SessionActor;
 use crate::local::provider_requests::{
@@ -211,6 +212,14 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
             app.invalidate_provider_catalog_cache();
             Ok(response)
         }
+        request if is_capability_request(&request) => execute_capability_request(app, request)
+            .await
+            .unwrap_or_else(|| {
+                Err(DaemonError::LocalTransport {
+                    operation: "route capability request",
+                    message: "capability request was not handled by executor".to_string(),
+                })
+            }),
         request => {
             if is_blocking_local_request(&request) {
                 let app = Arc::clone(app);
@@ -231,6 +240,19 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
             app.handle_local_request(request)
         }
     }
+}
+
+fn is_capability_request(request: &LocalDaemonRequest) -> bool {
+    matches!(
+        request,
+        LocalDaemonRequest::RunShellCommand(_)
+            | LocalDaemonRequest::ReadDirectoryTree(_)
+            | LocalDaemonRequest::ReadFile(_)
+            | LocalDaemonRequest::EditFile(_)
+            | LocalDaemonRequest::InspectGit(_)
+            | LocalDaemonRequest::CaptureScreenshot(_)
+            | LocalDaemonRequest::StoreTransferredFile(_)
+    )
 }
 
 async fn execute_provider_catalog_request(

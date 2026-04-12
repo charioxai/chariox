@@ -712,6 +712,126 @@ async fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         .expect("kernel websocket server should shut down cleanly");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
+    let mut config = DaemonConfig::for_tests();
+    config.kernel_websocket_port = free_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server(std::sync::Arc::new(tokio::sync::Mutex::new(app)), async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    let cwd = std::env::current_dir()
+        .expect("current directory should be available")
+        .to_string_lossy()
+        .to_string();
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(cwd.as_str(), cwd.as_str())),
+    )
+    .await;
+    let session = &response_variant(&create_response, "SessionCreated")["session"];
+    let session_id = session["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+    let agent_id = session["agents"][0]["id"]
+        .as_str()
+        .expect("agent id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-shell-responsive-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    let _provider_response = send_request(
+        &mut socket,
+        "launch-provider",
+        LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        }),
+    )
+    .await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "slow-shell",
+            "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 0.5".to_string()],
+                working_directory: None,
+                timeout_ms: Some(1_000),
+            }),
+        }),
+    )
+    .await;
+    sleep(Duration::from_millis(50)).await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "submit-prompt",
+            "request": LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                target_agent_id: Some(agent_id.clone()),
+                prompt: "prompt should ack while shell command is still running".to_string(),
+                attachments: Vec::new(),
+            }),
+        }),
+    )
+    .await;
+    let submit_response =
+        wait_for_response_with_timeout(&mut socket, "submit-prompt", Duration::from_millis(250))
+            .await;
+    assert!(
+        response_variant(&submit_response, "PromptSubmitted")["outcome"]["Started"].is_object(),
+        "prompt should start before the shell capability completes: {submit_response}"
+    );
+
+    let shell_response = wait_for_response(&mut socket, "slow-shell").await;
+    assert!(
+        response_variant(&shell_response, "ShellCommandCompleted")["result"].is_object(),
+        "shell capability should still complete: {shell_response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
 fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
     listener
