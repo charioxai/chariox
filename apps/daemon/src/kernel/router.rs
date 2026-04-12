@@ -180,10 +180,15 @@ async fn execute_kernel_prompt_cancel(
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            let job = {
+            let job = loop {
                 let mut app = app.lock().await;
                 match app.take_kernel_prompt_abort_job(&dispatch) {
-                    Ok(job) => job,
+                    Ok(job) => break job,
+                    Err(_) if app.structured_prompt_io_in_flight(&dispatch.provider_run_id) => {
+                        drop(app);
+                        sleep(Duration::from_millis(25)).await;
+                        continue;
+                    }
                     Err(error) => {
                         let _ = app.fail_kernel_prompt_abort(dispatch, error);
                         return;

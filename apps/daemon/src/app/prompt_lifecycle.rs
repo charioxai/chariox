@@ -14,6 +14,8 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RelayPro
 use arroba_relay::protocol::ClientTarget;
 use base64::Engine;
 use std::fs;
+use std::thread;
+use std::time::Duration;
 
 pub(crate) struct KernelPromptSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
@@ -682,6 +684,7 @@ impl DaemonApp {
         &mut self,
         dispatch: &KernelPromptAbortDispatch,
     ) -> Result<ProviderPromptAbortJob, DaemonError> {
+        self.reap_structured_prompt_submit_jobs();
         self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
         self.providers
             .take_structured_prompt_abort_job(&dispatch.provider_run_id)?
@@ -707,6 +710,43 @@ impl DaemonApp {
             format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
         );
         Err(error)
+    }
+
+    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        self.providers
+            .structured_prompt_io_in_flight(provider_run_id)
+    }
+
+    pub(crate) fn wait_for_structured_prompt_io_idle(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        for _ in 0..200 {
+            self.reap_structured_prompt_submit_jobs();
+            if !self.structured_prompt_io_in_flight(provider_run_id) {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "wait for structured prompt I/O",
+            message: format!(
+                "provider run `{provider_run_id}` still has structured prompt I/O in flight"
+            ),
+        })
+    }
+
+    pub(crate) fn reap_structured_prompt_submit_jobs(&mut self) {
+        let finished_jobs = self.providers.drain_finished_structured_prompt_submits();
+        for finished in finished_jobs {
+            let _ = self.finish_kernel_prompt_dispatch(
+                finished.session_id,
+                finished.provider_run_id,
+                finished.agent_id,
+                finished.completion,
+                finished.result,
+            );
+        }
     }
 
     pub(crate) fn cancel_active_prompt_for_runtime(
@@ -800,6 +840,9 @@ impl DaemonApp {
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
 
+        if self.providers.run_uses_structured_prompt_io(&provider_run) {
+            self.wait_for_structured_prompt_io_idle(&provider_run_id)?;
+        }
         if !self.providers.abort_structured_runtime(&provider_run_id)? {
             self.send_provider_input(
                 session_id,

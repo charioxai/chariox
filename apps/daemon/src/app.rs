@@ -637,6 +637,7 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        self.reap_structured_prompt_submit_jobs();
         self.ensure_attachment_in_session(session_id, attachment_id)?;
         let provider_run_id = self
             .sessions
@@ -660,6 +661,7 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        self.reap_structured_prompt_submit_jobs();
         if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
             return Ok(Vec::new());
         }
@@ -717,6 +719,7 @@ impl DaemonApp {
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {
+        self.reap_structured_prompt_submit_jobs();
         let sessions = self.sessions.list_sessions();
         for session in sessions {
             let recipient_attachment_ids =
@@ -802,10 +805,28 @@ impl DaemonApp {
             });
         }
 
-        if self
-            .providers
-            .submit_structured_prompt(&provider_run, prompt, attachments)?
-        {
+        if self.providers.run_uses_structured_prompt_io(&provider_run) {
+            let agent_id = provider_run
+                .agent_instance_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "provider run has no agent".to_string(),
+                })?
+                .to_string();
+            let job = self
+                .providers
+                .take_structured_prompt_submit_job(&provider_run, prompt, attachments)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "prepare structured prompt dispatch",
+                    message: format!(
+                        "provider run `{provider_run_id}` does not use structured prompt I/O"
+                    ),
+                })?;
+            self.providers.spawn_structured_prompt_submit_job(
+                session_id.to_string(),
+                provider_run_id.to_string(),
+                agent_id,
+                job,
+            );
             return Ok(());
         }
 
