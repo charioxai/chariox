@@ -13,7 +13,9 @@ use crate::kernel::projection::{
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
-use crate::session::{PromptQueueItem, RuntimeSession};
+use crate::session::{
+    PromptCancellation, PromptCompletion, PromptQueueItem, PromptSubmissionOutcome, RuntimeSession,
+};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -121,6 +123,75 @@ impl AgentRuntimePromptStateStore {
         agents.insert(agent_id.to_string(), prompt_state);
     }
 
+    pub(crate) fn apply_submission_outcome(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        outcome: &PromptSubmissionOutcome,
+    ) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned");
+        let state = agents
+            .entry(agent_id.to_string())
+            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
+        match outcome {
+            PromptSubmissionOutcome::Started { prompt } => {
+                state.active_prompt = Some(prompt.clone());
+            }
+            PromptSubmissionOutcome::Queued { prompt } => {
+                if state.next_queued_prompt.is_none() {
+                    state.next_queued_prompt = Some(prompt.clone());
+                }
+                state.queued_prompt_count = state.queued_prompt_count.saturating_add(1);
+            }
+        }
+    }
+
+    pub(crate) fn apply_cancellation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cancellation: &PromptCancellation,
+    ) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned");
+        let state = agents
+            .entry(agent_id.to_string())
+            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
+        state.active_prompt = cancellation
+            .started_next
+            .clone()
+            .or_else(|| Some(cancellation.prompt.clone()));
+        if cancellation.started_next.is_some() {
+            state.queued_prompt_count = state.queued_prompt_count.saturating_sub(1);
+            state.next_queued_prompt = None;
+        }
+    }
+
+    pub(crate) fn apply_completion(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        completion: &PromptCompletion,
+    ) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned");
+        let state = agents
+            .entry(agent_id.to_string())
+            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
+        state.active_prompt = completion.started_next.clone();
+        if completion.started_next.is_some() {
+            state.queued_prompt_count = state.queued_prompt_count.saturating_sub(1);
+            state.next_queued_prompt = None;
+        }
+    }
+
     pub(crate) fn remove_agent(&self, agent_id: &str) {
         self.agents
             .lock()
@@ -133,6 +204,16 @@ impl AgentRuntimePromptStateStore {
             .lock()
             .expect("agent runtime prompt state lock should not be poisoned")
             .retain(|_, state| state.session_id != session_id);
+    }
+}
+
+fn empty_agent_prompt_state(session_id: &str, agent_id: &str) -> AgentRuntimePromptState {
+    AgentRuntimePromptState {
+        session_id: session_id.to_string(),
+        agent_id: agent_id.to_string(),
+        active_prompt: None,
+        next_queued_prompt: None,
+        queued_prompt_count: 0,
     }
 }
 
@@ -582,6 +663,11 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
+            prompt_state.apply_submission_outcome(
+                &request.session_id,
+                &target_agent_id,
+                &prepared.outcome,
+            );
             agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
             prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
 
@@ -611,6 +697,11 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
+            prompt_state.apply_cancellation(
+                &request.session_id,
+                &target_agent_id,
+                &prepared.cancellation,
+            );
             agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
             prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
 
@@ -645,6 +736,7 @@ async fn execute_agent_command(
                 (completion, session)
             };
             session_projection.update(session.clone());
+            prompt_state.apply_completion(&request.session_id, &target_agent_id, &completion);
             agent_runtime_projection.update_agent_from_session(&session, &target_agent_id);
             prompt_state.update_agent_from_session(&session, &target_agent_id);
 
@@ -690,7 +782,10 @@ mod tests {
         AttachToSessionRequest, CancelActivePromptRequest, LaunchProviderRunRequest,
         LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
-    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+    use crate::session::{
+        CreateSessionRequest, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
+        PromptSubmissionOutcome,
+    };
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -826,5 +921,89 @@ mod tests {
             }
             _ => panic!("unexpected local response"),
         }
+    }
+
+    #[test]
+    fn prompt_state_store_applies_mailbox_lifecycle_facts() {
+        let store = super::AgentRuntimePromptStateStore::default();
+        let session_id = "session-1";
+        let agent_id = "agent-1";
+        let active = prompt_item("prompt-1", agent_id, "active");
+        let queued = prompt_item("prompt-2", agent_id, "queued");
+
+        store.apply_submission_outcome(
+            session_id,
+            agent_id,
+            &PromptSubmissionOutcome::Started {
+                prompt: active.clone(),
+            },
+        );
+        let state = store
+            .get(agent_id)
+            .expect("started prompt should create runtime state");
+        assert_eq!(
+            state.active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-1")
+        );
+        assert_eq!(state.queued_prompt_count, 0);
+
+        store.apply_submission_outcome(
+            session_id,
+            agent_id,
+            &PromptSubmissionOutcome::Queued {
+                prompt: queued.clone(),
+            },
+        );
+        let state = store
+            .get(agent_id)
+            .expect("queued prompt should update runtime state");
+        assert_eq!(
+            state.next_queued_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-2")
+        );
+        assert_eq!(state.queued_prompt_count, 1);
+
+        store.apply_cancellation(
+            session_id,
+            agent_id,
+            &PromptCancellation {
+                prompt: active,
+                started_next: None,
+            },
+        );
+        let state = store
+            .get(agent_id)
+            .expect("cancellation should keep runtime state");
+        assert_eq!(
+            state.active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-1")
+        );
+
+        store.apply_completion(
+            session_id,
+            agent_id,
+            &PromptCompletion {
+                completed: prompt_item("prompt-1", agent_id, "active"),
+                started_next: Some(queued),
+            },
+        );
+        let state = store
+            .get(agent_id)
+            .expect("completion should keep runtime state");
+        assert_eq!(
+            state.active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-2")
+        );
+        assert_eq!(state.queued_prompt_count, 0);
+    }
+
+    fn prompt_item(id: &str, agent_id: &str, prompt: &str) -> PromptQueueItem {
+        PromptQueueItem::new(
+            id.to_string(),
+            "attachment-1".to_string(),
+            agent_id.to_string(),
+            prompt.to_string(),
+            PromptStatus::Queued,
+        )
     }
 }
