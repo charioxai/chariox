@@ -21,7 +21,10 @@ const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
 #[derive(Debug)]
 enum AgentCommand {
-    SubmitPrompt(crate::local::SubmitPromptRequest),
+    SubmitPrompt {
+        request: crate::local::SubmitPromptRequest,
+        admission: PromptSubmissionAdmission,
+    },
     CompletePrompt {
         request: crate::local::CompletePromptRequest,
         target_agent_id: String,
@@ -30,6 +33,12 @@ enum AgentCommand {
         request: crate::local::CancelActivePromptRequest,
         target_agent_id: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptSubmissionAdmission {
+    Start,
+    Queue,
 }
 
 #[derive(Debug)]
@@ -149,6 +158,14 @@ impl AgentRuntimePromptStateStore {
         }
     }
 
+    fn submission_admission(&self, session_id: &str, agent_id: &str) -> PromptSubmissionAdmission {
+        self.get(agent_id)
+            .filter(|state| state.session_id == session_id)
+            .and_then(|state| state.active_prompt)
+            .map(|_| PromptSubmissionAdmission::Queue)
+            .unwrap_or(PromptSubmissionAdmission::Start)
+    }
+
     pub(crate) fn apply_cancellation(
         &self,
         session_id: &str,
@@ -259,11 +276,14 @@ impl AgentRuntime {
             .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
             .await?;
         request.target_agent_id = Some(agent_id.clone());
+        let admission = self
+            .prompt_state
+            .submission_admission(&request.session_id, &agent_id);
         self.dispatch_to_agent(
             agent_id,
             command.command_id.clone(),
             command.command_type.clone(),
-            AgentCommand::SubmitPrompt(request),
+            AgentCommand::SubmitPrompt { request, admission },
         )
         .await
     }
@@ -644,7 +664,7 @@ async fn execute_agent_command(
     command: AgentCommand,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match command {
-        AgentCommand::SubmitPrompt(request) => {
+        AgentCommand::SubmitPrompt { request, admission } => {
             let target_agent_id =
                 request
                     .target_agent_id
@@ -662,6 +682,10 @@ async fn execute_agent_command(
                     request.attachments,
                 )?
             };
+            debug_assert!(
+                submission_admission_is_compatible(admission, &prepared.outcome),
+                "agent runtime prompt admission should not miss an active prompt"
+            );
             session_projection.update(prepared.session.clone());
             prompt_state.apply_submission_outcome(
                 &request.session_id,
@@ -743,6 +767,19 @@ async fn execute_agent_command(
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
     }
+}
+
+fn submission_admission_is_compatible(
+    admission: PromptSubmissionAdmission,
+    outcome: &PromptSubmissionOutcome,
+) -> bool {
+    !matches!(
+        (admission, outcome),
+        (
+            PromptSubmissionAdmission::Queue,
+            PromptSubmissionOutcome::Started { .. }
+        )
+    )
 }
 
 pub(crate) struct AgentActor;
@@ -995,6 +1032,49 @@ mod tests {
             Some("prompt-2")
         );
         assert_eq!(state.queued_prompt_count, 0);
+    }
+
+    #[test]
+    fn prompt_state_store_previews_submit_admission() {
+        let store = super::AgentRuntimePromptStateStore::default();
+        let session_id = "session-1";
+        let agent_id = "agent-1";
+
+        assert_eq!(
+            store.submission_admission(session_id, agent_id),
+            super::PromptSubmissionAdmission::Start
+        );
+
+        store.apply_submission_outcome(
+            session_id,
+            agent_id,
+            &PromptSubmissionOutcome::Started {
+                prompt: prompt_item("prompt-1", agent_id, "active"),
+            },
+        );
+
+        assert_eq!(
+            store.submission_admission(session_id, agent_id),
+            super::PromptSubmissionAdmission::Queue
+        );
+        assert!(
+            super::submission_admission_is_compatible(
+                super::PromptSubmissionAdmission::Queue,
+                &PromptSubmissionOutcome::Queued {
+                    prompt: prompt_item("prompt-2", agent_id, "queued")
+                },
+            ),
+            "runtime queue admission should accept queued compatibility outcomes"
+        );
+        assert!(
+            !super::submission_admission_is_compatible(
+                super::PromptSubmissionAdmission::Queue,
+                &PromptSubmissionOutcome::Started {
+                    prompt: prompt_item("prompt-2", agent_id, "unexpected start")
+                },
+            ),
+            "runtime queue admission must reject compatibility starts"
+        );
     }
 
     fn prompt_item(id: &str, agent_id: &str, prompt: &str) -> PromptQueueItem {
