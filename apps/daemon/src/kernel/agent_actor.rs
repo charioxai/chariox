@@ -6,7 +6,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
-    ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+    ActorQueueSnapshot, AgentRuntimeProjection, AgentRuntimeProjectionStore,
+    SessionStateProjectionStore,
 };
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
@@ -123,6 +124,9 @@ impl AgentRuntime {
     }
 
     async fn resolve_completion_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
+        if let Some(agent_id) = self.resolve_projected_completion_agent_id(session_id).await {
+            return Ok(agent_id);
+        }
         if let Some(agent_id) = self
             .session_projection
             .get(session_id)
@@ -136,6 +140,41 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             }
         })
+    }
+
+    async fn resolve_projected_completion_agent_id(&self, session_id: &str) -> Option<String> {
+        if let Some(focused_agent_id) = self.focus_projection.focused_agent_id(session_id).await {
+            if self
+                .agent_runtime_projection
+                .get(&focused_agent_id)
+                .is_some_and(|projection| {
+                    projection.session_id == session_id && projection.active_prompt.is_some()
+                })
+            {
+                return Some(focused_agent_id);
+            }
+        }
+
+        let session_focused_agent_id = self
+            .session_projection
+            .get(session_id)
+            .and_then(|session| session.focused_agent_id().map(str::to_string));
+        if let Some(focused_agent_id) = session_focused_agent_id.as_deref() {
+            if self
+                .agent_runtime_projection
+                .get(focused_agent_id)
+                .is_some_and(|projection| {
+                    projection.session_id == session_id && projection.active_prompt.is_some()
+                })
+            {
+                return Some(focused_agent_id.to_string());
+            }
+        }
+
+        active_prompt_agent_id_from_projections(
+            session_focused_agent_id.as_deref(),
+            &self.agent_runtime_projection.list_for_session(session_id),
+        )
     }
 
     async fn resolve_submit_agent_id(
@@ -275,6 +314,29 @@ fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<St
         .iter()
         .filter(|(_, state)| state.active_prompt().is_some())
         .map(|(agent_id, _)| agent_id.clone());
+    let agent_id = active_agents.next()?;
+    if active_agents.next().is_none() {
+        Some(agent_id)
+    } else {
+        None
+    }
+}
+
+fn active_prompt_agent_id_from_projections(
+    focused_agent_id: Option<&str>,
+    projections: &[AgentRuntimeProjection],
+) -> Option<String> {
+    if let Some(focused_agent_id) = focused_agent_id {
+        if projections.iter().any(|projection| {
+            projection.agent_id == focused_agent_id && projection.active_prompt.is_some()
+        }) {
+            return Some(focused_agent_id.to_string());
+        }
+    }
+    let mut active_agents = projections
+        .iter()
+        .filter(|projection| projection.active_prompt.is_some())
+        .map(|projection| projection.agent_id.clone());
     let agent_id = active_agents.next()?;
     if active_agents.next().is_none() {
         Some(agent_id)

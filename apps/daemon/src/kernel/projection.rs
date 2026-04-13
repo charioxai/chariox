@@ -231,7 +231,6 @@ pub(crate) struct AgentRuntimeProjectionStore {
 }
 
 impl AgentRuntimeProjectionStore {
-    #[allow(dead_code)]
     pub(crate) fn get(&self, agent_id: &str) -> Option<AgentRuntimeProjection> {
         self.agents
             .lock()
@@ -256,7 +255,6 @@ impl AgentRuntimeProjectionStore {
         projections
     }
 
-    #[allow(dead_code)]
     pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<AgentRuntimeProjection> {
         self.list()
             .into_iter()

@@ -2337,7 +2337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_complete_uses_projected_active_prompt_owner_when_focus_is_idle() {
+    async fn prompt_complete_uses_agent_runtime_projection_when_session_projection_is_stale() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, default_agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -2381,6 +2381,9 @@ mod tests {
         .expect("provider run should launch");
         app.handle_local_request(focus_request(&session_id, &default_agent_id))
             .expect("default agent should regain focus");
+        let idle_session_snapshot = app
+            .local_api_session_snapshot(&session_id)
+            .expect("idle session snapshot should be available");
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -2401,6 +2404,7 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm active prompt projection");
+        router.session_projection.update(idle_session_snapshot);
 
         let app_guard = app.lock().await;
         let complete_request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
@@ -2434,7 +2438,7 @@ mod tests {
         }
         assert!(
             spawned_agent_lane_created,
-            "prompt complete should resolve the active prompt owner from projection before touching the app lock"
+            "prompt complete should resolve the active prompt owner from the agent-runtime projection before touching the app lock"
         );
         assert!(
             !complete_task.is_finished(),
