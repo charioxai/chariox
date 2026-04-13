@@ -708,11 +708,35 @@ export function submitPromptRequest(
   }
 }
 
+export function completePromptRequest(sessionId: string) {
+  return {
+    CompletePrompt: {
+      session_id: sessionId,
+    },
+  }
+}
+
 export function cancelActivePromptRequest(sessionId: string, attachmentId: string) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
+    },
+  }
+}
+
+export function ackWorkflowTurnRequest(
+  sessionId: string,
+  workflowRunRef: string,
+  workflowNodeRunId: string,
+  deliveryToken: string,
+) {
+  return {
+    AckWorkflowTurn: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+      workflow_node_run_id: workflowNodeRunId,
+      delivery_token: deliveryToken,
     },
   }
 }

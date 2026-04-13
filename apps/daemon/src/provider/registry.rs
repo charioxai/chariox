@@ -79,15 +79,28 @@ impl AgentEndpointAdapter for DevStubAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
+        let pty_args = dev_stub_pty_args(request.model.as_str());
+        let pty_target = if is_dev_stub_workflow_drill_model(request.model.as_str()) {
+            format!(
+                "stub-pty:{}:{}",
+                request.session_id,
+                request
+                    .agent_id
+                    .as_deref()
+                    .unwrap_or(request.model.as_str())
+            )
+        } else {
+            format!("stub-pty:{}", request.session_id)
+        };
         Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: format!(
                 "dev-stub:{}:{}:{}",
                 request.provider, request.account_profile, request.model
             ),
-            pty_target: Some(format!("stub-pty:{}", request.session_id)),
+            pty_target: Some(pty_target),
             pty_program: Some("/bin/sh".to_string()),
-            pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_args,
             pty_env: std::collections::BTreeMap::new(),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
@@ -99,6 +112,32 @@ impl AgentEndpointAdapter for DevStubAdapter {
     fn resume(&self, _run: &RuntimeProviderRun) {}
 
     fn terminate(&self, _run: &RuntimeProviderRun) {}
+}
+
+fn dev_stub_pty_args(model: &str) -> Vec<String> {
+    let script = match model {
+        "workflow-drill-node-1" => Some(dev_stub_workflow_output_script(
+            "workflow drill node 1",
+            1842,
+        )),
+        "workflow-drill-node-2" => Some(dev_stub_workflow_output_script(
+            "workflow drill node 2",
+            1843,
+        )),
+        _ => None,
+    }
+    .unwrap_or_else(|| "cat".to_string());
+    vec!["-lc".to_string(), script]
+}
+
+fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
+    matches!(model, "workflow-drill-node-1" | "workflow-drill-node-2")
+}
+
+fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {
+    let payload =
+        format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
+    format!("sleep 1; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; sleep 300")
 }
 
 #[derive(Debug, Default)]

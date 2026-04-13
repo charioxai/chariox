@@ -385,47 +385,14 @@ impl<'a> KernelAgentService<'a> {
                     );
                     return Err(error);
                 }
-                let provider_run = match self
-                    .app
-                    .prepare_provider_prompt_dispatch(session_id, provider_run_id)
-                {
-                    Ok(provider_run) => provider_run,
-                    Err(error) => {
-                        self.cancel_active_after_prompt_start_failure(
-                            session_id,
-                            &target_agent_id,
-                            provider_run_id,
-                        );
-                        return Err(error);
-                    }
-                };
-                if self
-                    .app
-                    .providers
-                    .run_uses_structured_prompt_io(&provider_run)
-                {
-                    flow_control::note_prompt_started(self.app, provider_run_id);
-                    dispatch = Some(KernelPromptDispatch {
-                        session_id: session_id.to_string(),
-                        provider_run_id: provider_run_id.to_string(),
-                        agent_id: target_agent_id.clone(),
-                        prompt: prompt.prompt().to_string(),
-                        attachments: prompt.attachments().to_vec(),
-                    });
-                } else if let Err(error) = self.app.send_provider_input(
-                    session_id,
-                    provider_run_id,
-                    prompt.source_attachment_id(),
-                    prompt.prompt().as_bytes(),
-                ) {
-                    let _ = self
-                        .app
-                        .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
-                    flow_control::clear_prompt_activity(self.app, provider_run_id);
-                    return Err(error);
-                } else {
-                    flow_control::note_prompt_started(self.app, provider_run_id);
-                }
+                dispatch = Some(KernelPromptDispatch {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: target_agent_id.clone(),
+                    source_attachment_id: prompt.source_attachment_id().to_string(),
+                    prompt: prompt.prompt().to_string(),
+                    attachments: prompt.attachments().to_vec(),
+                });
             }
             PromptSubmissionOutcome::Queued { prompt } => {
                 let queue_depth = self

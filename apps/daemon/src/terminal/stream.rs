@@ -250,6 +250,13 @@ impl TerminalStreamStore {
             .expect("terminal stream lock should not be poisoned")
             .drain_notice_records(session_id, attachment_id)
     }
+
+    pub fn remove_session(&self, session_id: &str) {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .remove_session(session_id);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -527,6 +534,18 @@ impl TerminalStreamService {
         self.refresh_health();
         drained
     }
+
+    pub fn remove_session(&mut self, session_id: &str) {
+        self.input_records
+            .retain(|record| record.session_id != session_id);
+        self.output_records
+            .retain(|record| record.session_id != session_id);
+        self.notice_records
+            .retain(|record| record.session_id != session_id);
+        self.completion_records
+            .retain(|record| record.session_id != session_id);
+        self.refresh_health();
+    }
 }
 
 #[cfg(test)]
@@ -749,5 +768,46 @@ mod tests {
 
         let none_left = terminal.drain_completion_records("session-1", "attachment-2");
         assert!(none_left.is_empty());
+    }
+
+    #[test]
+    fn removes_all_records_for_session() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.record_input("session-1", "provider-run-1", "attachment-1", b"one");
+        terminal.record_input("session-2", "provider-run-2", "attachment-2", b"two");
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            None,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"output",
+        );
+        terminal.record_notice(
+            "session-1",
+            None,
+            None,
+            vec!["attachment-1".to_string()],
+            "notice",
+        );
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            None,
+            vec!["attachment-1".to_string()],
+            "message-1",
+            1,
+        );
+
+        terminal.remove_session("session-1");
+
+        assert_eq!(terminal.input_records().len(), 1);
+        assert_eq!(terminal.input_records()[0].session_id, "session-2");
+        assert!(terminal.output_records().is_empty());
+        assert!(terminal.notice_records().is_empty());
+        assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+        assert_eq!(terminal.health_snapshot().pending_notice_records, 0);
+        assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
     }
 }

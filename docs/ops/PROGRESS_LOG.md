@@ -439,3 +439,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Changed the workflow runtime contract so `summary` remains human-facing while downstream routing uses an explicit `output.message` plus optional artifact refs.
 - Updated workflow-owned prompts to request a structured JSON completion envelope with separate `summary` and `output`.
 - Reframed the docs around graph-derived execution and per-node gating/release policy instead of user-declared circular vs hierarchical workflow modes.
+
+### M4.5 prompt dispatch and terminal cleanup update
+
+- Kept provider-prompt worktree claim admission synchronous, so cross-session same-worktree prompt conflicts still fail before `PromptSubmitted`.
+- Moved local provider prompt PTY writes and provider actor enqueue work into the spawned provider-run operation dispatch after owner-backed prompt mutation, reducing work done inline by the per-agent mailbox response path.
+- Added session-runtime terminal cleanup on session end/delete so terminal input, pending output, notices, completions, and terminal backlog health do not retain stale records for removed sessions.
+- Added CLI request helpers for `CompletePrompt` and `AckWorkflowTurn` so deterministic live drills can use the public kernel API once the non-I/O runtime slices are complete.

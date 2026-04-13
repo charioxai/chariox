@@ -409,6 +409,13 @@ async fn run_session_command_lane(
                 .and_then(|session| session.focused_agent_id()),
         )
         .await;
+        if matches!(
+            result,
+            Ok(LocalDaemonResponse::SessionEnded { .. })
+                | Ok(LocalDaemonResponse::SessionDeleted { .. })
+        ) {
+            terminal_stream.remove_session(&session_id);
+        }
         let _ = envelope.result_tx.send(result);
     }
 }
@@ -726,11 +733,12 @@ mod tests {
         FocusedAgentProjection, SessionActor, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest, SpawnAgentRequest,
-        SubmitPromptRequest, UpdateSessionConfigRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LaunchProviderRunRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
+        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -883,6 +891,91 @@ mod tests {
         assert!(
             !runtime.has_lane("missing-session").await,
             "missing attachment should be rejected before creating a session lane"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_clears_terminal_stream_records() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app = app.lock().await;
+            let (session, _agent) = app
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let attachment = app
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "cli-terminal-cleanup",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            let terminal_stream = app.terminal_stream_store();
+            terminal_stream.record_input(session.id(), "provider-run-1", attachment.id(), b"input");
+            terminal_stream.fan_out_output(
+                session.id(),
+                "provider-run-1",
+                None,
+                TerminalOutputKind::ProviderOutput,
+                None,
+                vec![attachment.id().to_string()],
+                b"output",
+            );
+            terminal_stream.record_notice(
+                session.id(),
+                None,
+                None,
+                vec![attachment.id().to_string()],
+                "notice",
+            );
+            terminal_stream.record_assistant_message_completion(
+                session.id(),
+                "provider-run-1",
+                None,
+                vec![attachment.id().to_string()],
+                "message-1",
+                1,
+            );
+            (session.id().to_string(), terminal_stream)
+        };
+        assert_eq!(terminal_stream.health_snapshot().pending_output_records, 1);
+        assert_eq!(terminal_stream.health_snapshot().pending_notice_records, 1);
+        assert_eq!(
+            terminal_stream.health_snapshot().pending_completion_records,
+            1
+        );
+
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            Arc::clone(&app),
+            1,
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream.clone(),
+        );
+        let request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session_id.clone(),
+        });
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "cmd-end-session-cleanup",
+            None,
+            None,
+            &request,
+        );
+        runtime
+            .dispatch_session_command(command, request)
+            .await
+            .expect("session end should succeed");
+
+        assert!(terminal_stream.input_records().is_empty());
+        assert!(terminal_stream.output_records().is_empty());
+        assert!(terminal_stream.notice_records().is_empty());
+        assert_eq!(terminal_stream.health_snapshot().pending_output_records, 0);
+        assert_eq!(terminal_stream.health_snapshot().pending_notice_records, 0);
+        assert_eq!(
+            terminal_stream.health_snapshot().pending_completion_records,
+            0
         );
     }
 

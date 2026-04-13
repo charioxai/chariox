@@ -30,6 +30,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
+    pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
     pub(crate) attachments: Vec<PromptAttachment>,
 }
@@ -123,16 +124,34 @@ impl DaemonApp {
         &mut self,
         dispatch: &KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
-        let provider_run =
-            self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
-        self.providers.enqueue_structured_prompt_submit(
-            dispatch.session_id.clone(),
-            dispatch.provider_run_id.clone(),
-            dispatch.agent_id.clone(),
-            &provider_run,
+        self.echo_prompt_to_other_attachments(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.source_attachment_id,
             &dispatch.prompt,
             &dispatch.attachments,
-        )
+        );
+        let provider_run =
+            self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
+        if self.providers.run_uses_structured_prompt_io(&provider_run) {
+            flow_control::note_prompt_started(self, &dispatch.provider_run_id);
+            return self.providers.enqueue_structured_prompt_submit(
+                dispatch.session_id.clone(),
+                dispatch.provider_run_id.clone(),
+                dispatch.agent_id.clone(),
+                &provider_run,
+                &dispatch.prompt,
+                &dispatch.attachments,
+            );
+        }
+        self.send_provider_input(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.source_attachment_id,
+            dispatch.prompt.as_bytes(),
+        )?;
+        flow_control::note_prompt_started(self, &dispatch.provider_run_id);
+        Ok(())
     }
 
     pub(crate) fn fail_kernel_prompt_dispatch(
