@@ -310,8 +310,14 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        self.kernel_agents()
-            .advance_next_queued_prompt(session_id, agent_id, None)
+        let expected_next = self
+            .agent_runtime_projection_store()
+            .next_queued_prompt(session_id, agent_id);
+        self.kernel_agents().advance_next_queued_prompt(
+            session_id,
+            agent_id,
+            expected_next.as_ref(),
+        )
     }
 
     pub(crate) fn advance_next_queued_prompt_remote(
