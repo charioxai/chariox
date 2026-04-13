@@ -352,8 +352,38 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn release_prompt_workspace_claim(&mut self, provider_run_id: &str) {
-        self.prompt_workspace_claims.remove(provider_run_id);
+    pub(crate) fn acquire_workflow_node_workspace_claim(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let workspace_id = session.workspace_id().to_string();
+        let worktree_id = self
+            .agents
+            .get_agent(agent_id)
+            .ok()
+            .and_then(|agent| agent.worktree_id().map(str::to_string))
+            .unwrap_or_else(|| session.worktree_id().to_string());
+        let claim = self.workspace_coordinator.acquire_worktree_write_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            Some(format!("{}:{}", workflow_run_id, workflow_node_run_id)),
+            "workflow_node_dispatch",
+        )?;
+        self.prompt_workspace_claims
+            .insert(provider_run_id.to_string(), claim);
+        Ok(())
+    }
+
+    pub(crate) fn release_prompt_workspace_claim(&mut self, provider_run_id: &str) -> bool {
+        self.prompt_workspace_claims
+            .remove(provider_run_id)
+            .is_some()
     }
 
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {

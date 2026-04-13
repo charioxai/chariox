@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::attachment::ClientCapabilityLevel;
 use crate::session::{
-    CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload,
+    CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
 };
 use crate::terminal::TerminalOutputKind;
@@ -1983,8 +1983,18 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         active_prompt_count >= 1,
         "expected at least one branch prompt to be active after entry completed"
     );
-    assert_eq!(active_prompt_count + queued_prompt_count, 2);
-    assert_eq!(active_branch_agents.len(), 2);
+    assert_eq!(active_prompt_count + queued_prompt_count, 1);
+    assert_eq!(active_branch_agents.len(), 1);
+    assert_eq!(
+        after_entry
+            .node_runs()
+            .iter()
+            .filter(|node_run| {
+                node_run.status() == WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+            })
+            .count(),
+        1
+    );
 
     app.complete_active_prompt(session.id(), active_branch_agents[0], None)
         .unwrap_or_else(|error| panic!("first branch workflow prompt should complete: {error}"));
@@ -3304,6 +3314,184 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         .active_claims()
         .into_iter()
         .all(|claim| claim.operation != "provider_prompt"));
+}
+
+#[test]
+fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (interactive_session, interactive_agent) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("interactive session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let interactive_attachment = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: interactive_session.id().to_string(),
+                client_id: "client-workflow-claim-owner".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("interactive attachment should join")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    match app
+        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: interactive_session.id().to_string(),
+                agent_id: Some(interactive_agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("interactive provider run should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    match app
+        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: interactive_session.id().to_string(),
+            attachment_id: interactive_attachment.id().to_string(),
+            target_agent_id: Some(interactive_agent.id().to_string()),
+            prompt: "hold the worktree".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("interactive prompt should start")
+    {
+        LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            _ => panic!("expected interactive prompt to start"),
+        },
+        _ => panic!("unexpected local response"),
+    }
+
+    let workflow_session = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-shared"),
+        ))
+        .expect("workflow session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow_agent = match app
+        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: workflow_session.id().to_string(),
+            alias: Some("workflow-worker".to_string()),
+            provider: "dev-stub".to_string(),
+            model: Some("default".to_string()),
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        }))
+        .expect("workflow agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    let workflow = match app
+        .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: workflow_session.id().to_string(),
+            alias: Some("blocked".to_string()),
+        }))
+        .expect("workflow should be created")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = match app
+        .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+            AddWorkflowNodeRequest {
+                session_id: workflow_session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                agent_id: workflow_agent.id().to_string(),
+            },
+        ))
+        .expect("workflow node should be added")
+    {
+        LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
+        _ => panic!("unexpected local response"),
+    };
+    let endpoint = match app
+        .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: workflow_session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("entry".to_string()),
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    let blocked_run = match app
+        .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: workflow_session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                prompt: Some("background work".to_string()),
+            },
+        ))
+        .expect("workflow invoke should block instead of fail")
+    {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        blocked_run.status(),
+        crate::session::WorkflowRunStatus::Waiting
+    );
+    assert_eq!(
+        blocked_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+    );
+
+    match app
+        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: interactive_session.id().to_string(),
+        }))
+        .expect("interactive prompt should complete")
+    {
+        LocalDaemonResponse::PromptCompleted { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    let retried_run = match app
+        .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+            session_id: workflow_session.id().to_string(),
+            workflow_run_ref: blocked_run.id().to_string(),
+        }))
+        .expect("workflow run should resolve after retry")
+    {
+        LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        retried_run.status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+    assert_eq!(
+        retried_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(
+        retried_run.active_node_run_id(),
+        Some(retried_run.node_runs()[0].id())
+    );
 }
 
 #[test]

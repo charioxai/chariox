@@ -189,6 +189,218 @@ pub fn schedule_workflow_node_prompt(
         mailbox_content,
         handoff_payloads_json,
     )?;
+    dispatch_prepared_workflow_node_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        node_id,
+        prompt,
+    )
+}
+
+fn dispatch_prepared_workflow_node_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    target_agent_id: &str,
+    node_id: &str,
+    prompt: &str,
+) -> Result<(), DaemonError> {
+    let provider_run_id =
+        match ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id) {
+            Ok(provider_run_id) => provider_run_id,
+            Err(error) => return Err(error),
+        };
+    match app.acquire_workflow_node_workspace_claim(
+        session_id,
+        &provider_run_id,
+        target_agent_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    ) {
+        Ok(()) => {
+            let _ = app
+                .sessions_mut()
+                .ready_workflow_node_after_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+        }
+        Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+            let _ = app.sessions_mut().block_workflow_node_on_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` blocked node `{node_id}` on a workspace claim: {error}"
+                ),
+            );
+            let _ = app.publish_session_projection(session_id);
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    }
+    let outcome = match submit_claimed_workflow_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        prompt,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = app.release_prompt_workspace_claim(&provider_run_id);
+            return Err(error);
+        }
+    };
+    handle_workflow_prompt_submission_outcome(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        node_id,
+        outcome,
+    )
+}
+
+pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) {
+    let mut blocked = Vec::new();
+    for session in app.sessions().list_sessions() {
+        let session_id = session.id().to_string();
+        for workflow_run in session.workflow_runs() {
+            for node_run in workflow_run.node_runs() {
+                if node_run.status() != WorkflowNodeRunStatus::BlockedOnWorkspaceClaim {
+                    continue;
+                }
+                let Some(prompt) = node_run
+                    .turn_envelope()
+                    .and_then(|envelope| envelope.rendered_prompt())
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                blocked.push((
+                    session_id.clone(),
+                    workflow_run.id().to_string(),
+                    node_run.id().to_string(),
+                    node_run.agent_id().to_string(),
+                    node_run.node_id().to_string(),
+                    prompt,
+                ));
+            }
+        }
+    }
+
+    for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt) in blocked {
+        if let Err(error) = dispatch_prepared_workflow_node_prompt(
+            app,
+            &session_id,
+            &workflow_run_id,
+            &workflow_node_run_id,
+            &agent_id,
+            &node_id,
+            &prompt,
+        ) {
+            app.record_notice(
+                &session_id,
+                None,
+                app.attachments().list_session_attachment_ids(&session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` could not retry blocked node `{node_id}`: {error}"
+                ),
+            );
+        }
+    }
+}
+
+pub fn resume_workflow_run(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_ref: &str,
+) -> Result<WorkflowRun, DaemonError> {
+    let workflow_run = app
+        .sessions_mut()
+        .resume_workflow_run(session_id, workflow_run_ref)?;
+    let resumable_node_runs = workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| {
+            node_run.status() == WorkflowNodeRunStatus::Ready
+                && node_run
+                    .turn_envelope()
+                    .and_then(|envelope| envelope.rendered_prompt())
+                    .is_some()
+        })
+        .map(|node_run| {
+            (
+                node_run.id().to_string(),
+                node_run.node_id().to_string(),
+                node_run.agent_id().to_string(),
+                node_run
+                    .turn_envelope()
+                    .and_then(|envelope| envelope.rendered_prompt())
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (workflow_node_run_id, node_id, agent_id, prompt) in resumable_node_runs {
+        resume_existing_workflow_node_prompt(
+            app,
+            session_id,
+            workflow_run.id(),
+            &workflow_node_run_id,
+            &node_id,
+            &agent_id,
+            &prompt,
+        )?;
+    }
+    app.sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run.id())
+}
+
+fn resume_existing_workflow_node_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    node_id: &str,
+    target_agent_id: &str,
+    prompt: &str,
+) -> Result<(), DaemonError> {
+    let _ = app
+        .sessions_mut()
+        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
+    dispatch_prepared_workflow_node_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        node_id,
+        prompt,
+    )
+}
+
+fn submit_claimed_workflow_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    target_agent_id: &str,
+    prompt: &str,
+) -> Result<PromptSubmissionOutcome, DaemonError> {
     let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
         session_id,
         &workflow_prompt_source_attachment_id(workflow_run_id),
@@ -197,7 +409,18 @@ pub fn schedule_workflow_node_prompt(
         workflow_node_run_id,
         prompt.to_string(),
     )?;
+    Ok(outcome)
+}
 
+fn handle_workflow_prompt_submission_outcome(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    target_agent_id: &str,
+    node_id: &str,
+    outcome: PromptSubmissionOutcome,
+) -> Result<(), DaemonError> {
     match outcome {
         PromptSubmissionOutcome::Started { prompt } => {
             if let Err(error) = TransportService::dispatch_workflow_prompt(
@@ -246,95 +469,6 @@ pub fn schedule_workflow_node_prompt(
                 app.attachments().list_session_attachment_ids(session_id),
                 format!(
                     "Workflow run `{workflow_run_id}` queued node `{node_id}` behind the current active prompt."
-                ),
-            );
-        }
-    }
-
-    Ok(())
-}
-
-pub fn resume_workflow_run(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_ref: &str,
-) -> Result<WorkflowRun, DaemonError> {
-    let workflow_run = app
-        .sessions_mut()
-        .resume_workflow_run(session_id, workflow_run_ref)?;
-    let resumable_node_runs = workflow_run
-        .node_runs()
-        .iter()
-        .filter(|node_run| {
-            node_run.status() == WorkflowNodeRunStatus::Ready
-                && node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .is_some()
-        })
-        .map(|node_run| {
-            (
-                node_run.id().to_string(),
-                node_run.agent_id().to_string(),
-                node_run
-                    .turn_envelope()
-                    .and_then(|envelope| envelope.rendered_prompt())
-                    .unwrap_or_default()
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    for (workflow_node_run_id, agent_id, prompt) in resumable_node_runs {
-        resume_existing_workflow_node_prompt(
-            app,
-            session_id,
-            workflow_run.id(),
-            &workflow_node_run_id,
-            &agent_id,
-            &prompt,
-        )?;
-    }
-    app.sessions()
-        .resolve_workflow_run_ref(session_id, workflow_run.id())
-}
-
-fn resume_existing_workflow_node_prompt(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_id: &str,
-    workflow_node_run_id: &str,
-    target_agent_id: &str,
-    prompt: &str,
-) -> Result<(), DaemonError> {
-    let _ = app
-        .sessions_mut()
-        .set_focused_agent(session_id, Some(target_agent_id.to_string()));
-    let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
-        session_id,
-        &workflow_prompt_source_attachment_id(workflow_run_id),
-        target_agent_id,
-        workflow_run_id,
-        workflow_node_run_id,
-        prompt.to_string(),
-    )?;
-
-    match outcome {
-        PromptSubmissionOutcome::Started { prompt } => {
-            TransportService::dispatch_workflow_prompt(app, session_id, target_agent_id, &prompt)?;
-            app.sessions_mut().mark_workflow_turn_dispatched(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            on_workflow_prompt_started(app, session_id, &prompt)?;
-        }
-        PromptSubmissionOutcome::Queued { .. } => {
-            app.record_notice(
-                session_id,
-                None,
-                app.attachments().list_session_attachment_ids(session_id),
-                format!(
-                    "Workflow run `{workflow_run_id}` queued resumed node run `{workflow_node_run_id}` behind the current active prompt."
                 ),
             );
         }
@@ -579,7 +713,19 @@ pub fn on_workflow_prompt_completed(
             );
         }
     }
+    let claim_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+        app.providers()
+            .get_run_for_agent(session_id, prompt.target_agent_id())
+            .map(|run| run.id().to_string())
+    });
+    let released_claim = claim_provider_run_id
+        .as_deref()
+        .map(|provider_run_id| app.release_prompt_workspace_claim(provider_run_id))
+        .unwrap_or(false);
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
+    if released_claim {
+        retry_blocked_workflow_claims(app);
+    }
     let state_suffix = match workflow_run.status() {
         WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
         WorkflowRunStatus::Completing => "is completing",

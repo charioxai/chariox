@@ -769,6 +769,7 @@ pub enum WorkflowRunStatus {
 pub enum WorkflowNodeRunStatus {
     Created,
     Ready,
+    BlockedOnWorkspaceClaim,
     Running,
     Waiting,
     Completed,
