@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -12,6 +13,7 @@ use crate::kernel::projection::{
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
+use crate::session::{PromptQueueItem, RuntimeSession};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -36,6 +38,92 @@ struct AgentCommandEnvelope {
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentRuntimePromptState {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) active_prompt: Option<PromptQueueItem>,
+    pub(crate) next_queued_prompt: Option<PromptQueueItem>,
+    pub(crate) queued_prompt_count: usize,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct AgentRuntimePromptStateStore {
+    agents: Arc<StdMutex<HashMap<String, AgentRuntimePromptState>>>,
+}
+
+impl AgentRuntimePromptStateStore {
+    pub(crate) fn get(&self, agent_id: &str) -> Option<AgentRuntimePromptState> {
+        self.agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned")
+            .get(agent_id)
+            .cloned()
+    }
+
+    pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<AgentRuntimePromptState> {
+        let mut states = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned")
+            .values()
+            .filter(|state| state.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        states.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        states
+    }
+
+    pub(crate) fn update_session(&self, session: &RuntimeSession) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned");
+        agents.retain(|_, state| state.session_id != session.id());
+        for agent in session.agents() {
+            let prompt_state = session.prompt_states().get(agent.id());
+            agents.insert(
+                agent.id().to_string(),
+                AgentRuntimePromptState {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
+                    next_queued_prompt: prompt_state
+                        .and_then(|state| state.queued_prompts().front().cloned()),
+                    queued_prompt_count: prompt_state
+                        .map(|state| state.queued_prompts().len())
+                        .unwrap_or(0),
+                },
+            );
+        }
+        for (agent_id, prompt_state) in session.prompt_states() {
+            agents
+                .entry(agent_id.clone())
+                .or_insert_with(|| AgentRuntimePromptState {
+                    session_id: session.id().to_string(),
+                    agent_id: agent_id.clone(),
+                    active_prompt: prompt_state.active_prompt().cloned(),
+                    next_queued_prompt: prompt_state.queued_prompts().front().cloned(),
+                    queued_prompt_count: prompt_state.queued_prompts().len(),
+                });
+        }
+    }
+
+    pub(crate) fn remove_agent(&self, agent_id: &str) {
+        self.agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned")
+            .remove(agent_id);
+    }
+
+    pub(crate) fn remove_session(&self, session_id: &str) {
+        self.agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned")
+            .retain(|_, state| state.session_id != session_id);
+    }
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AgentRuntime {
@@ -44,6 +132,7 @@ pub(crate) struct AgentRuntime {
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    prompt_state: AgentRuntimePromptStateStore,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -62,6 +151,7 @@ impl AgentRuntime {
             focus_projection,
             session_projection,
             agent_runtime_projection,
+            prompt_state: AgentRuntimePromptStateStore::default(),
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -129,6 +219,9 @@ impl AgentRuntime {
         &self,
         session_id: &str,
     ) -> Result<String, DaemonError> {
+        if let Some(agent_id) = self.resolve_state_active_prompt_agent_id(session_id).await {
+            return Ok(agent_id);
+        }
         if let Some(agent_id) = self
             .resolve_projected_active_prompt_agent_id(session_id)
             .await
@@ -148,6 +241,29 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             }
         })
+    }
+
+    async fn resolve_state_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
+        if let Some(focused_agent_id) = self.focus_projection.focused_agent_id(session_id).await {
+            if self
+                .prompt_state
+                .get(&focused_agent_id)
+                .is_some_and(|state| {
+                    state.session_id == session_id && state.active_prompt.is_some()
+                })
+            {
+                return Some(focused_agent_id);
+            }
+        }
+
+        let session_focused_agent_id = self
+            .session_projection
+            .get(session_id)
+            .and_then(|session| session.focused_agent_id().map(str::to_string));
+        active_prompt_agent_id_from_state(
+            session_focused_agent_id.as_deref(),
+            &self.prompt_state.list_for_session(session_id),
+        )
     }
 
     async fn resolve_projected_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
@@ -253,6 +369,7 @@ impl AgentRuntime {
             self.provider_runtime_lanes.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
+            self.prompt_state.clone(),
             agent_id.to_string(),
             rx,
         ));
@@ -278,6 +395,7 @@ impl AgentRuntime {
 
     pub(crate) async fn remove_agent_lane(&self, agent_id: &str) {
         self.lanes.lock().await.remove(agent_id);
+        self.prompt_state.remove_agent(agent_id);
     }
 
     pub(crate) async fn remove_agent_lanes<'a>(
@@ -287,7 +405,17 @@ impl AgentRuntime {
         let mut lanes = self.lanes.lock().await;
         for agent_id in agent_ids {
             lanes.remove(agent_id);
+            self.prompt_state.remove_agent(agent_id);
         }
+    }
+
+    pub(crate) fn remove_session_state(&self, session_id: &str) {
+        self.prompt_state.remove_session(session_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prompt_state_for_test(&self, agent_id: &str) -> Option<AgentRuntimePromptState> {
+        self.prompt_state.get(agent_id)
     }
 }
 
@@ -333,11 +461,36 @@ fn active_prompt_agent_id_from_projections(
     }
 }
 
+fn active_prompt_agent_id_from_state(
+    focused_agent_id: Option<&str>,
+    states: &[AgentRuntimePromptState],
+) -> Option<String> {
+    if let Some(focused_agent_id) = focused_agent_id {
+        if states
+            .iter()
+            .any(|state| state.agent_id == focused_agent_id && state.active_prompt.is_some())
+        {
+            return Some(focused_agent_id.to_string());
+        }
+    }
+    let mut active_agents = states
+        .iter()
+        .filter(|state| state.active_prompt.is_some())
+        .map(|state| state.agent_id.clone());
+    let agent_id = active_agents.next()?;
+    if active_agents.next().is_none() {
+        Some(agent_id)
+    } else {
+        None
+    }
+}
+
 async fn run_agent_command_lane(
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    prompt_state: AgentRuntimePromptStateStore,
     agent_id: String,
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
@@ -356,6 +509,7 @@ async fn run_agent_command_lane(
             &provider_runtime_lanes,
             &session_projection,
             &agent_runtime_projection,
+            &prompt_state,
             envelope.command,
         )
         .await;
@@ -368,6 +522,7 @@ async fn execute_agent_command(
     provider_runtime_lanes: &ProviderRunOperationLanes,
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
+    prompt_state: &AgentRuntimePromptStateStore,
     command: AgentCommand,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match command {
@@ -384,6 +539,7 @@ async fn execute_agent_command(
             };
             session_projection.update(prepared.session.clone());
             agent_runtime_projection.update_session(&prepared.session);
+            prompt_state.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_dispatch_operation(
@@ -412,6 +568,7 @@ async fn execute_agent_command(
             };
             session_projection.update(prepared.session.clone());
             agent_runtime_projection.update_session(&prepared.session);
+            prompt_state.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_abort_operation(
@@ -445,6 +602,7 @@ async fn execute_agent_command(
             };
             session_projection.update(session.clone());
             agent_runtime_projection.update_session(&session);
+            prompt_state.update_session(&session);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
