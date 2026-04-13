@@ -539,8 +539,7 @@ impl ProviderProcessService {
             return Ok(());
         }
         self.run_actor_mailbox
-            .spawn_selection_sync(provider_run_id.to_string());
-        Ok(())
+            .spawn_selection_sync(provider_run_id.to_string())
     }
 
     pub(crate) fn apply_finished_provider_run_selection_sync_jobs(&mut self) {
@@ -608,8 +607,7 @@ impl ProviderProcessService {
             run.clone(),
             prompt.to_string(),
             attachments.to_vec(),
-        );
-        Ok(())
+        )
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
@@ -627,8 +625,7 @@ impl ProviderProcessService {
             });
         }
         self.run_actor_mailbox
-            .spawn_abort(session_id, provider_run_id, run);
-        Ok(())
+            .spawn_abort(session_id, provider_run_id, run)
     }
 
     pub(crate) fn drain_finished_structured_prompt_submit_jobs(
@@ -652,9 +649,8 @@ impl ProviderProcessService {
         if !self.run_uses_structured_prompt_io(&run) {
             return Ok(false);
         }
-        Ok(self
-            .run_actor_mailbox
-            .spawn_output_poll(provider_run_id.to_string(), run))
+        self.run_actor_mailbox
+            .spawn_output_poll(provider_run_id.to_string(), run)
     }
 
     pub(crate) fn drain_finished_structured_output_poll_jobs(

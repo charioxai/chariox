@@ -101,6 +101,7 @@ pub struct DaemonApp {
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
+    pending_structured_output_records: BTreeMap<String, Vec<TerminalOutputRecord>>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
@@ -205,6 +206,7 @@ impl DaemonApp {
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
+            pending_structured_output_records: BTreeMap::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
@@ -964,13 +966,16 @@ impl DaemonApp {
                 }
             }
         }
-        let records = self.drain_finished_structured_output_jobs_for_run(
+        let mut records = self
+            .pending_structured_output_records
+            .remove(provider_run_id)
+            .unwrap_or_default();
+        records.extend(self.drain_finished_structured_output_jobs_for_run(
             session_id,
             provider_run_id,
             recipient_attachment_ids.clone(),
-        )?;
-        let _ = self
-            .providers
+        )?);
+        self.providers
             .enqueue_structured_output_poll(provider_run_id)?;
         Ok(records)
     }
@@ -1047,6 +1052,11 @@ impl DaemonApp {
             )?;
             if is_requested_run {
                 requested_records.extend(records);
+            } else if !records.is_empty() {
+                self.pending_structured_output_records
+                    .entry(provider_run_id)
+                    .or_default()
+                    .extend(records);
             }
         }
         Ok(requested_records)

@@ -1,6 +1,5 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -13,10 +12,7 @@ use crate::kernel::projection::{
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
-use crate::session::{
-    PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-    RuntimeSession,
-};
+use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -24,7 +20,6 @@ const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,
-        admission: PromptSubmissionAdmission,
     },
     CompletePrompt {
         request: crate::local::CompletePromptRequest,
@@ -51,215 +46,6 @@ struct AgentCommandEnvelope {
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AgentRuntimePromptState {
-    pub(crate) session_id: String,
-    pub(crate) agent_id: String,
-    pub(crate) active_prompt: Option<PromptQueueItem>,
-    pub(crate) next_queued_prompt: Option<PromptQueueItem>,
-    pub(crate) queued_prompts: VecDeque<PromptQueueItem>,
-    pub(crate) queued_prompt_count: usize,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct AgentRuntimePromptStateStore {
-    agents: Arc<StdMutex<HashMap<String, AgentRuntimePromptState>>>,
-}
-
-impl AgentRuntimePromptStateStore {
-    pub(crate) fn get(&self, agent_id: &str) -> Option<AgentRuntimePromptState> {
-        self.agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned")
-            .get(agent_id)
-            .cloned()
-    }
-
-    pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<AgentRuntimePromptState> {
-        let mut states = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned")
-            .values()
-            .filter(|state| state.session_id == session_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        states.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
-        states
-    }
-
-    pub(crate) fn update_session(&self, session: &RuntimeSession) {
-        let mut agents = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned");
-        agents.retain(|_, state| state.session_id != session.id());
-        for agent in session.agents() {
-            let prompt_state = session.prompt_states().get(agent.id());
-            agents.insert(
-                agent.id().to_string(),
-                AgentRuntimePromptState {
-                    session_id: session.id().to_string(),
-                    agent_id: agent.id().to_string(),
-                    active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
-                    next_queued_prompt: prompt_state
-                        .and_then(|state| state.queued_prompts().front().cloned()),
-                    queued_prompts: prompt_state
-                        .map(|state| state.queued_prompts().clone())
-                        .unwrap_or_default(),
-                    queued_prompt_count: prompt_state
-                        .map(|state| state.queued_prompts().len())
-                        .unwrap_or(0),
-                },
-            );
-        }
-        for (agent_id, prompt_state) in session.prompt_states() {
-            agents
-                .entry(agent_id.clone())
-                .or_insert_with(|| AgentRuntimePromptState {
-                    session_id: session.id().to_string(),
-                    agent_id: agent_id.clone(),
-                    active_prompt: prompt_state.active_prompt().cloned(),
-                    next_queued_prompt: prompt_state.queued_prompts().front().cloned(),
-                    queued_prompts: prompt_state.queued_prompts().clone(),
-                    queued_prompt_count: prompt_state.queued_prompts().len(),
-                });
-        }
-    }
-
-    pub(crate) fn apply_submission_outcome(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        outcome: &PromptSubmissionOutcome,
-    ) -> AgentRuntimePromptState {
-        let mut agents = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned");
-        let state = agents
-            .entry(agent_id.to_string())
-            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
-        match outcome {
-            PromptSubmissionOutcome::Started { prompt } => {
-                state.active_prompt = Some(prompt.clone());
-            }
-            PromptSubmissionOutcome::Queued { prompt } => {
-                state.queued_prompts.push_back(prompt.clone());
-                refresh_prompt_queue_summary(state);
-            }
-        }
-        state.clone()
-    }
-
-    fn submission_admission(&self, session_id: &str, agent_id: &str) -> PromptSubmissionAdmission {
-        self.get(agent_id)
-            .filter(|state| state.session_id == session_id)
-            .and_then(|state| state.active_prompt)
-            .map(|_| PromptSubmissionAdmission::Queue)
-            .unwrap_or(PromptSubmissionAdmission::Start)
-    }
-
-    pub(crate) fn apply_cancellation(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        cancellation: &PromptCancellation,
-    ) -> AgentRuntimePromptState {
-        let mut agents = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned");
-        let state = agents
-            .entry(agent_id.to_string())
-            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
-        state.active_prompt = cancellation
-            .started_next
-            .clone()
-            .or_else(|| Some(cancellation.prompt.clone()));
-        if let Some(started_next) = cancellation.started_next.as_ref() {
-            activate_queued_prompt(state, started_next);
-        }
-        state.clone()
-    }
-
-    pub(crate) fn apply_completion(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        completion: &PromptCompletion,
-    ) -> AgentRuntimePromptState {
-        let mut agents = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned");
-        let state = agents
-            .entry(agent_id.to_string())
-            .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
-        state.active_prompt = completion.started_next.clone();
-        if let Some(started_next) = completion.started_next.as_ref() {
-            activate_queued_prompt(state, started_next);
-        }
-        state.clone()
-    }
-
-    pub(crate) fn peek_next_queued_prompt(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Option<PromptQueueItem> {
-        self.get(agent_id)
-            .filter(|state| state.session_id == session_id)
-            .and_then(|state| state.queued_prompts.front().cloned())
-    }
-
-    pub(crate) fn remove_agent(&self, agent_id: &str) {
-        self.agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned")
-            .remove(agent_id);
-    }
-
-    pub(crate) fn remove_session(&self, session_id: &str) {
-        self.agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned")
-            .retain(|_, state| state.session_id != session_id);
-    }
-}
-
-fn empty_agent_prompt_state(session_id: &str, agent_id: &str) -> AgentRuntimePromptState {
-    AgentRuntimePromptState {
-        session_id: session_id.to_string(),
-        agent_id: agent_id.to_string(),
-        active_prompt: None,
-        next_queued_prompt: None,
-        queued_prompts: VecDeque::new(),
-        queued_prompt_count: 0,
-    }
-}
-
-fn refresh_prompt_queue_summary(state: &mut AgentRuntimePromptState) {
-    state.next_queued_prompt = state.queued_prompts.front().cloned();
-    state.queued_prompt_count = state.queued_prompts.len();
-}
-
-fn activate_queued_prompt(state: &mut AgentRuntimePromptState, started_next: &PromptQueueItem) {
-    state.active_prompt = Some(started_next.clone());
-    if state
-        .queued_prompts
-        .front()
-        .is_some_and(|prompt| prompt.id() == started_next.id())
-    {
-        let _ = state.queued_prompts.pop_front();
-    } else {
-        state
-            .queued_prompts
-            .retain(|prompt| prompt.id() != started_next.id());
-    }
-    refresh_prompt_queue_summary(state);
-}
-
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AgentRuntime {
@@ -268,7 +54,6 @@ pub(crate) struct AgentRuntime {
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-    prompt_state: AgentRuntimePromptStateStore,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -287,7 +72,6 @@ impl AgentRuntime {
             focus_projection,
             session_projection,
             agent_runtime_projection,
-            prompt_state: AgentRuntimePromptStateStore::default(),
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -302,14 +86,11 @@ impl AgentRuntime {
             .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
             .await?;
         request.target_agent_id = Some(agent_id.clone());
-        let admission = self
-            .prompt_state
-            .submission_admission(&request.session_id, &agent_id);
         self.dispatch_to_agent(
             agent_id,
             command.command_id.clone(),
             command.command_type.clone(),
-            AgentCommand::SubmitPrompt { request, admission },
+            AgentCommand::SubmitPrompt { request },
         )
         .await
     }
@@ -343,8 +124,8 @@ impl AgentRuntime {
             .resolve_active_prompt_agent_id(&request.session_id)
             .await?;
         let next_queued_prompt = self
-            .prompt_state
-            .peek_next_queued_prompt(&request.session_id, &agent_id);
+            .agent_runtime_projection
+            .next_queued_prompt(&request.session_id, &agent_id);
         self.dispatch_to_agent(
             agent_id.clone(),
             command.command_id.clone(),
@@ -362,9 +143,6 @@ impl AgentRuntime {
         &self,
         session_id: &str,
     ) -> Result<String, DaemonError> {
-        if let Some(agent_id) = self.resolve_state_active_prompt_agent_id(session_id).await {
-            return Ok(agent_id);
-        }
         if let Some(agent_id) = self
             .resolve_projected_active_prompt_agent_id(session_id)
             .await
@@ -379,7 +157,6 @@ impl AgentRuntime {
             return Ok(agent_id);
         }
         if self.session_projection.get(session_id).is_some()
-            || !self.prompt_state.list_for_session(session_id).is_empty()
             || !self
                 .agent_runtime_projection
                 .list_for_session(session_id)
@@ -400,29 +177,6 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             }
         })
-    }
-
-    async fn resolve_state_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
-        if let Some(focused_agent_id) = self.focus_projection.focused_agent_id(session_id).await {
-            if self
-                .prompt_state
-                .get(&focused_agent_id)
-                .is_some_and(|state| {
-                    state.session_id == session_id && state.active_prompt.is_some()
-                })
-            {
-                return Some(focused_agent_id);
-            }
-        }
-
-        let session_focused_agent_id = self
-            .session_projection
-            .get(session_id)
-            .and_then(|session| session.focused_agent_id().map(str::to_string));
-        active_prompt_agent_id_from_state(
-            session_focused_agent_id.as_deref(),
-            &self.prompt_state.list_for_session(session_id),
-        )
     }
 
     async fn resolve_projected_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
@@ -468,7 +222,6 @@ impl AgentRuntime {
         let session_projection = self.session_projection.get(session_id);
         if session_projection.is_none()
             && self.session_projection.has_warmed_list()
-            && self.prompt_state.list_for_session(session_id).is_empty()
             && self
                 .agent_runtime_projection
                 .list_for_session(session_id)
@@ -494,11 +247,6 @@ impl AgentRuntime {
         }
         if let Some(agent_id) =
             session_projection.and_then(|session| session.focused_agent_id().map(str::to_string))
-        {
-            return Ok(agent_id);
-        }
-        if let Some(agent_id) =
-            single_agent_prompt_state_id(&self.prompt_state.list_for_session(session_id))
         {
             return Ok(agent_id);
         }
@@ -557,7 +305,6 @@ impl AgentRuntime {
             self.provider_runtime_lanes.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
-            self.prompt_state.clone(),
             agent_id.to_string(),
             rx,
         ));
@@ -583,7 +330,6 @@ impl AgentRuntime {
 
     pub(crate) async fn remove_agent_lane(&self, agent_id: &str) {
         self.lanes.lock().await.remove(agent_id);
-        self.prompt_state.remove_agent(agent_id);
     }
 
     pub(crate) async fn remove_agent_lanes<'a>(
@@ -593,21 +339,11 @@ impl AgentRuntime {
         let mut lanes = self.lanes.lock().await;
         for agent_id in agent_ids {
             lanes.remove(agent_id);
-            self.prompt_state.remove_agent(agent_id);
         }
     }
 
     pub(crate) fn remove_session_state(&self, session_id: &str) {
-        self.prompt_state.remove_session(session_id);
-    }
-
-    pub(crate) fn update_prompt_state_from_session(&self, session: &RuntimeSession) {
-        self.prompt_state.update_session(session);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn prompt_state_for_test(&self, agent_id: &str) -> Option<AgentRuntimePromptState> {
-        self.prompt_state.get(agent_id)
+        self.agent_runtime_projection.remove_session(session_id);
     }
 }
 
@@ -653,48 +389,10 @@ fn active_prompt_agent_id_from_projections(
     }
 }
 
-fn active_prompt_agent_id_from_state(
-    focused_agent_id: Option<&str>,
-    states: &[AgentRuntimePromptState],
-) -> Option<String> {
-    if let Some(focused_agent_id) = focused_agent_id {
-        if states
-            .iter()
-            .any(|state| state.agent_id == focused_agent_id && state.active_prompt.is_some())
-        {
-            return Some(focused_agent_id.to_string());
-        }
-    }
-    let mut active_agents = states
-        .iter()
-        .filter(|state| state.active_prompt.is_some())
-        .map(|state| state.agent_id.clone());
-    let agent_id = active_agents.next()?;
-    if active_agents.next().is_none() {
-        Some(agent_id)
-    } else {
-        None
-    }
-}
-
 fn single_agent_projection_id(projections: &[AgentRuntimeProjection]) -> Option<String> {
     let mut agent_ids = projections
         .iter()
         .map(|projection| projection.agent_id.clone())
-        .collect::<Vec<_>>();
-    agent_ids.sort();
-    agent_ids.dedup();
-    if agent_ids.len() == 1 {
-        agent_ids.into_iter().next()
-    } else {
-        None
-    }
-}
-
-fn single_agent_prompt_state_id(states: &[AgentRuntimePromptState]) -> Option<String> {
-    let mut agent_ids = states
-        .iter()
-        .map(|state| state.agent_id.clone())
         .collect::<Vec<_>>();
     agent_ids.sort();
     agent_ids.dedup();
@@ -710,7 +408,6 @@ async fn run_agent_command_lane(
     provider_runtime_lanes: ProviderRunOperationLanes,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-    prompt_state: AgentRuntimePromptStateStore,
     agent_id: String,
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
@@ -729,7 +426,6 @@ async fn run_agent_command_lane(
             &provider_runtime_lanes,
             &session_projection,
             &agent_runtime_projection,
-            &prompt_state,
             envelope.command,
         )
         .await;
@@ -742,11 +438,10 @@ async fn execute_agent_command(
     provider_runtime_lanes: &ProviderRunOperationLanes,
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
-    prompt_state: &AgentRuntimePromptStateStore,
     command: AgentCommand,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match command {
-        AgentCommand::SubmitPrompt { request, admission } => {
+        AgentCommand::SubmitPrompt { request } => {
             let target_agent_id =
                 request
                     .target_agent_id
@@ -754,6 +449,11 @@ async fn execute_agent_command(
                     .ok_or_else(|| DaemonError::AgentNotFound {
                         agent_id: "no target agent".to_string(),
                     })?;
+            let admission = prompt_submission_admission_from_projection(
+                agent_runtime_projection,
+                &request.session_id,
+                &target_agent_id,
+            );
             let prepared = {
                 let mut app = app.lock().await;
                 let prompt = PromptQueueItem::new(
@@ -774,15 +474,10 @@ async fn execute_agent_command(
             };
             debug_assert!(
                 submission_admission_is_compatible(admission, &prepared.outcome),
-                "agent runtime prompt admission should not miss an active prompt"
+                "agent runtime projection admission should not miss an active prompt"
             );
             session_projection.update(prepared.session.clone());
-            let runtime_prompt_state = prompt_state.apply_submission_outcome(
-                &request.session_id,
-                &target_agent_id,
-                &prepared.outcome,
-            );
-            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
+            agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_dispatch_operation(
@@ -810,12 +505,7 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
-            let runtime_prompt_state = prompt_state.apply_cancellation(
-                &request.session_id,
-                &target_agent_id,
-                &prepared.cancellation,
-            );
-            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
+            agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_abort_operation(
@@ -854,26 +544,24 @@ async fn execute_agent_command(
                 completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),
                 "agent runtime queue-front preview should match compatibility advancement"
             );
-            let runtime_prompt_state =
-                prompt_state.apply_completion(&request.session_id, &target_agent_id, &completion);
-            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
+            agent_runtime_projection.update_session(&session);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
     }
 }
 
-fn publish_agent_runtime_prompt_state(
+fn prompt_submission_admission_from_projection(
     agent_runtime_projection: &AgentRuntimeProjectionStore,
-    state: &AgentRuntimePromptState,
-) {
-    agent_runtime_projection.update_agent_prompt_state(
-        &state.session_id,
-        &state.agent_id,
-        state.active_prompt.clone(),
-        state.next_queued_prompt.clone(),
-        state.queued_prompt_count,
-    );
+    session_id: &str,
+    agent_id: &str,
+) -> PromptSubmissionAdmission {
+    agent_runtime_projection
+        .get(agent_id)
+        .filter(|projection| projection.session_id == session_id)
+        .and_then(|projection| projection.active_prompt)
+        .map(|_| PromptSubmissionAdmission::Queue)
+        .unwrap_or(PromptSubmissionAdmission::Start)
 }
 
 fn completion_started_next_is_compatible(
@@ -944,10 +632,7 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
     use crate::provider::ProviderRunOperationLanes;
-    use crate::session::{
-        CreateSessionRequest, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
-        PromptSubmissionOutcome,
-    };
+    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
 
@@ -1259,117 +944,45 @@ mod tests {
     }
 
     #[test]
-    fn prompt_state_store_applies_mailbox_lifecycle_facts() {
-        let store = super::AgentRuntimePromptStateStore::default();
-        let session_id = "session-1";
-        let agent_id = "agent-1";
-        let active = prompt_item("prompt-1", agent_id, "active");
-        let queued = prompt_item("prompt-2", agent_id, "queued");
-
-        store.apply_submission_outcome(
-            session_id,
-            agent_id,
-            &PromptSubmissionOutcome::Started {
-                prompt: active.clone(),
-            },
-        );
-        let state = store
-            .get(agent_id)
-            .expect("started prompt should create runtime state");
-        assert_eq!(
-            state.active_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-1")
-        );
-        assert_eq!(state.queued_prompt_count, 0);
-
-        store.apply_submission_outcome(
-            session_id,
-            agent_id,
-            &PromptSubmissionOutcome::Queued {
-                prompt: queued.clone(),
-            },
-        );
-        let state = store
-            .get(agent_id)
-            .expect("queued prompt should update runtime state");
-        assert_eq!(
-            state.next_queued_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-2")
-        );
-        assert_eq!(
-            state
-                .queued_prompts
-                .iter()
-                .map(|prompt| prompt.id().to_string())
-                .collect::<Vec<_>>(),
-            vec!["prompt-2".to_string()]
-        );
-        assert_eq!(state.queued_prompt_count, 1);
-
-        store.apply_cancellation(
-            session_id,
-            agent_id,
-            &PromptCancellation {
-                prompt: active,
-                started_next: None,
-            },
-        );
-        let state = store
-            .get(agent_id)
-            .expect("cancellation should keep runtime state");
-        assert_eq!(
-            state.active_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-1")
-        );
-
-        store.apply_completion(
-            session_id,
-            agent_id,
-            &PromptCompletion {
-                completed: prompt_item("prompt-1", agent_id, "active"),
-                started_next: Some(queued),
-            },
-        );
-        let state = store
-            .get(agent_id)
-            .expect("completion should keep runtime state");
-        assert_eq!(
-            state.active_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-2")
-        );
-        assert!(state.queued_prompts.is_empty());
-        assert!(state.next_queued_prompt.is_none());
-        assert_eq!(state.queued_prompt_count, 0);
-    }
-
-    #[test]
-    fn prompt_state_store_previews_submit_admission() {
-        let store = super::AgentRuntimePromptStateStore::default();
+    fn prompt_projection_previews_submit_admission() {
+        let store = AgentRuntimeProjectionStore::default();
         let session_id = "session-1";
         let agent_id = "agent-1";
 
         assert_eq!(
-            store.submission_admission(session_id, agent_id),
+            super::prompt_submission_admission_from_projection(&store, session_id, agent_id),
             super::PromptSubmissionAdmission::Start
         );
 
-        store.apply_submission_outcome(
+        store.update_agent_prompt_state(
             session_id,
             agent_id,
-            &PromptSubmissionOutcome::Started {
-                prompt: prompt_item("prompt-1", agent_id, "active"),
-            },
+            Some(crate::session::PromptQueueItem::new(
+                "prompt-1",
+                "attachment-1",
+                agent_id,
+                "active",
+                PromptStatus::Queued,
+            )),
+            None,
+            0,
         );
 
         assert_eq!(
-            store.submission_admission(session_id, agent_id),
+            super::prompt_submission_admission_from_projection(&store, session_id, agent_id),
             super::PromptSubmissionAdmission::Queue
         );
         assert!(
             super::submission_admission_is_compatible(
                 super::PromptSubmissionAdmission::Queue,
                 &PromptSubmissionOutcome::Queued {
-                    prompt: prompt_item("prompt-2", agent_id, "queued")
+                    prompt: crate::session::PromptQueueItem::new(
+                        "prompt-2",
+                        "attachment-1",
+                        agent_id,
+                        "queued",
+                        PromptStatus::Queued,
+                    )
                 },
             ),
             "runtime queue admission should accept queued compatibility outcomes"
@@ -1378,85 +991,16 @@ mod tests {
             !super::submission_admission_is_compatible(
                 super::PromptSubmissionAdmission::Queue,
                 &PromptSubmissionOutcome::Started {
-                    prompt: prompt_item("prompt-2", agent_id, "unexpected start")
+                    prompt: crate::session::PromptQueueItem::new(
+                        "prompt-2",
+                        "attachment-1",
+                        agent_id,
+                        "unexpected start",
+                        PromptStatus::Queued,
+                    )
                 },
             ),
             "runtime queue admission must reject compatibility starts"
         );
-    }
-
-    #[test]
-    fn prompt_state_store_peeks_queue_front_for_completion_preview() {
-        let store = super::AgentRuntimePromptStateStore::default();
-        let session_id = "session-1";
-        let agent_id = "agent-1";
-
-        store.apply_submission_outcome(
-            session_id,
-            agent_id,
-            &PromptSubmissionOutcome::Started {
-                prompt: prompt_item("prompt-1", agent_id, "active"),
-            },
-        );
-        store.apply_submission_outcome(
-            session_id,
-            agent_id,
-            &PromptSubmissionOutcome::Queued {
-                prompt: prompt_item("prompt-2", agent_id, "queued"),
-            },
-        );
-
-        let preview = store
-            .peek_next_queued_prompt(session_id, agent_id)
-            .expect("runtime state should expose queue front");
-        assert_eq!(preview.id(), "prompt-2");
-        assert!(super::completion_started_next_is_compatible(
-            Some(&preview),
-            &PromptCompletion {
-                completed: prompt_item("prompt-1", agent_id, "active"),
-                started_next: Some(prompt_item("prompt-2", agent_id, "queued")),
-            }
-        ));
-        assert!(!super::completion_started_next_is_compatible(
-            Some(&preview),
-            &PromptCompletion {
-                completed: prompt_item("prompt-1", agent_id, "active"),
-                started_next: Some(prompt_item("prompt-3", agent_id, "wrong")),
-            }
-        ));
-    }
-
-    #[test]
-    fn prompt_state_store_activates_matching_queued_prompt_by_id() {
-        let mut state = super::empty_agent_prompt_state("session-1", "agent-1");
-        state
-            .queued_prompts
-            .push_back(prompt_item("prompt-2", "agent-1", "queued"));
-        state
-            .queued_prompts
-            .push_back(prompt_item("prompt-3", "agent-1", "second queued"));
-        super::refresh_prompt_queue_summary(&mut state);
-
-        super::activate_queued_prompt(&mut state, &prompt_item("prompt-2", "agent-1", "queued"));
-
-        assert_eq!(
-            state.active_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-2")
-        );
-        assert_eq!(
-            state.next_queued_prompt.as_ref().map(|prompt| prompt.id()),
-            Some("prompt-3")
-        );
-        assert_eq!(state.queued_prompt_count, 1);
-    }
-
-    fn prompt_item(id: &str, agent_id: &str, prompt: &str) -> PromptQueueItem {
-        PromptQueueItem::new(
-            id.to_string(),
-            "attachment-1".to_string(),
-            agent_id.to_string(),
-            prompt.to_string(),
-            PromptStatus::Queued,
-        )
     }
 }

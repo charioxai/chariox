@@ -270,7 +270,7 @@ impl ProviderRunActorMailbox {
         run: RuntimeProviderRun,
         prompt: String,
         attachments: Vec<PromptAttachment>,
-    ) {
+    ) -> Result<(), DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Submit {
@@ -281,18 +281,27 @@ impl ProviderRunActorMailbox {
             prompt,
             attachments,
         }) {
-            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Ok(()) => {
+                self.operation_lanes.record_command_enqueued();
+                Ok(())
+            }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
                 self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                let error_message = error.to_string();
                 crate::logging::error_with_fields(
                     "daemon.provider_run_actor",
                     "structured prompt submit command enqueue failed",
                     serde_json::json!({
                         "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
+                        "error": error_message,
                     }),
                 );
+                Err(provider_actor_enqueue_error(
+                    "enqueue structured prompt submit",
+                    &provider_run_id,
+                    error_message,
+                ))
             }
         }
     }
@@ -302,7 +311,7 @@ impl ProviderRunActorMailbox {
         session_id: String,
         provider_run_id: String,
         run: RuntimeProviderRun,
-    ) {
+    ) -> Result<(), DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Abort {
@@ -310,18 +319,27 @@ impl ProviderRunActorMailbox {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
-            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Ok(()) => {
+                self.operation_lanes.record_command_enqueued();
+                Ok(())
+            }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
                 self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                let error_message = error.to_string();
                 crate::logging::error_with_fields(
                     "daemon.provider_run_actor",
                     "structured prompt abort command enqueue failed",
                     serde_json::json!({
                         "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
+                        "error": error_message,
                     }),
                 );
+                Err(provider_actor_enqueue_error(
+                    "enqueue structured prompt abort",
+                    &provider_run_id,
+                    error_message,
+                ))
             }
         }
     }
@@ -369,22 +387,31 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) {
+    pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) -> Result<(), DaemonError> {
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::SyncSelection {
             provider_run_id: provider_run_id.clone(),
         }) {
-            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Ok(()) => {
+                self.operation_lanes.record_command_enqueued();
+                Ok(())
+            }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
+                let error_message = error.to_string();
                 crate::logging::error_with_fields(
                     "daemon.provider_run_actor",
                     "provider run selection sync command enqueue failed",
                     serde_json::json!({
                         "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
+                        "error": error_message,
                     }),
                 );
+                Err(provider_actor_enqueue_error(
+                    "enqueue provider run selection sync",
+                    &provider_run_id,
+                    error_message,
+                ))
             }
         }
     }
@@ -393,31 +420,38 @@ impl ProviderRunActorMailbox {
         &self,
         provider_run_id: String,
         run: RuntimeProviderRun,
-    ) -> bool {
+    ) -> Result<bool, DaemonError> {
         if !self.mark_structured_output_poll_in_flight(provider_run_id.clone()) {
-            return false;
+            return Ok(false);
         }
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
-            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Ok(()) => {
+                self.operation_lanes.record_command_enqueued();
+                Ok(true)
+            }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
                 self.clear_structured_output_poll_in_flight(&provider_run_id);
+                let error_message = error.to_string();
                 crate::logging::error_with_fields(
                     "daemon.provider_run_actor",
                     "provider run output poll command enqueue failed",
                     serde_json::json!({
                         "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
+                        "error": error_message,
                     }),
                 );
-                return false;
+                Err(provider_actor_enqueue_error(
+                    "enqueue provider run output poll",
+                    &provider_run_id,
+                    error_message,
+                ))
             }
         }
-        true
     }
 
     pub(crate) fn stop_run(&self, provider_run_id: &str) {
@@ -741,6 +775,113 @@ mod tests {
         assert_eq!(snapshot.enqueue_rejections, 1);
     }
 
+    fn mailbox_with_full_run_queue(run_id: &str) -> ProviderRunActorMailbox {
+        let mailbox = ProviderRunActorMailbox::default();
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(0);
+        mailbox
+            .workers
+            .lock()
+            .expect("worker map should not be poisoned")
+            .insert(run_id.to_string(), sender);
+        mailbox
+    }
+
+    fn runtime_run(run_id: &str) -> RuntimeProviderRun {
+        RuntimeProviderRun::from_control_capability_inference(
+            run_id,
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "codex".to_string(),
+        )
+    }
+
+    fn assert_local_transport_operation(error: DaemonError, expected_operation: &'static str) {
+        match error {
+            DaemonError::LocalTransport { operation, .. } => {
+                assert_eq!(operation, expected_operation);
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[test]
+    fn structured_submit_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_submit(
+                "session-1".to_string(),
+                "run-1".to_string(),
+                "agent-1".to_string(),
+                runtime_run("run-1"),
+                "hello".to_string(),
+                Vec::new(),
+            )
+            .expect_err("full provider actor queue should reject submit");
+
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue structured prompt submit");
+    }
+
+    #[test]
+    fn structured_abort_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_abort(
+                "session-1".to_string(),
+                "run-1".to_string(),
+                runtime_run("run-1"),
+            )
+            .expect_err("full provider actor queue should reject abort");
+
+        assert!(!mailbox.structured_prompt_io_in_flight("run-1"));
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue structured prompt abort");
+    }
+
+    #[test]
+    fn structured_output_poll_enqueue_failure_is_reported_and_clears_in_flight_state() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
+            .expect_err("full provider actor queue should reject output poll");
+
+        assert!(mailbox
+            .structured_output_polls
+            .lock()
+            .expect("structured output poll set should not be poisoned")
+            .is_empty());
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue provider run output poll");
+    }
+
+    #[test]
+    fn selection_sync_enqueue_failure_is_reported() {
+        let mailbox = mailbox_with_full_run_queue("run-1");
+
+        let error = mailbox
+            .spawn_selection_sync("run-1".to_string())
+            .expect_err("full provider actor queue should reject selection sync");
+
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueue_rejections,
+            1
+        );
+        assert_local_transport_operation(error, "enqueue provider run selection sync");
+    }
+
     #[test]
     fn runtime_tombstone_rejects_stale_state_restore_after_cleanup() {
         let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
@@ -861,6 +1002,19 @@ fn push_finished_submit(
                 }),
             );
         }
+    }
+}
+
+fn provider_actor_enqueue_error(
+    operation: &'static str,
+    provider_run_id: &str,
+    error_message: String,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "provider run actor queue rejected command for `{provider_run_id}`: {error_message}"
+        ),
     }
 }
 

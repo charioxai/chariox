@@ -458,6 +458,7 @@ impl AgentRuntimeProjectionStore {
         agents.insert(agent_id.to_string(), projection);
     }
 
+    #[cfg(test)]
     pub(crate) fn update_agent_prompt_state(
         &self,
         session_id: &str,

@@ -732,7 +732,6 @@ impl CommandRouter {
             (processes, sessions)
         };
         for session in &sessions {
-            self.agent_runtime.update_prompt_state_from_session(session);
             self.agent_runtime_projection.update_session(session);
             self.session_projection.update(session.clone());
         }
@@ -893,8 +892,6 @@ impl CommandRouter {
         let mut refreshed_session_ids = Vec::new();
         for session in response_sessions(response) {
             refreshed_session_ids.push(session.id().to_string());
-            self.agent_runtime
-                .update_prompt_state_from_session(&session);
             if should_update_agent_runtime_projection_from_response(response) {
                 self.agent_runtime_projection.update_session(&session);
             }
@@ -902,7 +899,6 @@ impl CommandRouter {
         }
         if let LocalDaemonResponse::SessionsListed { sessions } = response {
             for session in sessions {
-                self.agent_runtime.update_prompt_state_from_session(session);
                 self.agent_runtime_projection.update_session(session);
             }
             self.session_projection.update_list(sessions.clone());
@@ -923,8 +919,6 @@ impl CommandRouter {
                 for session_id in snapshot_session_ids {
                     if let Some(session) = self.session_projection.get(&session_id) {
                         refreshed_session_ids.push(session.id().to_string());
-                        self.agent_runtime
-                            .update_prompt_state_from_session(&session);
                         self.agent_runtime_projection.update_session(&session);
                     }
                 }
@@ -3873,12 +3867,12 @@ mod tests {
             .dispatch(prompt_command, prompt_request)
             .await
             .expect("prompt submit should warm active prompt projection");
-        let prompt_state = router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .expect("agent runtime should own a prompt-state shadow after submit");
-        assert!(prompt_state.active_prompt.is_some());
-        assert_eq!(prompt_state.queued_prompt_count, 0);
+        let prompt_projection = router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .expect("agent runtime projection should track prompt state after submit");
+        assert!(prompt_projection.active_prompt.is_some());
+        assert_eq!(prompt_projection.queued_prompt_count, 0);
 
         let complete_request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: session_id.clone(),
@@ -3893,12 +3887,12 @@ mod tests {
             .dispatch(complete_command, complete_request)
             .await
             .expect("prompt completion should publish session projection through agent runtime");
-        let prompt_state = router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .expect("agent runtime should retain the agent prompt-state shadow after complete");
-        assert!(prompt_state.active_prompt.is_none());
-        assert_eq!(prompt_state.queued_prompt_count, 0);
+        let prompt_projection = router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .expect("agent runtime projection should retain prompt state after complete");
+        assert!(prompt_projection.active_prompt.is_none());
+        assert_eq!(prompt_projection.queued_prompt_count, 0);
 
         let app_guard = app.lock().await;
         let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
@@ -3934,7 +3928,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_snapshot_refresh_tracks_agent_runtime_prompt_state_shadow() {
+    async fn session_snapshot_refresh_tracks_agent_runtime_projection() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -3975,11 +3969,11 @@ mod tests {
         router
             .dispatch(prompt_command, prompt_request)
             .await
-            .expect("prompt submit should warm agent runtime prompt state");
+            .expect("prompt submit should warm agent runtime projection");
         assert!(router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .and_then(|state| state.active_prompt)
+            .agent_runtime_projection
+            .get(&agent_id)
+            .and_then(|projection| projection.active_prompt)
             .is_some());
 
         {
@@ -3990,11 +3984,11 @@ mod tests {
         }
         assert!(
             router
-                .agent_runtime
-                .prompt_state_for_test(&agent_id)
-                .and_then(|state| state.active_prompt)
+                .agent_runtime_projection
+                .get(&agent_id)
+                .and_then(|projection| projection.active_prompt)
                 .is_some(),
-            "prompt-state shadow should stay stale until a session snapshot is observed"
+            "prompt projection should stay stale until a session snapshot is observed"
         );
 
         let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
@@ -4008,12 +4002,12 @@ mod tests {
             .await
             .expect("snapshot-producing pump should refresh projections");
 
-        let prompt_state = router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .expect("agent prompt-state shadow should remain registered");
-        assert!(prompt_state.active_prompt.is_none());
-        assert_eq!(prompt_state.queued_prompt_count, 0);
+        let prompt_projection = router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .expect("agent prompt projection should remain registered");
+        assert!(prompt_projection.active_prompt.is_none());
+        assert_eq!(prompt_projection.queued_prompt_count, 0);
     }
 
     #[tokio::test]
@@ -4184,9 +4178,9 @@ mod tests {
             .await
             .expect("prompt submit should warm active prompt projection");
         assert!(router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .and_then(|state| state.active_prompt)
+            .agent_runtime_projection
+            .get(&agent_id)
+            .and_then(|projection| projection.active_prompt)
             .is_some());
 
         let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
@@ -4203,12 +4197,12 @@ mod tests {
             .dispatch(cancel_command, cancel_request)
             .await
             .expect("prompt cancellation should publish session projection");
-        let prompt_state = router
-            .agent_runtime
-            .prompt_state_for_test(&agent_id)
-            .expect("agent runtime should retain the agent prompt-state shadow after cancel");
+        let prompt_projection = router
+            .agent_runtime_projection
+            .get(&agent_id)
+            .expect("agent runtime projection should retain prompt state after cancel");
         assert_eq!(
-            prompt_state
+            prompt_projection
                 .active_prompt
                 .as_ref()
                 .map(|prompt| prompt.status()),
