@@ -189,6 +189,21 @@ impl DaemonApp {
             .complete_active_prompt(session_id, agent_id, provider_run_id)
     }
 
+    pub(crate) fn complete_active_prompt_for_kernel(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        next_queued_prompt: Option<&PromptQueueItem>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        self.kernel_agents().complete_active_prompt_for_kernel(
+            session_id,
+            agent_id,
+            provider_run_id,
+            next_queued_prompt,
+        )
+    }
+
     pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,
@@ -296,7 +311,7 @@ impl DaemonApp {
         agent_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         self.kernel_agents()
-            .advance_next_queued_prompt(session_id, agent_id)
+            .advance_next_queued_prompt(session_id, agent_id, None)
     }
 
     pub(crate) fn advance_next_queued_prompt_remote(
@@ -311,6 +326,7 @@ impl DaemonApp {
             agent_id,
             worker_kernel_id,
             leased_agent_id,
+            None,
         )
     }
 

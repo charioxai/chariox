@@ -788,10 +788,11 @@ async fn execute_agent_command(
                     .providers()
                     .get_run_for_agent(&request.session_id, &target_agent_id)
                     .map(|run| run.id().to_string());
-                let completion = app.complete_active_prompt(
+                let completion = app.complete_active_prompt_for_kernel(
                     &request.session_id,
                     &target_agent_id,
                     provider_run_id.as_deref(),
+                    next_queued_prompt.as_ref(),
                 )?;
                 let session = app.local_api_session_snapshot(&request.session_id)?;
                 (completion, session)

@@ -483,6 +483,16 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCompletion, DaemonError> {
+        self.complete_active_prompt_for_kernel(session_id, agent_id, provider_run_id, None)
+    }
+
+    pub(crate) fn complete_active_prompt_for_kernel(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        next_queued_prompt: Option<&PromptQueueItem>,
+    ) -> Result<PromptCompletion, DaemonError> {
         let target_agent = self.app.agents.get_agent(agent_id)?;
         if let Some(remote_execution) = target_agent.remote_execution().cloned() {
             let remote_provider_run_id =
@@ -537,6 +547,7 @@ impl<'a> KernelAgentService<'a> {
                     agent_id,
                     &remote_execution.worker_kernel_id,
                     &remote_execution.leased_agent_id,
+                    next_queued_prompt,
                 )?
             } else {
                 None
@@ -590,7 +601,7 @@ impl<'a> KernelAgentService<'a> {
             .active_prompt_for_agent(agent_id)
             .is_none()
         {
-            self.advance_next_queued_prompt(session_id, agent_id)?
+            self.advance_next_queued_prompt(session_id, agent_id, next_queued_prompt)?
         } else {
             None
         };
@@ -609,12 +620,14 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         session_id: &str,
         agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
             let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
+            self.ensure_expected_next_prompt(expected_next, &peeked)?;
             let target_agent_id = peeked.target_agent_id().to_string();
             let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
                 peeked.source_attachment_id(),
@@ -792,12 +805,14 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         worker_kernel_id: &str,
         leased_agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
             let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
+            self.ensure_expected_next_prompt(expected_next, &peeked)?;
             let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
                 peeked.source_attachment_id(),
             );
@@ -902,6 +917,26 @@ impl<'a> KernelAgentService<'a> {
         self.app
             .sessions
             .peek_next_queued_prompt(session_id, agent_id)
+    }
+
+    fn ensure_expected_next_prompt(
+        &self,
+        expected_next: Option<&PromptQueueItem>,
+        actual_next: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        if let Some(expected_next) = expected_next {
+            if expected_next.id() != actual_next.id() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "advance queued prompt",
+                    message: format!(
+                        "agent runtime expected queued prompt `{}` but compatibility queue front was `{}`",
+                        expected_next.id(),
+                        actual_next.id()
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel_active_prompt(
@@ -1100,7 +1135,7 @@ impl<'a> KernelAgentService<'a> {
             .active_prompt_for_agent(agent_id)
             .is_none()
         {
-            self.advance_next_queued_prompt(session_id, agent_id)?
+            self.advance_next_queued_prompt(session_id, agent_id, None)?
         } else {
             None
         };
