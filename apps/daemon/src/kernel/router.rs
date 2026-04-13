@@ -362,6 +362,9 @@ impl CommandRouter {
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
             }
+            LocalDaemonRequest::PumpTerminalOutput(request) => {
+                self.execute_terminal_output_request(request).await
+            }
             request => match command.priority {
                 KernelCommandPriority::Interactive => {
                     self.dispatch_interactive(command, request).await
@@ -628,6 +631,41 @@ impl CommandRouter {
         };
         self.execute_session_history_request_from_session(session, request)
             .await
+    }
+
+    async fn execute_terminal_output_request(
+        &self,
+        request: PumpTerminalOutputRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let Some(session) = self.session_projection.get(&request.session_id) else {
+            let mut app = self.app.lock().await;
+            return Ok(LocalDaemonResponse::TerminalOutput {
+                records: app.pump_terminal_output(&request.session_id, &request.attachment_id)?,
+            });
+        };
+        let Some(provider_run_id) = session.active_provider_run_id().map(str::to_string) else {
+            return Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
+            });
+        };
+
+        let recipient_attachment_ids = session.attachment_ids().iter().cloned().collect();
+        let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
+        {
+            let mut app = self.app.lock().await;
+            let _ = app.pump_provider_output(
+                &request.session_id,
+                &provider_run_id,
+                recipient_attachment_ids,
+            )?;
+        }
+        Ok(LocalDaemonResponse::TerminalOutput {
+            records: self
+                .terminal_stream
+                .drain_output_records(&request.session_id, &request.attachment_id),
+        })
     }
 
     async fn execute_session_history_request_from_session(
@@ -5256,6 +5294,83 @@ mod tests {
                 assert_eq!(records.len(), 1);
                 assert_eq!(records[0].session_id, session_id);
                 assert_eq!(records[0].bytes, b"buffered output".to_vec());
+            }
+            _ => panic!("unexpected pump response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-pump-active",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let provider_run_id = match app
+            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session_id.clone(),
+                    agent_id: Some(agent.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider run should launch")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { provider_run } => {
+                provider_run.id().to_string()
+            }
+            _ => panic!("unexpected launch response"),
+        };
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-pump-active-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm active provider projection");
+
+        let permit = router
+            .provider_runtime_lanes
+            .acquire(&provider_run_id)
+            .await;
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let pump_command =
+            KernelCommand::from_local_request("cmd-pump-active-lane", None, None, &pump_request);
+        let pump_router = router.clone();
+        let pump_task =
+            tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !pump_task.is_finished(),
+            "active terminal output pumping should wait behind the provider-run runtime lane"
+        );
+
+        drop(permit);
+        let pump_response = pump_task
+            .await
+            .expect("pump task should join")
+            .expect("pump should succeed");
+        match pump_response {
+            LocalDaemonResponse::TerminalOutput { records } => {
+                assert!(records.is_empty());
             }
             _ => panic!("unexpected pump response"),
         }
