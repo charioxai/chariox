@@ -608,13 +608,6 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
-    pub(crate) fn return_finished_structured_output_poll_jobs(
-        &mut self,
-        jobs: Vec<super::FinishedProviderOutputPollJob>,
-    ) {
-        self.run_actor_mailbox.return_finished_output_polls(jobs);
-    }
-
     pub(crate) fn apply_structured_output_metadata(
         &mut self,
         provider_run_id: &str,

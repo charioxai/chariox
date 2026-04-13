@@ -452,24 +452,6 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    pub(crate) fn return_finished_output_polls(&self, jobs: Vec<FinishedProviderOutputPollJob>) {
-        if jobs.is_empty() {
-            return;
-        }
-        match self.finished_output_polls.lock() {
-            Ok(mut existing_jobs) => existing_jobs.extend(jobs),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "daemon.provider_run_actor",
-                    "provider run output poll completion queue poisoned while restoring jobs",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
-    }
-
     fn worker_for_run(&self, provider_run_id: &str) -> mpsc::Sender<ProviderRunActorCommand> {
         let mut workers = self
             .workers
