@@ -623,11 +623,11 @@ impl<'a> KernelAgentService<'a> {
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
+            let next_candidate =
+                self.next_queued_prompt_candidate(session_id, agent_id, expected_next)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
-            self.ensure_expected_next_prompt(expected_next, &peeked)?;
             let target_agent_id = peeked.target_agent_id().to_string();
             let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
                 peeked.source_attachment_id(),
@@ -809,11 +809,11 @@ impl<'a> KernelAgentService<'a> {
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
+            let next_candidate =
+                self.next_queued_prompt_candidate(session_id, agent_id, expected_next)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
-            self.ensure_expected_next_prompt(expected_next, &peeked)?;
             let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
                 peeked.source_attachment_id(),
             );
@@ -919,24 +919,22 @@ impl<'a> KernelAgentService<'a> {
             .peek_next_queued_prompt(session_id, agent_id)
     }
 
-    fn ensure_expected_next_prompt(
+    fn next_queued_prompt_candidate(
         &self,
+        session_id: &str,
+        agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
-        actual_next: &PromptQueueItem,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
         if let Some(expected_next) = expected_next {
-            if expected_next.id() != actual_next.id() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "advance queued prompt",
-                    message: format!(
-                        "agent runtime expected queued prompt `{}` but compatibility queue front was `{}`",
-                        expected_next.id(),
-                        actual_next.id()
-                    ),
-                });
-            }
+            return Ok(select_next_queued_prompt_candidate(
+                Some(expected_next),
+                None,
+            ));
         }
-        Ok(())
+        Ok(select_next_queued_prompt_candidate(
+            None,
+            self.peek_next_queued_prompt(session_id, agent_id)?,
+        ))
     }
 
     fn activate_next_queued_prompt_for_mirror(
@@ -1269,5 +1267,40 @@ impl<'a> KernelAgentService<'a> {
             session,
             dispatch,
         })
+    }
+}
+
+fn select_next_queued_prompt_candidate(
+    expected_next: Option<&PromptQueueItem>,
+    fallback_next: Option<PromptQueueItem>,
+) -> Option<PromptQueueItem> {
+    expected_next.cloned().or(fallback_next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_next_queued_prompt_candidate;
+    use crate::session::{PromptQueueItem, PromptStatus};
+
+    #[test]
+    fn queue_candidate_selection_prefers_runtime_expected_prompt() {
+        let runtime_expected = prompt_item("prompt-runtime");
+        let stale_fallback = prompt_item("prompt-fallback");
+
+        let selected =
+            select_next_queued_prompt_candidate(Some(&runtime_expected), Some(stale_fallback))
+                .expect("candidate should be selected");
+
+        assert_eq!(selected.id(), "prompt-runtime");
+    }
+
+    fn prompt_item(id: &str) -> PromptQueueItem {
+        PromptQueueItem::new(
+            id.to_string(),
+            "attachment-1",
+            "agent-1",
+            "prompt",
+            PromptStatus::Queued,
+        )
     }
 }
