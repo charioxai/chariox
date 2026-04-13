@@ -369,6 +369,10 @@ impl CommandRouter {
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 self.execute_terminal_output_request(request).await
             }
+            LocalDaemonRequest::TeardownProviderProcesses(request) => {
+                self.execute_teardown_provider_processes_request(request)
+                    .await
+            }
             request => match command.priority {
                 KernelCommandPriority::Interactive => {
                     self.dispatch_interactive(command, request).await
@@ -694,6 +698,32 @@ impl CommandRouter {
                 .terminal_stream
                 .drain_output_records(&request.session_id, &request.attachment_id),
         })
+    }
+
+    async fn execute_teardown_provider_processes_request(
+        &self,
+        request: TeardownProviderProcessesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (processes, sessions) = {
+            let mut app = self.app.lock().await;
+            let processes = app.teardown_provider_processes(request.provider.as_deref())?;
+            let session_ids = processes
+                .iter()
+                .flat_map(|process| process.owner_session_ids.iter())
+                .cloned()
+                .collect::<HashSet<_>>();
+            let sessions = session_ids
+                .into_iter()
+                .filter_map(|session_id| app.local_api_session_snapshot(&session_id).ok())
+                .collect::<Vec<_>>();
+            (processes, sessions)
+        };
+        for session in &sessions {
+            self.agent_runtime.update_prompt_state_from_session(session);
+            self.agent_runtime_projection.update_session(session);
+            self.session_projection.update(session.clone());
+        }
+        Ok(LocalDaemonResponse::ProviderProcessesTornDown { processes })
     }
 
     async fn execute_session_history_request_from_session(
@@ -1600,7 +1630,8 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         PumpTerminalOutputRequest, RelayStatusRequest, ResizeTerminalRequest,
         ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
-        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -4938,6 +4969,88 @@ mod tests {
                 assert!(processes.is_empty());
             }
             _ => panic!("unexpected provider process list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let launch_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+        });
+        let launch_command = KernelCommand::from_local_request(
+            "cmd-teardown-refresh-launch",
+            None,
+            None,
+            &launch_request,
+        );
+        router
+            .dispatch(launch_command, launch_request)
+            .await
+            .expect("provider launch should be accepted");
+
+        let teardown_request =
+            LocalDaemonRequest::TeardownProviderProcesses(TeardownProviderProcessesRequest {
+                provider: None,
+            });
+        let teardown_command = KernelCommand::from_local_request(
+            "cmd-teardown-refresh",
+            None,
+            None,
+            &teardown_request,
+        );
+        let teardown_response = router
+            .dispatch(teardown_command, teardown_request)
+            .await
+            .expect("safe process teardown should succeed");
+        match teardown_response {
+            LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
+                assert_eq!(processes.len(), 1);
+            }
+            _ => panic!("unexpected teardown response"),
+        }
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-teardown-refresh-state",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        let state_response = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("post-teardown session state should not wait for the app lock")
+            .expect("state task should join")
+            .expect("state should resolve");
+        drop(app_guard);
+
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(session.id(), session_id);
+                assert_eq!(session.active_provider_run_id(), None);
+            }
+            _ => panic!("unexpected session state response"),
         }
     }
 
