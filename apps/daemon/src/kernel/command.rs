@@ -320,11 +320,14 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        LocalDaemonRequest, SubmitPromptRequest,
+        AliasSessionRequest, AttachToSessionRequest, EndSessionRequest, FocusAgentRequest,
+        GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
 
     #[test]
@@ -395,6 +398,51 @@ mod tests {
         assert_eq!(command.command_type, "session.end");
         assert_eq!(command.priority, KernelCommandPriority::Interactive);
         assert_eq!(command.session_id.as_deref(), Some("session-1"));
+    }
+
+    #[test]
+    fn normalizes_session_runtime_commands_as_interactive_commands() {
+        let notice = KernelCommand::from_local_request(
+            "notice-1",
+            None,
+            None,
+            &LocalDaemonRequest::PollRuntimeNotices(PollRuntimeNoticesRequest {
+                session_id: "session-1".to_string(),
+                attachment_id: "attachment-1".to_string(),
+            }),
+        );
+        let config = KernelCommand::from_local_request(
+            "config-1",
+            None,
+            None,
+            &LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+                session_id: "session-1".to_string(),
+                attachment_id: "attachment-1".to_string(),
+                values: BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                requires_idle: false,
+            }),
+        );
+        let alias = KernelCommand::from_local_request(
+            "alias-1",
+            None,
+            None,
+            &LocalDaemonRequest::AliasSession(AliasSessionRequest {
+                session_id: "session-1".to_string(),
+                alias: "review".to_string(),
+            }),
+        );
+
+        assert_eq!(notice.command_type, "runtime_notice.poll");
+        assert_eq!(notice.priority, KernelCommandPriority::Interactive);
+        assert_eq!(notice.session_id.as_deref(), Some("session-1"));
+        assert_eq!(notice.attachment_id.as_deref(), Some("attachment-1"));
+        assert_eq!(config.command_type, "session.config.update");
+        assert_eq!(config.priority, KernelCommandPriority::Interactive);
+        assert_eq!(config.session_id.as_deref(), Some("session-1"));
+        assert_eq!(config.attachment_id.as_deref(), Some("attachment-1"));
+        assert_eq!(alias.command_type, "session.alias");
+        assert_eq!(alias.priority, KernelCommandPriority::Interactive);
+        assert_eq!(alias.session_id.as_deref(), Some("session-1"));
     }
 
     #[test]
