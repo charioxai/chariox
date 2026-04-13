@@ -634,11 +634,10 @@ impl<'a> KernelAgentService<'a> {
             {
                 Ok(provider_run_id) => provider_run_id,
                 Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
-                    match crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
-                        self.app,
-                        session_id,
-                        &target_agent_id,
-                    ) {
+                    match self
+                        .app
+                        .ensure_workflow_provider_run_from_runtime(session_id, &target_agent_id)
+                    {
                         Ok(provider_run_id) => provider_run_id,
                         Err(error) => {
                             self.app.record_notice(

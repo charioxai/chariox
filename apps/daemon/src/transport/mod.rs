@@ -127,11 +127,7 @@ impl TransportService {
         let mut last_retryable_error = None;
         for attempt in 0..3 {
             let provider_run_id =
-                crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
-                    app,
-                    session_id,
-                    target_agent_id,
-                )?;
+                app.ensure_workflow_provider_run_from_runtime(session_id, target_agent_id)?;
             match dispatch(app, &provider_run_id) {
                 Ok(()) => {
                     flow_control::note_prompt_started(app, &provider_run_id);

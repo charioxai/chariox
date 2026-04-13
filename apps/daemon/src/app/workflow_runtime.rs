@@ -52,6 +52,16 @@ impl DaemonApp {
         crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, prompt)
     }
 
+    pub(crate) fn ensure_workflow_provider_run_from_runtime(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
+            self, session_id, agent_id,
+        )
+    }
+
     pub fn invoke_workflow_endpoint_with_admission(
         &mut self,
         session_id: &str,
