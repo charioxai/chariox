@@ -228,6 +228,11 @@ impl CommandRouter {
                 if let Some(session) = self.session_projection.get(&request.session_id) {
                     return Ok(LocalDaemonResponse::SessionState { session });
                 }
+                if self.session_projection.has_warmed_list() {
+                    return Err(DaemonError::SessionNotFound {
+                        session_id: request.session_id.clone(),
+                    });
+                }
             }
         }
         if let LocalDaemonRequest::ResolveSession(request) = &request {
@@ -235,6 +240,21 @@ impl CommandRouter {
                 .session_projection
                 .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
             {
+                return Ok(LocalDaemonResponse::SessionResolved { session });
+            }
+            if let Some(result) = self
+                .session_projection
+                .resolve_session_ref_id_from_warmed_list(
+                    &request.session_ref,
+                    request.workspace_id.as_deref(),
+                )
+            {
+                let session_id = result?;
+                let session = self.session_projection.get(&session_id).ok_or_else(|| {
+                    DaemonError::SessionNotFound {
+                        session_id: session_id.clone(),
+                    }
+                })?;
                 return Ok(LocalDaemonResponse::SessionResolved { session });
             }
         }
@@ -4091,6 +4111,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_session_state_uses_list_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-list-missing-state-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm empty session projection");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: "missing-session".to_string(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-missing-state-projection",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        let error = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("missing state should not wait for the app lock")
+            .expect("state task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
     async fn resolve_session_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _agent) = app
@@ -4143,6 +4211,58 @@ mod tests {
                 assert_eq!(session.id(), session_id);
             }
             _ => panic!("unexpected resolve response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_resolve_session_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-resolve-missing-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm empty session projection");
+
+        let app_guard = app.lock().await;
+        let resolve_request = LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: "missing-session".to_string(),
+            workspace_id: None,
+        });
+        let resolve_command = KernelCommand::from_local_request(
+            "cmd-resolve-missing-projection",
+            None,
+            None,
+            &resolve_request,
+        );
+        let resolve_router = router.clone();
+        let resolve_task = tokio::spawn(async move {
+            resolve_router
+                .dispatch(resolve_command, resolve_request)
+                .await
+        });
+
+        let error = timeout(Duration::from_millis(100), resolve_task)
+            .await
+            .expect("missing resolve should not wait for the app lock")
+            .expect("resolve task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
         }
     }
 
