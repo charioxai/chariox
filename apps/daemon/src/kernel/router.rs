@@ -4700,6 +4700,36 @@ mod tests {
             }
             _ => panic!("unexpected provider response"),
         }
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-provider-running-session-projection",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+        let state_response = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("async launch completion should publish session projection without app lock")
+            .expect("state task should join")
+            .expect("state should resolve");
+        drop(app_guard);
+
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(
+                    session.active_provider_run_id(),
+                    Some(provider_run_id.as_str())
+                );
+            }
+            _ => panic!("unexpected session state response"),
+        }
     }
 
     #[tokio::test]
