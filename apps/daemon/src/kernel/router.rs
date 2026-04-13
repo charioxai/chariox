@@ -30,6 +30,7 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
+use crate::terminal::TerminalStreamHealthStore;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -58,6 +59,7 @@ pub(crate) struct CommandRouter {
     provider_process_projection: ProviderProcessProjectionStore,
     capability_health: CapabilityExecutorHealthStore,
     transport_health: TransportHealthStore,
+    terminal_health: TerminalStreamHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
@@ -92,6 +94,7 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             agent_runtime_projection,
+            terminal_health,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -135,6 +138,7 @@ impl CommandRouter {
             provider_process_projection,
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health: TransportHealthStore::default(),
+            terminal_health,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -169,6 +173,7 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             agent_runtime_projection,
+            terminal_health,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -212,6 +217,7 @@ impl CommandRouter {
             provider_process_projection,
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health,
+            terminal_health,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -510,10 +516,7 @@ impl CommandRouter {
                 crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
                 crate::kernel_transport::INBOUND_REQUEST_LIMIT,
             ),
-            {
-                let app = self.app.lock().await;
-                app.terminal().health_snapshot()
-            },
+            self.terminal_health.snapshot(),
             self.session_projection
                 .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
         )
@@ -842,6 +845,7 @@ fn router_projection_stores(
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
     AgentRuntimeProjectionStore,
+    TerminalStreamHealthStore,
     WorkspaceCoordinator,
 ) {
     let app = app
@@ -855,6 +859,7 @@ fn router_projection_stores(
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
         app.agent_runtime_projection_store(),
+        app.terminal_health_store(),
         app.workspace_coordinator(),
     )
 }
@@ -2122,6 +2127,38 @@ mod tests {
         assert_eq!(projection.capability_executor.failed_jobs, 1);
         assert_eq!(projection.capability_executor.rejected_jobs, 0);
         assert!(!projection.provider_catalog.cached);
+    }
+
+    #[tokio::test]
+    async fn daemon_health_reads_terminal_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let app_guard = app.lock().await;
+        let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let health_command =
+            KernelCommand::from_local_request("cmd-health-no-lock", None, None, &health_request);
+        let health_router = router.clone();
+        let health_task =
+            tokio::spawn(
+                async move { health_router.dispatch(health_command, health_request).await },
+            );
+
+        let response = timeout(Duration::from_millis(100), health_task)
+            .await
+            .expect("daemon health should not wait for the app lock")
+            .expect("health task should join")
+            .expect("health should resolve");
+        drop(app_guard);
+
+        match response {
+            LocalDaemonResponse::DaemonHealth { projection } => {
+                assert_eq!(projection.terminal_stream.pending_output_records, 0);
+            }
+            _ => panic!("unexpected health response"),
+        }
     }
 
     #[tokio::test]

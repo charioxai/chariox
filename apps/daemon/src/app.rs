@@ -55,7 +55,9 @@ use crate::session::{
 pub use crate::session_history_page::{
     SessionHistoryCursor, SessionHistoryPage, SessionHistoryPageEntry,
 };
-use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamService};
+use crate::terminal::{
+    TerminalOutputKind, TerminalOutputRecord, TerminalStreamHealthStore, TerminalStreamService,
+};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
 use crate::transport::relay_discovery;
@@ -443,6 +445,10 @@ impl DaemonApp {
 
     pub fn terminal(&self) -> &TerminalStreamService {
         &self.terminal
+    }
+
+    pub(crate) fn terminal_health_store(&self) -> TerminalStreamHealthStore {
+        self.terminal.health_store()
     }
 
     /// Spawn a new agent in a session

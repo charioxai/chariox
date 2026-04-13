@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
@@ -68,6 +71,27 @@ pub struct TerminalStreamHealthSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct TerminalStreamHealthStore {
+    snapshot: Arc<StdMutex<TerminalStreamHealthSnapshot>>,
+}
+
+impl TerminalStreamHealthStore {
+    pub fn snapshot(&self) -> TerminalStreamHealthSnapshot {
+        self.snapshot
+            .lock()
+            .expect("terminal stream health lock should not be poisoned")
+            .clone()
+    }
+
+    fn update(&self, snapshot: TerminalStreamHealthSnapshot) {
+        *self
+            .snapshot
+            .lock()
+            .expect("terminal stream health lock should not be poisoned") = snapshot;
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TerminalStreamService {
     input_records: Vec<TerminalInputRecord>,
     output_records: Vec<TerminalOutputRecord>,
@@ -75,23 +99,32 @@ pub struct TerminalStreamService {
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
     trimmed_pending_output_recipients: u64,
+    health_store: TerminalStreamHealthStore,
 }
 
 impl TerminalStreamService {
     pub fn new() -> Self {
-        Self {
+        let service = Self {
             pending_output_record_limit_per_attachment:
                 DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
             ..Self::default()
-        }
+        };
+        service.refresh_health();
+        service
     }
 
     #[cfg(test)]
     fn with_pending_output_record_limit_per_attachment(limit: usize) -> Self {
-        Self {
+        let service = Self {
             pending_output_record_limit_per_attachment: limit,
             ..Self::new()
-        }
+        };
+        service.refresh_health();
+        service
+    }
+
+    pub fn health_store(&self) -> TerminalStreamHealthStore {
+        self.health_store.clone()
     }
 
     pub fn record_input(
@@ -133,6 +166,7 @@ impl TerminalStreamService {
 
         self.output_records.push(record.clone());
         self.enforce_pending_output_record_limits();
+        self.refresh_health();
         record
     }
 
@@ -154,6 +188,7 @@ impl TerminalStreamService {
         };
 
         self.notice_records.push(record.clone());
+        self.refresh_health();
         record
     }
 
@@ -166,6 +201,10 @@ impl TerminalStreamService {
     }
 
     pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
+        self.health_store.snapshot()
+    }
+
+    fn current_health_snapshot(&self) -> TerminalStreamHealthSnapshot {
         TerminalStreamHealthSnapshot {
             pending_output_records: self.output_records.len(),
             pending_notice_records: self.notice_records.len(),
@@ -174,6 +213,10 @@ impl TerminalStreamService {
                 .pending_output_record_limit_per_attachment,
             trimmed_pending_output_recipients: self.trimmed_pending_output_recipients,
         }
+    }
+
+    fn refresh_health(&self) {
+        self.health_store.update(self.current_health_snapshot());
     }
 
     pub fn drain_output_records(
@@ -198,6 +241,7 @@ impl TerminalStreamService {
 
         self.output_records
             .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        self.refresh_health();
         drained
     }
 
@@ -261,6 +305,7 @@ impl TerminalStreamService {
         };
 
         self.completion_records.push(record.clone());
+        self.refresh_health();
         record
     }
 
@@ -286,6 +331,7 @@ impl TerminalStreamService {
 
         self.completion_records
             .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        self.refresh_health();
         drained
     }
 
@@ -317,6 +363,7 @@ impl TerminalStreamService {
                 !record.pending_recipient_attachment_ids.is_empty()
             }
         });
+        self.refresh_health();
         drained
     }
 }
@@ -448,6 +495,57 @@ mod tests {
         assert_eq!(health.pending_completion_records, 1);
         assert_eq!(health.pending_output_record_limit_per_attachment, 2);
         assert_eq!(health.trimmed_pending_output_recipients, 2);
+    }
+
+    #[test]
+    fn cloned_health_store_tracks_terminal_stream_mutations() {
+        let mut terminal =
+            TerminalStreamService::with_pending_output_record_limit_per_attachment(2);
+        let health_store = terminal.health_store();
+
+        assert_eq!(health_store.snapshot().pending_output_records, 0);
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"chunk-1",
+        );
+        assert_eq!(health_store.snapshot().pending_output_records, 1);
+
+        terminal.record_notice(
+            "session-1",
+            None,
+            None,
+            vec!["attachment-1".to_string()],
+            "notice",
+        );
+        assert_eq!(health_store.snapshot().pending_notice_records, 1);
+
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            vec!["attachment-1".to_string()],
+            "message-1",
+            42,
+        );
+        assert_eq!(health_store.snapshot().pending_completion_records, 1);
+
+        let output = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(output.len(), 1);
+        assert_eq!(health_store.snapshot().pending_output_records, 0);
+
+        let notices = terminal.drain_notice_records("session-1", "attachment-1");
+        assert_eq!(notices.len(), 1);
+        assert_eq!(health_store.snapshot().pending_notice_records, 0);
+
+        let completions = terminal.drain_completion_records("session-1", "attachment-1");
+        assert_eq!(completions.len(), 1);
+        assert_eq!(health_store.snapshot().pending_completion_records, 0);
     }
 
     #[test]
