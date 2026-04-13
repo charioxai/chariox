@@ -292,6 +292,10 @@ async fn run_session_command_lane(
                 None
             };
             (result, projected_session)
+        } else if let Some(result) =
+            projected_session_absence_response(&session_projection, &envelope.request)
+        {
+            (result, None)
         } else {
             let mut app = app.lock().await;
             let result = SessionActor::handle_interactive_command(
@@ -401,6 +405,39 @@ fn projected_resize_terminal_response(
     Some(Err(DaemonError::SessionNotFound {
         session_id: request.session_id.clone(),
     }))
+}
+
+fn projected_session_absence_response(
+    session_projection: &SessionStateProjectionStore,
+    request: &LocalDaemonRequest,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    let session_id = match request {
+        LocalDaemonRequest::AttachToSession(request) => &request.session_id,
+        LocalDaemonRequest::FocusAgent(request) => &request.session_id,
+        LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
+        _ => return None,
+    };
+    let Some(session) = session_projection.get(session_id) else {
+        if session_projection.has_warmed_list() {
+            return Some(Err(DaemonError::SessionNotFound {
+                session_id: session_id.clone(),
+            }));
+        }
+        return None;
+    };
+    if let LocalDaemonRequest::FocusAgent(request) = request {
+        if !session
+            .agents()
+            .iter()
+            .any(|agent| agent.id() == request.agent_id)
+        {
+            return Some(Err(DaemonError::AgentNotInSession {
+                session_id: request.session_id.clone(),
+                agent_id: request.agent_id.clone(),
+            }));
+        }
+    }
+    None
 }
 
 fn session_id_for_projection_refresh(

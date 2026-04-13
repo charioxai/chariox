@@ -1590,13 +1590,14 @@ mod tests {
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, CancelActivePromptRequest,
-        CompletePromptRequest, ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest,
-        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
-        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        CompletePromptRequest, ConfigureRelayRequest, CreateWorkflowRequest,
+        CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
+        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
+        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
+        ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         PumpTerminalOutputRequest, RelayStatusRequest, ResizeTerminalRequest,
         ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
         SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
@@ -2387,6 +2388,128 @@ mod tests {
         match error {
             DaemonError::AttachmentNotFound { attachment_id } => {
                 assert_eq!(attachment_id, "missing-attachment");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_attach_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-attach-missing-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let attach_request = attach_request("missing-session", "cli-missing-session");
+        let attach_command =
+            KernelCommand::from_local_request("cmd-attach-missing", None, None, &attach_request);
+        let attach_router = router.clone();
+        let attach_task =
+            tokio::spawn(
+                async move { attach_router.dispatch(attach_command, attach_request).await },
+            );
+
+        let error = timeout(Duration::from_millis(100), attach_task)
+            .await
+            .expect("missing attach should not wait for the app lock")
+            .expect("attach task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_focus_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-focus-invalid-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let focus_request = focus_request(&session_id, "missing-agent");
+        let focus_command =
+            KernelCommand::from_local_request("cmd-focus-invalid", None, None, &focus_request);
+        let focus_router = router.clone();
+        let focus_task =
+            tokio::spawn(async move { focus_router.dispatch(focus_command, focus_request).await });
+
+        let error = timeout(Duration::from_millis(100), focus_task)
+            .await
+            .expect("invalid focus should not wait for the app lock")
+            .expect("focus task should join")
+            .expect_err("missing agent should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::AgentNotInSession {
+                session_id: error_session_id,
+                agent_id,
+            } => {
+                assert_eq!(error_session_id, session_id);
+                assert_eq!(agent_id, "missing-agent");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_cycle_focus_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-cycle-missing-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let cycle_request = LocalDaemonRequest::CycleAgentFocus(CycleAgentFocusRequest {
+            session_id: "missing-session".to_string(),
+        });
+        let cycle_command =
+            KernelCommand::from_local_request("cmd-cycle-missing", None, None, &cycle_request);
+        let cycle_router = router.clone();
+        let cycle_task =
+            tokio::spawn(async move { cycle_router.dispatch(cycle_command, cycle_request).await });
+
+        let error = timeout(Duration::from_millis(100), cycle_task)
+            .await
+            .expect("missing cycle focus should not wait for the app lock")
+            .expect("cycle task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
             }
             error => panic!("unexpected error: {error}"),
         }
