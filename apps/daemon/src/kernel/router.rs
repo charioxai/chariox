@@ -839,15 +839,8 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         | LocalDaemonRequest::CycleAgentFocus(_)
         | LocalDaemonRequest::SpawnAgent(_)
         | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
-        LocalDaemonRequest::CompletePrompt(request) => {
-            SessionProjectionRefresh::SnapshotRequestSession {
-                session_id: request.session_id.clone(),
-            }
-        }
-        LocalDaemonRequest::CancelActivePrompt(request) => {
-            SessionProjectionRefresh::SnapshotRequestSession {
-                session_id: request.session_id.clone(),
-            }
+        LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
+            SessionProjectionRefresh::None
         }
         LocalDaemonRequest::PumpTerminalOutput(request) => {
             SessionProjectionRefresh::SnapshotRequestSession {
@@ -1246,17 +1239,17 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest,
-        DestroyAgentRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, ResolveSessionRequest, ResolveWorkflowRequest, SpawnAgentRequest,
-        SubmitPromptRequest,
+        AttachToSessionRequest, CancelActivePromptRequest, ConfigureRelayRequest,
+        CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest, EndSessionRequest,
+        FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
+        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
+        ResolveWorkflowRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
-    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
+    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig};
 
     #[tokio::test]
@@ -2320,6 +2313,105 @@ mod tests {
         match state_response {
             LocalDaemonResponse::SessionState { session } => {
                 assert!(session.active_prompt_for_agent(&agent_id).is_none());
+            }
+            _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_session_state_projection_tracks_prompt_cancellation_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-cancel-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "cancel projection".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command = KernelCommand::from_local_request(
+            "cmd-prompt-cancel-state",
+            None,
+            None,
+            &prompt_request,
+        );
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt submit should warm active prompt projection");
+
+        let cancel_request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let cancel_command = KernelCommand::from_local_request(
+            "cmd-cancel-state-projection",
+            None,
+            None,
+            &cancel_request,
+        );
+        router
+            .dispatch(cancel_command, cancel_request)
+            .await
+            .expect("prompt cancellation should publish session projection");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-state-cancel-projection",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "cancelled prompt state should be served from projection without app lock access"
+        );
+        drop(app_guard);
+
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                let active_prompt = session
+                    .active_prompt_for_agent(&agent_id)
+                    .expect("prompt should still be settling");
+                assert_eq!(active_prompt.status(), PromptStatus::Cancelling);
             }
             _ => panic!("unexpected state response"),
         }
