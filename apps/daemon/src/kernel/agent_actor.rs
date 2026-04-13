@@ -29,6 +29,7 @@ enum AgentCommand {
     CompletePrompt {
         request: crate::local::CompletePromptRequest,
         target_agent_id: String,
+        next_queued_prompt: Option<PromptQueueItem>,
     },
     CancelActivePrompt {
         request: crate::local::CancelActivePromptRequest,
@@ -213,6 +214,16 @@ impl AgentRuntimePromptStateStore {
         }
     }
 
+    pub(crate) fn peek_next_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        self.get(agent_id)
+            .filter(|state| state.session_id == session_id)
+            .and_then(|state| state.queued_prompts.front().cloned())
+    }
+
     pub(crate) fn remove_agent(&self, agent_id: &str) {
         self.agents
             .lock()
@@ -326,6 +337,9 @@ impl AgentRuntime {
         let agent_id = self
             .resolve_active_prompt_agent_id(&request.session_id)
             .await?;
+        let next_queued_prompt = self
+            .prompt_state
+            .peek_next_queued_prompt(&request.session_id, &agent_id);
         self.dispatch_to_agent(
             agent_id.clone(),
             command.command_id.clone(),
@@ -333,6 +347,7 @@ impl AgentRuntime {
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
+                next_queued_prompt,
             },
         )
         .await
@@ -765,6 +780,7 @@ async fn execute_agent_command(
         AgentCommand::CompletePrompt {
             request,
             target_agent_id,
+            next_queued_prompt,
         } => {
             let (completion, session) = {
                 let mut app = app.lock().await;
@@ -781,12 +797,26 @@ async fn execute_agent_command(
                 (completion, session)
             };
             session_projection.update(session.clone());
+            debug_assert!(
+                completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),
+                "agent runtime queue-front preview should match compatibility advancement"
+            );
             prompt_state.apply_completion(&request.session_id, &target_agent_id, &completion);
             agent_runtime_projection.update_agent_from_session(&session, &target_agent_id);
             prompt_state.update_agent_from_session(&session, &target_agent_id);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
+    }
+}
+
+fn completion_started_next_is_compatible(
+    next_queued_prompt: Option<&PromptQueueItem>,
+    completion: &PromptCompletion,
+) -> bool {
+    match (next_queued_prompt, completion.started_next.as_ref()) {
+        (Some(expected), Some(started)) => expected.id() == started.id(),
+        _ => true,
     }
 }
 
@@ -1106,6 +1136,47 @@ mod tests {
             ),
             "runtime queue admission must reject compatibility starts"
         );
+    }
+
+    #[test]
+    fn prompt_state_store_peeks_queue_front_for_completion_preview() {
+        let store = super::AgentRuntimePromptStateStore::default();
+        let session_id = "session-1";
+        let agent_id = "agent-1";
+
+        store.apply_submission_outcome(
+            session_id,
+            agent_id,
+            &PromptSubmissionOutcome::Started {
+                prompt: prompt_item("prompt-1", agent_id, "active"),
+            },
+        );
+        store.apply_submission_outcome(
+            session_id,
+            agent_id,
+            &PromptSubmissionOutcome::Queued {
+                prompt: prompt_item("prompt-2", agent_id, "queued"),
+            },
+        );
+
+        let preview = store
+            .peek_next_queued_prompt(session_id, agent_id)
+            .expect("runtime state should expose queue front");
+        assert_eq!(preview.id(), "prompt-2");
+        assert!(super::completion_started_next_is_compatible(
+            Some(&preview),
+            &PromptCompletion {
+                completed: prompt_item("prompt-1", agent_id, "active"),
+                started_next: Some(prompt_item("prompt-2", agent_id, "queued")),
+            }
+        ));
+        assert!(!super::completion_started_next_is_compatible(
+            Some(&preview),
+            &PromptCompletion {
+                completed: prompt_item("prompt-1", agent_id, "active"),
+                started_next: Some(prompt_item("prompt-3", agent_id, "wrong")),
+            }
+        ));
     }
 
     fn prompt_item(id: &str, agent_id: &str, prompt: &str) -> PromptQueueItem {
