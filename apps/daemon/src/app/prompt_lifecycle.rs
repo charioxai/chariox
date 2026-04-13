@@ -32,6 +32,23 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) attachments: Vec<PromptAttachment>,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ProviderRunExitPromptSettlement {
+    FinalizeCancellation,
+    CompleteActivePrompt,
+    SyncIdleProvider,
+}
+
+impl ProviderRunExitPromptSettlement {
+    fn from_active_prompt_status(active_prompt_status: Option<PromptStatus>) -> Self {
+        match active_prompt_status {
+            Some(PromptStatus::Cancelling) => Self::FinalizeCancellation,
+            Some(_) => Self::CompleteActivePrompt,
+            None => Self::SyncIdleProvider,
+        }
+    }
+}
+
 pub(crate) struct KernelPromptCancellation {
     pub(crate) cancellation: PromptCancellation,
     pub(crate) session: crate::session::RuntimeSession,
@@ -470,14 +487,14 @@ impl DaemonApp {
         provider_run_id: &str,
         active_prompt_status: Option<PromptStatus>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        match active_prompt_status {
-            Some(PromptStatus::Cancelling) => Ok(self
+        match ProviderRunExitPromptSettlement::from_active_prompt_status(active_prompt_status) {
+            ProviderRunExitPromptSettlement::FinalizeCancellation => Ok(self
                 .finalize_active_prompt_cancellation(session_id, agent_id, Some(provider_run_id))?
                 .started_next),
-            Some(_) => Ok(self
+            ProviderRunExitPromptSettlement::CompleteActivePrompt => Ok(self
                 .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?
                 .started_next),
-            None => {
+            ProviderRunExitPromptSettlement::SyncIdleProvider => {
                 self.sync_focused_provider_run_if_idle(session_id)?;
                 Ok(None)
             }
