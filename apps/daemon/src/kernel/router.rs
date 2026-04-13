@@ -207,6 +207,14 @@ impl CommandRouter {
                 }
             }
         }
+        if let LocalDaemonRequest::ResolveSession(request) = &request {
+            if let Some(session) = self
+                .session_projection
+                .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
+            {
+                return Ok(LocalDaemonResponse::SessionResolved { session });
+            }
+        }
         if matches!(request, LocalDaemonRequest::ListSessions(_)) {
             if let Some(sessions) = self.session_projection.list() {
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
@@ -1244,7 +1252,8 @@ mod tests {
         GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
         ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
         ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, ResolveWorkflowRequest, SpawnAgentRequest, SubmitPromptRequest,
+        LocalDaemonResponse, ResolveSessionRequest, ResolveWorkflowRequest, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -3099,6 +3108,62 @@ mod tests {
                 assert_eq!(session.id(), session_id);
             }
             _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_session_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let session_prefix = session_id[..8].to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-resolve-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm visible session projection entries");
+
+        let app_guard = app.lock().await;
+        let resolve_request = LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: session_prefix,
+            workspace_id: Some("workspace".to_string()),
+        });
+        let resolve_command = KernelCommand::from_local_request(
+            "cmd-resolve-projection",
+            None,
+            None,
+            &resolve_request,
+        );
+        let resolve_router = router.clone();
+        let resolve_task = tokio::spawn(async move {
+            resolve_router
+                .dispatch(resolve_command, resolve_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            resolve_task.is_finished(),
+            "warmed ResolveSession should return from session projection without app lock access"
+        );
+
+        drop(app_guard);
+        let resolve_response = resolve_task
+            .await
+            .expect("resolve task should join")
+            .expect("resolve should succeed");
+        match resolve_response {
+            LocalDaemonResponse::SessionResolved { session } => {
+                assert_eq!(session.id(), session_id);
+            }
+            _ => panic!("unexpected resolve response"),
         }
     }
 

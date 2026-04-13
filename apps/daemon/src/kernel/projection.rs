@@ -188,6 +188,15 @@ impl SessionStateProjectionStore {
         None
     }
 
+    pub(crate) fn resolve_session_ref(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Option<RuntimeSession> {
+        let session_id = self.resolve_session_ref_id(session_ref, workspace_id)?;
+        self.get(&session_id)
+    }
+
     pub(crate) fn session_id_for_attachment(&self, attachment_id: &str) -> Option<String> {
         self.projected_sessions()
             .into_iter()
