@@ -308,6 +308,18 @@ impl AgentRuntimeProjectionStore {
         }
     }
 
+    pub(crate) fn update_agent_from_session(&self, session: &RuntimeSession, agent_id: &str) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned");
+        let Some(projection) = agent_runtime_projection_from_session(session, agent_id) else {
+            agents.remove(agent_id);
+            return;
+        };
+        agents.insert(agent_id.to_string(), projection);
+    }
+
     pub(crate) fn remove_session(&self, session_id: &str) {
         self.agents
             .lock()
@@ -329,6 +341,27 @@ impl AgentRuntimeProjectionStore {
                 .sum(),
         }
     }
+}
+
+fn agent_runtime_projection_from_session(
+    session: &RuntimeSession,
+    agent_id: &str,
+) -> Option<AgentRuntimeProjection> {
+    if !session.agents().iter().any(|agent| agent.id() == agent_id)
+        && !session.prompt_states().contains_key(agent_id)
+    {
+        return None;
+    }
+    let prompt_state = session.prompt_states().get(agent_id);
+    Some(AgentRuntimeProjection {
+        session_id: session.id().to_string(),
+        agent_id: agent_id.to_string(),
+        active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
+        next_queued_prompt: prompt_state.and_then(|state| state.queued_prompts().front().cloned()),
+        queued_prompt_count: prompt_state
+            .map(|state| state.queued_prompts().len())
+            .unwrap_or(0),
+    })
 }
 
 fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) {
@@ -872,7 +905,7 @@ mod tests {
     };
     use crate::local::{
         AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SubmitPromptRequest,
+        SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -1051,6 +1084,97 @@ mod tests {
         );
         assert_eq!(store.health_snapshot().active_prompts, 1);
         assert_eq!(store.health_snapshot().queued_prompts, 1);
+    }
+
+    #[test]
+    fn agent_runtime_projection_can_refresh_one_agent_without_stomping_peers() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, first_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let first_agent_id = first_agent.id().to_string();
+        let second_agent_id = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session_id.clone(),
+                alias: Some("peer".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                effort: None,
+                worktree_id: None,
+                machine_ref: None,
+            }))
+            .expect("second agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            _ => panic!("unexpected spawn response"),
+        };
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session_id.clone(),
+                    client_id: "cli-agent-runtime-one-agent-refresh".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+        for agent_id in [&first_agent_id, &second_agent_id] {
+            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session_id.clone(),
+                    agent_id: Some(agent_id.clone()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider run should launch");
+        }
+
+        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(first_agent_id.clone()),
+            prompt: "first active".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("first prompt should start");
+        let first_only_snapshot = app
+            .local_api_session_snapshot(&session_id)
+            .expect("first snapshot should load");
+        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(second_agent_id.clone()),
+            prompt: "second active".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("second prompt should start");
+        let both_snapshot = app
+            .local_api_session_snapshot(&session_id)
+            .expect("second snapshot should load");
+
+        let store = AgentRuntimeProjectionStore::default();
+        store.update_session(&both_snapshot);
+        assert!(store
+            .get(&second_agent_id)
+            .and_then(|projection| projection.active_prompt)
+            .is_some());
+
+        store.update_agent_from_session(&first_only_snapshot, &first_agent_id);
+        assert!(
+            store
+                .get(&second_agent_id)
+                .and_then(|projection| projection.active_prompt)
+                .is_some(),
+            "single-agent refresh should not erase newer peer prompt state"
+        );
     }
 
     #[test]

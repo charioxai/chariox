@@ -109,6 +109,18 @@ impl AgentRuntimePromptStateStore {
         }
     }
 
+    pub(crate) fn update_agent_from_session(&self, session: &RuntimeSession, agent_id: &str) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime prompt state lock should not be poisoned");
+        let Some(prompt_state) = agent_prompt_state_from_session(session, agent_id) else {
+            agents.remove(agent_id);
+            return;
+        };
+        agents.insert(agent_id.to_string(), prompt_state);
+    }
+
     pub(crate) fn remove_agent(&self, agent_id: &str) {
         self.agents
             .lock()
@@ -423,6 +435,27 @@ impl AgentRuntime {
     }
 }
 
+fn agent_prompt_state_from_session(
+    session: &RuntimeSession,
+    agent_id: &str,
+) -> Option<AgentRuntimePromptState> {
+    if !session.agents().iter().any(|agent| agent.id() == agent_id)
+        && !session.prompt_states().contains_key(agent_id)
+    {
+        return None;
+    }
+    let prompt_state = session.prompt_states().get(agent_id);
+    Some(AgentRuntimePromptState {
+        session_id: session.id().to_string(),
+        agent_id: agent_id.to_string(),
+        active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
+        next_queued_prompt: prompt_state.and_then(|state| state.queued_prompts().front().cloned()),
+        queued_prompt_count: prompt_state
+            .map(|state| state.queued_prompts().len())
+            .unwrap_or(0),
+    })
+}
+
 fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<String> {
     if let Some(focused_agent_id) = session.focused_agent_id() {
         if session.active_prompt_for_agent(focused_agent_id).is_some() {
@@ -531,6 +564,13 @@ async fn execute_agent_command(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match command {
         AgentCommand::SubmitPrompt(request) => {
+            let target_agent_id =
+                request
+                    .target_agent_id
+                    .clone()
+                    .ok_or_else(|| DaemonError::AgentNotFound {
+                        agent_id: "no target agent".to_string(),
+                    })?;
             let prepared = {
                 let mut app = app.lock().await;
                 app.kernel_agents().submit_prompt_for_kernel(
@@ -542,8 +582,8 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
-            agent_runtime_projection.update_session(&prepared.session);
-            prompt_state.update_session(&prepared.session);
+            agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
+            prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_dispatch_operation(
@@ -571,8 +611,8 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
-            agent_runtime_projection.update_session(&prepared.session);
-            prompt_state.update_session(&prepared.session);
+            agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
+            prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_abort_operation(
@@ -605,8 +645,8 @@ async fn execute_agent_command(
                 (completion, session)
             };
             session_projection.update(session.clone());
-            agent_runtime_projection.update_session(&session);
-            prompt_state.update_session(&session);
+            agent_runtime_projection.update_agent_from_session(&session, &target_agent_id);
+            prompt_state.update_agent_from_session(&session, &target_agent_id);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
