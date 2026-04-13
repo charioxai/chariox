@@ -335,12 +335,7 @@ impl CommandRouter {
             }
         }
         if matches!(request, LocalDaemonRequest::GetProviderCatalog(_)) {
-            if let Some(catalog) = self
-                .provider_catalog_projection
-                .get(PROVIDER_CATALOG_CACHE_TTL)
-            {
-                return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
-            }
+            return self.projected_provider_catalog_response().await;
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return Ok(LocalDaemonResponse::DaemonHealth {
@@ -519,6 +514,27 @@ impl CommandRouter {
             machine_ref,
             kernels,
         })
+    }
+
+    async fn projected_provider_catalog_response(
+        &self,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(catalog) = self
+            .provider_catalog_projection
+            .get(PROVIDER_CATALOG_CACHE_TTL)
+        {
+            return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        }
+
+        let config = self.config_projection.snapshot();
+        let catalog = tokio::task::spawn_blocking(move || load_provider_catalog(config))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "load provider catalog",
+                message: error.to_string(),
+            })??;
+        self.provider_catalog_projection.update(catalog.clone());
+        Ok(LocalDaemonResponse::ProviderCatalog { catalog })
     }
 
     fn projected_session_or_absence(
