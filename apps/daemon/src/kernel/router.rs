@@ -92,6 +92,7 @@ impl CommandRouter {
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
+            session_projection.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -156,6 +157,7 @@ impl CommandRouter {
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
+            session_projection.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -1849,6 +1851,108 @@ mod tests {
             LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {
                     assert_eq!(prompt.target_agent_id(), focused_agent.id());
+                }
+                _ => panic!("expected prompt to start"),
+            },
+            _ => panic!("unexpected prompt response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_submit_uses_warmed_session_projection_without_app_lock_for_focus_fallback() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-session-projection-focus",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-focus-fallback-warm",
+            None,
+            None,
+            &state_request,
+        );
+        router
+            .dispatch(state_command, state_request)
+            .await
+            .expect("state read should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: None,
+            prompt: "hello through warmed session projection".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command = KernelCommand::from_local_request(
+            "cmd-prompt-session-projection-focus",
+            None,
+            None,
+            &prompt_request,
+        );
+        let prompt_router = router.clone();
+        let prompt_task =
+            tokio::spawn(
+                async move { prompt_router.dispatch(prompt_command, prompt_request).await },
+            );
+
+        let mut agent_lane_created = false;
+        for _ in 0..50 {
+            let projection = router.daemon_health_projection(0).await;
+            if projection
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == agent_id)
+            {
+                agent_lane_created = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            agent_lane_created,
+            "prompt submit should resolve focus from warmed session projection before touching the app lock"
+        );
+        assert!(
+            !prompt_task.is_finished(),
+            "agent worker should still wait on the deliberately held app lock"
+        );
+
+        drop(app_guard);
+        let prompt_response = prompt_task
+            .await
+            .expect("prompt task should join")
+            .expect("prompt should submit");
+        match prompt_response {
+            LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
+                PromptSubmissionOutcome::Started { prompt } => {
+                    assert_eq!(prompt.target_agent_id(), agent_id);
                 }
                 _ => panic!("expected prompt to start"),
             },

@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::kernel::projection::ActorQueueSnapshot;
+use crate::kernel::projection::{ActorQueueSnapshot, SessionStateProjectionStore};
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
@@ -35,6 +35,7 @@ pub(crate) struct AgentRuntime {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -44,11 +45,13 @@ impl AgentRuntime {
         app: Arc<Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,
         focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
     ) -> Self {
         Self {
             app,
             provider_runtime_lanes,
             focus_projection,
+            session_projection,
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -101,6 +104,13 @@ impl AgentRuntime {
         if let Some(agent_id) = self.focus_projection.focused_agent_id(session_id).await {
             return Ok(agent_id);
         }
+        if let Some(agent_id) = self
+            .session_projection
+            .get(session_id)
+            .and_then(|session| session.focused_agent_id().map(str::to_string))
+        {
+            return Ok(agent_id);
+        }
         let app = self.app.lock().await;
         app.sessions()
             .get_session(session_id)?
@@ -113,6 +123,13 @@ impl AgentRuntime {
 
     async fn resolve_focused_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
         if let Some(agent_id) = self.focus_projection.focused_agent_id(session_id).await {
+            return Ok(agent_id);
+        }
+        if let Some(agent_id) = self
+            .session_projection
+            .get(session_id)
+            .and_then(|session| session.focused_agent_id().map(str::to_string))
+        {
             return Ok(agent_id);
         }
         let app = self.app.lock().await;
