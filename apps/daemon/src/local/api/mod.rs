@@ -30,6 +30,29 @@ mod types;
 pub use types::*;
 
 impl DaemonApp {
+    pub(crate) fn create_session_response(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (mut session, agent) = self.create_session(request)?;
+        let agents = self.agents().get_session_agents(session.id());
+        session.set_agents(agents);
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session created with default agent",
+            serde_json::json!({
+                "session_id": session.id(),
+                "session_alias": session.alias(),
+                "workspace_id": session.workspace_id(),
+                "worktree_id": session.worktree_id(),
+                "execution_mode": format!("{:?}", session.execution_mode()),
+                "agent_id": agent.id(),
+                "agent_ref": agent.agent_ref(),
+            }),
+        );
+        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+    }
+
     pub(crate) fn local_api_session_snapshot(
         &self,
         session_id: &str,
@@ -47,26 +70,7 @@ impl DaemonApp {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
-            LocalDaemonRequest::CreateSession(request) => {
-                let (mut session, agent) = self.create_session(request)?;
-                // Populate agents list
-                let agents = self.agents().get_session_agents(session.id());
-                session.set_agents(agents);
-                crate::logging::info_with_fields(
-                    "daemon.session",
-                    "session created with default agent",
-                    serde_json::json!({
-                        "session_id": session.id(),
-                        "session_alias": session.alias(),
-                        "workspace_id": session.workspace_id(),
-                        "worktree_id": session.worktree_id(),
-                        "execution_mode": format!("{:?}", session.execution_mode()),
-                        "agent_id": agent.id(),
-                        "agent_ref": agent.agent_ref(),
-                    }),
-                );
-                Ok(LocalDaemonResponse::SessionCreated { session, agent })
-            }
+            LocalDaemonRequest::CreateSession(request) => self.create_session_response(request),
             LocalDaemonRequest::AttachToSession(request) => {
                 Ok(LocalDaemonResponse::SessionAttached {
                     attachment: self.attach(AttachRequest::new(

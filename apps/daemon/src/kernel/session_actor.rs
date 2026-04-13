@@ -592,24 +592,7 @@ impl SessionActor {
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         if let LocalDaemonRequest::CreateSession(request) = request {
-            return Some(app.create_session(request).map(|(mut session, agent)| {
-                let agents = app.agents().get_session_agents(session.id());
-                session.set_agents(agents);
-                crate::logging::info_with_fields(
-                    "daemon.session",
-                    "session created with default agent",
-                    serde_json::json!({
-                        "session_id": session.id(),
-                        "session_alias": session.alias(),
-                        "workspace_id": session.workspace_id(),
-                        "worktree_id": session.worktree_id(),
-                        "execution_mode": format!("{:?}", session.execution_mode()),
-                        "agent_id": agent.id(),
-                        "agent_ref": agent.agent_ref(),
-                    }),
-                );
-                LocalDaemonResponse::SessionCreated { session, agent }
-            }));
+            return Some(app.create_session_response(request));
         }
         if let LocalDaemonRequest::UpdateSessionConfig(request) = request {
             let session_id = request.session_id.clone();

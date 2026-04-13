@@ -69,6 +69,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved public session creation and default-agent bootstrap behind `KernelSessionService`, leaving `DaemonApp::create_session` as a compatibility facade instead of a direct lifecycle owner.
 - Added daemon-health projection invariant reporting for session/agent-runtime prompt drift, with regression coverage that detects stale agent-runtime queue-front and queued-count projections.
 - Routed public `CreateSession` through the session runtime mailbox boundary, including projection and focused-agent publication for the created session, so creation is not rejected behind the generic interactive lane.
+- Collapsed `CreateSession` response construction into one compatibility helper shared by local API and session runtime dispatch, avoiding duplicate create/logging components while the runtime migration is still in progress.
 - Added `docs/ops/IMPLEMENTATION_INVARIANTS.md` as the explicit M4.5 gate for ownership, projection refresh, cleanup, overload, health, and tests before final I/O coordination starts.
 - Recorded the full A+ sequence for the rest of M4.5: prompt ownership, session ownership, projection correctness, workflow hardening, provider/terminal hardening, hot app-lock removal, docs/invariant lock, and final I/O coordination last.
 
