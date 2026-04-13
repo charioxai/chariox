@@ -19,6 +19,7 @@ use crate::kernel::projection::{
     ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
     TransportHealthStore,
 };
+use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
@@ -106,6 +107,7 @@ impl CommandRouter {
             terminal_health,
             terminal_stream,
             workspace_coordinator,
+            prompt_state_owner,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -114,6 +116,7 @@ impl CommandRouter {
             focus_projection.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),
+            prompt_state_owner.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -193,6 +196,7 @@ impl CommandRouter {
             terminal_health,
             terminal_stream,
             workspace_coordinator,
+            prompt_state_owner,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -201,6 +205,7 @@ impl CommandRouter {
             focus_projection.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),
+            prompt_state_owner.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -1158,6 +1163,7 @@ fn router_projection_stores(
     TerminalStreamHealthStore,
     TerminalStreamStore,
     WorkspaceCoordinator,
+    PromptStateOwner,
 ) {
     let app = app
         .try_lock()
@@ -1175,6 +1181,7 @@ fn router_projection_stores(
         app.terminal_health_store(),
         app.terminal_stream_store(),
         app.workspace_coordinator(),
+        app.prompt_state_owner(),
     )
 }
 

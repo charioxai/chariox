@@ -4,7 +4,7 @@ This checklist is the merge gate for M4.5 runtime slices before the final I/O-co
 
 ## Ownership
 
-- Mutable prompt lifecycle changes enter through `KernelAgentService` or the `AgentRuntime` mailbox path and mutate `PromptStateOwner` before any compatibility session mirror is refreshed. `RuntimeSession`/`PromptRuntimeState` prompt fields are compatibility mirrors, not admission or lifecycle authorities.
+- Mutable prompt lifecycle changes enter through `KernelAgentService` or the `AgentRuntime` mailbox path and mutate the shared `PromptStateOwner` before any compatibility session mirror is refreshed. `RuntimeSession`/`PromptRuntimeState` prompt fields are compatibility mirrors, not admission, routing, or lifecycle authorities.
 - Mutable session lifecycle changes enter through `KernelSessionService` or the `SessionRuntime` mailbox path. Public session creation, attach, detach, focus, cycle, resize, config, alias, end, and delete must not add new direct request-handler mutation paths.
 - Workflow progression enters through workflow runtime methods or scheduler-owned dispatch paths. New workflow state transitions must not bypass workflow lane admission.
 - Provider-run structured submit, abort, output polling, selection sync, and teardown must remain behind provider runtime lanes or provider-run actor methods.

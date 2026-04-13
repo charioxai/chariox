@@ -279,6 +279,10 @@ impl DaemonApp {
         self.agent_runtime_projection.clone()
     }
 
+    pub(crate) fn prompt_state_owner(&self) -> PromptStateOwner {
+        self.prompt_state_owner.clone()
+    }
+
     pub(crate) fn update_session_projection(&self, session: RuntimeSession) {
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);

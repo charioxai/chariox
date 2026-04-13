@@ -9,6 +9,7 @@ use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjection, AgentRuntimeProjectionStore,
     SessionStateProjectionStore,
 };
+use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
@@ -48,6 +49,7 @@ pub(crate) struct AgentRuntime {
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    prompt_state_owner: PromptStateOwner,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -59,6 +61,7 @@ impl AgentRuntime {
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
+        prompt_state_owner: PromptStateOwner,
     ) -> Self {
         Self {
             app,
@@ -66,6 +69,7 @@ impl AgentRuntime {
             focus_projection,
             session_projection,
             agent_runtime_projection,
+            prompt_state_owner,
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -118,8 +122,16 @@ impl AgentRuntime {
             .resolve_active_prompt_agent_id(&request.session_id)
             .await?;
         let next_queued_prompt = self
-            .agent_runtime_projection
-            .next_queued_prompt(&request.session_id, &agent_id);
+            .session_projection
+            .get(&request.session_id)
+            .and_then(|session| {
+                self.prompt_state_owner
+                    .peek_next_queued_prompt(&session, &agent_id)
+            })
+            .or_else(|| {
+                self.agent_runtime_projection
+                    .next_queued_prompt(&request.session_id, &agent_id)
+            });
         self.dispatch_to_agent(
             agent_id.clone(),
             command.command_id.clone(),
@@ -146,7 +158,7 @@ impl AgentRuntime {
         if let Some(agent_id) = self
             .session_projection
             .get(session_id)
-            .and_then(|session| active_prompt_agent_id(&session))
+            .and_then(|session| self.prompt_state_owner.active_prompt_agent_id(&session))
         {
             return Ok(agent_id);
         }
@@ -165,12 +177,11 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             });
         }
-        let app = self.app.lock().await;
-        active_prompt_agent_id(&app.sessions().get_session(session_id)?).ok_or_else(|| {
-            DaemonError::NoActivePrompt {
+        let mut app = self.app.lock().await;
+        app.prompt_owner_active_prompt_agent_id(session_id)?
+            .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
-            }
-        })
+            })
     }
 
     async fn resolve_projected_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
@@ -337,12 +348,9 @@ impl AgentRuntime {
     }
 
     pub(crate) fn remove_session_state(&self, session_id: &str) {
+        self.prompt_state_owner.remove_session(session_id);
         self.agent_runtime_projection.remove_session(session_id);
     }
-}
-
-fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<String> {
-    session.active_prompt_agent_id()
 }
 
 fn active_prompt_agent_id_from_projections(
@@ -567,16 +575,19 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
 
-    use crate::attachment::ClientCapabilityLevel;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::prompt_state::PromptStateOwner;
     use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::{
         AttachToSessionRequest, CancelActivePromptRequest, LaunchProviderRunRequest,
         LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
     use crate::provider::ProviderRunOperationLanes;
-    use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+    use crate::session::{
+        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    };
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
 
@@ -598,6 +609,7 @@ mod tests {
             FocusedAgentProjection::default(),
             SessionStateProjectionStore::default(),
             agent_runtime_projection,
+            PromptStateOwner::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -630,6 +642,7 @@ mod tests {
             FocusedAgentProjection::default(),
             session_projection,
             AgentRuntimeProjectionStore::default(),
+            PromptStateOwner::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -648,6 +661,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_prompt_resolution_uses_prompt_owner_without_app_lock_when_session_mirror_is_stale(
+    ) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new(
+                "workspace-owner-route",
+                "worktree-owner-route",
+            ))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owner-route",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "owner-backed routing",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should submit through owner");
+        app.sessions_mut()
+            .complete_active_prompt_only(session.id(), agent.id())
+            .expect("test should clear only the compatibility mirror");
+        let session_snapshot = app
+            .local_api_session_snapshot(session.id())
+            .expect("session snapshot should still be available");
+        assert!(
+            session_snapshot
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "compatibility session snapshot is intentionally stale"
+        );
+
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update(session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+            prompt_state_owner,
+        );
+
+        let _locked_app = app.lock().await;
+        let resolved = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_active_prompt_agent_id(session.id()),
+        )
+        .await
+        .expect("owner-backed active prompt resolution should not wait for the app lock")
+        .expect("prompt owner should still know the active agent");
+
+        assert_eq!(resolved, agent.id());
+    }
+
+    #[tokio::test]
     async fn submit_agent_resolution_uses_warmed_list_for_missing_session_without_app_lock() {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
@@ -660,6 +737,7 @@ mod tests {
             FocusedAgentProjection::default(),
             session_projection,
             AgentRuntimeProjectionStore::default(),
+            PromptStateOwner::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -697,6 +775,7 @@ mod tests {
             FocusedAgentProjection::default(),
             session_projection,
             AgentRuntimeProjectionStore::default(),
+            PromptStateOwner::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -733,6 +812,7 @@ mod tests {
             FocusedAgentProjection::default(),
             session_projection,
             AgentRuntimeProjectionStore::default(),
+            PromptStateOwner::default(),
         );
 
         let _locked_app = app.lock().await;
