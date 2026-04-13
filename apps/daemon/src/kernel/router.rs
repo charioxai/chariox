@@ -847,15 +847,8 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
                 session_id: request.session_id.clone(),
             }
         }
-        LocalDaemonRequest::PollRuntimeNotices(request) => {
-            SessionProjectionRefresh::SnapshotRequestSession {
-                session_id: request.session_id.clone(),
-            }
-        }
-        LocalDaemonRequest::ResizeTerminal(request) => {
-            SessionProjectionRefresh::SnapshotRequestSession {
-                session_id: request.session_id.clone(),
-            }
+        LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
+            SessionProjectionRefresh::None
         }
         _ => SessionProjectionRefresh::None,
     }
