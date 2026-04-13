@@ -80,6 +80,7 @@ Status as of 2026-04-12:
 - Landed: Phase 8 missing session-scoped inspection/history reads now return `SessionNotFound` from warmed session-list projections instead of falling back to the compatibility app lock.
 - Landed: Phase 8 relay status, remote-machine discovery, remote-kernel discovery, and provider command catalog reads now use router-owned config/projection data instead of taking the compatibility app lock.
 - Landed: Phase 8 provider catalog reads now load and refresh the router-owned provider catalog projection from the config projection instead of taking the compatibility app lock on cold catalog paths.
+- Landed: Phase 8 provider-launch pending guards now clear from session/provider-run projections when a launch has settled, so warmed session-state reads do not fall back to the compatibility app lock only because a stale launch guard remains.
 - Landed: structured provider output polling now drains all finished provider-run actor poll jobs on each pump pass. Non-requested run output is applied into the terminal fanout buffer for its recipients instead of being deferred behind the currently polling client/run.
 - Landed: multi-run structured output regression coverage now proves a pump for one provider run applies already-finished output jobs from another run into the terminal fanout buffer without returning that background output as requested-run output.
 - Landed: provider-run actor command mailboxes now use bounded per-run queues and non-blocking enqueue. Submit/abort/poll/sync/terminate commands cannot grow an unbounded provider-run worker backlog under repeated polling or lifecycle pressure.
@@ -429,7 +430,7 @@ Current status: Phase 6 is complete for the M4.5 boundary. Workflow commands are
 - Keep `DaemonApp` only as bootstrap/test compatibility until callers are migrated.
 - Delete compatibility facade once tests and live drills pass without it.
 
-Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, session read/resolve/inspection/history paths, delete/detach lane resolution, daemon health terminal pressure, relay status/discovery reads, provider catalog/command catalog reads, and router-side focus refresh now prefer actor/runtime/session/config projections and avoid compatibility app-lock fallback in the covered success and absence cases. The remaining Phase 8 work is the larger ownership flip: session/agent/workflow command workers still use `DaemonApp` as the mutation mirror, and cold session/provider-auth/configuration paths still use compatibility state until their runtime-owned stores are separated.
+Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, session read/resolve/inspection/history paths, delete/detach lane resolution, daemon health terminal pressure, relay status/discovery reads, provider catalog/command catalog reads, settled provider-launch guards, and router-side focus refresh now prefer actor/runtime/session/config projections and avoid compatibility app-lock fallback in the covered success and absence cases. The remaining Phase 8 work is the larger ownership flip: session/agent/workflow command workers still use `DaemonApp` as the mutation mirror, and cold session/provider-auth/configuration paths still use compatibility state until their runtime-owned stores are separated.
 
 ## Required Tests and Drills
 

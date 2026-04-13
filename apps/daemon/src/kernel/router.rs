@@ -243,7 +243,10 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let focus_refresh = focus_projection_refresh(&request);
         if let LocalDaemonRequest::GetSessionState(request) = &request {
-            if !self.has_pending_provider_launch(&request.session_id).await {
+            if !self
+                .has_unsettled_pending_provider_launch(&request.session_id)
+                .await
+            {
                 if let Some(session) = self.session_projection.get(&request.session_id) {
                     return Ok(LocalDaemonResponse::SessionState { session });
                 }
@@ -850,15 +853,47 @@ impl CommandRouter {
         }
     }
 
-    async fn has_pending_provider_launch(&self, session_id: &str) -> bool {
-        self.pending_provider_launch_sessions
+    async fn has_unsettled_pending_provider_launch(&self, session_id: &str) -> bool {
+        if !self
+            .pending_provider_launch_sessions
             .lock()
             .await
             .contains(session_id)
+        {
+            return false;
+        }
+        if let Some(is_starting) =
+            self.provider_launch_is_still_starting_from_projection(session_id)
+        {
+            if !is_starting {
+                self.pending_provider_launch_sessions
+                    .lock()
+                    .await
+                    .remove(session_id);
+            }
+            return is_starting;
+        }
+        true
     }
 
     async fn clear_provider_launch_pending_if_settled(&self, session_id: &str) {
-        if !self.has_pending_provider_launch(session_id).await {
+        if !self
+            .pending_provider_launch_sessions
+            .lock()
+            .await
+            .contains(session_id)
+        {
+            return;
+        }
+        if let Some(is_starting) =
+            self.provider_launch_is_still_starting_from_projection(session_id)
+        {
+            if !is_starting {
+                self.pending_provider_launch_sessions
+                    .lock()
+                    .await
+                    .remove(session_id);
+            }
             return;
         }
         let is_still_starting = {
@@ -876,6 +911,15 @@ impl CommandRouter {
                 .await
                 .remove(session_id);
         }
+    }
+
+    fn provider_launch_is_still_starting_from_projection(&self, session_id: &str) -> Option<bool> {
+        let session = self.session_projection.get(session_id)?;
+        let Some(provider_run_id) = session.active_provider_run_id() else {
+            return Some(false);
+        };
+        let run = self.provider_run_projection.get(provider_run_id)?;
+        Some(run.state() == ProviderRunState::Starting)
     }
 }
 
@@ -3949,6 +3993,70 @@ mod tests {
             }
             _ => panic!("unexpected provider response"),
         }
+    }
+
+    #[tokio::test]
+    async fn settled_provider_launch_pending_state_uses_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (mut session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
+            "projected-run",
+            session_id.clone(),
+            Some(agent_id),
+            "dev-stub".to_string(),
+        );
+        provider_run.mark_running();
+        session.set_active_provider_run(Some(provider_run.id().to_string()));
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        router.session_projection.update(session);
+        router.provider_run_projection.update(provider_run);
+        router
+            .pending_provider_launch_sessions
+            .lock()
+            .await
+            .insert(session_id.clone());
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-settled-launch-state-projection",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        let response = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("settled provider launch state should not wait for the app lock")
+            .expect("state task should join")
+            .expect("state should resolve");
+        drop(app_guard);
+
+        match response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(session.id(), session_id);
+                assert_eq!(session.active_provider_run_id(), Some("projected-run"));
+            }
+            _ => panic!("unexpected state response"),
+        }
+        assert!(
+            !router
+                .pending_provider_launch_sessions
+                .lock()
+                .await
+                .contains(&session_id),
+            "projection-settled launch should clear pending launch guard"
+        );
     }
 
     #[tokio::test]
