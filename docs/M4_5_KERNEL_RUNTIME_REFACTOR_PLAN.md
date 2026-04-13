@@ -77,6 +77,7 @@ Status as of 2026-04-12:
 - Landed: provider-run exit reconciliation no longer completes/cancels active prompts by mutating session prompt state directly and then separately draining the queue. It now delegates prompt settlement to the kernel prompt lifecycle service, preserving the runtime/projection-guided queue advancement path for unexpected provider exits.
 - Landed: terminal output fanout now enforces a bounded pending-output backlog per attachment. Slow or disconnected output consumers cannot grow the in-memory terminal stream without bound; history remains the durable transcript source.
 - Landed: Phase 8 daemon health reads terminal stream pressure from a cloned terminal health store instead of locking the compatibility app-owned terminal stream.
+- Landed: Phase 8 missing session-scoped inspection/history reads now return `SessionNotFound` from warmed session-list projections instead of falling back to the compatibility app lock.
 - Landed: structured provider output polling now drains all finished provider-run actor poll jobs on each pump pass. Non-requested run output is applied into the terminal fanout buffer for its recipients instead of being deferred behind the currently polling client/run.
 - Landed: multi-run structured output regression coverage now proves a pump for one provider run applies already-finished output jobs from another run into the terminal fanout buffer without returning that background output as requested-run output.
 - Landed: provider-run actor command mailboxes now use bounded per-run queues and non-blocking enqueue. Submit/abort/poll/sync/terminate commands cannot grow an unbounded provider-run worker backlog under repeated polling or lifecycle pressure.
@@ -426,7 +427,7 @@ Current status: Phase 6 is complete for the M4.5 boundary. Workflow commands are
 - Keep `DaemonApp` only as bootstrap/test compatibility until callers are migrated.
 - Delete compatibility facade once tests and live drills pass without it.
 
-Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, session read/resolve paths, delete/detach lane resolution, and router-side focus refresh now prefer actor/runtime/session projections and avoid compatibility app-lock fallback in the covered success and absence cases. The remaining Phase 8 work is the larger ownership flip: session/agent/workflow command workers still use `DaemonApp` as the mutation mirror, terminal health still reads through the app-owned terminal stream, and cold provider/session/relay paths still use compatibility state until their runtime-owned stores are separated.
+Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, session read/resolve/inspection/history paths, delete/detach lane resolution, daemon health terminal pressure, and router-side focus refresh now prefer actor/runtime/session projections and avoid compatibility app-lock fallback in the covered success and absence cases. The remaining Phase 8 work is the larger ownership flip: session/agent/workflow command workers still use `DaemonApp` as the mutation mirror, and cold provider/session/relay paths still use compatibility state until their runtime-owned stores are separated.
 
 ## Required Tests and Drills
 

@@ -274,7 +274,7 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::GetSessionHistory(request) = &request {
             if let Some(response) = self.projected_session_history_response(request).await {
-                return Ok(response);
+                return response;
             }
         }
         if let LocalDaemonRequest::CompletePrompt(request) = &request {
@@ -353,26 +353,38 @@ impl CommandRouter {
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         match request {
             LocalDaemonRequest::ListAgents(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(Ok(LocalDaemonResponse::AgentsListed {
                     agents: session.agents().to_vec(),
                 }))
             }
             LocalDaemonRequest::ListWorkflows(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(Ok(LocalDaemonResponse::WorkflowsListed {
                     workflows: session.workflows().to_vec(),
                 }))
             }
             LocalDaemonRequest::ResolveWorkflow(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(
                     projected_resolve_workflow(&session, &request.workflow_ref)
                         .map(|workflow| LocalDaemonResponse::WorkflowResolved { workflow }),
                 )
             }
             LocalDaemonRequest::ListWorkflowRuns(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(
                     projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
                         |workflow_id| {
@@ -392,14 +404,20 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::GetWorkflowRun(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(
                     projected_resolve_workflow_run(&session, &request.workflow_run_ref)
                         .map(|workflow_run| LocalDaemonResponse::WorkflowRun { workflow_run }),
                 )
             }
             LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(
                     projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
                         |workflow_id| {
@@ -419,7 +437,10 @@ impl CommandRouter {
                 )
             }
             LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
-                let session = self.session_projection.get(&request.session_id)?;
+                let session = match self.projected_session_or_absence(&request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
                 Some(Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
                     queued_launches: session.queued_workflow_launches().iter().cloned().collect(),
                 }))
@@ -428,10 +449,25 @@ impl CommandRouter {
         }
     }
 
+    fn projected_session_or_absence(
+        &self,
+        session_id: &str,
+    ) -> Option<Result<crate::session::RuntimeSession, DaemonError>> {
+        if let Some(session) = self.session_projection.get(session_id) {
+            return Some(Ok(session));
+        }
+        if self.session_projection.has_warmed_list() {
+            return Some(Err(DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            }));
+        }
+        None
+    }
+
     async fn projected_session_history_response(
         &self,
         request: &GetSessionHistoryRequest,
-    ) -> Option<LocalDaemonResponse> {
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         if let Some(page) = self.history_projection.page(
             &request.session_id,
             request.agent_id.as_deref(),
@@ -440,16 +476,20 @@ impl CommandRouter {
             request.before_entry_index,
             request.before_entry_char_offset,
         ) {
-            return Some(LocalDaemonResponse::SessionHistory {
+            return Some(Ok(LocalDaemonResponse::SessionHistory {
                 entries: page.entries,
                 next_cursor: page.next_cursor,
-            });
+            }));
         }
 
-        let session = self.session_projection.get(&request.session_id)?;
-        self.execute_session_history_request_from_session(session, request.clone())
-            .await
-            .ok()
+        let session = match self.projected_session_or_absence(&request.session_id)? {
+            Ok(session) => session,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(
+            self.execute_session_history_request_from_session(session, request.clone())
+                .await,
+        )
     }
 
     async fn execute_session_history_request(
@@ -4292,6 +4332,113 @@ mod tests {
             .await
             .expect("missing resolve should not wait for the app lock")
             .expect("resolve task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_session_inspection_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-inspection-missing-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm empty session projection");
+
+        let app_guard = app.lock().await;
+        let inspection_request = LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: "missing-session".to_string(),
+        });
+        let inspection_command = KernelCommand::from_local_request(
+            "cmd-inspection-missing-projection",
+            None,
+            None,
+            &inspection_request,
+        );
+        let inspection_router = router.clone();
+        let inspection_task = tokio::spawn(async move {
+            inspection_router
+                .dispatch(inspection_command, inspection_request)
+                .await
+        });
+
+        let error = timeout(Duration::from_millis(100), inspection_task)
+            .await
+            .expect("missing inspection should not wait for the app lock")
+            .expect("inspection task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_session_history_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-history-missing-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm empty session projection");
+
+        let app_guard = app.lock().await;
+        let history_request = LocalDaemonRequest::GetSessionHistory(GetSessionHistoryRequest {
+            session_id: "missing-session".to_string(),
+            agent_id: None,
+            round_count: Some(10),
+            max_chars: None,
+            before_entry_index: None,
+            before_entry_char_offset: None,
+        });
+        let history_command = KernelCommand::from_local_request(
+            "cmd-history-missing-projection",
+            None,
+            None,
+            &history_request,
+        );
+        let history_router = router.clone();
+        let history_task = tokio::spawn(async move {
+            history_router
+                .dispatch(history_command, history_request)
+                .await
+        });
+
+        let error = timeout(Duration::from_millis(100), history_task)
+            .await
+            .expect("missing history should not wait for the app lock")
+            .expect("history task should join")
             .expect_err("missing session should fail");
         drop(app_guard);
 
