@@ -448,6 +448,7 @@ impl CommandRouter {
             self.session_runtime.queue_snapshots().await,
             self.agent_runtime.queue_snapshots().await,
             self.provider_runtime_lanes.queue_snapshots(),
+            self.provider_runtime_lanes.health_snapshot(),
             self.session_projection.health_snapshot(),
             self.agent_runtime_projection.health_snapshot(),
             self.provider_catalog_projection

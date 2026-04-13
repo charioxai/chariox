@@ -666,6 +666,12 @@ pub struct AgentRuntimeProjectionHealthSnapshot {
     pub queued_prompts: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProviderRunActorHealthSnapshot {
+    pub enqueued_commands: u64,
+    pub enqueue_rejections: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCatalogHealthSnapshot {
     pub cached: bool,
@@ -879,6 +885,7 @@ pub struct DaemonHealthProjection {
     pub session_command_lanes: Vec<ActorQueueSnapshot>,
     pub agent_command_lanes: Vec<ActorQueueSnapshot>,
     pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
+    pub provider_run_actor: ProviderRunActorHealthSnapshot,
     pub session_projection: SessionProjectionHealthSnapshot,
     pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
@@ -892,6 +899,7 @@ impl DaemonHealthProjection {
         session_command_lanes: Vec<ActorQueueSnapshot>,
         agent_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
+        provider_run_actor: ProviderRunActorHealthSnapshot,
         mut session_projection: SessionProjectionHealthSnapshot,
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
@@ -910,6 +918,7 @@ impl DaemonHealthProjection {
             session_command_lanes,
             agent_command_lanes,
             provider_runtime_lanes,
+            provider_run_actor,
             session_projection,
             agent_runtime_projection,
             provider_catalog,
@@ -924,9 +933,9 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::projection::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
-        DaemonHealthProjection, ProviderCatalogHealthSnapshot, SessionProjectionHealthSnapshot,
-        SessionSnapshotProjection, SessionStateProjectionStore, TransportHealthSnapshot,
-        WorkspaceCoordinationHealthSnapshot,
+        DaemonHealthProjection, ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot,
+        SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
+        TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
     use crate::local::{
         AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
@@ -958,6 +967,10 @@ mod tests {
             vec![ActorQueueSnapshot::new("session-1", 128, 2)],
             vec![ActorQueueSnapshot::new("agent-1", 128, 1)],
             vec![ActorQueueSnapshot::new("provider-run-1", 1, 1)],
+            ProviderRunActorHealthSnapshot {
+                enqueued_commands: 5,
+                enqueue_rejections: 1,
+            },
             SessionProjectionHealthSnapshot {
                 projected_sessions: 3,
                 projected_session_list_entries: Some(3),
@@ -1013,6 +1026,8 @@ mod tests {
             projection.provider_runtime_lanes[0].lane_id,
             "provider-run-1"
         );
+        assert_eq!(projection.provider_run_actor.enqueued_commands, 5);
+        assert_eq!(projection.provider_run_actor.enqueue_rejections, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 2);
         assert_eq!(projection.agent_runtime_projection.projected_agents, 3);

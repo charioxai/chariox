@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -6,7 +7,7 @@ use std::thread;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
-use crate::kernel::projection::ActorQueueSnapshot;
+use crate::kernel::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
 use crate::session::PromptAttachment;
 
 use super::{
@@ -42,6 +43,13 @@ pub(crate) struct ProviderRunActorMailbox {
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunOperationLanes {
     lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
+    health: Arc<ProviderRunActorHealthCounters>,
+}
+
+#[derive(Debug, Default)]
+struct ProviderRunActorHealthCounters {
+    enqueued_commands: AtomicU64,
+    enqueue_rejections: AtomicU64,
 }
 
 pub(crate) struct FinishedProviderPromptSubmitJob {
@@ -139,6 +147,25 @@ impl ProviderRunOperationLanes {
             .collect::<Vec<_>>();
         snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
         snapshots
+    }
+
+    pub(crate) fn health_snapshot(&self) -> ProviderRunActorHealthSnapshot {
+        ProviderRunActorHealthSnapshot {
+            enqueued_commands: self.health.enqueued_commands.load(Ordering::Relaxed),
+            enqueue_rejections: self.health.enqueue_rejections.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_command_enqueued(&self) {
+        self.health
+            .enqueued_commands
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_enqueue_rejection(&self) {
+        self.health
+            .enqueue_rejections
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -246,7 +273,7 @@ impl ProviderRunActorMailbox {
     ) {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.try_send(ProviderRunActorCommand::Submit {
+        match sender.try_send(ProviderRunActorCommand::Submit {
             session_id,
             provider_run_id: provider_run_id.clone(),
             agent_id,
@@ -254,15 +281,19 @@ impl ProviderRunActorMailbox {
             prompt,
             attachments,
         }) {
-            self.clear_structured_prompt_io_in_flight(&provider_run_id);
-            crate::logging::error_with_fields(
-                "daemon.provider_run_actor",
-                "structured prompt submit command enqueue failed",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "structured prompt submit command enqueue failed",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -274,20 +305,24 @@ impl ProviderRunActorMailbox {
     ) {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.try_send(ProviderRunActorCommand::Abort {
+        match sender.try_send(ProviderRunActorCommand::Abort {
             session_id,
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
-            self.clear_structured_prompt_io_in_flight(&provider_run_id);
-            crate::logging::error_with_fields(
-                "daemon.provider_run_actor",
-                "structured prompt abort command enqueue failed",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "structured prompt abort command enqueue failed",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -313,36 +348,44 @@ impl ProviderRunActorMailbox {
                 )
             })
         };
-        if let Err(error) = sender.try_send(ProviderRunActorCommand::Terminate {
+        match sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
-            self.clear_structured_prompt_io_in_flight(&provider_run_id);
-            self.clear_runtime(&provider_run_id);
-            crate::logging::error_with_fields(
-                "daemon.provider_run_actor",
-                "provider run actor terminate command enqueue failed",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                self.clear_structured_prompt_io_in_flight(&provider_run_id);
+                self.clear_runtime(&provider_run_id);
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run actor terminate command enqueue failed",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
     pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) {
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.try_send(ProviderRunActorCommand::SyncSelection {
+        match sender.try_send(ProviderRunActorCommand::SyncSelection {
             provider_run_id: provider_run_id.clone(),
         }) {
-            crate::logging::error_with_fields(
-                "daemon.provider_run_actor",
-                "provider run selection sync command enqueue failed",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run selection sync command enqueue failed",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -355,20 +398,24 @@ impl ProviderRunActorMailbox {
             return false;
         }
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.try_send(ProviderRunActorCommand::PollOutput {
+        match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
-            self.clear_structured_output_poll_in_flight(&provider_run_id);
-            crate::logging::error_with_fields(
-                "daemon.provider_run_actor",
-                "provider run output poll command enqueue failed",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "error": error.to_string(),
-                }),
-            );
-            return false;
+            Ok(()) => self.operation_lanes.record_command_enqueued(),
+            Err(error) => {
+                self.operation_lanes.record_enqueue_rejection();
+                self.clear_structured_output_poll_in_flight(&provider_run_id);
+                crate::logging::error_with_fields(
+                    "daemon.provider_run_actor",
+                    "provider run output poll command enqueue failed",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return false;
+            }
         }
         true
     }
@@ -383,7 +430,10 @@ impl ProviderRunActorMailbox {
             workers.remove(provider_run_id)
         };
         if let Some(sender) = sender {
-            let _ = sender.try_send(ProviderRunActorCommand::Stop);
+            match sender.try_send(ProviderRunActorCommand::Stop) {
+                Ok(()) => self.operation_lanes.record_command_enqueued(),
+                Err(_) => self.operation_lanes.record_enqueue_rejection(),
+            }
         }
     }
 
@@ -665,6 +715,22 @@ mod tests {
             .lock()
             .expect("structured output poll set should not be poisoned")
             .is_empty());
+        assert_eq!(
+            mailbox.operation_lanes.health_snapshot().enqueued_commands,
+            1
+        );
+    }
+
+    #[test]
+    fn provider_run_actor_health_counts_enqueue_rejections() {
+        let lanes = ProviderRunOperationLanes::default();
+        lanes.record_command_enqueued();
+        lanes.record_enqueue_rejection();
+
+        let snapshot = lanes.health_snapshot();
+
+        assert_eq!(snapshot.enqueued_commands, 1);
+        assert_eq!(snapshot.enqueue_rejections, 1);
     }
 
     #[test]
