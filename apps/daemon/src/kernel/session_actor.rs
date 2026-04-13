@@ -282,6 +282,16 @@ async fn run_session_command_lane(
                 None
             };
             (result, projected_session)
+        } else if let Some(result) =
+            projected_resize_terminal_response(&session_projection, &envelope.request)
+        {
+            let projected_session = if result.is_ok() {
+                session_id_for_projection_refresh(&result)
+                    .and_then(|session_id| session_projection.get(&session_id))
+            } else {
+                None
+            };
+            (result, projected_session)
         } else {
             let mut app = app.lock().await;
             let result = SessionActor::handle_interactive_command(
@@ -368,6 +378,29 @@ fn projected_runtime_notices_response(
         }),
     };
     Some(result)
+}
+
+fn projected_resize_terminal_response(
+    session_projection: &SessionStateProjectionStore,
+    request: &LocalDaemonRequest,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    let LocalDaemonRequest::ResizeTerminal(request) = request else {
+        return None;
+    };
+    if let Some(session) = session_projection.get(&request.session_id) {
+        if session.active_provider_run_id().is_none() {
+            return Some(Err(DaemonError::NoActiveProviderRun {
+                session_id: request.session_id.clone(),
+            }));
+        }
+        return None;
+    }
+    if !session_projection.has_warmed_list() {
+        return None;
+    }
+    Some(Err(DaemonError::SessionNotFound {
+        session_id: request.session_id.clone(),
+    }))
 }
 
 fn session_id_for_projection_refresh(

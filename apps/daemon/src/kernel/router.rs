@@ -3490,6 +3490,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resize_without_active_run_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-resize-no-active-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm session projection");
+
+        let app_guard = app.lock().await;
+        let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+            session_id: session_id.clone(),
+            cols: 120,
+            rows: 40,
+        });
+        let resize_command = KernelCommand::from_local_request(
+            "cmd-resize-no-active-projection",
+            None,
+            None,
+            &resize_request,
+        );
+        let resize_router = router.clone();
+        let resize_task =
+            tokio::spawn(
+                async move { resize_router.dispatch(resize_command, resize_request).await },
+            );
+
+        let error = timeout(Duration::from_millis(100), resize_task)
+            .await
+            .expect("resize absence should not wait for the app lock")
+            .expect("resize task should join")
+            .expect_err("resize without active provider run should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::NoActiveProviderRun {
+                session_id: error_session_id,
+            } => assert_eq!(error_session_id, session_id),
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
     async fn get_session_state_projection_tracks_prompt_completion_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = app
