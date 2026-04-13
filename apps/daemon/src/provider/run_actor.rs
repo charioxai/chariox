@@ -22,11 +22,12 @@ use super::{
 
 type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
+const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunActorMailbox {
     operation_lanes: ProviderRunOperationLanes,
-    workers: Arc<Mutex<BTreeMap<String, mpsc::Sender<ProviderRunActorCommand>>>>,
+    workers: Arc<Mutex<BTreeMap<String, mpsc::SyncSender<ProviderRunActorCommand>>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
@@ -245,7 +246,7 @@ impl ProviderRunActorMailbox {
     ) {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.send(ProviderRunActorCommand::Submit {
+        if let Err(error) = sender.try_send(ProviderRunActorCommand::Submit {
             session_id,
             provider_run_id: provider_run_id.clone(),
             agent_id,
@@ -273,7 +274,7 @@ impl ProviderRunActorMailbox {
     ) {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.send(ProviderRunActorCommand::Abort {
+        if let Err(error) = sender.try_send(ProviderRunActorCommand::Abort {
             session_id,
             provider_run_id: provider_run_id.clone(),
             run,
@@ -312,7 +313,7 @@ impl ProviderRunActorMailbox {
                 )
             })
         };
-        if let Err(error) = sender.send(ProviderRunActorCommand::Terminate {
+        if let Err(error) = sender.try_send(ProviderRunActorCommand::Terminate {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
@@ -331,7 +332,7 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn spawn_selection_sync(&self, provider_run_id: String) {
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.send(ProviderRunActorCommand::SyncSelection {
+        if let Err(error) = sender.try_send(ProviderRunActorCommand::SyncSelection {
             provider_run_id: provider_run_id.clone(),
         }) {
             crate::logging::error_with_fields(
@@ -354,7 +355,7 @@ impl ProviderRunActorMailbox {
             return false;
         }
         let sender = self.worker_for_run(&provider_run_id);
-        if let Err(error) = sender.send(ProviderRunActorCommand::PollOutput {
+        if let Err(error) = sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
         }) {
@@ -382,7 +383,7 @@ impl ProviderRunActorMailbox {
             workers.remove(provider_run_id)
         };
         if let Some(sender) = sender {
-            let _ = sender.send(ProviderRunActorCommand::Stop);
+            let _ = sender.try_send(ProviderRunActorCommand::Stop);
         }
     }
 
@@ -452,7 +453,7 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    fn worker_for_run(&self, provider_run_id: &str) -> mpsc::Sender<ProviderRunActorCommand> {
+    fn worker_for_run(&self, provider_run_id: &str) -> mpsc::SyncSender<ProviderRunActorCommand> {
         let mut workers = self
             .workers
             .lock()
@@ -487,8 +488,8 @@ impl ProviderRunActorMailbox {
         finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
         finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
         finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
-    ) -> mpsc::Sender<ProviderRunActorCommand> {
-        let (tx, rx) = mpsc::channel();
+    ) -> mpsc::SyncSender<ProviderRunActorCommand> {
+        let (tx, rx) = mpsc::sync_channel(PROVIDER_RUN_COMMAND_QUEUE_LIMIT);
         thread::spawn(move || {
             while let Ok(command) = rx.recv() {
                 match command {
