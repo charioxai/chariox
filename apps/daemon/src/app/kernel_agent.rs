@@ -1,6 +1,6 @@
 use super::prompt_lifecycle::{
-    KernelPromptAbortDispatch, KernelPromptCancellation, KernelPromptDispatch,
-    KernelPromptSubmission,
+    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
+    KernelPromptDispatch, KernelPromptSubmission,
 };
 use super::DaemonApp;
 use crate::error::DaemonError;
@@ -242,33 +242,86 @@ impl<'a> KernelAgentService<'a> {
         Ok(outcome)
     }
 
-    pub(crate) fn submit_prompt_for_kernel(
+    pub(crate) fn submit_prepared_prompt_for_kernel(
         &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        target_agent_id: Option<&str>,
-        prompt: &str,
-        attachments: Vec<PromptAttachment>,
+        prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
+        let session_id = prepared.session_id.as_str();
+        let attachment_id = prepared.prompt.source_attachment_id().to_string();
+        let target_agent_id = prepared.prompt.target_agent_id().to_string();
         self.app
-            .ensure_attachment_in_session(session_id, attachment_id)?;
+            .ensure_attachment_in_session(session_id, &attachment_id)?;
         let session_before = self.app.sessions.get_session(session_id)?;
 
-        let target_agent_id = target_agent_id
-            .or_else(|| session_before.focused_agent_id())
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: "no focused agent".to_string(),
-            })?
-            .to_string();
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.remote_execution().is_some() {
-            let outcome = self.submit_prompt(
+            self.app.append_user_prompt_history(
                 session_id,
-                attachment_id,
-                Some(&target_agent_id),
-                prompt,
-                attachments,
-            )?;
+                &attachment_id,
+                &target_agent_id,
+                prepared.prompt.prompt(),
+                prepared.prompt.attachments(),
+            );
+            let (_session, outcome) = if prepared.force_queue {
+                self.app
+                    .sessions
+                    .queue_prepared_prompt(session_id, prepared.prompt.clone())?
+            } else {
+                self.app
+                    .sessions
+                    .submit_prepared_prompt(session_id, prepared.prompt.clone())?
+            };
+            if let PromptSubmissionOutcome::Started { prompt } = &outcome {
+                let remote_execution = target_agent
+                    .remote_execution()
+                    .expect("remote execution should be available for remote agent");
+                let response =
+                    self.app
+                        .block_on_relay_future(send_peer_request_via_temporary_connection(
+                            self.app.config(),
+                            ClientTarget {
+                                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                daemon_alias: None,
+                            },
+                            RelayPeerRequest::SubmitLeasedPrompt {
+                                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                prompt: prompt.prompt().to_string(),
+                                attachments: self
+                                    .app
+                                    .serialize_remote_prompt_attachments(prompt.attachments())?,
+                                workflow_context: None,
+                            },
+                        ));
+                let remote_provider_run_id = match response {
+                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id, ..
+                    }) => provider_run_id,
+                    Ok(other) => {
+                        let _ = self
+                            .app
+                            .sessions
+                            .cancel_active_prompt(session_id, &target_agent_id);
+                        return Err(DaemonError::LocalTransport {
+                            operation: "submit remote prepared prompt",
+                            message: format!("unexpected remote prompt response: {other:?}"),
+                        });
+                    }
+                    Err(error) => {
+                        let _ = self
+                            .app
+                            .sessions
+                            .cancel_active_prompt(session_id, &target_agent_id);
+                        return Err(error);
+                    }
+                };
+                self.app.echo_prompt_to_other_attachments(
+                    session_id,
+                    &remote_provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                    prompt.attachments(),
+                );
+            }
             let session = self.app.local_api_session_snapshot(session_id)?;
             return Ok(KernelPromptSubmission {
                 outcome,
@@ -298,28 +351,20 @@ impl<'a> KernelAgentService<'a> {
 
         self.app.append_user_prompt_history(
             session_id,
-            attachment_id,
+            &attachment_id,
             &target_agent_id,
-            prompt,
-            &attachments,
+            prepared.prompt.prompt(),
+            prepared.prompt.attachments(),
         );
 
-        let (_session, outcome) = if provider_run_is_starting {
-            self.app.sessions.queue_prompt(
-                session_id,
-                attachment_id,
-                &target_agent_id,
-                prompt,
-                attachments.clone(),
-            )?
+        let (_session, outcome) = if prepared.force_queue || provider_run_is_starting {
+            self.app
+                .sessions
+                .queue_prepared_prompt(session_id, prepared.prompt.clone())?
         } else {
-            self.app.sessions.submit_prompt(
-                session_id,
-                attachment_id,
-                &target_agent_id,
-                prompt,
-                attachments.clone(),
-            )?
+            self.app
+                .sessions
+                .submit_prepared_prompt(session_id, prepared.prompt.clone())?
         };
 
         let mut dispatch = None;
@@ -407,7 +452,7 @@ impl<'a> KernelAgentService<'a> {
                 self.app.record_notice(
                     session_id,
                     provider_run_id.as_deref(),
-                    self.app.other_attachment_ids(session_id, attachment_id),
+                    self.app.other_attachment_ids(session_id, &attachment_id),
                     format!(
                         "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
                         attachment_id,

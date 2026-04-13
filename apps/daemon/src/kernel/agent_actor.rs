@@ -4,7 +4,7 @@ use std::sync::Mutex as StdMutex;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjection, AgentRuntimeProjectionStore,
@@ -14,7 +14,8 @@ use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
 use crate::session::{
-    PromptCancellation, PromptCompletion, PromptQueueItem, PromptSubmissionOutcome, RuntimeSession,
+    PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    RuntimeSession,
 };
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -674,12 +675,20 @@ async fn execute_agent_command(
                     })?;
             let prepared = {
                 let mut app = app.lock().await;
-                app.kernel_agents().submit_prompt_for_kernel(
-                    &request.session_id,
+                let prompt = PromptQueueItem::new(
+                    app.sessions_mut().reserve_prompt_id(),
                     &request.attachment_id,
-                    request.target_agent_id.as_deref(),
+                    &target_agent_id,
                     &request.prompt,
-                    request.attachments,
+                    PromptStatus::Queued,
+                )
+                .with_attachments(request.attachments);
+                app.kernel_agents().submit_prepared_prompt_for_kernel(
+                    KernelPreparedPromptSubmission {
+                        session_id: request.session_id.clone(),
+                        prompt,
+                        force_queue: admission == PromptSubmissionAdmission::Queue,
+                    },
                 )?
             };
             debug_assert!(

@@ -15,6 +15,8 @@ mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod workflow_runtime;
 
+pub(crate) use prompt_lifecycle::KernelPreparedPromptSubmission;
+
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest, RemoteAgentBinding};

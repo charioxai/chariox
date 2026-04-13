@@ -240,6 +240,25 @@ impl SessionService {
         Ok((session.clone(), outcome))
     }
 
+    pub(crate) fn submit_prepared_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: super::PromptQueueItem,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let source_attachment_id = prompt.source_attachment_id().to_string();
+        let session = self.get_session_mut_for_operation(session_id, "submit prepared prompt")?;
+
+        if !session.has_attachment(&source_attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: source_attachment_id,
+            });
+        }
+
+        let outcome = session.submit_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
     pub fn queue_prompt(
         &mut self,
         session_id: &str,
@@ -263,6 +282,25 @@ impl SessionService {
             return Err(DaemonError::AttachmentNotInSession {
                 session_id: session_id.to_string(),
                 attachment_id: attachment_id.to_string(),
+            });
+        }
+
+        let outcome = session.queue_prompt(prompt);
+        Ok((session.clone(), outcome))
+    }
+
+    pub(crate) fn queue_prepared_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: super::PromptQueueItem,
+    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
+        let source_attachment_id = prompt.source_attachment_id().to_string();
+        let session = self.get_session_mut_for_operation(session_id, "queue prepared prompt")?;
+
+        if !session.has_attachment(&source_attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: source_attachment_id,
             });
         }
 
@@ -594,6 +632,10 @@ impl SessionService {
 
         session.touch();
         Ok(session)
+    }
+
+    pub(crate) fn reserve_prompt_id(&mut self) -> String {
+        self.next_prompt_id()
     }
 
     pub(super) fn next_prompt_id(&mut self) -> String {

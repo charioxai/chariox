@@ -3,7 +3,8 @@ use crate::error::DaemonError;
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::pty::PtyProcessState;
 use crate::session::{
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
+    PromptSubmissionOutcome,
 };
 use crate::transport::flow_control;
 use crate::transport::relay_peer::RelayPromptAttachment;
@@ -15,6 +16,12 @@ pub(crate) struct KernelPromptSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
     pub(crate) session: crate::session::RuntimeSession,
     pub(crate) dispatch: Option<KernelPromptDispatch>,
+}
+
+pub(crate) struct KernelPreparedPromptSubmission {
+    pub(crate) session_id: String,
+    pub(crate) prompt: PromptQueueItem,
+    pub(crate) force_queue: bool,
 }
 
 pub(crate) struct KernelPromptDispatch {
