@@ -1752,8 +1752,7 @@ impl DaemonApp {
             let (_session, completed) = self
                 .sessions
                 .complete_active_prompt_only(session_id, agent_id)?;
-            crate::scheduler::runtime::on_workflow_prompt_completed(
-                self,
+            self.complete_workflow_prompt_from_runtime(
                 session_id,
                 &completed,
                 Some(provider_run_id),

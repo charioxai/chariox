@@ -1,8 +1,9 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{
-    unix_epoch_ms, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, WorkflowDefinition,
-    WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun, WorkflowWatchdogTickPlan,
+    unix_epoch_ms, PromptQueueItem, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource,
+    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun,
+    WorkflowWatchdogTickPlan,
 };
 use std::collections::BTreeSet;
 
@@ -21,6 +22,28 @@ pub enum WorkflowLaunchOutcome {
 }
 
 impl DaemonApp {
+    pub(crate) fn complete_workflow_prompt_from_runtime(
+        &mut self,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_completed(
+            self,
+            session_id,
+            prompt,
+            provider_run_id,
+        )
+    }
+
+    pub(crate) fn cancel_workflow_prompt_from_runtime(
+        &mut self,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, prompt)
+    }
+
     pub fn invoke_workflow_endpoint_with_admission(
         &mut self,
         session_id: &str,
