@@ -90,7 +90,9 @@ impl AgentRuntime {
         command: &crate::kernel::command::KernelCommand,
         request: crate::local::CancelActivePromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let agent_id = self.resolve_focused_agent_id(&request.session_id).await?;
+        let agent_id = self
+            .resolve_active_prompt_agent_id(&request.session_id)
+            .await?;
         self.dispatch_to_agent(
             agent_id.clone(),
             command.command_id.clone(),
@@ -109,7 +111,7 @@ impl AgentRuntime {
         request: crate::local::CompletePromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let agent_id = self
-            .resolve_completion_agent_id(&request.session_id)
+            .resolve_active_prompt_agent_id(&request.session_id)
             .await?;
         self.dispatch_to_agent(
             agent_id.clone(),
@@ -123,8 +125,14 @@ impl AgentRuntime {
         .await
     }
 
-    async fn resolve_completion_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
-        if let Some(agent_id) = self.resolve_projected_completion_agent_id(session_id).await {
+    async fn resolve_active_prompt_agent_id(
+        &self,
+        session_id: &str,
+    ) -> Result<String, DaemonError> {
+        if let Some(agent_id) = self
+            .resolve_projected_active_prompt_agent_id(session_id)
+            .await
+        {
             return Ok(agent_id);
         }
         if let Some(agent_id) = self
@@ -142,7 +150,7 @@ impl AgentRuntime {
         })
     }
 
-    async fn resolve_projected_completion_agent_id(&self, session_id: &str) -> Option<String> {
+    async fn resolve_projected_active_prompt_agent_id(&self, session_id: &str) -> Option<String> {
         if let Some(focused_agent_id) = self.focus_projection.focused_agent_id(session_id).await {
             if self
                 .agent_runtime_projection
@@ -202,27 +210,6 @@ impl AgentRuntime {
             .map(str::to_string)
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "no focused agent".to_string(),
-            })
-    }
-
-    async fn resolve_focused_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
-        if let Some(agent_id) = self.focus_projection.focused_agent_id(session_id).await {
-            return Ok(agent_id);
-        }
-        if let Some(agent_id) = self
-            .session_projection
-            .get(session_id)
-            .and_then(|session| session.focused_agent_id().map(str::to_string))
-        {
-            return Ok(agent_id);
-        }
-        let app = self.app.lock().await;
-        app.sessions()
-            .get_session(session_id)?
-            .focused_agent_id()
-            .map(str::to_string)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
             })
     }
 
