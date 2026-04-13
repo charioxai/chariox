@@ -13,6 +13,8 @@ use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope,
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::kernel::command::{KernelCommand, KernelCommandSource};
+use crate::kernel::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::kernel_transport::{
     event_is_relevant_to_attachment, event_session_id, watch_subscription_state, KernelEvent,
     WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
@@ -70,6 +72,16 @@ pub async fn run_daemon_relay_connector(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let event_runtime = Arc::new(RelayEventRuntime::default());
+    let provider_runtime_lanes = {
+        let app = app.lock().await;
+        app.provider_run_operation_lanes()
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+        Arc::clone(&app),
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        provider_runtime_lanes,
+    ));
+    let command_sequence = Arc::new(AtomicU64::new(1));
 
     loop {
         if *shutdown.borrow() {
@@ -158,6 +170,8 @@ pub async fn run_daemon_relay_connector(
                                 Some(Ok(Message::Text(payload))) => {
                                     if handle_incoming_envelope(
                                         &app,
+                                        &router,
+                                        &command_sequence,
                                         &state,
                                         &outgoing_tx,
                                         &subscription_tasks,
@@ -247,6 +261,8 @@ pub async fn run_daemon_relay_connector(
 
 async fn handle_incoming_envelope(
     app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
+    command_sequence: &Arc<AtomicU64>,
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_tasks: &RelaySubscriptionTasks,
@@ -264,7 +280,8 @@ async fn handle_incoming_envelope(
             relay_request_id,
             encrypted_request,
         } => {
-            let relay_response = handle_daemon_request(app, encrypted_request).await;
+            let relay_response =
+                handle_daemon_request(app, router, command_sequence, encrypted_request).await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -1125,6 +1142,8 @@ async fn resolve_pending_peer_response(
 
 async fn handle_daemon_request(
     app: &Arc<Mutex<DaemonApp>>,
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, client_public_key, daemon_private_key) = {
@@ -1173,10 +1192,7 @@ async fn handle_daemon_request(
         };
     }
 
-    let result = {
-        let mut app = app.lock().await;
-        app.handle_local_request(request)
-    };
+    let result = dispatch_relay_client_request(router, command_sequence, request).await;
     match result {
         Ok(response) => {
             let plaintext = match serde_json::to_vec(&response) {
@@ -1216,6 +1232,26 @@ async fn handle_daemon_request(
             error: Some(map_relay_error(&error)),
         },
     }
+}
+
+async fn dispatch_relay_client_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    request: LocalDaemonRequest,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
+    let command_id = format!(
+        "relay-client-{}-{sequence}",
+        crate::session::unix_epoch_ms()
+    );
+    let command = KernelCommand::from_local_request_with_source(
+        command_id,
+        KernelCommandSource::RelayClient,
+        None,
+        None,
+        &request,
+    );
+    router.dispatch(command, request).await
 }
 
 fn is_supported_relay_request(request: &LocalDaemonRequest) -> bool {
@@ -2811,6 +2847,13 @@ mod tests {
             list_response,
             LocalDaemonResponse::SessionsListed { sessions } if sessions.iter().any(|session| session.id() == created_session_id)
         ));
+        assert!(
+            app.lock()
+                .await
+                .session_state_projection_store()
+                .has_warmed_list(),
+            "relay daemon requests should enter through the command router and warm projections"
+        );
 
         let state_request_private_key = send_client_request(
             &mut client_socket,
