@@ -1291,17 +1291,18 @@ mod tests {
     use crate::local::{
         AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
         ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest,
-        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
-        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
-        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest,
+        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
+        SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
-    use crate::{DaemonApp, DaemonConfig};
+    use crate::{DaemonApp, DaemonConfig, DaemonError};
 
     #[tokio::test]
     async fn routes_interactive_commands_through_bounded_lane() {
@@ -1895,6 +1896,91 @@ mod tests {
             !router.session_runtime.has_lane(&session_id).await,
             "deleting a session should remove its mailbox registration"
         );
+    }
+
+    #[tokio::test]
+    async fn missing_delete_session_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-list-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: "missing-session".to_string(),
+            workspace_id: None,
+        });
+        let delete_command =
+            KernelCommand::from_local_request("cmd-delete-missing", None, None, &delete_request);
+        let delete_router = router.clone();
+        let delete_task =
+            tokio::spawn(
+                async move { delete_router.dispatch(delete_command, delete_request).await },
+            );
+
+        let error = timeout(Duration::from_millis(100), delete_task)
+            .await
+            .expect("missing delete should not wait for the app lock")
+            .expect("delete task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_detach_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-list-warm-detach", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let detach_request = LocalDaemonRequest::DetachFromSession(DetachFromSessionRequest {
+            attachment_id: "missing-attachment".to_string(),
+        });
+        let detach_command =
+            KernelCommand::from_local_request("cmd-detach-missing", None, None, &detach_request);
+        let detach_router = router.clone();
+        let detach_task =
+            tokio::spawn(
+                async move { detach_router.dispatch(detach_command, detach_request).await },
+            );
+
+        let error = timeout(Duration::from_millis(100), detach_task)
+            .await
+            .expect("missing detach should not wait for the app lock")
+            .expect("detach task should join")
+            .expect_err("missing attachment should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::AttachmentNotFound { attachment_id } => {
+                assert_eq!(attachment_id, "missing-attachment");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
     }
 
     #[tokio::test]

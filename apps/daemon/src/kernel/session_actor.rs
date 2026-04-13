@@ -126,6 +126,15 @@ impl SessionRuntime {
                 {
                     return Ok(session_id);
                 }
+                if let Some(result) = self
+                    .session_projection
+                    .resolve_session_ref_id_from_warmed_list(
+                        &request.session_ref,
+                        request.workspace_id.as_deref(),
+                    )
+                {
+                    return result;
+                }
                 let app = self.app.lock().await;
                 Ok(app
                     .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?
@@ -138,6 +147,11 @@ impl SessionRuntime {
                     .session_id_for_attachment(&request.attachment_id)
                 {
                     return Ok(session_id);
+                }
+                if self.session_projection.has_warmed_list() {
+                    return Err(DaemonError::AttachmentNotFound {
+                        attachment_id: request.attachment_id.clone(),
+                    });
                 }
                 let app = self.app.lock().await;
                 Ok(app
