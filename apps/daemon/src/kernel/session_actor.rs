@@ -130,8 +130,16 @@ impl SessionRuntime {
             LocalDaemonRequest::ResizeTerminal(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
-            LocalDaemonRequest::PollRuntimeNotices(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::UpdateSessionConfig(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::PollRuntimeNotices(request) => self
+                .resolve_attachment_scoped_session_lane_key(
+                    &request.session_id,
+                    &request.attachment_id,
+                ),
+            LocalDaemonRequest::UpdateSessionConfig(request) => self
+                .resolve_attachment_scoped_session_lane_key(
+                    &request.session_id,
+                    &request.attachment_id,
+                ),
             LocalDaemonRequest::AliasSession(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
@@ -194,6 +202,34 @@ impl SessionRuntime {
         }
         Err(DaemonError::SessionNotFound {
             session_id: session_id.to_string(),
+        })
+    }
+
+    fn resolve_attachment_scoped_session_lane_key(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<String, DaemonError> {
+        if self
+            .session_projection
+            .get(session_id)
+            .is_some_and(|session| session.has_attachment(attachment_id))
+            || !self.session_projection.has_warmed_list()
+        {
+            return Ok(session_id.to_string());
+        }
+        if self
+            .session_projection
+            .session_id_for_attachment(attachment_id)
+            .is_some()
+        {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        Err(DaemonError::AttachmentNotFound {
+            attachment_id: attachment_id.to_string(),
         })
     }
 
@@ -640,8 +676,8 @@ mod tests {
     };
     use crate::local::{
         AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-        LocalDaemonResponse, ResizeTerminalRequest, SpawnAgentRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest, SpawnAgentRequest,
+        SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -723,6 +759,51 @@ mod tests {
             }
             error => panic!("unexpected error: {error}"),
         }
+    }
+
+    #[tokio::test]
+    async fn attachment_scoped_session_lane_resolution_rejects_warmed_missing_attachment_without_lane(
+    ) {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            Arc::clone(&app),
+            1,
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+            {
+                let app = app.lock().await;
+                app.terminal_stream_store()
+            },
+        );
+
+        let _locked_app = app.lock().await;
+        let request = LocalDaemonRequest::PollRuntimeNotices(PollRuntimeNoticesRequest {
+            session_id: "missing-session".to_string(),
+            attachment_id: "missing-attachment".to_string(),
+        });
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_session_lane_key(&request),
+        )
+        .await
+        .expect("warmed missing attachment lane resolution should not wait for the app lock")
+        .expect_err("missing attachment should fail before lane creation");
+
+        match error {
+            DaemonError::AttachmentNotFound { attachment_id } => {
+                assert_eq!(attachment_id, "missing-attachment");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+        assert!(
+            !runtime.has_lane("missing-session").await,
+            "missing attachment should be rejected before creating a session lane"
+        );
     }
 
     #[test]
