@@ -2005,9 +2005,12 @@ mod tests {
         assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
         assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
         assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
+        assert_eq!(projection.capability_executor.max_concurrent_jobs, 64);
+        assert_eq!(projection.capability_executor.available_permits, 64);
         assert_eq!(projection.capability_executor.submitted_jobs, 1);
         assert_eq!(projection.capability_executor.completed_jobs, 0);
         assert_eq!(projection.capability_executor.failed_jobs, 1);
+        assert_eq!(projection.capability_executor.rejected_jobs, 0);
         assert!(!projection.provider_catalog.cached);
     }
 

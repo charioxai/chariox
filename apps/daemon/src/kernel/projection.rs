@@ -986,10 +986,13 @@ mod tests {
                 enqueue_rejections: 1,
             },
             CapabilityExecutorHealthSnapshot {
+                max_concurrent_jobs: 64,
+                available_permits: 63,
                 submitted_jobs: 8,
                 running_jobs: 1,
                 completed_jobs: 6,
                 failed_jobs: 1,
+                rejected_jobs: 0,
                 join_errors: 0,
             },
             SessionProjectionHealthSnapshot {
