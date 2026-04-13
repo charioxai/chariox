@@ -643,9 +643,12 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let Some(session) = self.session_projection.get(&request.session_id) else {
             let mut app = self.app.lock().await;
-            return Ok(LocalDaemonResponse::TerminalOutput {
-                records: app.pump_terminal_output(&request.session_id, &request.attachment_id)?,
-            });
+            let records = app.pump_terminal_output(&request.session_id, &request.attachment_id)?;
+            if let Ok(session) = app.local_api_session_snapshot(&request.session_id) {
+                self.agent_runtime_projection.update_session(&session);
+                self.session_projection.update(session);
+            }
+            return Ok(LocalDaemonResponse::TerminalOutput { records });
         };
         let Some(provider_run_id) = session.active_provider_run_id().map(str::to_string) else {
             return Ok(LocalDaemonResponse::TerminalOutput {
@@ -654,6 +657,23 @@ impl CommandRouter {
                     .drain_output_records(&request.session_id, &request.attachment_id),
             });
         };
+        if self
+            .provider_run_projection
+            .get(&provider_run_id)
+            .is_some_and(|run| {
+                run.session_id() == request.session_id
+                    && matches!(
+                        run.state(),
+                        ProviderRunState::Ended | ProviderRunState::Parked
+                    )
+            })
+        {
+            return Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
+            });
+        }
 
         let recipient_attachment_ids = session.attachment_ids().iter().cloned().collect();
         let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
@@ -664,6 +684,10 @@ impl CommandRouter {
                 &provider_run_id,
                 recipient_attachment_ids,
             )?;
+            if let Ok(session) = app.local_api_session_snapshot(&request.session_id) {
+                self.agent_runtime_projection.update_session(&session);
+                self.session_projection.update(session);
+            }
         }
         Ok(LocalDaemonResponse::TerminalOutput {
             records: self
@@ -859,26 +883,6 @@ impl CommandRouter {
                         self.agent_runtime
                             .update_prompt_state_from_session(&session);
                         self.agent_runtime_projection.update_session(&session);
-                    }
-                }
-            }
-            SessionProjectionRefresh::SnapshotRequestSession { .. } => {
-                for session_id in snapshot_session_ids {
-                    let session = {
-                        let app = self.app.lock().await;
-                        app.local_api_session_snapshot(&session_id).ok()
-                    };
-                    if let Some(session) = session {
-                        refreshed_session_ids.push(session.id().to_string());
-                        self.agent_runtime
-                            .update_prompt_state_from_session(&session);
-                        self.agent_runtime_projection.update_session(&session);
-                        self.session_projection.update(session);
-                    } else {
-                        self.agent_runtime.remove_session_state(&session_id);
-                        self.agent_runtime_projection.remove_session(&session_id);
-                        self.session_projection.remove(&session_id);
-                        refreshed_session_ids.push(session_id);
                     }
                 }
             }
@@ -1154,7 +1158,6 @@ fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefr
 #[derive(Debug)]
 enum SessionProjectionRefresh {
     None,
-    SnapshotRequestSession { session_id: String },
     SnapshotAgentResponse,
 }
 
@@ -1162,9 +1165,6 @@ impl SessionProjectionRefresh {
     fn session_ids(&self, response: &LocalDaemonResponse) -> Vec<String> {
         match self {
             SessionProjectionRefresh::None => Vec::new(),
-            SessionProjectionRefresh::SnapshotRequestSession { session_id } => {
-                vec![session_id.clone()]
-            }
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
                 LocalDaemonResponse::AgentSpawned { agent }
                 | LocalDaemonResponse::AgentDestroyed { agent }
@@ -1192,11 +1192,7 @@ fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjection
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
             SessionProjectionRefresh::None
         }
-        LocalDaemonRequest::PumpTerminalOutput(request) => {
-            SessionProjectionRefresh::SnapshotRequestSession {
-                session_id: request.session_id.clone(),
-            }
-        }
+        LocalDaemonRequest::PumpTerminalOutput(_) => SessionProjectionRefresh::None,
         LocalDaemonRequest::PollRuntimeNotices(_) | LocalDaemonRequest::ResizeTerminal(_) => {
             SessionProjectionRefresh::None
         }
@@ -5397,6 +5393,82 @@ mod tests {
         match pump_response {
             LocalDaemonResponse::TerminalOutput { records } => {
                 assert!(records.is_empty());
+            }
+            _ => panic!("unexpected pump response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_output_with_projected_inactive_run_drains_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-pump-parked",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let mut projected_session = app
+            .local_api_session_snapshot(&session_id)
+            .expect("session snapshot should be available");
+        let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-parked",
+            session_id.clone(),
+            Some(agent.id().to_string()),
+            "dev-stub".to_string(),
+        );
+        provider_run.mark_parked();
+        projected_session.set_active_provider_run(Some(provider_run.id().to_string()));
+        app.fan_out_output(
+            &session_id,
+            provider_run.id(),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            vec![attachment.id().to_string()],
+            b"parked buffered output",
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        router.session_projection.update(projected_session);
+        router.provider_run_projection.update(provider_run.clone());
+
+        let app_guard = app.lock().await;
+        let permit = router
+            .provider_runtime_lanes
+            .acquire(provider_run.id())
+            .await;
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let pump_command = KernelCommand::from_local_request(
+            "cmd-pump-parked-projection",
+            None,
+            None,
+            &pump_request,
+        );
+        let pump_router = router.clone();
+        let pump_task =
+            tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+        let pump_response = timeout(Duration::from_millis(100), pump_task)
+            .await
+            .expect("inactive run drain should not wait for app lock or provider lane")
+            .expect("pump task should join")
+            .expect("pump should succeed");
+        drop(permit);
+        drop(app_guard);
+
+        match pump_response {
+            LocalDaemonResponse::TerminalOutput { records } => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].session_id, session_id);
+                assert_eq!(records[0].bytes, b"parked buffered output".to_vec());
             }
             _ => panic!("unexpected pump response"),
         }
