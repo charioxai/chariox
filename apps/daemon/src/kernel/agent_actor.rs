@@ -479,6 +479,14 @@ impl AgentRuntime {
             });
         }
         if let Some(agent_id) = target_agent_id {
+            if let Some(session) = session_projection.as_ref() {
+                if !session.agents().iter().any(|agent| agent.id() == agent_id) {
+                    return Err(DaemonError::AgentNotInSession {
+                        session_id: session_id.to_string(),
+                        agent_id: agent_id.to_string(),
+                    });
+                }
+            }
             return Ok(agent_id.to_string());
         }
         if let Some(agent_id) = self.focus_projection.focused_agent_id(session_id).await {
@@ -1037,6 +1045,47 @@ mod tests {
         match error {
             DaemonError::SessionNotFound { session_id } => {
                 assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_agent_resolution_uses_session_projection_for_invalid_target_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_snapshot = app
+            .local_api_session_snapshot(session.id())
+            .expect("session projection fixture should be available");
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update(session_snapshot);
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+
+        let _locked_app = app.lock().await;
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_submit_agent_id(session.id(), Some("missing-agent")),
+        )
+        .await
+        .expect("projected invalid target resolution should not wait for the app lock")
+        .expect_err("invalid target agent should fail");
+
+        match error {
+            DaemonError::AgentNotInSession {
+                session_id,
+                agent_id,
+            } => {
+                assert_eq!(session_id, session.id());
+                assert_eq!(agent_id, "missing-agent");
             }
             error => panic!("unexpected error: {error}"),
         }
