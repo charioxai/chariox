@@ -331,28 +331,30 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let (result, projected_session) = if let Some(result) = projected_runtime_notices_response(
+        let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &session_projection,
             &terminal_stream,
             &envelope.request,
         ) {
-            let projected_session = if result.is_ok() {
+            let projection_action = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
                     .and_then(|session_id| session_projection.get(&session_id))
+                    .map(SessionProjectionAction::Update)
             } else {
                 None
             };
-            (result, projected_session)
+            (result, projection_action)
         } else if let Some(result) =
             projected_resize_terminal_response(&session_projection, &envelope.request)
         {
-            let projected_session = if result.is_ok() {
+            let projection_action = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
                     .and_then(|session_id| session_projection.get(&session_id))
+                    .map(SessionProjectionAction::Update)
             } else {
                 None
             };
-            (result, projected_session)
+            (result, projection_action)
         } else if let Some(result) =
             projected_config_update_absence_response(&session_projection, &envelope.request)
         {
@@ -374,18 +376,30 @@ async fn run_session_command_lane(
                     message: "request is not handled by the session runtime".to_string(),
                 })
             });
-            let projected_session = if result.is_ok() {
-                session_id_for_projection_refresh(&result)
-                    .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
+            let projection_action = if let Ok(response) = result.as_ref() {
+                session_response_projection_action(response).or_else(|| {
+                    session_id_for_projection_refresh(&result)
+                        .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
+                        .map(SessionProjectionAction::Update)
+                })
             } else {
                 None
             };
-            (result, projected_session)
+            (result, projection_action)
         };
-        if let Some(session) = projected_session.as_ref() {
-            agent_runtime_projection.update_session(session);
-            session_projection.update(session.clone());
-        }
+        let projected_session = match projection_action {
+            Some(SessionProjectionAction::Update(session)) => {
+                agent_runtime_projection.update_session(&session);
+                session_projection.update(session.clone());
+                Some(session)
+            }
+            Some(SessionProjectionAction::Remove { session_id }) => {
+                agent_runtime_projection.remove_session(&session_id);
+                session_projection.remove(&session_id);
+                None
+            }
+            None => None,
+        };
         update_focus_projection_after_session_command(
             &focus_projection,
             &session_id,
@@ -397,6 +411,11 @@ async fn run_session_command_lane(
         .await;
         let _ = envelope.result_tx.send(result);
     }
+}
+
+enum SessionProjectionAction {
+    Update(crate::session::RuntimeSession),
+    Remove { session_id: String },
 }
 
 async fn update_focus_projection_after_session_command(
@@ -422,6 +441,23 @@ async fn update_focus_projection_after_session_command(
             focus_projection.update(session_id, focused_agent_id).await;
         }
         Err(_) => {}
+    }
+}
+
+fn session_response_projection_action(
+    response: &LocalDaemonResponse,
+) -> Option<SessionProjectionAction> {
+    match response {
+        LocalDaemonResponse::SessionCreated { session, .. }
+        | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::SessionEnded { session }
+        | LocalDaemonResponse::SessionAliased { session } => {
+            Some(SessionProjectionAction::Update(session.clone()))
+        }
+        LocalDaemonResponse::SessionDeleted { session } => Some(SessionProjectionAction::Remove {
+            session_id: session.id().to_string(),
+        }),
+        _ => None,
     }
 }
 
@@ -686,8 +722,8 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::session_actor::{
-        projected_config_update_absence_response, FocusedAgentProjection, SessionActor,
-        SessionRuntime,
+        projected_config_update_absence_response, session_response_projection_action,
+        FocusedAgentProjection, SessionActor, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
         AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
@@ -699,6 +735,35 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
+
+    #[test]
+    fn session_response_projection_action_uses_response_session_and_removes_deleted_sessions() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_snapshot = app
+            .local_api_session_snapshot(session.id())
+            .expect("session snapshot should be available");
+
+        match session_response_projection_action(&LocalDaemonResponse::SessionAliased {
+            session: session_snapshot.clone(),
+        }) {
+            Some(SessionProjectionAction::Update(projected)) => {
+                assert_eq!(projected.id(), session.id());
+            }
+            _ => panic!("session-bearing response should update projections"),
+        }
+
+        match session_response_projection_action(&LocalDaemonResponse::SessionDeleted {
+            session: session_snapshot,
+        }) {
+            Some(SessionProjectionAction::Remove { session_id }) => {
+                assert_eq!(session_id, session.id());
+            }
+            _ => panic!("deleted-session response should remove projections"),
+        }
+    }
 
     #[tokio::test]
     async fn direct_session_lane_resolution_rejects_warmed_missing_session_without_lane() {
