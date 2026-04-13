@@ -231,6 +231,39 @@ pub(crate) struct AgentRuntimeProjectionStore {
 }
 
 impl AgentRuntimeProjectionStore {
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, agent_id: &str) -> Option<AgentRuntimeProjection> {
+        self.agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned")
+            .get(agent_id)
+            .cloned()
+    }
+
+    pub(crate) fn list(&self) -> Vec<AgentRuntimeProjection> {
+        let mut projections = self
+            .agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        projections.sort_by(|left, right| {
+            left.session_id
+                .cmp(&right.session_id)
+                .then_with(|| left.agent_id.cmp(&right.agent_id))
+        });
+        projections
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn list_for_session(&self, session_id: &str) -> Vec<AgentRuntimeProjection> {
+        self.list()
+            .into_iter()
+            .filter(|projection| projection.session_id == session_id)
+            .collect()
+    }
+
     pub(crate) fn update_session(&self, session: &RuntimeSession) {
         let mut agents = self
             .agents
@@ -271,18 +304,15 @@ impl AgentRuntimeProjectionStore {
     }
 
     pub(crate) fn health_snapshot(&self) -> AgentRuntimeProjectionHealthSnapshot {
-        let agents = self
-            .agents
-            .lock()
-            .expect("agent runtime projection lock should not be poisoned");
+        let agents = self.list();
         AgentRuntimeProjectionHealthSnapshot {
             projected_agents: agents.len(),
             active_prompts: agents
-                .values()
+                .iter()
                 .filter(|projection| projection.active_prompt.is_some())
                 .count(),
             queued_prompts: agents
-                .values()
+                .iter()
                 .map(|projection| projection.queued_prompt_count)
                 .sum(),
         }
@@ -821,10 +851,16 @@ impl DaemonHealthProjection {
 
 #[cfg(test)]
 mod tests {
+    use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::projection::{
-        ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
-        ProviderCatalogHealthSnapshot, SessionProjectionHealthSnapshot, SessionSnapshotProjection,
-        SessionStateProjectionStore, TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
+        DaemonHealthProjection, ProviderCatalogHealthSnapshot, SessionProjectionHealthSnapshot,
+        SessionSnapshotProjection, SessionStateProjectionStore, TransportHealthSnapshot,
+        WorkspaceCoordinationHealthSnapshot,
+    };
+    use crate::local::{
+        AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+        SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -918,6 +954,77 @@ mod tests {
             projection.workspace_coordination.worktree_collisions.len(),
             1
         );
+    }
+
+    #[test]
+    fn agent_runtime_projection_reads_agent_prompt_state() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session_id.clone(),
+                    client_id: "cli-agent-runtime-projection".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "first prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("first prompt should start");
+        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "queued prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("second prompt should queue");
+
+        let session = app
+            .local_api_session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        let store = AgentRuntimeProjectionStore::default();
+        store.update_session(&session);
+
+        let projection = store
+            .get(&agent_id)
+            .expect("agent projection should be available");
+        assert_eq!(projection.session_id, session_id);
+        assert_eq!(projection.agent_id, agent_id);
+        assert!(projection.active_prompt.is_some());
+        assert_eq!(projection.queued_prompt_count, 1);
+        assert_eq!(
+            store.list_for_session(&projection.session_id),
+            vec![projection]
+        );
+        assert_eq!(store.health_snapshot().active_prompts, 1);
+        assert_eq!(store.health_snapshot().queued_prompts, 1);
     }
 
     #[test]
