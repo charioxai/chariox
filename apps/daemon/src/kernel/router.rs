@@ -11,9 +11,9 @@ use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
 use crate::kernel::capability_executor::execute_capability_request;
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
-    page_history_entries, DaemonHealthProjection, ProviderCatalogProjectionStore,
-    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    page_history_entries, AgentRuntimeProjectionStore, DaemonHealthProjection,
+    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
@@ -46,6 +46,7 @@ pub(crate) struct CommandRouter {
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     history_store: SessionHistoryStore,
     history_projection: SessionHistoryProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
@@ -85,6 +86,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            agent_runtime_projection,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -112,6 +114,7 @@ impl CommandRouter {
             provider_runtime_lanes,
             focus_projection,
             session_projection,
+            agent_runtime_projection,
             history_store,
             history_projection,
             provider_catalog_projection,
@@ -151,6 +154,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            agent_runtime_projection,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -178,6 +182,7 @@ impl CommandRouter {
             provider_runtime_lanes,
             focus_projection,
             session_projection,
+            agent_runtime_projection,
             history_store,
             history_projection,
             provider_catalog_projection,
@@ -426,6 +431,7 @@ impl CommandRouter {
             self.agent_runtime.queue_snapshots().await,
             self.provider_runtime_lanes.queue_snapshots(),
             self.session_projection.health_snapshot(),
+            self.agent_runtime_projection.health_snapshot(),
             self.provider_catalog_projection
                 .health_snapshot(PROVIDER_CATALOG_CACHE_TTL),
             self.transport_health.snapshot(
@@ -530,12 +536,17 @@ impl CommandRouter {
         let mut refreshed_session_ids = Vec::new();
         for session in response_sessions(response) {
             refreshed_session_ids.push(session.id().to_string());
+            self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
         }
         if let LocalDaemonResponse::SessionsListed { sessions } = response {
+            for session in sessions {
+                self.agent_runtime_projection.update_session(session);
+            }
             self.session_projection.update_list(sessions.clone());
         }
         for session_id in response_removed_session_ids(response) {
+            self.agent_runtime_projection.remove_session(session_id);
             self.session_projection.remove(session_id);
             self.history_projection.remove(session_id);
             refreshed_session_ids.push(session_id.to_string());
@@ -551,8 +562,10 @@ impl CommandRouter {
             };
             if let Some(session) = session {
                 refreshed_session_ids.push(session.id().to_string());
+                self.agent_runtime_projection.update_session(&session);
                 self.session_projection.update(session);
             } else {
+                self.agent_runtime_projection.remove_session(&session_id);
                 self.session_projection.remove(&session_id);
                 refreshed_session_ids.push(session_id);
             }
@@ -737,6 +750,7 @@ fn router_projection_stores(
     ProviderCatalogProjectionStore,
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
+    AgentRuntimeProjectionStore,
     WorkspaceCoordinator,
 ) {
     let app = app
@@ -749,6 +763,7 @@ fn router_projection_stores(
         app.provider_catalog_projection_store(),
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
+        app.agent_runtime_projection_store(),
         app.workspace_coordinator(),
     )
 }
@@ -1574,6 +1589,9 @@ mod tests {
         assert_eq!(projection.session_projection.projected_sessions, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 0);
+        assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
+        assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
+        assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
         assert!(!projection.provider_catalog.cached);
     }
 

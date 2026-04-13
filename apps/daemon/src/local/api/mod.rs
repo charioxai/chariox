@@ -118,6 +118,7 @@ impl DaemonApp {
                     Vec::new(),
                     self.provider_run_operation_lanes().queue_snapshots(),
                     self.session_state_projection_store().health_snapshot(),
+                    self.agent_runtime_projection_store().health_snapshot(),
                     self.provider_catalog_projection_store().health_snapshot(
                         crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL,
                     ),

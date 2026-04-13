@@ -36,9 +36,9 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
-    page_history_entries, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
-    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
-    TransportHealthStore,
+    page_history_entries, AgentRuntimeProjectionStore, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
@@ -87,6 +87,7 @@ pub struct DaemonApp {
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
     session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     history_projection: SessionHistoryProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
@@ -189,6 +190,7 @@ impl DaemonApp {
                 config.session_history_read_delay_ms,
             )?,
             session_projection: SessionStateProjectionStore::default(),
+            agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             history_projection: SessionHistoryProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
@@ -278,8 +280,18 @@ impl DaemonApp {
         self.session_projection.clone()
     }
 
+    pub(crate) fn agent_runtime_projection_store(&self) -> AgentRuntimeProjectionStore {
+        self.agent_runtime_projection.clone()
+    }
+
     pub(crate) fn update_session_projection(&self, session: RuntimeSession) {
+        self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);
+    }
+
+    pub(crate) fn remove_session_projection(&self, session_id: &str) {
+        self.session_projection.remove(session_id);
+        self.agent_runtime_projection.remove_session(session_id);
     }
 
     pub(crate) fn publish_session_projection(

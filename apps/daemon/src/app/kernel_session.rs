@@ -222,6 +222,7 @@ impl<'a> KernelSessionService<'a> {
         let mut deleted = self.app.sessions.delete_session(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
         self.app.history_projection.remove(deleted.id());
+        self.app.remove_session_projection(deleted.id());
         crate::logging::info_with_fields(
             "daemon.session",
             "session deleted",

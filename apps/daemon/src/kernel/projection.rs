@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
 use crate::kernel::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
-use crate::session::{unix_epoch_ms, RuntimeSession, SessionStatus};
+use crate::session::{unix_epoch_ms, PromptQueueItem, RuntimeSession, SessionStatus};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 use serde::{Deserialize, Serialize};
 
@@ -210,6 +210,78 @@ impl SessionStateProjectionStore {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| state.session_states.values().cloned().collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRuntimeProjection {
+    pub session_id: String,
+    pub agent_id: String,
+    pub active_prompt: Option<PromptQueueItem>,
+    pub queued_prompt_count: usize,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct AgentRuntimeProjectionStore {
+    agents: Arc<StdMutex<HashMap<String, AgentRuntimeProjection>>>,
+}
+
+impl AgentRuntimeProjectionStore {
+    pub(crate) fn update_session(&self, session: &RuntimeSession) {
+        let mut agents = self
+            .agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned");
+        agents.retain(|_, projection| projection.session_id != session.id());
+        for agent in session.agents() {
+            let prompt_state = session.prompt_states().get(agent.id());
+            agents.insert(
+                agent.id().to_string(),
+                AgentRuntimeProjection {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
+                    queued_prompt_count: prompt_state
+                        .map(|state| state.queued_prompts().len())
+                        .unwrap_or(0),
+                },
+            );
+        }
+        for (agent_id, prompt_state) in session.prompt_states() {
+            agents
+                .entry(agent_id.clone())
+                .or_insert_with(|| AgentRuntimeProjection {
+                    session_id: session.id().to_string(),
+                    agent_id: agent_id.clone(),
+                    active_prompt: prompt_state.active_prompt().cloned(),
+                    queued_prompt_count: prompt_state.queued_prompts().len(),
+                });
+        }
+    }
+
+    pub(crate) fn remove_session(&self, session_id: &str) {
+        self.agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned")
+            .retain(|_, projection| projection.session_id != session_id);
+    }
+
+    pub(crate) fn health_snapshot(&self) -> AgentRuntimeProjectionHealthSnapshot {
+        let agents = self
+            .agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned");
+        AgentRuntimeProjectionHealthSnapshot {
+            projected_agents: agents.len(),
+            active_prompts: agents
+                .values()
+                .filter(|projection| projection.active_prompt.is_some())
+                .count(),
+            queued_prompts: agents
+                .values()
+                .map(|projection| projection.queued_prompt_count)
+                .sum(),
+        }
     }
 }
 
@@ -484,6 +556,13 @@ pub struct SessionProjectionHealthSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRuntimeProjectionHealthSnapshot {
+    pub projected_agents: usize,
+    pub active_prompts: usize,
+    pub queued_prompts: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCatalogHealthSnapshot {
     pub cached: bool,
     pub expired: bool,
@@ -697,6 +776,7 @@ pub struct DaemonHealthProjection {
     pub agent_command_lanes: Vec<ActorQueueSnapshot>,
     pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
     pub session_projection: SessionProjectionHealthSnapshot,
+    pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
     pub transport: TransportHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
@@ -709,6 +789,7 @@ impl DaemonHealthProjection {
         agent_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
         session_projection: SessionProjectionHealthSnapshot,
+        agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
         transport: TransportHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
@@ -719,6 +800,7 @@ impl DaemonHealthProjection {
             agent_command_lanes,
             provider_runtime_lanes,
             session_projection,
+            agent_runtime_projection,
             provider_catalog,
             transport,
             workspace_coordination,
@@ -729,9 +811,9 @@ impl DaemonHealthProjection {
 #[cfg(test)]
 mod tests {
     use crate::kernel::projection::{
-        ActorQueueSnapshot, DaemonHealthProjection, ProviderCatalogHealthSnapshot,
-        SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
-        TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, DaemonHealthProjection,
+        ProviderCatalogHealthSnapshot, SessionProjectionHealthSnapshot, SessionSnapshotProjection,
+        SessionStateProjectionStore, TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -762,6 +844,11 @@ mod tests {
             SessionProjectionHealthSnapshot {
                 projected_sessions: 3,
                 projected_session_list_entries: Some(3),
+                active_prompts: 1,
+                queued_prompts: 2,
+            },
+            AgentRuntimeProjectionHealthSnapshot {
+                projected_agents: 3,
                 active_prompts: 1,
                 queued_prompts: 2,
             },
@@ -810,6 +897,8 @@ mod tests {
             "provider-run-1"
         );
         assert_eq!(projection.session_projection.active_prompts, 1);
+        assert_eq!(projection.agent_runtime_projection.projected_agents, 3);
+        assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
         assert!(projection.provider_catalog.cached);
         assert_eq!(projection.transport.active_connections, 2);
         assert_eq!(projection.transport.slow_consumer_closes, 1);
