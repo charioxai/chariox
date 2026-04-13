@@ -100,22 +100,11 @@ impl SessionStateProjectionStore {
             .state
             .lock()
             .expect("session projection lock should not be poisoned");
-        let sessions = state.session_states.values().collect::<Vec<_>>();
-        let active_prompts = sessions
-            .iter()
-            .flat_map(|session| session.prompt_states().values())
-            .filter(|state| state.active_prompt().is_some())
-            .count();
-        let queued_prompts = sessions
-            .iter()
-            .flat_map(|session| session.prompt_states().values())
-            .map(|state| state.queued_prompts().len())
-            .sum();
         SessionProjectionHealthSnapshot {
             projected_sessions: state.session_states.len(),
             projected_session_list_entries: state.session_list.as_ref().map(Vec::len),
-            active_prompts,
-            queued_prompts,
+            active_prompts: 0,
+            queued_prompts: 0,
         }
     }
 
@@ -788,12 +777,19 @@ impl DaemonHealthProjection {
         session_command_lanes: Vec<ActorQueueSnapshot>,
         agent_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
-        session_projection: SessionProjectionHealthSnapshot,
+        mut session_projection: SessionProjectionHealthSnapshot,
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
         transport: TransportHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     ) -> Self {
+        // Compatibility: legacy clients may still read prompt counts from the
+        // session projection object. The agent runtime projection is the
+        // canonical health source for prompt work during the ownership
+        // migration, so mirror its counts here until the old fields can be
+        // retired from the wire shape.
+        session_projection.active_prompts = agent_runtime_projection.active_prompts;
+        session_projection.queued_prompts = agent_runtime_projection.queued_prompts;
         Self {
             metadata: ProjectionMetadata::new(1, last_event_id),
             session_command_lanes,
@@ -844,8 +840,8 @@ mod tests {
             SessionProjectionHealthSnapshot {
                 projected_sessions: 3,
                 projected_session_list_entries: Some(3),
-                active_prompts: 1,
-                queued_prompts: 2,
+                active_prompts: 99,
+                queued_prompts: 98,
             },
             AgentRuntimeProjectionHealthSnapshot {
                 projected_agents: 3,
@@ -897,6 +893,7 @@ mod tests {
             "provider-run-1"
         );
         assert_eq!(projection.session_projection.active_prompts, 1);
+        assert_eq!(projection.session_projection.queued_prompts, 2);
         assert_eq!(projection.agent_runtime_projection.projected_agents, 3);
         assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
         assert!(projection.provider_catalog.cached);
