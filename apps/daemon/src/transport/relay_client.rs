@@ -1181,17 +1181,6 @@ async fn handle_daemon_request(
         (request, decrypted.sender_public_key, daemon_private_key)
     };
 
-    if !is_supported_relay_request(&request) {
-        return RelayRequestOutcome {
-            encrypted_response: None,
-            error: Some(relay_error(
-                "unsupported_request",
-                "relay transport does not yet support this request type",
-                false,
-            )),
-        };
-    }
-
     let result = dispatch_relay_client_request(router, command_sequence, request).await;
     match result {
         Ok(response) => {
@@ -1252,13 +1241,6 @@ async fn dispatch_relay_client_request(
         &request,
     );
     router.dispatch(command, request).await
-}
-
-fn is_supported_relay_request(request: &LocalDaemonRequest) -> bool {
-    !matches!(
-        request,
-        LocalDaemonRequest::ValidateWorkflowOutput(_) | LocalDaemonRequest::AckWorkflowTurn(_)
-    )
 }
 
 fn map_relay_error(error: &DaemonError) -> RelayError {
@@ -1639,7 +1621,7 @@ mod tests {
     use crate::local::{
         AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest,
         GetSessionStateRequest, ListSessionsRequest, LocalDaemonResponse, ResizeTerminalRequest,
-        ResolveSessionRequest, UpdateSessionConfigRequest,
+        ResolveSessionRequest, UpdateSessionConfigRequest, ValidateWorkflowOutputRequest,
     };
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_crypto;
@@ -2890,6 +2872,42 @@ mod tests {
         assert!(matches!(
             attach_response,
             LocalDaemonResponse::SessionAttached { attachment } if attachment.session_id() == created_session_id
+        ));
+
+        let schema_path = std::env::temp_dir().join(format!(
+            "arroba-relay-validate-schema-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &schema_path,
+            r#"{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}"#,
+        )
+        .expect("schema should write");
+        let validate_request_private_key = send_client_request(
+            &mut client_socket,
+            "validate-1",
+            &config.daemon_id,
+            &daemon_public_key,
+            LocalDaemonRequest::ValidateWorkflowOutput(ValidateWorkflowOutputRequest {
+                session_id: created_session_id.clone(),
+                output_schema_ref: schema_path.display().to_string(),
+                output_json: r#"{"ok":true}"#.to_string(),
+                validation_policy: None,
+            }),
+        )
+        .await;
+        let validate_response = expect_client_response(
+            &mut client_socket,
+            "validate-1",
+            &validate_request_private_key,
+        )
+        .await;
+        assert!(matches!(
+            validate_response,
+            LocalDaemonResponse::WorkflowOutputValidated {
+                valid: true,
+                warning: None
+            }
         ));
 
         let _ = shutdown_tx.send(true);
