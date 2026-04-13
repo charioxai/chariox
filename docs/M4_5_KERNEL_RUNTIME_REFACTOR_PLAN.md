@@ -425,6 +425,8 @@ Current status: Phase 6 is complete for the M4.5 boundary. Workflow commands are
 - Keep `DaemonApp` only as bootstrap/test compatibility until callers are migrated.
 - Delete compatibility facade once tests and live drills pass without it.
 
+Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, session read/resolve paths, delete/detach lane resolution, and router-side focus refresh now prefer actor/runtime/session projections and avoid compatibility app-lock fallback in the covered success and absence cases. The remaining Phase 8 work is the larger ownership flip: session/agent/workflow command workers still use `DaemonApp` as the mutation mirror, terminal health still reads through the app-owned terminal stream, and cold provider/session/relay paths still use compatibility state until their runtime-owned stores are separated.
+
 ## Required Tests and Drills
 
 Unit and integration tests:
