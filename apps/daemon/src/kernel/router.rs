@@ -1035,15 +1035,16 @@ impl CommandRouter {
             }
             return;
         }
-        let is_still_starting = {
-            let app = self.app.lock().await;
-            app.sessions()
-                .get_session(session_id)
-                .ok()
-                .and_then(|session| session.active_provider_run_id().map(str::to_string))
-                .and_then(|provider_run_id| app.providers().get_run(&provider_run_id).ok())
-                .is_some_and(|run| run.state() == ProviderRunState::Starting)
+        let Ok(app) = self.app.try_lock() else {
+            return;
         };
+        let is_still_starting = app
+            .sessions()
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| session.active_provider_run_id().map(str::to_string))
+            .and_then(|provider_run_id| app.providers().get_run(&provider_run_id).ok())
+            .is_some_and(|run| run.state() == ProviderRunState::Starting);
         if !is_still_starting {
             self.pending_provider_launch_sessions
                 .lock()
@@ -1649,6 +1650,42 @@ mod tests {
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
+
+    #[tokio::test]
+    async fn pending_provider_launch_cleanup_does_not_wait_for_app_lock_when_projection_is_cold() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        router
+            .pending_provider_launch_sessions
+            .lock()
+            .await
+            .insert("cold-session".to_string());
+
+        let app_guard = app.lock().await;
+        let cleanup_router = router.clone();
+        let cleanup_task = tokio::spawn(async move {
+            cleanup_router
+                .clear_provider_launch_pending_if_settled("cold-session")
+                .await;
+        });
+
+        timeout(Duration::from_millis(100), cleanup_task)
+            .await
+            .expect("cold pending launch cleanup should not wait for the app lock")
+            .expect("cleanup task should join");
+        drop(app_guard);
+
+        assert!(
+            router
+                .pending_provider_launch_sessions
+                .lock()
+                .await
+                .contains("cold-session"),
+            "cold cleanup should leave the guard for a later projection-backed refresh"
+        );
+    }
 
     #[tokio::test]
     async fn routes_interactive_commands_through_bounded_lane() {
