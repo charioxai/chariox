@@ -2135,6 +2135,24 @@ impl RuntimeSession {
     pub fn active_prompt_for_agent(&self, agent_id: &str) -> Option<&PromptQueueItem> {
         self.prompt_runtime.active_prompt_for_agent(agent_id)
     }
+    pub fn active_prompt_agent_id(&self) -> Option<String> {
+        if let Some(focused_agent_id) = self.focused_agent_id() {
+            if self.active_prompt_for_agent(focused_agent_id).is_some() {
+                return Some(focused_agent_id.to_string());
+            }
+        }
+        let mut active_agents = self
+            .prompt_states()
+            .iter()
+            .filter(|(_, state)| state.active_prompt().is_some())
+            .map(|(agent_id, _)| agent_id.clone());
+        let agent_id = active_agents.next()?;
+        if active_agents.next().is_none() {
+            Some(agent_id)
+        } else {
+            None
+        }
+    }
     pub fn queued_prompts_for_agent(&self, agent_id: &str) -> Option<&VecDeque<PromptQueueItem>> {
         self.prompt_runtime.queued_prompts_for_agent(agent_id)
     }

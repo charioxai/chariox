@@ -348,22 +348,7 @@ impl AgentRuntime {
 }
 
 fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<String> {
-    if let Some(focused_agent_id) = session.focused_agent_id() {
-        if session.active_prompt_for_agent(focused_agent_id).is_some() {
-            return Some(focused_agent_id.to_string());
-        }
-    }
-    let mut active_agents = session
-        .prompt_states()
-        .iter()
-        .filter(|(_, state)| state.active_prompt().is_some())
-        .map(|(agent_id, _)| agent_id.clone());
-    let agent_id = active_agents.next()?;
-    if active_agents.next().is_none() {
-        Some(agent_id)
-    } else {
-        None
-    }
+    session.active_prompt_agent_id()
 }
 
 fn active_prompt_agent_id_from_projections(

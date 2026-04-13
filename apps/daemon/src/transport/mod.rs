@@ -51,11 +51,10 @@ impl TransportService {
         let agent_id = app
             .sessions()
             .get_session(session_id)?
-            .focused_agent_id()
+            .active_prompt_agent_id()
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
-            })?
-            .to_string();
+            })?;
         let provider_run_id = app
             .providers()
             .get_run_for_agent(session_id, &agent_id)

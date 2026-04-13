@@ -64,6 +64,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Moved `PromptRuntimeState` into `session/prompt_runtime.rs` as a dedicated session prompt-runtime boundary. `RuntimeSession` still flattens and forwards that owner for wire compatibility, but scattered prompt mutation is no longer embedded in the shared session type.
 - Removed the unused direct complete-and-auto-advance prompt mutation API from `RuntimeSession` and `PromptRuntimeState`, leaving completion on the kernel lifecycle path that reconciles against the agent-runtime queue-front preview before explicit queue advancement.
+- Aligned direct compatibility complete/cancel owner resolution with the agent runtime rule: prefer the focused agent only when it is active, otherwise resolve the single active agent and reject ambiguous multi-active ownership.
 - Recorded the full A+ sequence for the rest of M4.5: prompt ownership, session ownership, projection correctness, workflow hardening, provider/terminal hardening, hot app-lock removal, docs/invariant lock, and final I/O coordination last.
 
 ### Remaining M4.5 work

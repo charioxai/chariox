@@ -967,11 +967,10 @@ impl<'a> KernelAgentService<'a> {
             .app
             .sessions
             .get_session(session_id)?
-            .focused_agent_id()
+            .active_prompt_agent_id()
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
-            })?
-            .to_string();
+            })?;
         self.cancel_active_prompt_internal(session_id, &target_agent_id, Some(attachment_id))
     }
 
@@ -983,11 +982,10 @@ impl<'a> KernelAgentService<'a> {
             .app
             .sessions
             .get_session(session_id)?
-            .focused_agent_id()
+            .active_prompt_agent_id()
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
-            })?
-            .to_string();
+            })?;
         self.cancel_active_prompt_internal(session_id, &target_agent_id, None)
     }
 

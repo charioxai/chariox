@@ -2598,6 +2598,162 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
 }
 
 #[test]
+fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let prompt_agent = spawn_workflow_test_agent(&mut app, session.id(), "prompt-agent");
+    let attachment = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    match app
+        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(prompt_agent.id().to_string()),
+            prompt: "whoami".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should start")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => assert_eq!(prompt.target_agent_id(), prompt_agent.id()),
+        other => panic!("unexpected local response: {other:?}"),
+    }
+
+    let _ = app
+        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+        }))
+        .expect("focus should move to the idle default agent");
+
+    match app
+        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("completion should resolve the single active agent")
+    {
+        LocalDaemonResponse::PromptCompleted { completion } => {
+            assert_eq!(completion.completed.target_agent_id(), prompt_agent.id());
+            assert!(completion.started_next.is_none());
+        }
+        other => panic!("unexpected local response: {other:?}"),
+    }
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
+    assert!(session_state
+        .active_prompt_for_agent(prompt_agent.id())
+        .is_none());
+}
+
+#[test]
+fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let prompt_agent = spawn_workflow_test_agent(&mut app, session.id(), "prompt-agent");
+    let attachment = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    match app
+        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(prompt_agent.id().to_string()),
+            prompt: "whoami".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should start")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => assert_eq!(prompt.target_agent_id(), prompt_agent.id()),
+        other => panic!("unexpected local response: {other:?}"),
+    }
+
+    let _ = app
+        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+        }))
+        .expect("focus should move to the idle default agent");
+
+    match app
+        .handle_local_request(LocalDaemonRequest::CancelActivePrompt(
+            CancelActivePromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+            },
+        ))
+        .expect("cancel should resolve the single active agent")
+    {
+        LocalDaemonResponse::PromptCancelled { cancellation } => {
+            assert_eq!(cancellation.prompt.target_agent_id(), prompt_agent.id());
+            assert!(cancellation.started_next.is_none());
+        }
+        other => panic!("unexpected local response: {other:?}"),
+    }
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(prompt_agent.id())
+            .map(|prompt| prompt.status()),
+        Some(crate::session::PromptStatus::Cancelling)
+    );
+}
+
+#[test]
 fn prompt_idle_fallback_completes_after_recorded_completion_without_response_text() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
