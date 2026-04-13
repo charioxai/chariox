@@ -230,6 +230,12 @@ impl CommandRouter {
                 return Ok(response);
             }
         }
+        if let LocalDaemonRequest::CompletePrompt(request) = &request {
+            return self
+                .agent_runtime
+                .dispatch_prompt_complete(&command, request.clone())
+                .await;
+        }
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
             if let Some(provider_run) = self.provider_run_projection.get(&request.provider_run_id) {
                 if provider_run.adapter_key() != "opencode" {
@@ -1240,9 +1246,9 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, CancelActivePromptRequest, ConfigureRelayRequest,
-        CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest, EndSessionRequest,
-        FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
+        AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
+        ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest,
+        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
         GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
         ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
@@ -2283,10 +2289,21 @@ mod tests {
             .await
             .expect("prompt submit should warm active prompt projection");
 
-        let mut app_guard = app.lock().await;
-        app_guard
-            .complete_active_prompt(&session_id, &agent_id, None)
-            .expect("prompt completion should publish session projection");
+        let complete_request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session_id.clone(),
+        });
+        let complete_command = KernelCommand::from_local_request(
+            "cmd-complete-state-projection",
+            None,
+            None,
+            &complete_request,
+        );
+        router
+            .dispatch(complete_command, complete_request)
+            .await
+            .expect("prompt completion should publish session projection through agent runtime");
+
+        let app_guard = app.lock().await;
         let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
             session_id: session_id.clone(),
         });
@@ -2316,6 +2333,122 @@ mod tests {
                 assert!(session.active_prompt_for_agent(&agent_id).is_none());
             }
             _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_complete_uses_projected_active_prompt_owner_when_focus_is_idle() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let default_agent_id = default_agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-complete-owner-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let spawned_agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session_id.clone(),
+                alias: Some("worker".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                effort: None,
+                worktree_id: None,
+                machine_ref: None,
+            }))
+            .expect("agent should spawn")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected spawn response"),
+        };
+        let spawned_agent_id = spawned_agent.id().to_string();
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(spawned_agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+        app.handle_local_request(focus_request(&session_id, &default_agent_id))
+            .expect("default agent should regain focus");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(spawned_agent_id.clone()),
+            prompt: "complete owner projection".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command = KernelCommand::from_local_request(
+            "cmd-prompt-complete-owner",
+            None,
+            None,
+            &prompt_request,
+        );
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt submit should warm active prompt projection");
+
+        let app_guard = app.lock().await;
+        let complete_request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session_id.clone(),
+        });
+        let complete_command = KernelCommand::from_local_request(
+            "cmd-complete-owner-projection",
+            None,
+            None,
+            &complete_request,
+        );
+        let complete_router = router.clone();
+        let complete_task = tokio::spawn(async move {
+            complete_router
+                .dispatch(complete_command, complete_request)
+                .await
+        });
+
+        let mut spawned_agent_lane_created = false;
+        for _ in 0..50 {
+            let projection = router.daemon_health_projection(0).await;
+            if projection
+                .agent_command_lanes
+                .iter()
+                .any(|lane| lane.lane_id == spawned_agent_id)
+            {
+                spawned_agent_lane_created = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            spawned_agent_lane_created,
+            "prompt complete should resolve the active prompt owner from projection before touching the app lock"
+        );
+        assert!(
+            !complete_task.is_finished(),
+            "agent worker should still wait on the deliberately held app lock"
+        );
+
+        drop(app_guard);
+        let complete_response = complete_task
+            .await
+            .expect("complete task should join")
+            .expect("prompt should complete");
+        match complete_response {
+            LocalDaemonResponse::PromptCompleted { .. } => {}
+            _ => panic!("unexpected complete response"),
         }
     }
 

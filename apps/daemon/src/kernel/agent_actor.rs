@@ -17,6 +17,10 @@ const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 #[derive(Debug)]
 enum AgentCommand {
     SubmitPrompt(crate::local::SubmitPromptRequest),
+    CompletePrompt {
+        request: crate::local::CompletePromptRequest,
+        target_agent_id: String,
+    },
     CancelActivePrompt {
         request: crate::local::CancelActivePromptRequest,
         target_agent_id: String,
@@ -96,6 +100,42 @@ impl AgentRuntime {
             },
         )
         .await
+    }
+
+    pub(crate) async fn dispatch_prompt_complete(
+        &self,
+        command: &crate::kernel::command::KernelCommand,
+        request: crate::local::CompletePromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agent_id = self
+            .resolve_completion_agent_id(&request.session_id)
+            .await?;
+        self.dispatch_to_agent(
+            agent_id.clone(),
+            command.command_id.clone(),
+            command.command_type.clone(),
+            AgentCommand::CompletePrompt {
+                request,
+                target_agent_id: agent_id.clone(),
+            },
+        )
+        .await
+    }
+
+    async fn resolve_completion_agent_id(&self, session_id: &str) -> Result<String, DaemonError> {
+        if let Some(agent_id) = self
+            .session_projection
+            .get(session_id)
+            .and_then(|session| active_prompt_agent_id(&session))
+        {
+            return Ok(agent_id);
+        }
+        let app = self.app.lock().await;
+        active_prompt_agent_id(&app.sessions().get_session(session_id)?).ok_or_else(|| {
+            DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            }
+        })
     }
 
     async fn resolve_submit_agent_id(
@@ -224,6 +264,25 @@ impl AgentRuntime {
     }
 }
 
+fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<String> {
+    if let Some(focused_agent_id) = session.focused_agent_id() {
+        if session.active_prompt_for_agent(focused_agent_id).is_some() {
+            return Some(focused_agent_id.to_string());
+        }
+    }
+    let mut active_agents = session
+        .prompt_states()
+        .iter()
+        .filter(|(_, state)| state.active_prompt().is_some())
+        .map(|(agent_id, _)| agent_id.clone());
+    let agent_id = active_agents.next()?;
+    if active_agents.next().is_none() {
+        Some(agent_id)
+    } else {
+        None
+    }
+}
+
 async fn run_agent_command_lane(
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
@@ -310,6 +369,28 @@ async fn execute_agent_command(
             Ok(LocalDaemonResponse::PromptCancelled {
                 cancellation: prepared.cancellation,
             })
+        }
+        AgentCommand::CompletePrompt {
+            request,
+            target_agent_id,
+        } => {
+            let (completion, session) = {
+                let mut app = app.lock().await;
+                let provider_run_id = app
+                    .providers()
+                    .get_run_for_agent(&request.session_id, &target_agent_id)
+                    .map(|run| run.id().to_string());
+                let completion = app.complete_active_prompt(
+                    &request.session_id,
+                    &target_agent_id,
+                    provider_run_id.as_deref(),
+                )?;
+                let session = app.local_api_session_snapshot(&request.session_id)?;
+                (completion, session)
+            };
+            agent_runtime_projection.update_session(&session);
+
+            Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
     }
 }
