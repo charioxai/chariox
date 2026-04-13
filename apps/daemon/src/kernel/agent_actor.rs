@@ -378,6 +378,17 @@ impl AgentRuntime {
         {
             return Ok(agent_id);
         }
+        if self.session_projection.get(session_id).is_some()
+            || !self.prompt_state.list_for_session(session_id).is_empty()
+            || !self
+                .agent_runtime_projection
+                .list_for_session(session_id)
+                .is_empty()
+        {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
         let app = self.app.lock().await;
         active_prompt_agent_id(&app.sessions().get_session(session_id)?).ok_or_else(|| {
             DaemonError::NoActivePrompt {
@@ -913,6 +924,7 @@ mod tests {
         CreateSessionRequest, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
         PromptSubmissionOutcome,
     };
+    use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
 
     #[tokio::test]
@@ -945,6 +957,41 @@ mod tests {
         .expect("single projected agent should resolve");
 
         assert_eq!(resolved, agent.id());
+    }
+
+    #[tokio::test]
+    async fn active_prompt_resolution_uses_warmed_projection_for_no_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_snapshot = app
+            .local_api_session_snapshot(session.id())
+            .expect("session projection fixture should be available");
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update(session_snapshot);
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+
+        let _locked_app = app.lock().await;
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_active_prompt_agent_id(session.id()),
+        )
+        .await
+        .expect("projection-backed no-active resolution should not wait for the app lock")
+        .expect_err("session has no active prompt");
+
+        match error {
+            DaemonError::NoActivePrompt { session_id } => assert_eq!(session_id, session.id()),
+            error => panic!("unexpected error: {error}"),
+        }
     }
 
     #[test]
