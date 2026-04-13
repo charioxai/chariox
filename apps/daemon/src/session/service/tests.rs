@@ -1282,6 +1282,65 @@ fn prompt_queue_starts_then_queues_then_advances() {
 }
 
 #[test]
+fn activating_expected_queued_prompt_validates_queue_front() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    service
+        .add_attachment_to_session(created.id(), "attachment-1")
+        .expect("attachment should be added");
+    service
+        .add_attachment_to_session(created.id(), "attachment-2")
+        .expect("attachment should be added");
+    service
+        .submit_prompt(
+            created.id(),
+            "attachment-1",
+            "agent-1",
+            "first prompt",
+            Vec::new(),
+        )
+        .expect("first prompt should start");
+    service
+        .submit_prompt(
+            created.id(),
+            "attachment-2",
+            "agent-1",
+            "second prompt",
+            Vec::new(),
+        )
+        .expect("second prompt should queue");
+    service
+        .complete_active_prompt(created.id(), "agent-1")
+        .expect("active prompt should complete");
+
+    let error = service
+        .activate_expected_next_queued_prompt(created.id(), "agent-1", "prompt-mismatch")
+        .expect_err("mismatched expected prompt should fail");
+    match error {
+        DaemonError::LocalTransport { operation, message } => {
+            assert_eq!(operation, "activate expected queued prompt");
+            assert!(message.contains("prompt-mismatch"));
+            assert!(message.contains("prompt-2"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    let (session, started_next) = service
+        .activate_expected_next_queued_prompt(created.id(), "agent-1", "prompt-2")
+        .expect("matching expected prompt should activate");
+    assert_eq!(
+        started_next.expect("next prompt should start").id(),
+        "prompt-2"
+    );
+    assert_eq!(
+        session.active_prompt().expect("active prompt exists").id(),
+        "prompt-2"
+    );
+}
+
+#[test]
 fn config_updates_are_versioned() {
     let mut service = SessionService::new(&test_config());
     let created = service

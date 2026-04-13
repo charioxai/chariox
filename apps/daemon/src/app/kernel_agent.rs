@@ -694,10 +694,11 @@ impl<'a> KernelAgentService<'a> {
                 return Ok(None);
             }
 
-            let (_session, next_candidate) = self
-                .app
-                .sessions
-                .activate_next_queued_prompt(session_id, &target_agent_id)?;
+            let (_session, next_candidate) = self.activate_next_queued_prompt_for_mirror(
+                session_id,
+                &target_agent_id,
+                expected_next,
+            )?;
             let Some(next) = next_candidate else {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
@@ -831,10 +832,11 @@ impl<'a> KernelAgentService<'a> {
                             error
                         ),
                     );
-                    let _ = self
-                        .app
-                        .sessions
-                        .activate_next_queued_prompt(session_id, agent_id)?;
+                    let _ = self.activate_next_queued_prompt_for_mirror(
+                        session_id,
+                        agent_id,
+                        expected_next,
+                    )?;
                     continue;
                 }
             }
@@ -873,10 +875,8 @@ impl<'a> KernelAgentService<'a> {
                 }
                 Err(error) => return Err(error),
             };
-            let (_session, next_candidate) = self
-                .app
-                .sessions
-                .activate_next_queued_prompt(session_id, agent_id)?;
+            let (_session, next_candidate) =
+                self.activate_next_queued_prompt_for_mirror(session_id, agent_id, expected_next)?;
             let Some(active) = next_candidate else {
                 continue;
             };
@@ -937,6 +937,30 @@ impl<'a> KernelAgentService<'a> {
             }
         }
         Ok(())
+    }
+
+    fn activate_next_queued_prompt_for_mirror(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Option<crate::session::PromptQueueItem>,
+        ),
+        DaemonError,
+    > {
+        if let Some(expected_next) = expected_next {
+            return self.app.sessions.activate_expected_next_queued_prompt(
+                session_id,
+                agent_id,
+                expected_next.id(),
+            );
+        }
+        self.app
+            .sessions
+            .activate_next_queued_prompt(session_id, agent_id)
     }
 
     pub(crate) fn cancel_active_prompt(

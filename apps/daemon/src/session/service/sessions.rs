@@ -423,6 +423,33 @@ impl SessionService {
         Ok((session.clone(), next))
     }
 
+    pub fn activate_expected_next_queued_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "activate expected next prompt")?;
+        let Some(peeked) = session.peek_next_queued_prompt(agent_id) else {
+            return Ok((session.clone(), None));
+        };
+        if peeked.id() != expected_prompt_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "activate expected queued prompt",
+                message: format!(
+                    "expected queued prompt `{}` but compatibility queue front was `{}`",
+                    expected_prompt_id,
+                    peeked.id()
+                ),
+            });
+        }
+        let next = session
+            .pop_next_queued_prompt(agent_id)
+            .map(|prompt| session.activate_prompt(prompt));
+        Ok((session.clone(), next))
+    }
+
     pub fn activate_prompt(
         &mut self,
         session_id: &str,
