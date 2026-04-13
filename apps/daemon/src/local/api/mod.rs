@@ -135,6 +135,8 @@ impl DaemonApp {
                         .workspace_coordination_snapshot(
                             self.workspace_coordinator().active_claims(),
                         ),
+                    self.session_state_projection_store()
+                        .invariant_snapshot(&self.agent_runtime_projection_store()),
                 ),
             }),
             LocalDaemonRequest::GetProviderRun(request) => {

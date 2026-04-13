@@ -793,6 +793,8 @@ impl CommandRouter {
             self.terminal_health.snapshot(),
             self.session_projection
                 .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
+            self.session_projection
+                .invariant_snapshot(&self.agent_runtime_projection),
         )
     }
 
