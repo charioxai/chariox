@@ -773,22 +773,37 @@ impl CommandRouter {
         let mut snapshot_session_ids = refresh.session_ids(response);
         snapshot_session_ids.sort();
         snapshot_session_ids.dedup();
-        for session_id in snapshot_session_ids {
-            let session = {
-                let app = self.app.lock().await;
-                app.local_api_session_snapshot(&session_id).ok()
-            };
-            if let Some(session) = session {
-                refreshed_session_ids.push(session.id().to_string());
-                self.agent_runtime
-                    .update_prompt_state_from_session(&session);
-                self.agent_runtime_projection.update_session(&session);
-                self.session_projection.update(session);
-            } else {
-                self.agent_runtime.remove_session_state(&session_id);
-                self.agent_runtime_projection.remove_session(&session_id);
-                self.session_projection.remove(&session_id);
-                refreshed_session_ids.push(session_id);
+        match refresh {
+            SessionProjectionRefresh::None => {}
+            SessionProjectionRefresh::SnapshotAgentResponse => {
+                for session_id in snapshot_session_ids {
+                    if let Some(session) = self.session_projection.get(&session_id) {
+                        refreshed_session_ids.push(session.id().to_string());
+                        self.agent_runtime
+                            .update_prompt_state_from_session(&session);
+                        self.agent_runtime_projection.update_session(&session);
+                    }
+                }
+            }
+            SessionProjectionRefresh::SnapshotRequestSession { .. } => {
+                for session_id in snapshot_session_ids {
+                    let session = {
+                        let app = self.app.lock().await;
+                        app.local_api_session_snapshot(&session_id).ok()
+                    };
+                    if let Some(session) = session {
+                        refreshed_session_ids.push(session.id().to_string());
+                        self.agent_runtime
+                            .update_prompt_state_from_session(&session);
+                        self.agent_runtime_projection.update_session(&session);
+                        self.session_projection.update(session);
+                    } else {
+                        self.agent_runtime.remove_session_state(&session_id);
+                        self.agent_runtime_projection.remove_session(&session_id);
+                        self.session_projection.remove(&session_id);
+                        refreshed_session_ids.push(session_id);
+                    }
+                }
             }
         }
 
@@ -1991,6 +2006,114 @@ mod tests {
                 assert_eq!(session.focused_agent_id(), Some(second_agent.id()));
             }
             _ => panic!("unexpected session state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("projected-agent".to_string()),
+            provider: "claude-code".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        });
+        let spawn_command = KernelCommand::from_local_request(
+            "cmd-agent-lifecycle-spawn",
+            None,
+            None,
+            &spawn_request,
+        );
+        let spawned_agent_id = match router
+            .dispatch(spawn_command, spawn_request)
+            .await
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+            _ => panic!("unexpected spawn response"),
+        };
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-agent-lifecycle-spawn-state",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+        let state_response = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("spawn-projected state should not wait for the app lock")
+            .expect("state task should join")
+            .expect("state should resolve");
+        drop(app_guard);
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert!(session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == spawned_agent_id));
+            }
+            _ => panic!("unexpected state response"),
+        }
+
+        let destroy_request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: spawned_agent_id.clone(),
+        });
+        let destroy_command = KernelCommand::from_local_request(
+            "cmd-agent-lifecycle-destroy",
+            None,
+            None,
+            &destroy_request,
+        );
+        router
+            .dispatch(destroy_command, destroy_request)
+            .await
+            .expect("destroy should succeed");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-agent-lifecycle-destroy-state",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+        let state_response = timeout(Duration::from_millis(100), state_task)
+            .await
+            .expect("destroy-projected state should not wait for the app lock")
+            .expect("state task should join")
+            .expect("state should resolve");
+        drop(app_guard);
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert!(!session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == spawned_agent_id));
+            }
+            _ => panic!("unexpected state response"),
         }
     }
 

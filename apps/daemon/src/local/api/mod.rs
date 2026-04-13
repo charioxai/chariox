@@ -372,10 +372,12 @@ impl DaemonApp {
                     create_request
                 };
                 let agent = self.spawn_agent(create_request)?;
+                let _ = self.local_api_session_snapshot(agent.session_id())?;
                 Ok(LocalDaemonResponse::AgentSpawned { agent })
             }
             LocalDaemonRequest::DestroyAgent(request) => {
                 let agent = self.destroy_agent(&request.agent_id)?;
+                let _ = self.local_api_session_snapshot(agent.session_id())?;
                 Ok(LocalDaemonResponse::AgentDestroyed { agent })
             }
             LocalDaemonRequest::FocusAgent(request) => {
