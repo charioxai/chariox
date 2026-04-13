@@ -418,52 +418,37 @@ impl DaemonApp {
             .get_session(session_id)?
             .active_prompt_for_agent(&agent_id)
             .is_some();
+        let active_prompt_status = if had_active_prompt {
+            self.sessions
+                .get_session(session_id)?
+                .active_prompt_for_agent(&agent_id)
+                .map(|prompt| prompt.status())
+        } else {
+            None
+        };
         let ended_run =
             self.providers
                 .mark_run_ended(&mut self.sessions, session_id, provider_run_id)?;
         self.update_provider_run_projection(ended_run.clone());
         let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
 
-        if had_active_prompt {
-            let active_prompt_status = self
-                .sessions
-                .get_session(session_id)?
-                .active_prompt_for_agent(&agent_id)
-                .map(|prompt| prompt.status());
-            if active_prompt_status == Some(PromptStatus::Cancelling) {
-                let cancelled = self
-                    .sessions
-                    .finalize_active_prompt_cancellation(session_id, &agent_id)?
-                    .1;
-                crate::scheduler::runtime::on_workflow_prompt_cancelled(
-                    self, session_id, &cancelled,
-                )?;
-            } else {
-                let completed = self
-                    .sessions
-                    .complete_active_prompt_only(session_id, &agent_id)?
-                    .1;
-                crate::scheduler::runtime::on_workflow_prompt_completed(
-                    self,
-                    session_id,
-                    &completed,
-                    Some(provider_run_id),
-                )?;
-            }
-            flow_control::clear_prompt_activity(self, provider_run_id);
-        }
-        self.providers.clear_runtime(provider_run_id);
         let started_next = if had_active_prompt {
-            self.advance_next_queued_prompt(session_id, &agent_id)?
+            if active_prompt_status == Some(PromptStatus::Cancelling) {
+                self.finalize_active_prompt_cancellation(
+                    session_id,
+                    &agent_id,
+                    Some(provider_run_id),
+                )?
+                .started_next
+            } else {
+                self.complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?
+                    .started_next
+            }
         } else {
+            self.sync_focused_provider_run_if_idle(session_id)?;
             None
         };
-        if started_next.is_none() {
-            self.sync_focused_provider_run_if_idle(session_id)?;
-        }
-        if had_active_prompt {
-            self.publish_session_projection(session_id)?;
-        }
+        self.providers.clear_runtime(provider_run_id);
 
         self.record_notice(
             session_id,
