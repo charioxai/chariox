@@ -181,7 +181,7 @@ Required subsystem roles:
 - `AgentEndpointManager`
   - connects to managed or external agent endpoints and normalizes their native/provider-specific protocols into kernel events
 - `WorkspaceCoordinator`
-  - manages worktree/branch allocation, file or workspace claims, and integration/merge safety checks inside one workspace
+  - manages worktree/branch allocation, current coarse workspace claims, and later integration/merge safety checks inside one workspace
 
 Current implementation note:
 
@@ -189,6 +189,7 @@ Current implementation note:
 - the current OpenCode adapter is already a provider-endpoint integration example
 - the current local CLI transport is now a long-lived WebSocket subscription with pushed kernel events
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
+- the current `WorkspaceCoordinator` is intentionally a coarse safety/scheduling boundary: file-writing capabilities, local provider prompts, and workflow node dispatch can acquire visible worktree claims, but final I/O conflict control for arbitrary harness writes, file-level claims, port claims, sandboxing, and transactional patch application is deferred until the actor/projection kernel is further along
 
 ### 3.3.1.1 Target Kernel Runtime Implementation Model
 
@@ -240,7 +241,7 @@ M4.5 implementation contract:
 - the first event-log slice may be in-memory, but replay retention and replay-gap behavior must be explicit
 - events should not be described as daemon-restart durable until persisted event streams or equivalent projection checkpoints exist
 - projections must expose `projection_version`, `last_event_id`, and `generated_at_ms`
-- worktree/file/port claim coordination belongs to the kernel boundary before parallel remote workflow scale-out
+- coarse worktree claim coordination belongs to the kernel boundary before parallel remote workflow scale-out; file-level, port-level, sandbox, and transactional patch coordination belong to the later I/O-coordination design after actor/projection ownership is stable
 
 Current M4.5 implementation status:
 
@@ -255,8 +256,9 @@ Current M4.5 implementation status:
 - `ProviderRunProjectionStore` now serves warmed `GetProviderRun` reads. The router refreshes it from provider-run responses, and the daemon updates the shared projection as provider runs start, finish launch, fail launch, park, resume, or end.
 - `ProviderProcessProjectionStore` now serves warmed `ListProviderProcesses` reads. Provider-run and session lifecycle changes invalidate it so teardown-safety metadata is recomputed before the next warmed reuse.
 - `ProviderCatalogProjectionStore` now serves TTL-bound warmed `GetProviderCatalog` reads. Provider logout and relay/provider configuration changes invalidate the projection.
+- Warmed session projections now serve agent and workflow inspection reads, including `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowLaunches`, without taking the compatibility app lock.
 - `DaemonHealthProjection` now exposes session command lanes, agent command lanes, provider runtime operation lanes, session projection counts, active/queued prompt counts, provider-catalog cache status, kernel websocket transport pressure, workspace worktree-collision state, and active workspace operation claims without taking the compatibility app lock.
-- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`), active local provider prompt lifecycles, and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts fail fast on cross-session same-worktree conflicts; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. File-level scopes and port claims are still follow-up work.
+- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`), active local provider prompt lifecycles, and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts fail fast on cross-session same-worktree conflicts; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. File-level scopes, port claims, sandbox enforcement, and transactional patch application are deferred to the final I/O-coordination design.
 - `DaemonApp` still remains the compatibility facade for many paths. The next major implementation step is to move the rest of `KernelSessionService` and `KernelAgentService` state into those mailbox owners and expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots.
 
 ### 3.3.2 Workflow Model
@@ -488,7 +490,8 @@ Baseline responsibilities:
 
 Near-term practical rule:
 
-- file-level and branch/worktree-level coordination should come before any more advanced region-level locking
+- keep current worktree-level coordination as the near-term guardrail while the kernel refactor completes
+- defer file-level, port-level, sandbox, transactional patch, and advanced region-level locking decisions to the final I/O-coordination design
 - the kernel should own integration policy rather than delegating all conflict discovery to late Git merges or human PR review
 
 Scope rule:

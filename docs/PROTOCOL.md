@@ -503,6 +503,8 @@ Screenshot capture MUST write only into daemon-chosen session artifact locations
 
 The protocol should reserve room for kernel-owned workspace coordination because multi-agent orchestration cannot rely on human PR review as the only conflict-management mechanism.
 
+Current M4.5 coordination is intentionally narrower than the final design. The daemon exposes coarse worktree claims for visible mutating operations and health reporting, but it does not yet define a wire contract for arbitrary harness write enforcement, file-level locks, port claims, patch transactions, or automatic rebase loops.
+
 Future coordination operations are expected to cover:
 
 - worktree or branch allocation
@@ -510,7 +512,7 @@ Future coordination operations are expected to cover:
 - integration or mergeability validation
 - explicit conflict or claim-denial responses
 
-The exact wire surface is still open, but the kernel should remain the authority for these decisions.
+The exact wire surface is still open, and deeper I/O coordination should be designed after the actor/projection runtime no longer depends on hot compatibility `DaemonApp` paths. The kernel should remain the authority for these decisions.
 
 ## 5.1 `attach_file`
 

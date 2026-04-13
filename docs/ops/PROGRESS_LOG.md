@@ -33,18 +33,20 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added prompt lifecycle publication into the shared session projection. Prompt submit, complete, cancel, dispatch failure, and queue advancement now update warmed prompt-state snapshots so `GetSessionState` can reflect those transitions without taking the compatibility app lock.
 - Added a TTL-bound provider-catalog projection. Warmed `GetProviderCatalog` reads now return without taking the compatibility app lock, and provider logout/configuration changes invalidate the projection.
 - Fixed projection correctness gaps: provider-process projection now stores a canonical unfiltered snapshot and refreshes after teardown, warmed OpenCode `GetProviderRun` no longer bypasses selection-sync side effects, relay reconfiguration invalidates provider catalog projection state, and agent lanes are removed on agent/session cleanup.
+- Added warmed session-projection reads for agent and workflow inspection: `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowLaunches` can now return without taking the compatibility app lock once the session projection is warm.
 - Added transport health projection counters for kernel websocket pressure: active connections/subscriptions, incoming requests, emitted events, replay gaps, inbound overload rejections, outgoing queue overflows, and slow-consumer closes are now exposed through `GetDaemonHealth`.
 - Added a workspace coordination health baseline: active worktree claims and same-workspace worktree collisions are now reported from the warmed session projection through `GetDaemonHealth`.
 - Added initial `WorkspaceCoordinator` enforcement for explicit file-writing capabilities. `EditFile` and `StoreTransferredFile` now acquire scoped worktree write claims, reject overlapping same-workspace/worktree writes with a retryable workspace-claim conflict, publish active operation claims through daemon health, and release claims on operation completion.
 - Added provider prompt lifecycle worktree claims. Active local provider prompts now acquire provider-prompt operation claims before dispatch, reject cross-session same-workspace/worktree prompt conflicts, publish those claims through daemon health, and release them through the existing prompt cleanup path on completion, cancellation, dispatch failure, and session cleanup.
 - Promoted workspace claims into the workflow scheduler. Claims now expose `read`/`write` mode metadata, workflow node dispatch acquires an exclusive `workflow_node_dispatch` write claim before provider submission, blocked nodes move to `BlockedOnWorkspaceClaim`, and claim release retries blocked workflow nodes instead of failing temporary contention.
+- Clarified the claim strategy after review: current claims should remain a coarse safety/scheduler layer while M4.5 finishes actor/projection ownership. Deeper I/O coordination, including file-level claims, port claims, harness sandboxing, coordinator-owned patch application, and automatic patch rebase loops, is intentionally deferred to the final coordination slice.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
 - Move prompt queues and per-agent prompt state out of the shared session store and into actor-owned state/projections.
 - Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
-- Broaden `WorkspaceCoordinator` claim enforcement to file-level scopes and port claims before parallel relay/workflow scale-out.
+- Keep current workspace claims bounded until actor/projection ownership is complete; return to file-level scopes, port claims, harness enforcement, and transactional mutation/rebase semantics in the final I/O-coordination slice.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.
 
 ## 2026-03-31

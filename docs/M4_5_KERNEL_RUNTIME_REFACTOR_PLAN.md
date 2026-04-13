@@ -55,6 +55,7 @@ Status as of 2026-04-12:
 - Landed: projection correctness hardening. Provider-process snapshots are canonical rather than request-scoped, teardown refreshes affected process/run projections, warmed OpenCode provider-run reads preserve selection-sync side effects, relay reconfiguration invalidates provider-catalog projection state, and agent command lanes are cleaned up on agent/session removal.
 - Landed: transport health projection. Kernel websocket slow-consumer closes, outgoing queue overflows, inbound overload rejections, replay gaps, request/event counts, active connections, and active subscriptions are now surfaced through `GetDaemonHealth`.
 - Landed: workspace coordination health baseline. `GetDaemonHealth` now reports active worktree claims and same-workspace worktree collisions from the warmed session projection without taking the compatibility app lock.
+- Landed: session inspection reads from the warmed session projection. `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowLaunches` can now return from projected session state without taking the compatibility app lock after the session projection is warm.
 - Landed: initial `WorkspaceCoordinator` enforcement. Explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) acquire scoped worktree write claims, reject overlapping writes in the same workspace/worktree with a retryable workspace-claim conflict, expose active operation claims in daemon health, and release claims when the operation completes.
 - Landed: provider prompt lifecycle worktree claims. Active local provider prompts acquire a provider-prompt operation claim before dispatch, release it through the prompt activity cleanup path on completion/cancellation/dispatch failure/session cleanup, and reject cross-session prompt dispatch onto the same workspace/worktree while preserving same-session shared-worktree prompt flows.
 - Landed: workspace claims as a scheduler primitive. Claims now carry `read`/`write` mode metadata, use normalized real worktree keys where possible, and workflow node dispatch attempts an exclusive `workflow_node_dispatch` write claim before submitting provider work. Workflow nodes that hit a busy worktree move to `BlockedOnWorkspaceClaim` and retry when prompt/workflow claims release instead of failing the workflow.
@@ -65,7 +66,7 @@ Still open:
 - move prompt queues and per-agent prompt state out of the shared session store into actor-owned state/projections
 - broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models can be served without compatibility-store reads on the hot path
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
-- broaden `WorkspaceCoordinator` claim enforcement beyond worktree-scoped file-writing capabilities, provider prompt lifecycles, and workflow node dispatch to file-level scopes and port claims
+- keep the current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope while actor/projection ownership is completed; deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination are intentionally deferred to the final I/O-coordination slice
 
 ## Non-Goals
 
@@ -211,7 +212,7 @@ Projection rules:
 | terminal output fanout | `AgentActor` + transport gateway | Fanout must not block provider event ingestion. |
 | workflow run progression | `WorkflowRunActor` | Owns mailbox delivery, barriers, node activation, failure state, watchdog interaction. |
 | capability jobs | `CapabilityExecutor` | Bounded queues. Reports progress/results through events. |
-| file/worktree claims | `WorkspaceCoordinator` | Enforces collision prevention before code-writing capability/provider work. |
+| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work without attempting final I/O conflict control. |
 | relay connection state | `RelayRuntime` | Owns registration, remote subscriptions, and relay I/O without becoming workspace authority. |
 | provider catalogs/history scans/health reads | background executors + projections | Never run on the interactive command lane. |
 
@@ -250,12 +251,14 @@ Required policies:
 
 ## Worktree and Collision Coordination
 
-M4.5 should introduce the runtime boundary for workspace coordination even if full merge automation lands later.
+M4.5 introduces the runtime boundary for workspace coordination without trying to solve the full multi-agent I/O conflict problem yet.
+
+The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. It is not the final conflict-control architecture for arbitrary agent harnesses, filesystem writes, patch transactions, or merge automation.
 
 Minimum `WorkspaceCoordinator` responsibilities:
 
 - allocate or validate `WorktreeAssignment`
-- track active worktree/file/port claims
+- track active worktree claims now and leave file/port scopes for the final I/O-coordination design
 - reject concurrent code-writing work in the same active worktree when claims conflict
 - expose claim state in `DaemonHealthProjection` or a dedicated coordination projection
 - release stale claims on provider-run settlement, cancellation, session delete, or explicit recovery
@@ -272,8 +275,11 @@ Current implementation:
 
 Still open:
 
-- file-level claim scopes
+- define the final I/O-coordination model after the actor/projection refactor is complete
+- decide how enforced mutation control works across harnesses Arroba does not fully control: OS/filesystem sandboxing, read-only canonical worktrees plus writable overlays, coordinator-owned patch application, harness permission gates, or an explicit fallback advisory mode
+- file-level claim scopes, if they still make sense after the enforcement model is chosen
 - port claim scopes
+- transactional patch submission/rebase protocol, if Arroba chooses coordinator-owned canonical writes
 
 Rules:
 
@@ -281,6 +287,8 @@ Rules:
 - Capability jobs that mutate files consult the coordinator.
 - Provider-run placement records the assigned worktree in runtime state.
 - Shared-session worktree mode remains allowed for single-agent or explicitly serialized work.
+- Same-session shared worktrees must remain a product-supported collaboration mode. The current provider-prompt same-session allowance preserves that behavior; it should not be expanded into deeper I/O policy without a separate design review.
+- Do not expand claims into file-level/port-level enforcement until `SessionRuntime`, `AgentRuntime`, workflow ownership, and projection-first reads no longer depend on hot `Arc<Mutex<DaemonApp>>` paths.
 
 ## Migration Plan
 
@@ -330,7 +338,8 @@ Current status: session lifecycle/focus/resize/end/delete behavior has been cons
 
 ### Phase 7. WorkspaceCoordinator and RelayRuntime
 
-- Add worktree/file/port claim enforcement.
+- Add coarse worktree claim enforcement as a kernel-owned boundary for visible mutating work.
+- Defer file-level claims, port claims, harness sandboxing, and transactional mutation/rebase semantics until after hot-path actor/projection ownership is complete.
 - Move relay registration, remote subscriptions, and relay background I/O behind `RelayRuntime`.
 - Validate that relay remains a transport/runtime member, not a workspace authority.
 

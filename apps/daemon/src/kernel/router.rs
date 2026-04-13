@@ -203,6 +203,9 @@ impl CommandRouter {
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
         }
+        if let Some(response) = self.projected_session_inspection_response(&request) {
+            return response;
+        }
         if let LocalDaemonRequest::GetSessionHistory(request) = &request {
             if let Some(response) = self.projected_session_history_response(request).await {
                 return Ok(response);
@@ -259,6 +262,87 @@ impl CommandRouter {
         self.apply_provider_launch_projection_state(&result).await;
         self.apply_agent_lane_cleanup(&result).await;
         result
+    }
+
+    fn projected_session_inspection_response(
+        &self,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        match request {
+            LocalDaemonRequest::ListAgents(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(Ok(LocalDaemonResponse::AgentsListed {
+                    agents: session.agents().to_vec(),
+                }))
+            }
+            LocalDaemonRequest::ListWorkflows(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(Ok(LocalDaemonResponse::WorkflowsListed {
+                    workflows: session.workflows().to_vec(),
+                }))
+            }
+            LocalDaemonRequest::ResolveWorkflow(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(
+                    projected_resolve_workflow(&session, &request.workflow_ref)
+                        .map(|workflow| LocalDaemonResponse::WorkflowResolved { workflow }),
+                )
+            }
+            LocalDaemonRequest::ListWorkflowRuns(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(
+                    projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                        |workflow_id| {
+                            let workflow_runs = session
+                                .workflow_runs()
+                                .iter()
+                                .filter(|workflow_run| {
+                                    workflow_id
+                                        .as_deref()
+                                        .is_none_or(|id| workflow_run.workflow_id() == id)
+                                })
+                                .cloned()
+                                .collect();
+                            LocalDaemonResponse::WorkflowRunsListed { workflow_runs }
+                        },
+                    ),
+                )
+            }
+            LocalDaemonRequest::GetWorkflowRun(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(
+                    projected_resolve_workflow_run(&session, &request.workflow_run_ref)
+                        .map(|workflow_run| LocalDaemonResponse::WorkflowRun { workflow_run }),
+                )
+            }
+            LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(
+                    projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                        |workflow_id| {
+                            let watchdogs = session
+                                .workflow_watchdogs()
+                                .iter()
+                                .filter(|watchdog| {
+                                    workflow_id
+                                        .as_deref()
+                                        .is_none_or(|id| watchdog.workflow_id() == id)
+                                })
+                                .cloned()
+                                .collect();
+                            LocalDaemonResponse::WorkflowWatchdogsListed { watchdogs }
+                        },
+                    ),
+                )
+            }
+            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+                let session = self.session_projection.get(&request.session_id)?;
+                Some(Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
+                    queued_launches: session.queued_workflow_launches().iter().cloned().collect(),
+                }))
+            }
+            _ => None,
+        }
     }
 
     async fn projected_session_history_response(
@@ -554,6 +638,90 @@ impl CommandRouter {
                 .remove(session_id);
         }
     }
+}
+
+fn projected_workflow_id(
+    session: &crate::session::RuntimeSession,
+    workflow_ref: Option<&str>,
+) -> Result<Option<String>, DaemonError> {
+    workflow_ref
+        .map(|reference| projected_resolve_workflow(session, reference))
+        .transpose()
+        .map(|workflow| workflow.map(|workflow| workflow.id().to_string()))
+}
+
+fn projected_resolve_workflow(
+    session: &crate::session::RuntimeSession,
+    workflow_ref: &str,
+) -> Result<crate::session::WorkflowDefinition, DaemonError> {
+    let normalized_ref = workflow_ref.trim().to_lowercase();
+    if let Some(workflow) = session
+        .workflows()
+        .iter()
+        .find(|workflow| workflow.id() == normalized_ref)
+    {
+        return Ok(workflow.clone());
+    }
+    if let Some(workflow) = session
+        .workflows()
+        .iter()
+        .find(|workflow| workflow.alias() == Some(normalized_ref.as_str()))
+    {
+        return Ok(workflow.clone());
+    }
+    let id_matches = session
+        .workflows()
+        .iter()
+        .filter(|workflow| workflow.id().starts_with(&normalized_ref))
+        .cloned()
+        .collect::<Vec<_>>();
+    if id_matches.len() == 1 {
+        return Ok(id_matches[0].clone());
+    }
+    let alias_matches = session
+        .workflows()
+        .iter()
+        .filter(|workflow| {
+            workflow
+                .alias()
+                .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if alias_matches.len() == 1 {
+        return Ok(alias_matches[0].clone());
+    }
+    Err(DaemonError::WorkflowNotFound {
+        session_id: session.id().to_string(),
+        workflow_id: workflow_ref.to_string(),
+    })
+}
+
+fn projected_resolve_workflow_run(
+    session: &crate::session::RuntimeSession,
+    workflow_run_ref: &str,
+) -> Result<crate::session::WorkflowRun, DaemonError> {
+    let normalized_ref = workflow_run_ref.trim().to_lowercase();
+    if let Some(workflow_run) = session
+        .workflow_runs()
+        .iter()
+        .find(|workflow_run| workflow_run.id() == normalized_ref)
+    {
+        return Ok(workflow_run.clone());
+    }
+    let id_matches = session
+        .workflow_runs()
+        .iter()
+        .filter(|workflow_run| workflow_run.id().starts_with(&normalized_ref))
+        .cloned()
+        .collect::<Vec<_>>();
+    if id_matches.len() == 1 {
+        return Ok(id_matches[0].clone());
+    }
+    Err(DaemonError::WorkflowRunNotFound {
+        session_id: session.id().to_string(),
+        workflow_run_id: workflow_run_ref.to_string(),
+    })
 }
 
 fn router_projection_stores(
@@ -1051,11 +1219,13 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, ConfigureRelayRequest, DeleteSessionRequest, DestroyAgentRequest,
-        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetProviderCatalogRequest,
-        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListProviderProcessesRequest, ListSessionsRequest,
-        LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
+        AttachToSessionRequest, ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest,
+        DestroyAgentRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
+        GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, ResolveWorkflowRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -2683,6 +2853,193 @@ mod tests {
                 assert_eq!(sessions[0].id(), session_id);
             }
             _ => panic!("unexpected list response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("reviewer".to_string()),
+            provider: "claude-code".to_string(),
+            model: None,
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        });
+        let spawn_command =
+            KernelCommand::from_local_request("cmd-inspection-spawn", None, None, &spawn_request);
+        router
+            .dispatch(spawn_command, spawn_request)
+            .await
+            .expect("spawn should refresh the session projection");
+
+        let create_workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("inspection".to_string()),
+        });
+        let create_workflow_command = KernelCommand::from_local_request(
+            "cmd-inspection-workflow",
+            None,
+            None,
+            &create_workflow_request,
+        );
+        let workflow_id = match router
+            .dispatch(create_workflow_command, create_workflow_request)
+            .await
+            .expect("workflow should create")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow.id().to_string(),
+            _ => panic!("unexpected workflow response"),
+        };
+
+        let app_guard = app.lock().await;
+        let list_agents_request = LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session_id.clone(),
+        });
+        let list_workflows_request = LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session_id.clone(),
+        });
+        let resolve_workflow_request =
+            LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
+                session_id: session_id.clone(),
+                workflow_ref: "inspection".to_string(),
+            });
+        let list_runs_request = LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+            session_id: session_id.clone(),
+            workflow_ref: Some("inspection".to_string()),
+        });
+        let list_watchdogs_request =
+            LocalDaemonRequest::ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest {
+                session_id: session_id.clone(),
+                workflow_ref: Some("inspection".to_string()),
+            });
+
+        let list_agents_router = router.clone();
+        let list_agents_task = tokio::spawn(async move {
+            let command = KernelCommand::from_local_request(
+                "cmd-inspection-agents",
+                None,
+                None,
+                &list_agents_request,
+            );
+            list_agents_router
+                .dispatch(command, list_agents_request)
+                .await
+        });
+        let list_workflows_router = router.clone();
+        let list_workflows_task = tokio::spawn(async move {
+            let command = KernelCommand::from_local_request(
+                "cmd-inspection-workflows",
+                None,
+                None,
+                &list_workflows_request,
+            );
+            list_workflows_router
+                .dispatch(command, list_workflows_request)
+                .await
+        });
+        let resolve_workflow_router = router.clone();
+        let resolve_workflow_task = tokio::spawn(async move {
+            let command = KernelCommand::from_local_request(
+                "cmd-inspection-resolve-workflow",
+                None,
+                None,
+                &resolve_workflow_request,
+            );
+            resolve_workflow_router
+                .dispatch(command, resolve_workflow_request)
+                .await
+        });
+        let list_runs_router = router.clone();
+        let list_runs_task = tokio::spawn(async move {
+            let command = KernelCommand::from_local_request(
+                "cmd-inspection-runs",
+                None,
+                None,
+                &list_runs_request,
+            );
+            list_runs_router.dispatch(command, list_runs_request).await
+        });
+        let list_watchdogs_router = router.clone();
+        let list_watchdogs_task = tokio::spawn(async move {
+            let command = KernelCommand::from_local_request(
+                "cmd-inspection-watchdogs",
+                None,
+                None,
+                &list_watchdogs_request,
+            );
+            list_watchdogs_router
+                .dispatch(command, list_watchdogs_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(list_agents_task.is_finished());
+        assert!(list_workflows_task.is_finished());
+        assert!(resolve_workflow_task.is_finished());
+        assert!(list_runs_task.is_finished());
+        assert!(list_watchdogs_task.is_finished());
+        drop(app_guard);
+
+        match list_agents_task
+            .await
+            .expect("list agents task should join")
+            .expect("agents should list")
+        {
+            LocalDaemonResponse::AgentsListed { agents } => {
+                assert_eq!(agents.len(), 2);
+            }
+            _ => panic!("unexpected agents response"),
+        }
+        match list_workflows_task
+            .await
+            .expect("list workflows task should join")
+            .expect("workflows should list")
+        {
+            LocalDaemonResponse::WorkflowsListed { workflows } => {
+                assert_eq!(workflows.len(), 1);
+                assert_eq!(workflows[0].id(), workflow_id);
+            }
+            _ => panic!("unexpected workflows response"),
+        }
+        match resolve_workflow_task
+            .await
+            .expect("resolve workflow task should join")
+            .expect("workflow should resolve")
+        {
+            LocalDaemonResponse::WorkflowResolved { workflow } => {
+                assert_eq!(workflow.id(), workflow_id);
+            }
+            _ => panic!("unexpected workflow resolve response"),
+        }
+        match list_runs_task
+            .await
+            .expect("list runs task should join")
+            .expect("workflow runs should list")
+        {
+            LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => {
+                assert!(workflow_runs.is_empty());
+            }
+            _ => panic!("unexpected workflow runs response"),
+        }
+        match list_watchdogs_task
+            .await
+            .expect("list watchdogs task should join")
+            .expect("workflow watchdogs should list")
+        {
+            LocalDaemonResponse::WorkflowWatchdogsListed { watchdogs } => {
+                assert!(watchdogs.is_empty());
+            }
+            _ => panic!("unexpected workflow watchdogs response"),
         }
     }
 
