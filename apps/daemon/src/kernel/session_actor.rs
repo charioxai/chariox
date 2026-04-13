@@ -10,6 +10,7 @@ use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::terminal::TerminalStreamStore;
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -55,6 +56,7 @@ pub(crate) struct SessionRuntime {
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    terminal_stream: TerminalStreamStore,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
 }
 
@@ -65,6 +67,7 @@ impl SessionRuntime {
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
+        terminal_stream: TerminalStreamStore,
     ) -> Self {
         Self {
             app,
@@ -72,6 +75,7 @@ impl SessionRuntime {
             focus_projection,
             session_projection,
             agent_runtime_projection,
+            terminal_stream,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -182,6 +186,7 @@ impl SessionRuntime {
             self.focus_projection.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
+            self.terminal_stream.clone(),
             session_id.to_string(),
             rx,
         ));
@@ -251,6 +256,7 @@ async fn run_session_command_lane(
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    terminal_stream: TerminalStreamStore,
     session_id: String,
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
@@ -266,13 +272,17 @@ async fn run_session_command_lane(
         );
         let (result, projected_session) = {
             let mut app = app.lock().await;
-            let result = SessionActor::handle_interactive_command(&mut app, envelope.request)
-                .unwrap_or_else(|| {
-                    Err(DaemonError::LocalTransport {
-                        operation: "execute session kernel command",
-                        message: "request is not handled by the session runtime".to_string(),
-                    })
-                });
+            let result = SessionActor::handle_interactive_command(
+                &mut app,
+                &terminal_stream,
+                envelope.request,
+            )
+            .unwrap_or_else(|| {
+                Err(DaemonError::LocalTransport {
+                    operation: "execute session kernel command",
+                    message: "request is not handled by the session runtime".to_string(),
+                })
+            });
             let projected_session = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
                     .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
@@ -359,6 +369,7 @@ impl SessionActor {
 
     pub(crate) fn handle_interactive_command(
         app: &mut DaemonApp,
+        terminal_stream: &TerminalStreamStore,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         if let LocalDaemonRequest::UpdateSessionConfig(request) = request {
@@ -381,8 +392,7 @@ impl SessionActor {
             return Some(
                 app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)
                     .map(|_| LocalDaemonResponse::RuntimeNotices {
-                        notices: app
-                            .terminal_mut()
+                        notices: terminal_stream
                             .drain_notice_records(&request.session_id, &request.attachment_id),
                     }),
             );
@@ -466,8 +476,10 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
+        let terminal_stream = app.terminal_stream_store();
         let response = SessionActor::handle_interactive_command(
             &mut app,
+            &terminal_stream,
             LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "cli-1".to_string(),
@@ -549,8 +561,10 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
 
+        let terminal_stream = app.terminal_stream_store();
         SessionActor::handle_interactive_command(
             &mut app,
+            &terminal_stream,
             LocalDaemonRequest::FocusAgent(FocusAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: default_agent.id().to_string(),
@@ -581,6 +595,7 @@ mod tests {
 
         let response = SessionActor::handle_interactive_command(
             &mut app,
+            &terminal_stream,
             LocalDaemonRequest::FocusAgent(FocusAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: second_agent.id().to_string(),
