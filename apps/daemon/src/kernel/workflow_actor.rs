@@ -49,11 +49,7 @@ impl WorkflowRuntime {
         command: crate::kernel::command::KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session_id =
-            workflow_session_id(&request).ok_or_else(|| DaemonError::LocalTransport {
-                operation: "route workflow kernel command",
-                message: "request is not handled by the workflow runtime".to_string(),
-            })?;
+        let session_id = self.resolve_workflow_lane_key(&request)?;
         let lane = self.workflow_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         lane.try_send(WorkflowCommandEnvelope {
@@ -72,6 +68,23 @@ impl WorkflowRuntime {
                 operation: "await workflow kernel command",
                 message: error.to_string(),
             })?
+    }
+
+    fn resolve_workflow_lane_key(
+        &self,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        let session_id =
+            workflow_session_id(request).ok_or_else(|| DaemonError::LocalTransport {
+                operation: "route workflow kernel command",
+                message: "request is not handled by the workflow runtime".to_string(),
+            })?;
+        if self.session_projection.get(&session_id).is_some()
+            || !self.session_projection.has_warmed_list()
+        {
+            return Ok(session_id);
+        }
+        Err(DaemonError::SessionNotFound { session_id })
     }
 
     async fn workflow_lane(&self, session_id: &str) -> mpsc::Sender<WorkflowCommandEnvelope> {
@@ -138,8 +151,9 @@ async fn run_workflow_command_lane(
         let (result, projected_session) = {
             let mut app = app.lock().await;
             let result = app.handle_local_request(envelope.request);
-            let projected_session = if result.is_ok() {
-                app.local_api_session_snapshot(&session_id).ok()
+            let projected_session = if let Ok(response) = result.as_ref() {
+                workflow_response_session(response)
+                    .or_else(|| app.local_api_session_snapshot(&session_id).ok())
             } else {
                 None
             };
@@ -201,4 +215,90 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ListWorkflowWatchdogs(request) => request.session_id.clone(),
         _ => return None,
     })
+}
+
+fn workflow_response_session(
+    response: &LocalDaemonResponse,
+) -> Option<crate::session::RuntimeSession> {
+    match response {
+        LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
+        | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
+        | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
+        | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
+        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
+        | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
+        | LocalDaemonResponse::WorkflowRunResumed { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
+        | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
+        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
+        | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+    use tokio::time::{timeout, Duration};
+
+    use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::workflow_actor::WorkflowRuntime;
+    use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
+    use crate::{DaemonApp, DaemonConfig, DaemonError};
+
+    #[tokio::test]
+    async fn workflow_lane_resolution_rejects_warmed_missing_session_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let runtime = WorkflowRuntime::new(
+            Arc::clone(&app),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+        let request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: "missing-session".to_string(),
+            alias: Some("pipeline".to_string()),
+        });
+
+        let _locked_app = app.lock().await;
+        let error = timeout(Duration::from_millis(100), async {
+            runtime.resolve_workflow_lane_key(&request)
+        })
+        .await
+        .expect("warmed missing workflow session resolution should not wait for the app lock")
+        .expect_err("missing workflow session should fail");
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+        assert!(
+            !runtime.has_lane("missing-session").await,
+            "missing workflow session should be rejected before creating a workflow lane"
+        );
+    }
 }
