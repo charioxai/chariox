@@ -355,7 +355,14 @@ impl DaemonApp {
                 run.variant().map(str::to_string),
                 run.resume_state().clone(),
             )?;
-            let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            let expected_next = self
+                .agent_runtime_projection_store()
+                .next_queued_prompt(run.session_id(), agent_id);
+            let _ = self.kernel_agents().advance_next_queued_prompt(
+                run.session_id(),
+                agent_id,
+                expected_next.as_ref(),
+            )?;
             self.publish_session_projection(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());
