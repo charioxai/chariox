@@ -732,9 +732,8 @@ impl<'a> KernelAgentService<'a> {
                             workflow_node_run_id,
                         )?;
                     }
-                    crate::scheduler::runtime::on_workflow_prompt_started(
-                        self.app, session_id, &active,
-                    )?;
+                    self.app
+                        .start_workflow_prompt_from_runtime(session_id, &active)?;
                     flow_control::note_prompt_started(self.app, &provider_run_id);
                     self.app.publish_session_projection(session_id)?;
                     return Ok(Some(active));
@@ -788,7 +787,8 @@ impl<'a> KernelAgentService<'a> {
                     workflow_node_run_id,
                 )?;
             }
-            crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
+            self.app
+                .start_workflow_prompt_from_runtime(session_id, &active)?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
             self.app.publish_session_projection(session_id)?;
             return Ok(Some(active));
@@ -891,7 +891,8 @@ impl<'a> KernelAgentService<'a> {
                     workflow_node_run_id,
                 )?;
             }
-            crate::scheduler::runtime::on_workflow_prompt_started(self.app, session_id, &active)?;
+            self.app
+                .start_workflow_prompt_from_runtime(session_id, &active)?;
             self.app.publish_session_projection(session_id)?;
             return Ok(Some(active));
         }

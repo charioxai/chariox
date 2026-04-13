@@ -22,6 +22,14 @@ pub enum WorkflowLaunchOutcome {
 }
 
 impl DaemonApp {
+    pub(crate) fn start_workflow_prompt_from_runtime(
+        &mut self,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, prompt)
+    }
+
     pub(crate) fn complete_workflow_prompt_from_runtime(
         &mut self,
         session_id: &str,
