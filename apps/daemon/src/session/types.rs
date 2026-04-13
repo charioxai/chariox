@@ -2367,11 +2367,6 @@ impl RuntimeSession {
             .queue_prompt(prompt, self.focused_agent_id.as_deref())
     }
 
-    pub fn complete_active_prompt(&mut self, agent_id: &str) -> Option<PromptCompletion> {
-        self.prompt_runtime
-            .complete_active_prompt(agent_id, self.focused_agent_id.as_deref())
-    }
-
     pub fn complete_active_prompt_only(&mut self, agent_id: &str) -> Option<PromptQueueItem> {
         self.prompt_runtime
             .complete_active_prompt_only(agent_id, self.focused_agent_id.as_deref())

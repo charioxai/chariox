@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    AgentPromptState, PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-    SchedulerState,
+    AgentPromptState, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, SchedulerState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,30 +107,6 @@ impl PromptRuntimeState {
         prompt_state.queued_prompts.push_back(queued.clone());
         self.refresh_after_mutation(focused_agent_id);
         PromptSubmissionOutcome::Queued { prompt: queued }
-    }
-
-    pub(in crate::session) fn complete_active_prompt(
-        &mut self,
-        agent_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> Option<PromptCompletion> {
-        let prompt_state = self.prompt_states.get_mut(agent_id)?;
-        let mut completed = prompt_state.active_prompt.take()?;
-        completed.set_status(PromptStatus::Completed);
-
-        let started_next = prompt_state.queued_prompts.pop_front().map(|mut next| {
-            next.set_status(PromptStatus::Running);
-            prompt_state.active_prompt = Some(next.clone());
-            next
-        });
-
-        self.drop_empty_prompt_state(agent_id);
-        self.refresh_after_mutation(focused_agent_id);
-
-        Some(PromptCompletion {
-            completed,
-            started_next,
-        })
     }
 
     pub(in crate::session) fn complete_active_prompt_only(
