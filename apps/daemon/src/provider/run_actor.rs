@@ -503,6 +503,14 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn push_finished_output_poll_for_test(
+        &self,
+        finished: FinishedProviderOutputPollJob,
+    ) {
+        push_finished_output_poll(&self.finished_output_polls, finished);
+    }
+
     fn worker_for_run(&self, provider_run_id: &str) -> mpsc::SyncSender<ProviderRunActorCommand> {
         let mut workers = self
             .workers

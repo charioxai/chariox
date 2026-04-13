@@ -4,6 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::attachment::ClientCapabilityLevel;
+use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
@@ -33,6 +34,26 @@ use super::{
 use futures_util::SinkExt;
 use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
+    match app
+        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.to_string(),
+                agent_id: Some(agent_id.to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "slow-structured".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("slow structured provider run should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run.id().to_string(),
+        _ => panic!("unexpected local response"),
+    }
+}
 
 #[test]
 fn local_request_api_supports_session_attach_and_end() {
@@ -87,6 +108,80 @@ fn local_request_api_supports_session_attach_and_end() {
     assert_eq!(detached.id(), attachment.id());
     assert_eq!(ended.id(), session.id());
     assert!(app.attachments().get_attachment(detached.id()).is_err());
+}
+
+#[test]
+fn structured_output_pump_applies_finished_jobs_from_other_runs() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = match app
+        .handle_local_request(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-structured-output", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match app
+        .handle_local_request(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-structured-output".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    let worker_agent = match app
+        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("worker".to_string()),
+            provider: "slow-structured".to_string(),
+            model: Some("default".to_string()),
+            effort: None,
+            worktree_id: None,
+            machine_ref: None,
+        }))
+        .expect("worker agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+
+    let background_run_id = launch_slow_structured_run(&mut app, session.id(), default_agent.id());
+    let requested_run_id = launch_slow_structured_run(&mut app, session.id(), worker_agent.id());
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            background_run_id.clone(),
+            Ok(Some(ProviderPromptSignalBatch {
+                chunks: vec![ProviderPromptChunk {
+                    kind: TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("background-chunk".to_string()),
+                    bytes: b"background-run-output\n".to_vec(),
+                }],
+                ..ProviderPromptSignalBatch::default()
+            })),
+        );
+
+    let recipient_attachment_ids = app.attachments().list_session_attachment_ids(session.id());
+    let requested_records = app
+        .pump_provider_output(session.id(), &requested_run_id, recipient_attachment_ids)
+        .expect("requested run pump should drain all finished structured jobs");
+
+    assert!(
+        requested_records.is_empty(),
+        "background run output should be buffered for recipients, not returned as requested-run output"
+    );
+    let buffered_records = app
+        .terminal_mut()
+        .drain_output_records(session.id(), attachment.id());
+    assert_eq!(buffered_records.len(), 1);
+    assert_eq!(buffered_records[0].provider_run_id, background_run_id);
+    assert_eq!(buffered_records[0].bytes, b"background-run-output\n");
 }
 
 #[test]

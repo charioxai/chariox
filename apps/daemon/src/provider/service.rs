@@ -608,6 +608,20 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
+    #[cfg(test)]
+    pub(crate) fn push_finished_structured_output_poll_for_test(
+        &mut self,
+        provider_run_id: String,
+        result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
+    ) {
+        self.run_actor_mailbox.push_finished_output_poll_for_test(
+            super::FinishedProviderOutputPollJob {
+                provider_run_id,
+                result,
+            },
+        );
+    }
+
     pub(crate) fn apply_structured_output_metadata(
         &mut self,
         provider_run_id: &str,
