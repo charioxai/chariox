@@ -118,6 +118,7 @@ impl SessionRuntime {
             LocalDaemonRequest::FocusAgent(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::CycleAgentFocus(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::UpdateSessionConfig(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::DeleteSession(request) => {
                 if let Some(session_id) = self
@@ -327,6 +328,9 @@ fn session_id_for_projection_refresh(
         }
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: None }) => None,
         Ok(LocalDaemonResponse::TerminalResized { session_id, .. }) => Some(session_id.clone()),
+        Ok(LocalDaemonResponse::SessionConfigUpdated { session, .. }) => {
+            Some(session.id().to_string())
+        }
         _ => None,
     }
 }
@@ -342,6 +346,7 @@ impl SessionActor {
                 | LocalDaemonRequest::FocusAgent(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
+                | LocalDaemonRequest::UpdateSessionConfig(_)
                 | LocalDaemonRequest::EndSession(_)
                 | LocalDaemonRequest::DeleteSession(_)
         )
@@ -351,6 +356,23 @@ impl SessionActor {
         app: &mut DaemonApp,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if let LocalDaemonRequest::UpdateSessionConfig(request) = request {
+            let session_id = request.session_id.clone();
+            return Some(
+                app.update_session_config(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.values,
+                    request.requires_idle,
+                )
+                .and_then(|config| {
+                    app.local_api_session_snapshot(&session_id).map(|session| {
+                        LocalDaemonResponse::SessionConfigUpdated { config, session }
+                    })
+                }),
+            );
+        }
+
         let mut sessions = app.kernel_sessions();
         match request {
             LocalDaemonRequest::AttachToSession(request) => Some(

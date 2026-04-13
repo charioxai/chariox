@@ -1500,6 +1500,7 @@ fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
@@ -1519,6 +1520,7 @@ mod tests {
         LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatusRequest,
         ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -3187,6 +3189,84 @@ mod tests {
             LocalDaemonResponse::SessionState { session } => {
                 assert!(session.active_prompt_for_agent(&agent_id).is_some());
                 assert_eq!(session.agents().len(), 1);
+            }
+            _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_session_config_uses_session_runtime_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-config-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let update_request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            values: BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+            requires_idle: false,
+        });
+        let update_command =
+            KernelCommand::from_local_request("cmd-session-config", None, None, &update_request);
+        let update_response = router
+            .dispatch(update_command, update_request)
+            .await
+            .expect("session config update should succeed");
+        match update_response {
+            LocalDaemonResponse::SessionConfigUpdated { config, session } => {
+                assert_eq!(config.version(), 1);
+                assert_eq!(session.config_state().version(), 1);
+                assert_eq!(
+                    session.config_state().values().get("theme"),
+                    Some(&"compact".to_string())
+                );
+            }
+            _ => panic!("unexpected config response"),
+        }
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-session-config-state",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "session config update should publish a session projection for lock-free state reads"
+        );
+
+        drop(app_guard);
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(session.config_state().version(), 1);
+                assert_eq!(
+                    session.config_state().values().get("theme"),
+                    Some(&"compact".to_string())
+                );
             }
             _ => panic!("unexpected state response"),
         }
