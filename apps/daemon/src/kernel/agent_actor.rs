@@ -389,6 +389,11 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             });
         }
+        if self.session_projection.has_warmed_list() {
+            return Err(DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
         let app = self.app.lock().await;
         active_prompt_agent_id(&app.sessions().get_session(session_id)?).ok_or_else(|| {
             DaemonError::NoActivePrompt {
@@ -460,16 +465,27 @@ impl AgentRuntime {
         session_id: &str,
         target_agent_id: Option<&str>,
     ) -> Result<String, DaemonError> {
+        let session_projection = self.session_projection.get(session_id);
+        if session_projection.is_none()
+            && self.session_projection.has_warmed_list()
+            && self.prompt_state.list_for_session(session_id).is_empty()
+            && self
+                .agent_runtime_projection
+                .list_for_session(session_id)
+                .is_empty()
+        {
+            return Err(DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
         if let Some(agent_id) = target_agent_id {
             return Ok(agent_id.to_string());
         }
         if let Some(agent_id) = self.focus_projection.focused_agent_id(session_id).await {
             return Ok(agent_id);
         }
-        if let Some(agent_id) = self
-            .session_projection
-            .get(session_id)
-            .and_then(|session| session.focused_agent_id().map(str::to_string))
+        if let Some(agent_id) =
+            session_projection.and_then(|session| session.focused_agent_id().map(str::to_string))
         {
             return Ok(agent_id);
         }
@@ -990,6 +1006,70 @@ mod tests {
 
         match error {
             DaemonError::NoActivePrompt { session_id } => assert_eq!(session_id, session.id()),
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_agent_resolution_uses_warmed_list_for_missing_session_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+
+        let _locked_app = app.lock().await;
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_submit_agent_id("missing-session", None),
+        )
+        .await
+        .expect("warmed missing session should not wait for the app lock")
+        .expect_err("missing session should fail");
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_prompt_resolution_uses_warmed_list_for_missing_session_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+        );
+
+        let _locked_app = app.lock().await;
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_active_prompt_agent_id("missing-session"),
+        )
+        .await
+        .expect("warmed missing active-prompt session should not wait for the app lock")
+        .expect_err("missing session should fail");
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
             error => panic!("unexpected error: {error}"),
         }
     }
