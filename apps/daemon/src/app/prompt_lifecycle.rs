@@ -410,7 +410,8 @@ impl DaemonApp {
             provider_run_id,
             None,
         )? {
-            ProviderRunLivenessReconciliation::AlreadyEnded(_) => {
+            ProviderRunLivenessReconciliation::AlreadyEnded(run) => {
+                self.update_provider_run_projection(run);
                 let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
                 return Ok(true);
             }
