@@ -78,10 +78,16 @@ impl SessionStateProjectionStore {
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .expect("session projection lock should not be poisoned")
-            .session_list = Some(sessions);
+            .expect("session projection lock should not be poisoned");
+        for session in &sessions {
+            state
+                .session_states
+                .insert(session.id().to_string(), session.clone());
+        }
+        state.session_list = Some(sessions);
     }
 
     pub(crate) fn remove(&self, session_id: &str) {

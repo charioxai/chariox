@@ -3052,6 +3052,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-list-state-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should hydrate per-session projection entries");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-list-state-projection",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "ListSessions warm-up should hydrate GetSessionState projection entries without app lock access"
+        );
+
+        drop(app_guard);
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert_eq!(session.id(), session_id);
+            }
+            _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
     async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = app
