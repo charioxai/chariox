@@ -390,6 +390,10 @@ Current status: Phase 4 migration slices are complete for the M4.5 boundary. Ses
 - Make output fanout asynchronous and bounded.
 - Ensure provider output can continue while a client is slow or disconnected.
 
+Current status: Provider-run structured submit/abort/poll commands enter bounded per-run actor mailboxes, runtime-slot tombstones prevent stale runtime restoration after cleanup, finished structured output jobs are drained globally on each pump, terminal fanout is bounded per recipient, and daemon health exposes both provider-run actor enqueue pressure and terminal stream backlog pressure. Provider-run exit prompt settlement is now behind an explicit lifecycle decision boundary, but the final liveness mutation still runs through the compatibility prompt lifecycle service.
+
+Provider-run worker decision: keep the current thread-per-provider-run mailbox worker for M4.5. This is intentionally conservative because Codex/OpenCode runtime calls can block and own non-`Send`/process-local state; moving to bounded Tokio workers would require auditing every provider runtime operation for async cancellation, blocking behavior, and runtime-state ownership. The professionalization requirement for M4.5 is bounded admission, health visibility, cleanup correctness, and tests around multi-run output fairness. A Tokio worker pool remains a post-M4.5 optimization only after provider runtime calls are wrapped behind explicit blocking boundaries.
+
 ### Phase 6. WorkflowRunActor and CapabilityExecutor
 
 - Move workflow run progression out of shared app mutation and into `WorkflowRunActor`.
