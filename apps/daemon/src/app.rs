@@ -10,6 +10,7 @@ use tokio::runtime::{Handle, Runtime};
 mod kernel_agent;
 mod kernel_session;
 mod prompt_lifecycle;
+mod provider_output;
 mod provider_runtime;
 mod session_runtime;
 mod terminal_fanout;
@@ -820,61 +821,13 @@ impl DaemonApp {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.reap_structured_prompt_jobs();
-        if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
-            return Ok(Vec::new());
-        }
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        if provider_run.state() == crate::provider::ProviderRunState::Ended {
-            return Ok(Vec::new());
-        }
-        // Parked runs should not be polled for output
-        if provider_run.state() == crate::provider::ProviderRunState::Parked {
-            return Ok(Vec::new());
-        }
-
-        if self.providers.run_uses_structured_prompt_io(&provider_run) {
-            return self.pump_structured_output(
+        provider_output::ProviderOutputPump::new(self).pump_provider_output(
+            provider_output::ProviderOutputPumpRequest {
                 session_id,
                 provider_run_id,
                 recipient_attachment_ids,
-            );
-        }
-
-        let chunks = match self.pty.drain_output(provider_run_id) {
-            Ok(chunks) => chunks,
-            Err(error) => {
-                if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
-                    return Ok(Vec::new());
-                }
-                return Err(error);
-            }
-        };
-        if !chunks.is_empty() {
-            crate::transport::flow_control::note_prompt_response_content(self, provider_run_id);
-        }
-        let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
-        if !exited {
-            crate::transport::flow_control::maybe_complete_active_prompt(
-                self,
-                session_id,
-                provider_run_id,
-            )?;
-        }
-
-        Ok(chunks
-            .into_iter()
-            .map(|chunk| {
-                self.fan_out_output(
-                    session_id,
-                    provider_run_id,
-                    TerminalOutputKind::ProviderOutput,
-                    None,
-                    recipient_attachment_ids.clone(),
-                    &chunk.bytes,
-                )
-            })
-            .collect())
+            },
+        )
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {
