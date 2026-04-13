@@ -162,7 +162,7 @@ Order of work:
 5. Harden workflow runtime: move workflow progression, blocked-claim retry, node completion, watchdogs, and queued launches out of direct compatibility mutation paths and behind workflow-owned lanes.
 6. Harden provider and terminal runtime: ensure provider I/O does not hold hot app locks, give structured submit/abort/output-poll jobs explicit lifecycle states, and bound notice/completion buffers with health counters alongside output buffers.
 7. Remove hot `DaemonApp` dependencies: audit every remaining `Arc<Mutex<DaemonApp>>` request path, classify it as bootstrap, compatibility, or hot-path blocker, and move blockers behind actors/projections.
-8. Lock docs and invariants: keep README, architecture, roadmap, protocol, task board, and progress log aligned after each slice; add an implementation-invariants checklist for ownership, projection refresh, cleanup, overload behavior, health, and tests.
+8. Lock docs and invariants: keep README, architecture, roadmap, protocol, task board, and progress log aligned after each slice; enforce the implementation-invariants checklist for ownership, projection refresh, cleanup, overload behavior, health, and tests in [IMPLEMENTATION_INVARIANTS.md](/Users/miguel/arroba/docs/ops/IMPLEMENTATION_INVARIANTS.md).
 9. Return to final I/O coordination last: decide sandbox/overlay/coordinator-owned patch semantics, same-session behavior, file/port resource scopes, and transactional rebase/repair workflows only after actor/projection ownership is stable.
 
 ### Current Hot-Path Lock Audit
