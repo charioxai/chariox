@@ -81,6 +81,28 @@ Still open:
 - remove remaining hot request paths that require `Arc<Mutex<DaemonApp>>`
 - keep the current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope while actor/projection ownership is completed; deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination are intentionally deferred to the final I/O-coordination slice
 
+### Current Hot-Path Lock Audit
+
+Status as of 2026-04-13:
+
+The remaining `Arc<Mutex<DaemonApp>>` use falls into these buckets:
+
+| Area | Current use | M4.5 treatment |
+|------|-------------|----------------|
+| `kernel/router.rs` | compatibility fallback reads, projection refresh snapshots, provider launch/process/catalog cold paths, and the generic request fallback | keep cold/background reads bounded; remove fallback reads from warmed interactive paths before exit |
+| `kernel/session_actor.rs` | per-session mailboxes serialize requests but still execute lifecycle/focus/resize mutations through compatibility app state | next ownership slice: make `SessionRuntime` own normal session UI/lifecycle state and mirror compatibility snapshots |
+| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete but still mutate prompt queues through `KernelAgentService` on `DaemonApp` | core ownership slice: move active/queued prompt state into `AgentRuntime` and make session prompt fields compatibility projections |
+| `kernel_transport.rs` and `transport/relay_client.rs` | bootstrapping, relay/presence/config lookups, remote request handling, and some subscription helpers still read app state | keep relay as transport-owned background work; move registration/subscription state behind `RelayRuntime` after session/agent ownership |
+| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, runtime tools, and preserved turn state still operate over shared app/session state | introduce a workflow actor boundary after prompt ownership; do not broaden I/O coordination yet |
+| `kernel/capability_executor.rs` | capability jobs use app state for session/attachment context and write-claim coordination | acceptable only because jobs are bounded/background; final arbitrary I/O enforcement is deferred |
+
+New regression coverage locks in the current responsiveness contract while ownership continues moving:
+
+- slow session history reads must not delay prompt submission
+- slow provider catalog discovery must not delay focus, terminal resize, or prompt cancellation
+
+These tests do not prove actor ownership is complete. They specifically prevent backsliding on the M4.5 exit criterion that user-visible interactive commands must stay responsive while slow read/background work is running.
+
 ## Non-Goals
 
 - Do not rewrite provider adapters for every provider family.
