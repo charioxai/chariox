@@ -355,3 +355,67 @@ fn decrement_saturating(value: &AtomicU64) {
         current.checked_sub(1)
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+
+    use super::{execute_capability_request, CapabilityExecutorHealthStore};
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::error::DaemonError;
+    use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[tokio::test]
+    async fn capability_executor_rejects_when_concurrency_limit_is_exhausted() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-capability-overload",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let app = Arc::new(Mutex::new(app));
+        let health = CapabilityExecutorHealthStore::new(0);
+
+        let response = execute_capability_request(
+            &app,
+            health.clone(),
+            LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                command: "/bin/true".to_string(),
+                args: Vec::new(),
+                working_directory: None,
+                timeout_ms: Some(1_000),
+            }),
+        )
+        .await
+        .expect("shell command should be a capability request");
+
+        match response.expect_err("overloaded executor should reject work") {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "run shell command");
+                assert_eq!(message, "capability executor is overloaded");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.max_concurrent_jobs, 0);
+        assert_eq!(snapshot.available_permits, 0);
+        assert_eq!(snapshot.submitted_jobs, 0);
+        assert_eq!(snapshot.running_jobs, 0);
+        assert_eq!(snapshot.completed_jobs, 0);
+        assert_eq!(snapshot.failed_jobs, 0);
+        assert_eq!(snapshot.rejected_jobs, 1);
+        assert_eq!(snapshot.join_errors, 0);
+    }
+}
