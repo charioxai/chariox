@@ -26,7 +26,7 @@ Current multi-agent reliability work has already established one important invar
 
 ## Implementation Status
 
-Status as of 2026-04-12:
+Status as of 2026-04-13:
 
 - Landed: `KernelCommand` and `KernelEvent` envelopes with command ids, causation/correlation metadata, and priority classification.
 - Landed: `EventLog` service with daemon-local event ids, stream sequence ids, bounded replay windows, and explicit replay-gap reporting.
@@ -71,6 +71,7 @@ Status as of 2026-04-12:
 - Landed: queue advancement now prefers the agent-runtime expected queued prompt as the dispatch candidate when the mailbox supplies one, using compatibility projection/session reads only as a fallback for legacy/background paths. Compatibility state still validates and mirrors the selected prompt id before activation.
 - Landed: legacy/background queue-drain entrypoints now consult the warmed agent-runtime projection for the expected queued prompt before falling back to compatibility queue state, so provider-run startup and attachment cleanup paths follow the same actor-owned candidate path as prompt completion when projections are warm.
 - Landed: `RuntimeSession` prompt mutation is now concentrated behind `PromptRuntimeState`, which owns per-agent active/queued prompt state plus the legacy session-level active prompt, queued prompt, and scheduler projections. The struct is flattened for serialization, so the wire shape stays compatible while prompt mutation no longer writes scattered `RuntimeSession` fields directly.
+- Landed: `PromptRuntimeState` now lives in `session/prompt_runtime.rs` as a dedicated session prompt-runtime boundary. `RuntimeSession` still flattens and forwards it for compatibility, leaving a narrow module to move behind `AgentRuntime` next.
 - Landed: Phase 8 prompt-submit routing can resolve a missing target agent from the single-agent `AgentRuntimeProjection` before falling back to the compatibility app lock. This removes another hot-path lock for warmed single-agent sessions, including sessions whose session projection is not yet warm.
 - Landed: Phase 8 prompt cancel/complete owner resolution now returns `NoActivePrompt` from warmed session/runtime projections instead of taking the compatibility app lock just to confirm there is no active prompt.
 - Landed: Phase 8 prompt submit/cancel/complete routing now returns `SessionNotFound` from a warmed session-list projection for missing sessions instead of taking the compatibility app lock after runtime/session prompt projections are empty.
@@ -151,7 +152,7 @@ The A+ bar is not only green tests. The kernel runtime should have single owners
 Order of work:
 
 1. Stabilize the current branch: keep daemon tests green, remove duplicate prompt-state components, and make provider actor enqueue failure observable and retryable.
-2. Finish prompt ownership: `PromptRuntimeState` now concentrates session-mirror prompt mutation and compatibility projections; next move that owner behind `AgentRuntime` and make session prompt fields projection-only from the actor store.
+2. Finish prompt ownership: `PromptRuntimeState` now lives behind a dedicated session prompt-runtime module for compatibility mutation/projection forwarding; next move that owner behind `AgentRuntime` and make session prompt fields projection-only from the actor store.
 3. Finish session ownership: move remaining lifecycle, attachment, config, alias, focus, resize, end, and delete state behind `SessionRuntime`; session deletion must clean up agent lanes, workflow lanes, provider runs, terminal buffers, claims, and projections through one ordered path.
 4. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, and prompt complete.
 5. Harden workflow runtime: move workflow progression, blocked-claim retry, node completion, watchdogs, and queued launches out of direct compatibility mutation paths and behind workflow-owned lanes.
@@ -436,7 +437,7 @@ Rules:
 - Move prompt queues, per-agent prompt states, and provider-run binding into `AgentActor`.
 - Preserve the multi-agent invariant that focus does not park/resume/terminate another live run.
 
-Current status: Phase 4 migration slices are complete for the M4.5 boundary. Session lifecycle/focus/resize/end/delete behavior is consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior is consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` provide bounded per-session/per-agent mailboxes for responsiveness-critical command admission, session mailboxes are deregistered after successful end/delete, focused-agent routing is projection-backed, prompt submit admission and queue-front previews are computed from the shared agent-runtime projection, and provider/background settlement paths route through the kernel prompt lifecycle service instead of directly mutating prompt queues. Inside the compatibility session mirror, `PromptRuntimeState` is now the single prompt mutation owner for per-agent prompt queues plus legacy session prompt/scheduler projections; the next prompt-ownership slice moves that owner behind `AgentRuntime`.
+Current status: Phase 4 migration slices are complete for the M4.5 boundary. Session lifecycle/focus/resize/end/delete behavior is consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior is consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` provide bounded per-session/per-agent mailboxes for responsiveness-critical command admission, session mailboxes are deregistered after successful end/delete, focused-agent routing is projection-backed, prompt submit admission and queue-front previews are computed from the shared agent-runtime projection, and provider/background settlement paths route through the kernel prompt lifecycle service instead of directly mutating prompt queues. Inside the compatibility session mirror, `PromptRuntimeState` is now the single prompt mutation owner for per-agent prompt queues plus legacy session prompt/scheduler projections, and it lives in `session/prompt_runtime.rs` as the module boundary for the next prompt-ownership slice that moves that owner behind `AgentRuntime`.
 
 ### Phase 5. ProviderRunActor and Output Fanout
 

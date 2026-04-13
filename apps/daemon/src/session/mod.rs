@@ -1,3 +1,4 @@
+mod prompt_runtime;
 mod service;
 mod store;
 mod types;

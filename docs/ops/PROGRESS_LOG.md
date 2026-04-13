@@ -57,12 +57,18 @@ Chronological notes to preserve execution context between contributors/agents.
 - Changed structured provider submit/abort/output-poll/selection-sync enqueue failures to propagate as daemon errors instead of being logged and swallowed. This keeps prompt dispatch cleanup, claim release, notices, and retryable failures on the normal error path when a provider actor does not accept work.
 - Added a per-provider-run structured output return buffer so globally drained background output still comes back from the later direct pump for that provider run, without delaying terminal fanout.
 - Introduced `PromptRuntimeState` inside the compatibility session mirror. It is now the only writer for per-agent active/queued prompt state and the legacy session-level prompt/scheduler projections, while serialization remains flattened to the existing wire fields.
+
+## 2026-04-13
+
+### M4.5 kernel runtime refactor progress
+
+- Moved `PromptRuntimeState` into `session/prompt_runtime.rs` as a dedicated session prompt-runtime boundary. `RuntimeSession` still flattens and forwards that owner for wire compatibility, but scattered prompt mutation is no longer embedded in the shared session type.
 - Recorded the full A+ sequence for the rest of M4.5: prompt ownership, session ownership, projection correctness, workflow hardening, provider/terminal hardening, hot app-lock removal, docs/invariant lock, and final I/O coordination last.
 
 ### Remaining M4.5 work
 
 - Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
-- Move `PromptRuntimeState` out of the shared session mirror and behind `AgentRuntime`, keeping `AgentRuntimeProjectionStore` as the single warm read model.
+- Move `PromptRuntimeState` from the session prompt-runtime module behind `AgentRuntime`, keeping `AgentRuntimeProjectionStore` as the single warm read model.
 - Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
 - Keep current workspace claims bounded until actor/projection ownership is complete; return to file-level scopes, port claims, harness enforcement, and transactional mutation/rebase semantics in the final I/O-coordination slice.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.
