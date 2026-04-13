@@ -863,7 +863,6 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session }
-        | LocalDaemonResponse::PromptSubmitted { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session }

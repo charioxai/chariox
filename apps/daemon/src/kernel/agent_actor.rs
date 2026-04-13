@@ -251,6 +251,7 @@ impl AgentRuntime {
         tokio::spawn(run_agent_command_lane(
             Arc::clone(&self.app),
             self.provider_runtime_lanes.clone(),
+            self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
             agent_id.to_string(),
             rx,
@@ -335,6 +336,7 @@ fn active_prompt_agent_id_from_projections(
 async fn run_agent_command_lane(
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     agent_id: String,
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
@@ -352,6 +354,7 @@ async fn run_agent_command_lane(
         let result = execute_agent_command(
             &app,
             &provider_runtime_lanes,
+            &session_projection,
             &agent_runtime_projection,
             envelope.command,
         )
@@ -363,6 +366,7 @@ async fn run_agent_command_lane(
 async fn execute_agent_command(
     app: &Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: &ProviderRunOperationLanes,
+    session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
     command: AgentCommand,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -378,6 +382,7 @@ async fn execute_agent_command(
                     request.attachments,
                 )?
             };
+            session_projection.update(prepared.session.clone());
             agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
@@ -405,6 +410,7 @@ async fn execute_agent_command(
                     &request.attachment_id,
                 )?
             };
+            session_projection.update(prepared.session.clone());
             agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
@@ -437,6 +443,7 @@ async fn execute_agent_command(
                 let session = app.local_api_session_snapshot(&request.session_id)?;
                 (completion, session)
             };
+            session_projection.update(session.clone());
             agent_runtime_projection.update_session(&session);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
