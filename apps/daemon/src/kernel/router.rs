@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{sleep, Duration};
 
@@ -13,9 +14,10 @@ use crate::kernel::capability_executor::{
 };
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
-    page_history_entries, AgentRuntimeProjectionStore, DaemonHealthProjection,
-    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
+    page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
+    DaemonHealthProjection, ProviderCatalogProjectionStore, ProviderProcessProjectionStore,
+    ProviderRunProjectionStore, SessionHistoryProjectionStore, SessionStateProjectionStore,
+    TransportHealthStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
@@ -31,6 +33,7 @@ use crate::local::{
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::TerminalStreamHealthStore;
+use crate::transport::relay_client::RelayClientState;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -57,6 +60,8 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    config_projection: DaemonConfigProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
     capability_health: CapabilityExecutorHealthStore,
     transport_health: TransportHealthStore,
     terminal_health: TerminalStreamHealthStore,
@@ -94,6 +99,8 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             agent_runtime_projection,
+            config_projection,
+            relay_state,
             terminal_health,
             workspace_coordinator,
         ) = router_projection_stores(&app);
@@ -136,6 +143,8 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            config_projection,
+            relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health: TransportHealthStore::default(),
             terminal_health,
@@ -173,6 +182,8 @@ impl CommandRouter {
             provider_run_projection,
             provider_process_projection,
             agent_runtime_projection,
+            config_projection,
+            relay_state,
             terminal_health,
             workspace_coordinator,
         ) = router_projection_stores(&app);
@@ -215,6 +226,8 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            config_projection,
+            relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health,
             terminal_health,
@@ -268,6 +281,23 @@ impl CommandRouter {
             if let Some(sessions) = self.session_projection.list() {
                 return Ok(LocalDaemonResponse::SessionsListed { sessions });
             }
+        }
+        match &request {
+            LocalDaemonRequest::RelayStatus(_) => {
+                return self.projected_relay_status_response().await;
+            }
+            LocalDaemonRequest::ListRemoteMachines(_) => {
+                return self.projected_remote_machines_response().await;
+            }
+            LocalDaemonRequest::ListRemoteMachineKernels(request) => {
+                return self
+                    .projected_remote_machine_kernels_response(request.machine_ref.clone())
+                    .await;
+            }
+            LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
+                return provider_command_catalogs_response();
+            }
+            _ => {}
         }
         if let Some(response) = self.projected_session_inspection_response(&request) {
             return response;
@@ -447,6 +477,48 @@ impl CommandRouter {
             }
             _ => None,
         }
+    }
+
+    async fn projected_relay_status_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let connected = self.relay_state.read().await.connected();
+        Ok(LocalDaemonResponse::RelayStatus {
+            status: RelayStatus {
+                configured: config.relay_url.is_some() && config.relay_token.is_some(),
+                connected,
+                relay_url: config.relay_url,
+                relay_token_configured: config.relay_token.is_some(),
+                daemon_id: config.daemon_id,
+                machine_id: config.host_machine_id,
+                machine_alias: config.host_machine_alias,
+            },
+        })
+    }
+
+    async fn projected_remote_machines_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
+        let machines = crate::local::provider_requests::remote_machine_records(
+            machines,
+            &config.host_machine_id,
+        );
+        Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+    }
+
+    async fn projected_remote_machine_kernels_response(
+        &self,
+        machine_ref: String,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let machine_ref =
+            crate::local::provider_requests::resolve_registered_or_raw_machine_ref(&machine_ref);
+        let kernels =
+            crate::transport::relay_discovery::list_live_kernels_for_machine(&config, &machine_ref)
+                .await?;
+        Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
+            machine_ref,
+            kernels,
+        })
     }
 
     fn projected_session_or_absence(
@@ -885,6 +957,8 @@ fn router_projection_stores(
     ProviderRunProjectionStore,
     ProviderProcessProjectionStore,
     AgentRuntimeProjectionStore,
+    DaemonConfigProjectionStore,
+    Arc<RwLock<RelayClientState>>,
     TerminalStreamHealthStore,
     WorkspaceCoordinator,
 ) {
@@ -899,6 +973,8 @@ fn router_projection_stores(
         app.provider_run_projection_store(),
         app.provider_process_projection_store(),
         app.agent_runtime_projection_store(),
+        app.config_projection_store(),
+        app.relay_client_state(),
         app.terminal_health_store(),
         app.workspace_coordinator(),
     )
@@ -1361,13 +1437,13 @@ mod tests {
         AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
         ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest,
         DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderCatalogRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PumpTerminalOutputRequest, ResizeTerminalRequest,
-        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
-        SpawnAgentRequest, SubmitPromptRequest,
+        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
+        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
+        ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatusRequest,
+        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -2198,6 +2274,85 @@ mod tests {
                 assert_eq!(projection.terminal_stream.pending_output_records, 0);
             }
             _ => panic!("unexpected health response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_status_uses_config_projection_without_app_lock() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:9".to_string());
+        config.relay_token = Some("secret".to_string());
+        config.host_machine_id = "machine-projected".to_string();
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let app_guard = app.lock().await;
+        let relay_request = LocalDaemonRequest::RelayStatus(RelayStatusRequest);
+        let relay_command = KernelCommand::from_local_request(
+            "cmd-relay-status-projection",
+            None,
+            None,
+            &relay_request,
+        );
+        let relay_router = router.clone();
+        let relay_task =
+            tokio::spawn(async move { relay_router.dispatch(relay_command, relay_request).await });
+
+        let response = timeout(Duration::from_millis(100), relay_task)
+            .await
+            .expect("relay status should not wait for the app lock")
+            .expect("relay task should join")
+            .expect("relay status should resolve");
+        drop(app_guard);
+
+        match response {
+            LocalDaemonResponse::RelayStatus { status } => {
+                assert!(status.configured);
+                assert_eq!(status.relay_url.as_deref(), Some("ws://127.0.0.1:9"));
+                assert!(status.relay_token_configured);
+                assert_eq!(status.machine_id, "machine-projected");
+            }
+            _ => panic!("unexpected relay response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_command_catalogs_do_not_wait_for_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let app_guard = app.lock().await;
+        let catalog_request =
+            LocalDaemonRequest::GetProviderCommandCatalogs(GetProviderCommandCatalogsRequest);
+        let catalog_command = KernelCommand::from_local_request(
+            "cmd-provider-command-catalog-projection",
+            None,
+            None,
+            &catalog_request,
+        );
+        let catalog_router = router.clone();
+        let catalog_task = tokio::spawn(async move {
+            catalog_router
+                .dispatch(catalog_command, catalog_request)
+                .await
+        });
+
+        let response = timeout(Duration::from_millis(100), catalog_task)
+            .await
+            .expect("provider command catalogs should not wait for the app lock")
+            .expect("catalog task should join")
+            .expect("provider command catalogs should resolve");
+        drop(app_guard);
+
+        match response {
+            LocalDaemonResponse::ProviderCommandCatalogs { catalogs } => {
+                assert!(!catalogs.is_empty());
+            }
+            _ => panic!("unexpected provider command catalog response"),
         }
     }
 

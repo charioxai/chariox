@@ -5,6 +5,7 @@ use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use crate::app::DaemonApp;
+use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
 use crate::kernel::capability_executor::CapabilityExecutorHealthSnapshot;
@@ -37,6 +38,33 @@ pub struct SessionSnapshotProjection {
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
     pub provider_run: Option<RuntimeProviderRun>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DaemonConfigProjectionStore {
+    config: Arc<StdMutex<DaemonConfig>>,
+}
+
+impl DaemonConfigProjectionStore {
+    pub(crate) fn new(config: DaemonConfig) -> Self {
+        Self {
+            config: Arc::new(StdMutex::new(config)),
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> DaemonConfig {
+        self.config
+            .lock()
+            .expect("daemon config projection lock should not be poisoned")
+            .clone()
+    }
+
+    pub(crate) fn update(&self, config: DaemonConfig) {
+        *self
+            .config
+            .lock()
+            .expect("daemon config projection lock should not be poisoned") = config;
+    }
 }
 
 #[derive(Clone, Default)]

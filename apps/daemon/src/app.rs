@@ -38,9 +38,9 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
-    page_history_entries, AgentRuntimeProjectionStore, ProviderCatalogProjectionStore,
-    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
-    SessionStateProjectionStore, TransportHealthStore,
+    page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
+    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
@@ -90,6 +90,7 @@ pub struct DaemonApp {
     pub(crate) prompt_idle_timeout: Duration,
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
+    config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     history_projection: SessionHistoryProjectionStore,
@@ -193,6 +194,7 @@ impl DaemonApp {
                 config.session_history_root.clone(),
                 config.session_history_read_delay_ms,
             )?,
+            config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             history_projection: SessionHistoryProjectionStore::default(),
@@ -257,6 +259,10 @@ impl DaemonApp {
         Arc::clone(&self.relay_client_state)
     }
 
+    pub(crate) fn config_projection_store(&self) -> DaemonConfigProjectionStore {
+        self.config_projection.clone()
+    }
+
     pub(crate) fn configure_relay(
         &mut self,
         relay_url: Option<String>,
@@ -269,7 +275,9 @@ impl DaemonApp {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         self.config.validate()?;
-        self.config.persist_relay_config()
+        self.config.persist_relay_config()?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
     }
 
     pub fn sessions(&self) -> &SessionService {
