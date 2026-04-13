@@ -415,6 +415,8 @@ fn projected_session_absence_response(
         LocalDaemonRequest::AttachToSession(request) => &request.session_id,
         LocalDaemonRequest::FocusAgent(request) => &request.session_id,
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
+        LocalDaemonRequest::AliasSession(request) => &request.session_id,
+        LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };
     let Some(session) = session_projection.get(session_id) else {

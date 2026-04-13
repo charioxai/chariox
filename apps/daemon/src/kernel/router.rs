@@ -2433,6 +2433,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_alias_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-alias-missing-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let alias_request = LocalDaemonRequest::AliasSession(AliasSessionRequest {
+            session_id: "missing-session".to_string(),
+            alias: "review".to_string(),
+        });
+        let alias_command =
+            KernelCommand::from_local_request("cmd-alias-missing", None, None, &alias_request);
+        let alias_router = router.clone();
+        let alias_task =
+            tokio::spawn(async move { alias_router.dispatch(alias_command, alias_request).await });
+
+        let error = timeout(Duration::from_millis(100), alias_task)
+            .await
+            .expect("missing alias should not wait for the app lock")
+            .expect("alias task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_end_session_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-end-missing-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("list should warm the session projection");
+
+        let app_guard = app.lock().await;
+        let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: "missing-session".to_string(),
+        });
+        let end_command =
+            KernelCommand::from_local_request("cmd-end-missing", None, None, &end_request);
+        let end_router = router.clone();
+        let end_task =
+            tokio::spawn(async move { end_router.dispatch(end_command, end_request).await });
+
+        let error = timeout(Duration::from_millis(100), end_task)
+            .await
+            .expect("missing end should not wait for the app lock")
+            .expect("end task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
     async fn invalid_focus_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _agent) = app
