@@ -33,7 +33,7 @@ use crate::local::{
     TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
-use crate::terminal::TerminalStreamHealthStore;
+use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
 pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -66,6 +66,7 @@ pub(crate) struct CommandRouter {
     capability_health: CapabilityExecutorHealthStore,
     transport_health: TransportHealthStore,
     terminal_health: TerminalStreamHealthStore,
+    terminal_stream: TerminalStreamStore,
     workspace_coordinator: WorkspaceCoordinator,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
@@ -103,6 +104,7 @@ impl CommandRouter {
             config_projection,
             relay_state,
             terminal_health,
+            terminal_stream,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -149,6 +151,7 @@ impl CommandRouter {
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health: TransportHealthStore::default(),
             terminal_health,
+            terminal_stream,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -186,6 +189,7 @@ impl CommandRouter {
             config_projection,
             relay_state,
             terminal_health,
+            terminal_stream,
             workspace_coordinator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
@@ -232,6 +236,7 @@ impl CommandRouter {
             capability_health: CapabilityExecutorHealthStore::default(),
             transport_health,
             terminal_health,
+            terminal_stream,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -307,7 +312,7 @@ impl CommandRouter {
             return response;
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
-            if let Some(response) = self.projected_terminal_output_absence_response(request) {
+            if let Some(response) = self.projected_terminal_output_response(request) {
                 return response;
             }
         }
@@ -483,7 +488,7 @@ impl CommandRouter {
         }
     }
 
-    fn projected_terminal_output_absence_response(
+    fn projected_terminal_output_response(
         &self,
         request: &PumpTerminalOutputRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
@@ -495,6 +500,13 @@ impl CommandRouter {
             return Some(Err(DaemonError::AttachmentNotInSession {
                 session_id: request.session_id.clone(),
                 attachment_id: request.attachment_id.clone(),
+            }));
+        }
+        if session.active_provider_run_id().is_none() {
+            return Some(Ok(LocalDaemonResponse::TerminalOutput {
+                records: self
+                    .terminal_stream
+                    .drain_output_records(&request.session_id, &request.attachment_id),
             }));
         }
         None
@@ -1058,6 +1070,7 @@ fn router_projection_stores(
     DaemonConfigProjectionStore,
     Arc<RwLock<RelayClientState>>,
     TerminalStreamHealthStore,
+    TerminalStreamStore,
     WorkspaceCoordinator,
 ) {
     let app = app
@@ -1074,6 +1087,7 @@ fn router_projection_stores(
         app.config_projection_store(),
         app.relay_client_state(),
         app.terminal_health_store(),
+        app.terminal_stream_store(),
         app.workspace_coordinator(),
     )
 }
@@ -5179,6 +5193,71 @@ mod tests {
                 assert_eq!(attachment_id, "missing-attachment");
             }
             error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_output_without_active_run_drains_store_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-pump-buffered",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.fan_out_output(
+            &session_id,
+            "provider-run-buffered",
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            vec![attachment.id().to_string()],
+            b"buffered output",
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-pump-drain-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm session projection");
+
+        let app_guard = app.lock().await;
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let pump_command = KernelCommand::from_local_request(
+            "cmd-pump-drain-projection",
+            None,
+            None,
+            &pump_request,
+        );
+        let pump_router = router.clone();
+        let pump_task =
+            tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+        let pump_response = timeout(Duration::from_millis(100), pump_task)
+            .await
+            .expect("buffered terminal output drain should not wait for the app lock")
+            .expect("pump task should join")
+            .expect("pump should succeed");
+        drop(app_guard);
+
+        match pump_response {
+            LocalDaemonResponse::TerminalOutput { records } => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].session_id, session_id);
+                assert_eq!(records[0].bytes, b"buffered output".to_vec());
+            }
+            _ => panic!("unexpected pump response"),
         }
     }
 

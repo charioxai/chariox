@@ -92,6 +92,167 @@ impl TerminalStreamHealthStore {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct TerminalStreamStore {
+    inner: Arc<StdMutex<TerminalStreamService>>,
+}
+
+impl TerminalStreamStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(StdMutex::new(TerminalStreamService::new())),
+        }
+    }
+
+    pub fn health_store(&self) -> TerminalStreamHealthStore {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .health_store()
+    }
+
+    pub fn record_input(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        source_attachment_id: &str,
+        bytes: &[u8],
+    ) {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .record_input(session_id, provider_run_id, source_attachment_id, bytes);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .fan_out_output(
+                session_id,
+                provider_run_id,
+                agent_id,
+                kind,
+                merge_key,
+                recipient_attachment_ids,
+                bytes,
+            )
+    }
+
+    pub fn record_notice(
+        &self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> RuntimeNoticeRecord {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .record_notice(
+                session_id,
+                provider_run_id,
+                agent_id,
+                recipient_attachment_ids,
+                message,
+            )
+    }
+
+    pub fn input_records(&self) -> Vec<TerminalInputRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .input_records()
+            .to_vec()
+    }
+
+    pub fn output_records(&self) -> Vec<TerminalOutputRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .output_records()
+            .to_vec()
+    }
+
+    pub fn notice_records(&self) -> Vec<RuntimeNoticeRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .notice_records()
+            .to_vec()
+    }
+
+    pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
+        self.health_store().snapshot()
+    }
+
+    pub fn drain_output_records(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<TerminalOutputRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .drain_output_records(session_id, attachment_id)
+    }
+
+    pub fn record_assistant_message_completion(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) -> AssistantMessageCompletionRecord {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                agent_id,
+                recipient_attachment_ids,
+                message_id,
+                completed_at_ms,
+            )
+    }
+
+    pub fn drain_completion_records(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<AssistantMessageCompletionRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .drain_completion_records(session_id, attachment_id)
+    }
+
+    pub fn drain_notice_records(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<RuntimeNoticeRecord> {
+        self.inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .drain_notice_records(session_id, attachment_id)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TerminalStreamService {
     input_records: Vec<TerminalInputRecord>,
     output_records: Vec<TerminalOutputRecord>,

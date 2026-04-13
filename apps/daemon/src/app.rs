@@ -56,7 +56,7 @@ pub use crate::session_history_page::{
     SessionHistoryCursor, SessionHistoryPage, SessionHistoryPageEntry,
 };
 use crate::terminal::{
-    TerminalOutputKind, TerminalOutputRecord, TerminalStreamHealthStore, TerminalStreamService,
+    TerminalOutputKind, TerminalOutputRecord, TerminalStreamHealthStore, TerminalStreamStore,
 };
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
@@ -99,7 +99,7 @@ pub struct DaemonApp {
     provider_process_projection: ProviderProcessProjectionStore,
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
-    terminal: TerminalStreamService,
+    terminal: TerminalStreamStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
@@ -203,7 +203,7 @@ impl DaemonApp {
             provider_process_projection: ProviderProcessProjectionStore::default(),
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
-            terminal: TerminalStreamService::new(),
+            terminal: TerminalStreamStore::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
@@ -451,12 +451,16 @@ impl DaemonApp {
         &mut self.providers
     }
 
-    pub fn terminal(&self) -> &TerminalStreamService {
+    pub fn terminal(&self) -> &TerminalStreamStore {
         &self.terminal
     }
 
     pub(crate) fn terminal_health_store(&self) -> TerminalStreamHealthStore {
         self.terminal.health_store()
+    }
+
+    pub(crate) fn terminal_stream_store(&self) -> TerminalStreamStore {
+        self.terminal.clone()
     }
 
     /// Spawn a new agent in a session
@@ -549,8 +553,8 @@ impl DaemonApp {
         ))
     }
 
-    pub(crate) fn terminal_mut(&mut self) -> &mut TerminalStreamService {
-        &mut self.terminal
+    pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {
+        &self.terminal
     }
 
     pub fn pty(&self) -> &PtyManager {

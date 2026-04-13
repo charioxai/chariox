@@ -251,7 +251,7 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
         arroba_daemon::transport::TransportService::complete_active_prompt(&mut app, session.id())
             .expect("active prompt should complete");
 
-    let mut terminal = app.terminal().clone();
+    let terminal = app.terminal().clone();
     let records = terminal.drain_completion_records(session.id(), attachment.id());
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].provider_run_id, run.id());
