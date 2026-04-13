@@ -554,6 +554,8 @@ impl CommandRouter {
         let mut refreshed_session_ids = Vec::new();
         for session in response_sessions(response) {
             refreshed_session_ids.push(session.id().to_string());
+            self.agent_runtime
+                .update_prompt_state_from_session(&session);
             if should_update_agent_runtime_projection_from_response(response) {
                 self.agent_runtime_projection.update_session(&session);
             }
@@ -561,6 +563,7 @@ impl CommandRouter {
         }
         if let LocalDaemonResponse::SessionsListed { sessions } = response {
             for session in sessions {
+                self.agent_runtime.update_prompt_state_from_session(session);
                 self.agent_runtime_projection.update_session(session);
             }
             self.session_projection.update_list(sessions.clone());
@@ -582,9 +585,12 @@ impl CommandRouter {
             };
             if let Some(session) = session {
                 refreshed_session_ids.push(session.id().to_string());
+                self.agent_runtime
+                    .update_prompt_state_from_session(&session);
                 self.agent_runtime_projection.update_session(&session);
                 self.session_projection.update(session);
             } else {
+                self.agent_runtime.remove_session_state(&session_id);
                 self.agent_runtime_projection.remove_session(&session_id);
                 self.session_projection.remove(&session_id);
                 refreshed_session_ids.push(session_id);
@@ -1246,8 +1252,9 @@ mod tests {
         GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
         ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResizeTerminalRequest,
-        ResolveSessionRequest, ResolveWorkflowRequest, SpawnAgentRequest, SubmitPromptRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
+        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest, SpawnAgentRequest,
+        SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -2668,6 +2675,89 @@ mod tests {
             }
             _ => panic!("unexpected state response"),
         }
+    }
+
+    #[tokio::test]
+    async fn session_snapshot_refresh_tracks_agent_runtime_prompt_state_shadow() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-prompt-shadow-refresh",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(agent_id.clone()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+            },
+        ))
+        .expect("provider run should launch");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "shadow refresh".to_string(),
+            attachments: Vec::new(),
+        });
+        let prompt_command =
+            KernelCommand::from_local_request("cmd-shadow-submit", None, None, &prompt_request);
+        router
+            .dispatch(prompt_command, prompt_request)
+            .await
+            .expect("prompt submit should warm agent runtime prompt state");
+        assert!(router
+            .agent_runtime
+            .prompt_state_for_test(&agent_id)
+            .and_then(|state| state.active_prompt)
+            .is_some());
+
+        {
+            let mut app = app.lock().await;
+            app.sessions_mut()
+                .complete_active_prompt_only(&session_id, &agent_id)
+                .expect("compatibility state should be externally settled");
+        }
+        assert!(
+            router
+                .agent_runtime
+                .prompt_state_for_test(&agent_id)
+                .and_then(|state| state.active_prompt)
+                .is_some(),
+            "prompt-state shadow should stay stale until a session snapshot is observed"
+        );
+
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+        });
+        let pump_command =
+            KernelCommand::from_local_request("cmd-shadow-refresh", None, None, &pump_request);
+        router
+            .dispatch(pump_command, pump_request)
+            .await
+            .expect("snapshot-producing pump should refresh projections");
+
+        let prompt_state = router
+            .agent_runtime
+            .prompt_state_for_test(&agent_id)
+            .expect("agent prompt-state shadow should remain registered");
+        assert!(prompt_state.active_prompt.is_none());
+        assert_eq!(prompt_state.queued_prompt_count, 0);
     }
 
     #[tokio::test]

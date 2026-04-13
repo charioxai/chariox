@@ -413,6 +413,10 @@ impl AgentRuntime {
         self.prompt_state.remove_session(session_id);
     }
 
+    pub(crate) fn update_prompt_state_from_session(&self, session: &RuntimeSession) {
+        self.prompt_state.update_session(session);
+    }
+
     #[cfg(test)]
     pub(crate) fn prompt_state_for_test(&self, agent_id: &str) -> Option<AgentRuntimePromptState> {
         self.prompt_state.get(agent_id)
