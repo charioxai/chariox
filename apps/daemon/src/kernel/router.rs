@@ -1517,10 +1517,10 @@ mod tests {
         GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
         ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
-        RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, RelayStatusRequest, ResizeTerminalRequest,
+        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
+        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -3334,6 +3334,61 @@ mod tests {
                 assert_eq!(session.alias(), Some("review_entry"));
             }
             _ => panic!("unexpected resolve response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_runtime_notices_routes_through_session_runtime() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let source = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-notice-source",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("source attachment should attach");
+        let recipient = app
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-notice-recipient",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("recipient attachment should attach");
+        app.update_session_config(
+            &session_id,
+            source.id(),
+            BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+            false,
+        )
+        .expect("config update should create a notice");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let poll_request = LocalDaemonRequest::PollRuntimeNotices(PollRuntimeNoticesRequest {
+            session_id: session_id.clone(),
+            attachment_id: recipient.id().to_string(),
+        });
+        let poll_command =
+            KernelCommand::from_local_request("cmd-runtime-notices", None, None, &poll_request);
+        let poll_response = router
+            .dispatch(poll_command, poll_request)
+            .await
+            .expect("notice poll should succeed");
+
+        assert!(
+            router.session_runtime.has_lane(&session_id).await,
+            "notice polling should be admitted through the per-session runtime lane"
+        );
+        match poll_response {
+            LocalDaemonResponse::RuntimeNotices { notices } => {
+                assert_eq!(notices.len(), 1);
+                assert_eq!(notices[0].session_id, session_id);
+            }
+            _ => panic!("unexpected notice response"),
         }
     }
 

@@ -167,6 +167,19 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::ResizeTerminal(request) => {
             LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::PollRuntimeNotices(request) => {
+            LocalRequestMetadata::new("runtime_notice.poll", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::UpdateSessionConfig(request) => {
+            LocalRequestMetadata::new("session.config.update", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::AliasSession(request) => {
+            LocalRequestMetadata::new("session.alias", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::FocusAgent(request) => {
             LocalRequestMetadata::new("agent.focus", Interactive)
                 .session(&request.session_id)

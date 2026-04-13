@@ -118,6 +118,7 @@ impl SessionRuntime {
             LocalDaemonRequest::FocusAgent(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::CycleAgentFocus(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::PollRuntimeNotices(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::UpdateSessionConfig(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::AliasSession(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
@@ -348,6 +349,7 @@ impl SessionActor {
                 | LocalDaemonRequest::FocusAgent(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
+                | LocalDaemonRequest::PollRuntimeNotices(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
                 | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::EndSession(_)
@@ -373,6 +375,16 @@ impl SessionActor {
                         LocalDaemonResponse::SessionConfigUpdated { config, session }
                     })
                 }),
+            );
+        }
+        if let LocalDaemonRequest::PollRuntimeNotices(request) = request {
+            return Some(
+                app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+                    .map(|_| LocalDaemonResponse::RuntimeNotices {
+                        notices: app
+                            .terminal_mut()
+                            .drain_notice_records(&request.session_id, &request.attachment_id),
+                    }),
             );
         }
         if let LocalDaemonRequest::AliasSession(request) = request {
