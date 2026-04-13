@@ -91,6 +91,10 @@ impl WorkflowRuntime {
         tx
     }
 
+    pub(crate) async fn remove_session_lane(&self, session_id: &str) {
+        self.lanes.lock().await.remove(session_id);
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
         let lanes = self.lanes.lock().await;
@@ -106,6 +110,11 @@ impl WorkflowRuntime {
             .collect::<Vec<_>>();
         snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
         snapshots
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn has_lane(&self, session_id: &str) -> bool {
+        self.lanes.lock().await.contains_key(session_id)
     }
 }
 

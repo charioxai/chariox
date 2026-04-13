@@ -676,6 +676,9 @@ impl CommandRouter {
                 self.agent_runtime
                     .remove_agent_lanes(session.agents().iter().map(|agent| agent.id()))
                     .await;
+                self.workflow_runtime
+                    .remove_session_lane(session.id())
+                    .await;
             }
             _ => {}
         }
@@ -1975,7 +1978,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_lane_is_removed_when_session_ends() {
+    async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -2022,6 +2025,21 @@ mod tests {
             .agent_command_lanes
             .iter()
             .any(|lane| lane.lane_id == agent_id));
+        let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("cleanup-workflow".to_string()),
+        });
+        let workflow_command = KernelCommand::from_local_request(
+            "cmd-workflow-lane-create",
+            None,
+            None,
+            &workflow_request,
+        );
+        router
+            .dispatch(workflow_command, workflow_request)
+            .await
+            .expect("workflow command should create a workflow lane");
+        assert!(router.workflow_runtime.has_lane(&session_id).await);
 
         let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
             session_id: session_id.clone(),
@@ -2039,6 +2057,7 @@ mod tests {
             .agent_command_lanes
             .iter()
             .any(|lane| lane.lane_id == agent_id));
+        assert!(!router.workflow_runtime.has_lane(&session_id).await);
     }
 
     #[tokio::test]
