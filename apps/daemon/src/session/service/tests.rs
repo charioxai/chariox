@@ -1262,6 +1262,17 @@ fn prompt_queue_starts_then_queues_then_advances() {
             .scheduler_state(),
         SchedulerState::Waiting
     );
+    let serialized = serde_json::to_value(
+        service
+            .get_session(created.id())
+            .expect("session should exist"),
+    )
+    .expect("session should serialize");
+    assert!(serialized.get("prompt_runtime").is_none());
+    assert!(serialized.get("prompt_states").is_some());
+    assert!(serialized.get("active_prompt").is_some());
+    assert!(serialized.get("queued_prompts").is_some());
+    assert!(serialized.get("scheduler_state").is_some());
 
     let (_session, completed) = service
         .complete_active_prompt(created.id(), "agent-1")
