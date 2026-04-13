@@ -29,7 +29,8 @@ use crate::local::provider_requests::{
 };
 use crate::local::{
     GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, RelayStatus, TeardownProviderProcessesRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatus,
+    TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::TerminalStreamHealthStore;
@@ -305,6 +306,11 @@ impl CommandRouter {
         if let Some(response) = self.projected_session_inspection_response(&request) {
             return response;
         }
+        if let LocalDaemonRequest::PumpTerminalOutput(request) = &request {
+            if let Some(response) = self.projected_terminal_output_absence_response(request) {
+                return response;
+            }
+        }
         if let LocalDaemonRequest::GetSessionHistory(request) = &request {
             if let Some(response) = self.projected_session_history_response(request).await {
                 return response;
@@ -475,6 +481,23 @@ impl CommandRouter {
             }
             _ => None,
         }
+    }
+
+    fn projected_terminal_output_absence_response(
+        &self,
+        request: &PumpTerminalOutputRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        let session = match self.projected_session_or_absence(&request.session_id)? {
+            Ok(session) => session,
+            Err(error) => return Some(Err(error)),
+        };
+        if !session.has_attachment(&request.attachment_id) {
+            return Some(Err(DaemonError::AttachmentNotInSession {
+                session_id: request.session_id.clone(),
+                attachment_id: request.attachment_id.clone(),
+            }));
+        }
+        None
     }
 
     async fn projected_relay_status_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
@@ -5047,6 +5070,113 @@ mod tests {
         match error {
             DaemonError::SessionNotFound { session_id } => {
                 assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_terminal_output_session_uses_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command =
+            KernelCommand::from_local_request("cmd-pump-missing-warm", None, None, &list_request);
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm empty session projection");
+
+        let app_guard = app.lock().await;
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: "missing-session".to_string(),
+            attachment_id: "missing-attachment".to_string(),
+        });
+        let pump_command = KernelCommand::from_local_request(
+            "cmd-pump-missing-projection",
+            None,
+            None,
+            &pump_request,
+        );
+        let pump_router = router.clone();
+        let pump_task =
+            tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+        let error = timeout(Duration::from_millis(100), pump_task)
+            .await
+            .expect("missing terminal output session should not wait for the app lock")
+            .expect("pump task should join")
+            .expect_err("missing session should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_terminal_output_attachment_uses_warmed_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        app.attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "cli-pump-projection",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-pump-attachment-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm session projection");
+
+        let app_guard = app.lock().await;
+        let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
+            session_id: session_id.clone(),
+            attachment_id: "missing-attachment".to_string(),
+        });
+        let pump_command = KernelCommand::from_local_request(
+            "cmd-pump-attachment-projection",
+            None,
+            None,
+            &pump_request,
+        );
+        let pump_router = router.clone();
+        let pump_task =
+            tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
+
+        let error = timeout(Duration::from_millis(100), pump_task)
+            .await
+            .expect("missing terminal output attachment should not wait for the app lock")
+            .expect("pump task should join")
+            .expect_err("missing attachment should fail");
+        drop(app_guard);
+
+        match error {
+            DaemonError::AttachmentNotInSession {
+                session_id: error_session_id,
+                attachment_id,
+            } => {
+                assert_eq!(error_session_id, session_id);
+                assert_eq!(attachment_id, "missing-attachment");
             }
             error => panic!("unexpected error: {error}"),
         }
