@@ -6,7 +6,8 @@ use super::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptStatus, PromptSubmissionOutcome,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
+    PromptSubmissionOutcome,
 };
 use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -563,12 +564,9 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self
-                .app
-                .sessions
-                .peek_next_queued_prompt(session_id, agent_id)?;
+            let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
@@ -749,12 +747,9 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         worker_kernel_id: &str,
         leased_agent_id: &str,
-    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
         loop {
-            let next_candidate = self
-                .app
-                .sessions
-                .peek_next_queued_prompt(session_id, agent_id)?;
+            let next_candidate = self.peek_next_queued_prompt(session_id, agent_id)?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
@@ -845,6 +840,23 @@ impl<'a> KernelAgentService<'a> {
             self.app.publish_session_projection(session_id)?;
             return Ok(Some(active));
         }
+    }
+
+    fn peek_next_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        if let Some(prompt) = self
+            .app
+            .agent_runtime_projection_store()
+            .next_queued_prompt(session_id, agent_id)
+        {
+            return Ok(Some(prompt));
+        }
+        self.app
+            .sessions
+            .peek_next_queued_prompt(session_id, agent_id)
     }
 
     pub(crate) fn cancel_active_prompt(

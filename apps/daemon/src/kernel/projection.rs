@@ -222,6 +222,7 @@ pub struct AgentRuntimeProjection {
     pub session_id: String,
     pub agent_id: String,
     pub active_prompt: Option<PromptQueueItem>,
+    pub next_queued_prompt: Option<PromptQueueItem>,
     pub queued_prompt_count: usize,
 }
 
@@ -262,6 +263,16 @@ impl AgentRuntimeProjectionStore {
             .collect()
     }
 
+    pub(crate) fn next_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        self.get(agent_id)
+            .filter(|projection| projection.session_id == session_id)
+            .and_then(|projection| projection.next_queued_prompt)
+    }
+
     pub(crate) fn update_session(&self, session: &RuntimeSession) {
         let mut agents = self
             .agents
@@ -276,6 +287,8 @@ impl AgentRuntimeProjectionStore {
                     session_id: session.id().to_string(),
                     agent_id: agent.id().to_string(),
                     active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
+                    next_queued_prompt: prompt_state
+                        .and_then(|state| state.queued_prompts().front().cloned()),
                     queued_prompt_count: prompt_state
                         .map(|state| state.queued_prompts().len())
                         .unwrap_or(0),
@@ -289,6 +302,7 @@ impl AgentRuntimeProjectionStore {
                     session_id: session.id().to_string(),
                     agent_id: agent_id.clone(),
                     active_prompt: prompt_state.active_prompt().cloned(),
+                    next_queued_prompt: prompt_state.queued_prompts().front().cloned(),
                     queued_prompt_count: prompt_state.queued_prompts().len(),
                 });
         }
@@ -1016,7 +1030,21 @@ mod tests {
         assert_eq!(projection.session_id, session_id);
         assert_eq!(projection.agent_id, agent_id);
         assert!(projection.active_prompt.is_some());
+        assert_eq!(
+            projection
+                .next_queued_prompt
+                .as_ref()
+                .map(|prompt| prompt.prompt()),
+            Some("queued prompt")
+        );
         assert_eq!(projection.queued_prompt_count, 1);
+        assert_eq!(
+            store
+                .next_queued_prompt(&projection.session_id, &projection.agent_id)
+                .as_ref()
+                .map(|prompt| prompt.prompt()),
+            Some("queued prompt")
+        );
         assert_eq!(
             store.list_for_session(&projection.session_id),
             vec![projection]

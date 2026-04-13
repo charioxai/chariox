@@ -155,6 +155,8 @@ impl<'a> KernelSessionService<'a> {
                 "remaining_attachment_ids": remaining_attachment_ids,
             }),
         );
+        self.app
+            .publish_session_projection(attachment.session_id())?;
 
         Ok(attachment)
     }
