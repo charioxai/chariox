@@ -308,6 +308,7 @@ impl AgentRuntimeProjectionStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn update_agent_from_session(&self, session: &RuntimeSession, agent_id: &str) {
         let mut agents = self
             .agents
@@ -318,6 +319,29 @@ impl AgentRuntimeProjectionStore {
             return;
         };
         agents.insert(agent_id.to_string(), projection);
+    }
+
+    pub(crate) fn update_agent_prompt_state(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<PromptQueueItem>,
+        next_queued_prompt: Option<PromptQueueItem>,
+        queued_prompt_count: usize,
+    ) {
+        self.agents
+            .lock()
+            .expect("agent runtime projection lock should not be poisoned")
+            .insert(
+                agent_id.to_string(),
+                AgentRuntimeProjection {
+                    session_id: session_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    active_prompt,
+                    next_queued_prompt,
+                    queued_prompt_count,
+                },
+            );
     }
 
     pub(crate) fn remove_session(&self, session_id: &str) {
@@ -343,6 +367,7 @@ impl AgentRuntimeProjectionStore {
     }
 }
 
+#[cfg(test)]
 fn agent_runtime_projection_from_session(
     session: &RuntimeSession,
     agent_id: &str,

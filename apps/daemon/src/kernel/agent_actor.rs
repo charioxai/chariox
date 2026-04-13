@@ -127,24 +127,12 @@ impl AgentRuntimePromptStateStore {
         }
     }
 
-    pub(crate) fn update_agent_from_session(&self, session: &RuntimeSession, agent_id: &str) {
-        let mut agents = self
-            .agents
-            .lock()
-            .expect("agent runtime prompt state lock should not be poisoned");
-        let Some(prompt_state) = agent_prompt_state_from_session(session, agent_id) else {
-            agents.remove(agent_id);
-            return;
-        };
-        agents.insert(agent_id.to_string(), prompt_state);
-    }
-
     pub(crate) fn apply_submission_outcome(
         &self,
         session_id: &str,
         agent_id: &str,
         outcome: &PromptSubmissionOutcome,
-    ) {
+    ) -> AgentRuntimePromptState {
         let mut agents = self
             .agents
             .lock()
@@ -161,6 +149,7 @@ impl AgentRuntimePromptStateStore {
                 refresh_prompt_queue_summary(state);
             }
         }
+        state.clone()
     }
 
     fn submission_admission(&self, session_id: &str, agent_id: &str) -> PromptSubmissionAdmission {
@@ -176,7 +165,7 @@ impl AgentRuntimePromptStateStore {
         session_id: &str,
         agent_id: &str,
         cancellation: &PromptCancellation,
-    ) {
+    ) -> AgentRuntimePromptState {
         let mut agents = self
             .agents
             .lock()
@@ -191,6 +180,7 @@ impl AgentRuntimePromptStateStore {
         if let Some(started_next) = cancellation.started_next.as_ref() {
             activate_queued_prompt(state, started_next);
         }
+        state.clone()
     }
 
     pub(crate) fn apply_completion(
@@ -198,7 +188,7 @@ impl AgentRuntimePromptStateStore {
         session_id: &str,
         agent_id: &str,
         completion: &PromptCompletion,
-    ) {
+    ) -> AgentRuntimePromptState {
         let mut agents = self
             .agents
             .lock()
@@ -210,6 +200,7 @@ impl AgentRuntimePromptStateStore {
         if let Some(started_next) = completion.started_next.as_ref() {
             activate_queued_prompt(state, started_next);
         }
+        state.clone()
     }
 
     pub(crate) fn peek_next_queued_prompt(
@@ -575,30 +566,6 @@ impl AgentRuntime {
     }
 }
 
-fn agent_prompt_state_from_session(
-    session: &RuntimeSession,
-    agent_id: &str,
-) -> Option<AgentRuntimePromptState> {
-    if !session.agents().iter().any(|agent| agent.id() == agent_id)
-        && !session.prompt_states().contains_key(agent_id)
-    {
-        return None;
-    }
-    let prompt_state = session.prompt_states().get(agent_id);
-    Some(AgentRuntimePromptState {
-        session_id: session.id().to_string(),
-        agent_id: agent_id.to_string(),
-        active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
-        next_queued_prompt: prompt_state.and_then(|state| state.queued_prompts().front().cloned()),
-        queued_prompts: prompt_state
-            .map(|state| state.queued_prompts().clone())
-            .unwrap_or_default(),
-        queued_prompt_count: prompt_state
-            .map(|state| state.queued_prompts().len())
-            .unwrap_or(0),
-    })
-}
-
 fn active_prompt_agent_id(session: &crate::session::RuntimeSession) -> Option<String> {
     if let Some(focused_agent_id) = session.focused_agent_id() {
         if session.active_prompt_for_agent(focused_agent_id).is_some() {
@@ -737,13 +704,12 @@ async fn execute_agent_command(
                 "agent runtime prompt admission should not miss an active prompt"
             );
             session_projection.update(prepared.session.clone());
-            prompt_state.apply_submission_outcome(
+            let runtime_prompt_state = prompt_state.apply_submission_outcome(
                 &request.session_id,
                 &target_agent_id,
                 &prepared.outcome,
             );
-            agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
-            prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
+            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_dispatch_operation(
@@ -771,13 +737,12 @@ async fn execute_agent_command(
                 )?
             };
             session_projection.update(prepared.session.clone());
-            prompt_state.apply_cancellation(
+            let runtime_prompt_state = prompt_state.apply_cancellation(
                 &request.session_id,
                 &target_agent_id,
                 &prepared.cancellation,
             );
-            agent_runtime_projection.update_agent_from_session(&prepared.session, &target_agent_id);
-            prompt_state.update_agent_from_session(&prepared.session, &target_agent_id);
+            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_abort_operation(
@@ -816,13 +781,26 @@ async fn execute_agent_command(
                 completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),
                 "agent runtime queue-front preview should match compatibility advancement"
             );
-            prompt_state.apply_completion(&request.session_id, &target_agent_id, &completion);
-            agent_runtime_projection.update_agent_from_session(&session, &target_agent_id);
-            prompt_state.update_agent_from_session(&session, &target_agent_id);
+            let runtime_prompt_state =
+                prompt_state.apply_completion(&request.session_id, &target_agent_id, &completion);
+            publish_agent_runtime_prompt_state(agent_runtime_projection, &runtime_prompt_state);
 
             Ok(LocalDaemonResponse::PromptCompleted { completion })
         }
     }
+}
+
+fn publish_agent_runtime_prompt_state(
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
+    state: &AgentRuntimePromptState,
+) {
+    agent_runtime_projection.update_agent_prompt_state(
+        &state.session_id,
+        &state.agent_id,
+        state.active_prompt.clone(),
+        state.next_queued_prompt.clone(),
+        state.queued_prompt_count,
+    );
 }
 
 fn completion_started_next_is_compatible(
