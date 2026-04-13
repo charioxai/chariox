@@ -1917,6 +1917,16 @@ pub struct AgentPromptState {
 }
 
 impl AgentPromptState {
+    pub(in crate::session) fn from_parts(
+        active_prompt: Option<PromptQueueItem>,
+        queued_prompts: VecDeque<PromptQueueItem>,
+    ) -> Self {
+        Self {
+            active_prompt,
+            queued_prompts,
+        }
+    }
+
     pub fn active_prompt(&self) -> Option<&PromptQueueItem> {
         self.active_prompt.as_ref()
     }
@@ -2156,6 +2166,19 @@ impl RuntimeSession {
     pub fn queued_prompts_for_agent(&self, agent_id: &str) -> Option<&VecDeque<PromptQueueItem>> {
         self.prompt_runtime.queued_prompts_for_agent(agent_id)
     }
+    pub(in crate::session) fn mirror_agent_prompt_state(
+        &mut self,
+        agent_id: &str,
+        active_prompt: Option<PromptQueueItem>,
+        queued_prompts: VecDeque<PromptQueueItem>,
+    ) {
+        self.prompt_runtime.mirror_agent_prompt_state(
+            agent_id,
+            active_prompt,
+            queued_prompts,
+            self.focused_agent_id.as_deref(),
+        );
+    }
     pub fn has_any_active_prompt(&self) -> bool {
         self.prompt_runtime.has_any_active_prompt()
     }
@@ -2375,6 +2398,7 @@ impl RuntimeSession {
         &mut self.workflow_consoles[index]
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn submit_prompt(
         &mut self,
         prompt: PromptQueueItem,
@@ -2383,14 +2407,7 @@ impl RuntimeSession {
             .submit_prompt(prompt, self.focused_agent_id.as_deref())
     }
 
-    pub(in crate::session) fn queue_prompt(
-        &mut self,
-        prompt: PromptQueueItem,
-    ) -> PromptSubmissionOutcome {
-        self.prompt_runtime
-            .queue_prompt(prompt, self.focused_agent_id.as_deref())
-    }
-
+    #[cfg(test)]
     pub(in crate::session) fn complete_active_prompt_only(
         &mut self,
         agent_id: &str,
@@ -2405,29 +2422,6 @@ impl RuntimeSession {
     ) -> Option<PromptQueueItem> {
         self.prompt_runtime
             .cancel_active_prompt_only(agent_id, self.focused_agent_id.as_deref())
-    }
-
-    pub(in crate::session) fn begin_cancelling_active_prompt(
-        &mut self,
-        agent_id: &str,
-    ) -> Option<PromptQueueItem> {
-        self.prompt_runtime
-            .begin_cancelling_active_prompt(agent_id, self.focused_agent_id.as_deref())
-    }
-
-    pub(in crate::session) fn finalize_active_prompt_cancellation(
-        &mut self,
-        agent_id: &str,
-    ) -> Option<PromptQueueItem> {
-        self.prompt_runtime
-            .finalize_active_prompt_cancellation(agent_id, self.focused_agent_id.as_deref())
-    }
-
-    pub(in crate::session) fn peek_next_queued_prompt(
-        &self,
-        agent_id: &str,
-    ) -> Option<PromptQueueItem> {
-        self.prompt_runtime.peek_next_queued_prompt(agent_id)
     }
 
     pub(in crate::session) fn remove_queued_prompts_by_attachment(
@@ -2448,6 +2442,15 @@ impl RuntimeSession {
         )
     }
 
+    #[cfg(test)]
+    pub(in crate::session) fn peek_next_queued_prompt(
+        &self,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        self.prompt_runtime.peek_next_queued_prompt(agent_id)
+    }
+
+    #[cfg(test)]
     pub(in crate::session) fn pop_next_queued_prompt(
         &mut self,
         agent_id: &str,
@@ -2456,6 +2459,7 @@ impl RuntimeSession {
             .pop_next_queued_prompt(agent_id, self.focused_agent_id.as_deref())
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn activate_prompt(
         &mut self,
         prompt: PromptQueueItem,

@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(test)]
 use crate::session::PromptStatus;
 
 impl SessionService {
@@ -210,7 +211,8 @@ impl SessionService {
         Ok(session.clone())
     }
 
-    pub fn submit_prompt(
+    #[cfg(test)]
+    pub(crate) fn submit_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,
@@ -240,98 +242,20 @@ impl SessionService {
         Ok((session.clone(), outcome))
     }
 
-    pub(crate) fn submit_prepared_prompt(
+    pub(crate) fn mirror_agent_prompt_state(
         &mut self,
         session_id: &str,
-        prompt: super::PromptQueueItem,
-    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
-        let source_attachment_id = prompt.source_attachment_id().to_string();
-        let session = self.get_session_mut_for_operation(session_id, "submit prepared prompt")?;
-
-        if !session.has_attachment(&source_attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: source_attachment_id,
-            });
-        }
-
-        let outcome = session.submit_prompt(prompt);
-        Ok((session.clone(), outcome))
+        agent_id: &str,
+        active_prompt: Option<super::PromptQueueItem>,
+        queued_prompts: std::collections::VecDeque<super::PromptQueueItem>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "mirror prompt owner state")?;
+        session.mirror_agent_prompt_state(agent_id, active_prompt, queued_prompts);
+        Ok(session.clone())
     }
 
-    pub fn queue_prompt(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        target_agent_id: &str,
-        prompt: impl Into<String>,
-        attachments: Vec<PromptAttachment>,
-    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
-        let prompt_id = self.next_prompt_id();
-        let prompt = PromptQueueItem::new(
-            prompt_id,
-            attachment_id,
-            target_agent_id,
-            prompt,
-            PromptStatus::Queued,
-        )
-        .with_attachments(attachments);
-        let session = self.get_session_mut_for_operation(session_id, "queue prompt")?;
-
-        if !session.has_attachment(attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-
-        let outcome = session.queue_prompt(prompt);
-        Ok((session.clone(), outcome))
-    }
-
-    pub(crate) fn queue_prepared_prompt(
-        &mut self,
-        session_id: &str,
-        prompt: super::PromptQueueItem,
-    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
-        let source_attachment_id = prompt.source_attachment_id().to_string();
-        let session = self.get_session_mut_for_operation(session_id, "queue prepared prompt")?;
-
-        if !session.has_attachment(&source_attachment_id) {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: source_attachment_id,
-            });
-        }
-
-        let outcome = session.queue_prompt(prompt);
-        Ok((session.clone(), outcome))
-    }
-
-    pub fn submit_workflow_prompt(
-        &mut self,
-        session_id: &str,
-        source_attachment_id: &str,
-        target_agent_id: &str,
-        workflow_run_id: &str,
-        workflow_node_run_id: &str,
-        prompt: impl Into<String>,
-    ) -> Result<(RuntimeSession, PromptSubmissionOutcome), DaemonError> {
-        let prompt_id = self.next_prompt_id();
-        let prompt = PromptQueueItem::new(
-            prompt_id,
-            source_attachment_id,
-            target_agent_id,
-            prompt,
-            PromptStatus::Queued,
-        )
-        .with_workflow_context(workflow_run_id, workflow_node_run_id);
-        let session = self.get_session_mut_for_operation(session_id, "submit workflow prompt")?;
-        let outcome = session.submit_prompt(prompt);
-        Ok((session.clone(), outcome))
-    }
-
-    pub fn cancel_active_prompt(
+    pub(crate) fn cancel_active_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -345,36 +269,8 @@ impl SessionService {
         Ok((session.clone(), cancelled))
     }
 
-    pub fn begin_cancelling_active_prompt(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "begin cancelling prompt")?;
-        let prompt = session
-            .begin_cancelling_active_prompt(agent_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        Ok((session.clone(), prompt))
-    }
-
-    pub fn finalize_active_prompt_cancellation(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(RuntimeSession, PromptQueueItem), DaemonError> {
-        let session =
-            self.get_session_mut_for_operation(session_id, "finalize prompt cancellation")?;
-        let prompt = session
-            .finalize_active_prompt_cancellation(agent_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        Ok((session.clone(), prompt))
-    }
-
-    pub fn complete_active_prompt(
+    #[cfg(test)]
+    pub(crate) fn complete_active_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -388,7 +284,8 @@ impl SessionService {
         Ok((session.clone(), completed))
     }
 
-    pub fn complete_active_prompt_only(
+    #[cfg(test)]
+    pub(crate) fn complete_active_prompt_only(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -402,16 +299,8 @@ impl SessionService {
         Ok((session.clone(), completed))
     }
 
-    pub fn peek_next_queued_prompt(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<super::PromptQueueItem>, DaemonError> {
-        let session = self.get_session(session_id)?;
-        Ok(session.peek_next_queued_prompt(agent_id))
-    }
-
-    pub fn activate_next_queued_prompt(
+    #[cfg(test)]
+    pub(crate) fn activate_next_queued_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -423,7 +312,8 @@ impl SessionService {
         Ok((session.clone(), next))
     }
 
-    pub fn activate_expected_next_queued_prompt(
+    #[cfg(test)]
+    pub(crate) fn activate_expected_next_queued_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -447,26 +337,6 @@ impl SessionService {
         let next = session
             .pop_next_queued_prompt(agent_id)
             .map(|prompt| session.activate_prompt(prompt));
-        Ok((session.clone(), next))
-    }
-
-    pub fn activate_prompt(
-        &mut self,
-        session_id: &str,
-        prompt: super::PromptQueueItem,
-    ) -> Result<(RuntimeSession, super::PromptQueueItem), DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "activate prompt")?;
-        let active = session.activate_prompt(prompt);
-        Ok((session.clone(), active))
-    }
-
-    pub fn pop_next_queued_prompt(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(RuntimeSession, Option<super::PromptQueueItem>), DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "pop next prompt")?;
-        let next = session.pop_next_queued_prompt(agent_id);
         Ok((session.clone(), next))
     }
 

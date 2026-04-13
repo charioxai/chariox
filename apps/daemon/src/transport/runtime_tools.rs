@@ -513,7 +513,7 @@ pub fn dispatch_authenticated_runtime_tool_call(
                 .map(|binding| (run, binding))
         })
         .collect::<Vec<_>>();
-    let selected_leased_binding = requested_delivery_token
+    let mut selected_leased_binding = requested_delivery_token
         .as_deref()
         .and_then(|delivery_token| {
             leased_binding_candidates
@@ -530,31 +530,30 @@ pub fn dispatch_authenticated_runtime_tool_call(
             binding.context.workflow_node_run_id = workflow_node_run_id.to_string();
             binding.context.delivery_token = delivery_token.to_string();
             Some(binding)
-        })
-        .or_else(|| {
-            let active = leased_binding_candidates
-                .iter()
-                .filter(|(run, _)| {
-                    run.agent_instance_id().is_some_and(|agent_id| {
-                        app.sessions()
-                            .get_session(run.session_id())
-                            .ok()
-                            .and_then(|session| session.active_prompt_for_agent(agent_id).cloned())
-                            .is_some()
-                    })
-                })
-                .map(|(_, binding)| binding.clone())
-                .collect::<Vec<_>>();
-            if active.len() == 1 {
-                active.into_iter().next()
-            } else if leased_binding_candidates.len() == 1 {
-                leased_binding_candidates
-                    .first()
-                    .map(|(_, binding)| binding.clone())
-            } else {
-                None
-            }
         });
+    if selected_leased_binding.is_none() {
+        let mut active_leased_bindings = Vec::new();
+        for (run, binding) in &leased_binding_candidates {
+            let Some(agent_id) = run.agent_instance_id() else {
+                continue;
+            };
+            if app
+                .prompt_owner_active_prompt_for_agent(run.session_id(), agent_id)?
+                .is_some()
+            {
+                active_leased_bindings.push(binding.clone());
+            }
+        }
+        selected_leased_binding = if active_leased_bindings.len() == 1 {
+            active_leased_bindings.into_iter().next()
+        } else if leased_binding_candidates.len() == 1 {
+            leased_binding_candidates
+                .first()
+                .map(|(_, binding)| binding.clone())
+        } else {
+            None
+        };
+    }
     if let Some(binding) = selected_leased_binding {
         let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
             app.config(),
@@ -669,7 +668,7 @@ pub fn dispatch_forwarded_workflow_runtime_tool_call(
 }
 
 fn resolve_authenticated_workflow_turn(
-    app: &DaemonApp,
+    app: &mut DaemonApp,
     session_id: &str,
     candidate_agent_ids: &[String],
     delivery_token: Option<&str>,
@@ -681,48 +680,49 @@ fn resolve_authenticated_workflow_turn(
                 .iter()
                 .any(|agent_id| node_run.agent_id() == agent_id)
     };
-    if let Some(prompt) = session.active_prompt() {
-        if let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
+    for prompt in active_workflow_prompts_for_candidates(app, &session, candidate_agent_ids)? {
+        let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
-        {
-            if let Some(requested_delivery_token) = delivery_token {
-                let matches_active_token = session
-                    .workflow_runs()
-                    .iter()
-                    .find(|workflow_run| workflow_run.id() == workflow_run_ref)
-                    .and_then(|workflow_run| {
-                        workflow_run
-                            .node_runs()
-                            .iter()
-                            .find(|node_run| node_run.id() == workflow_node_run_id)
-                    })
-                    .filter(|node_run| agent_matches(node_run))
-                    .and_then(|node_run| node_run.turn_envelope())
-                    .is_some_and(|envelope| envelope.delivery_token() == requested_delivery_token);
-                if matches_active_token {
-                    return Ok((
-                        workflow_run_ref.to_string(),
-                        workflow_node_run_id.to_string(),
-                    ));
-                }
-            } else {
-                let matches_active_agent = session
-                    .workflow_runs()
-                    .iter()
-                    .find(|workflow_run| workflow_run.id() == workflow_run_ref)
-                    .and_then(|workflow_run| {
-                        workflow_run
-                            .node_runs()
-                            .iter()
-                            .find(|node_run| node_run.id() == workflow_node_run_id)
-                    })
-                    .is_some_and(agent_matches);
-                if matches_active_agent {
-                    return Ok((
-                        workflow_run_ref.to_string(),
-                        workflow_node_run_id.to_string(),
-                    ));
-                }
+        else {
+            continue;
+        };
+        if let Some(requested_delivery_token) = delivery_token {
+            let matches_active_token = session
+                .workflow_runs()
+                .iter()
+                .find(|workflow_run| workflow_run.id() == workflow_run_ref)
+                .and_then(|workflow_run| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == workflow_node_run_id)
+                })
+                .filter(|node_run| agent_matches(node_run))
+                .and_then(|node_run| node_run.turn_envelope())
+                .is_some_and(|envelope| envelope.delivery_token() == requested_delivery_token);
+            if matches_active_token {
+                return Ok((
+                    workflow_run_ref.to_string(),
+                    workflow_node_run_id.to_string(),
+                ));
+            }
+        } else {
+            let matches_active_agent = session
+                .workflow_runs()
+                .iter()
+                .find(|workflow_run| workflow_run.id() == workflow_run_ref)
+                .and_then(|workflow_run| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == workflow_node_run_id)
+                })
+                .is_some_and(agent_matches);
+            if matches_active_agent {
+                return Ok((
+                    workflow_run_ref.to_string(),
+                    workflow_node_run_id.to_string(),
+                ));
             }
         }
     }
@@ -840,6 +840,34 @@ fn resolve_authenticated_workflow_turn(
             message: "multiple workflow turns matched the authenticated provider run".to_string(),
         }),
     }
+}
+
+fn active_workflow_prompts_for_candidates(
+    app: &mut DaemonApp,
+    session: &crate::session::RuntimeSession,
+    candidate_agent_ids: &[String],
+) -> Result<Vec<crate::session::PromptQueueItem>, DaemonError> {
+    let mut agent_ids = if candidate_agent_ids.is_empty() {
+        let mut ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        ids.extend(session.prompt_states().keys().cloned());
+        ids
+    } else {
+        candidate_agent_ids.to_vec()
+    };
+    agent_ids.sort();
+    agent_ids.dedup();
+
+    let mut prompts = Vec::new();
+    for agent_id in agent_ids {
+        if let Some(prompt) = app.prompt_owner_active_prompt_for_agent(session.id(), &agent_id)? {
+            prompts.push(prompt);
+        }
+    }
+    Ok(prompts)
 }
 
 fn allowed_output_schema_refs_for_active_workflow_turn(
@@ -1656,8 +1684,7 @@ mod tests {
             .get_run_for_agent(session.id(), &agent_id)
             .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
             .expect("runtime auth token should exist");
-        app.sessions_mut()
-            .complete_active_prompt_only(session.id(), &agent_id)
+        app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
             .expect("active prompt should be clearable for test");
 
         let result = dispatch_authenticated_runtime_tool_call(
@@ -1786,12 +1813,11 @@ mod tests {
             .expect("turn envelope should be prepared")
             .delivery_token()
             .to_string();
-        app.sessions_mut()
-            .complete_active_prompt_only(session.id(), &active_agent_id)
+        app.prompt_owner_complete_active_prompt_only(session.id(), &active_agent_id)
             .expect("active prompt should be clearable");
 
         let (resolved_workflow_run_id, resolved_node_run_id) = resolve_authenticated_workflow_turn(
-            &app,
+            &mut app,
             session.id(),
             &[inactive_agent_id, active_agent_id],
             Some(&delivery_token),

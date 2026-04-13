@@ -401,7 +401,7 @@ fn submit_claimed_workflow_prompt(
     target_agent_id: &str,
     prompt: &str,
 ) -> Result<PromptSubmissionOutcome, DaemonError> {
-    let (_session, outcome) = app.sessions_mut().submit_workflow_prompt(
+    let outcome = app.prompt_owner_submit_workflow_prompt(
         session_id,
         &workflow_prompt_source_attachment_id(workflow_run_id),
         target_agent_id,

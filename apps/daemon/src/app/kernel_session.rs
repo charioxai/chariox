@@ -108,9 +108,17 @@ impl<'a> KernelSessionService<'a> {
             .app
             .attachments
             .detach_with_effect(&mut self.app.sessions, attachment_id)?;
+        let owner_removed_queued_prompt_count =
+            self.app.prompt_owner_remove_queued_prompts_by_attachment(
+                attachment.session_id(),
+                attachment_id,
+            )?;
+        let removed_queued_prompt_count = effect
+            .removed_queued_prompt_count
+            .max(owner_removed_queued_prompt_count);
         let session_after_detach = self.app.sessions.get_session(attachment.session_id())?;
 
-        if effect.removed_queued_prompt_count > 0 {
+        if removed_queued_prompt_count > 0 {
             self.app.record_notice(
                 attachment.session_id(),
                 None,
@@ -119,7 +127,7 @@ impl<'a> KernelSessionService<'a> {
                     .list_session_attachment_ids(attachment.session_id()),
                 format!(
                     "Removed {} queued prompt(s) from detached attachment `{}`.",
-                    effect.removed_queued_prompt_count, attachment_id
+                    removed_queued_prompt_count, attachment_id
                 ),
             );
         }
@@ -190,6 +198,7 @@ impl<'a> KernelSessionService<'a> {
         let session = self.app.sessions.get_session(session_id)?;
 
         if session.status() == SessionStatus::Ended {
+            self.app.prompt_owner_remove_session(session_id);
             return self.app.sessions.end_session(session_id);
         }
 
@@ -217,6 +226,7 @@ impl<'a> KernelSessionService<'a> {
                 crate::transport::flow_control::clear_prompt_activity(self.app, run.id());
             }
         }
+        self.app.prompt_owner_remove_session(session_id);
         let mut ended = self.app.sessions.end_session(session_id)?;
         ended.set_agents(removed_agents);
         crate::logging::info_with_fields(

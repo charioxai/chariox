@@ -53,7 +53,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added provider prompt lifecycle worktree claims. Active local provider prompts now acquire provider-prompt operation claims before dispatch, reject cross-session same-workspace/worktree prompt conflicts, publish those claims through daemon health, and release them through the existing prompt cleanup path on completion, cancellation, dispatch failure, and session cleanup.
 - Promoted workspace claims into the workflow scheduler. Claims now expose `read`/`write` mode metadata, workflow node dispatch acquires an exclusive `workflow_node_dispatch` write claim before provider submission, blocked nodes move to `BlockedOnWorkspaceClaim`, and claim release retries blocked workflow nodes instead of failing temporary contention.
 - Clarified the claim strategy after review: current claims should remain a coarse safety/scheduler layer while M4.5 finishes actor/projection ownership. Deeper I/O coordination, including file-level claims, port claims, harness sandboxing, coordinator-owned patch application, and automatic patch rebase loops, is intentionally deferred to the final coordination slice.
-- Removed the duplicate `AgentRuntimePromptStateStore` shadow after review. `AgentRuntimeProjectionStore` is now the single warm prompt-state read model for submit admission, active-owner routing, queue-front preview, daemon health, and projection-first reads while compatibility session state remains the mutation mirror.
+- Removed the duplicate `AgentRuntimePromptStateStore` shadow after review. `AgentRuntimeProjectionStore` is now the single warm prompt-state read model for active-owner routing, queue-front preview, daemon health, and projection-first reads while `PromptStateOwner` is the mutation authority and compatibility session state remains the mirror.
 - Changed structured provider submit/abort/output-poll/selection-sync enqueue failures to propagate as daemon errors instead of being logged and swallowed. This keeps prompt dispatch cleanup, claim release, notices, and retryable failures on the normal error path when a provider actor does not accept work.
 - Added a per-provider-run structured output return buffer so globally drained background output still comes back from the later direct pump for that provider run, without delaying terminal fanout.
 - Introduced `PromptRuntimeState` inside the compatibility session mirror. It is now the only writer for per-agent active/queued prompt state and the legacy session-level prompt/scheduler projections, while serialization remains flattened to the existing wire fields.
@@ -62,7 +62,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 kernel runtime refactor progress
 
-- Moved `PromptRuntimeState` into `session/prompt_runtime.rs` as a dedicated session prompt-runtime boundary. `RuntimeSession` still flattens and forwards that owner for wire compatibility, but scattered prompt mutation is no longer embedded in the shared session type.
+- Added `PromptStateOwner` as the kernel write owner for per-agent active prompts and queued prompt backlogs. Prompt submit, complete, cancel, cancellation finalization, dispatch-failure cleanup, queue advancement, detach cleanup, provider settlement, and workflow prompt submission now mutate the owner first and then mirror into compatibility `RuntimeSession` prompt fields.
+- Demoted `PromptRuntimeState` to the flattened compatibility mirror/projection boundary. It still preserves the existing wire shape for active prompt, queued prompts, per-agent prompt states, and scheduler state, but it is no longer the hot prompt lifecycle authority.
+- Removed projection-based prompt submit admission as an authority. Agent-runtime projections still provide warm queue-front previews and health/read models, but stale projection state cannot force an otherwise idle prompt owner to queue.
+- Added regression coverage that deliberately corrupts the compatibility session mirror and verifies completion still succeeds from the prompt owner.
+- Moved `PromptRuntimeState` into `session/prompt_runtime.rs` as a dedicated compatibility prompt mirror boundary. `RuntimeSession` still flattens and forwards it for wire compatibility, but scattered prompt mutation is no longer embedded in the shared session type.
 - Removed the unused direct complete-and-auto-advance prompt mutation API from `RuntimeSession` and `PromptRuntimeState`, leaving completion on the kernel lifecycle path that reconciles against the agent-runtime queue-front preview before explicit queue advancement.
 - Aligned direct compatibility complete/cancel owner resolution with the agent runtime rule: prefer the focused agent only when it is active, otherwise resolve the single active agent and reject ambiguous multi-active ownership.
 - Narrowed compatibility prompt mutation visibility. `RuntimeSession` prompt mutators are now private to the session module tree, and provider dispatch failure cleanup now calls back into `KernelAgentService` instead of reaching into `SessionService` directly.
@@ -75,8 +79,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### Remaining M4.5 work
 
-- Move `KernelSessionService` and `KernelAgentService` state into the new `SessionRuntime` / `AgentRuntime` mailbox owners.
-- Move `PromptRuntimeState` from the session prompt-runtime module behind `AgentRuntime`, keeping `AgentRuntimeProjectionStore` as the single warm read model.
+- Move `KernelSessionService` session state into the new `SessionRuntime` mailbox owner, then finish removing prompt lifecycle hot paths from the shared app lock.
 - Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
 - Keep current workspace claims bounded until actor/projection ownership is complete; return to file-level scopes, port claims, harness enforcement, and transactional mutation/rebase semantics in the final I/O-coordination slice.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.

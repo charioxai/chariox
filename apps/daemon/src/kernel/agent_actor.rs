@@ -12,7 +12,7 @@ use crate::kernel::projection::{
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
-use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -30,12 +30,6 @@ enum AgentCommand {
         request: crate::local::CancelActivePromptRequest,
         target_agent_id: String,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PromptSubmissionAdmission {
-    Start,
-    Queue,
 }
 
 #[derive(Debug)]
@@ -434,11 +428,6 @@ async fn execute_agent_command(
                     .ok_or_else(|| DaemonError::AgentNotFound {
                         agent_id: "no target agent".to_string(),
                     })?;
-            let admission = prompt_submission_admission_from_projection(
-                agent_runtime_projection,
-                &request.session_id,
-                &target_agent_id,
-            );
             let prepared = {
                 let mut app = app.lock().await;
                 let prompt = PromptQueueItem::new(
@@ -453,14 +442,10 @@ async fn execute_agent_command(
                     KernelPreparedPromptSubmission {
                         session_id: request.session_id.clone(),
                         prompt,
-                        force_queue: admission == PromptSubmissionAdmission::Queue,
+                        force_queue: false,
                     },
                 )?
             };
-            debug_assert!(
-                submission_admission_is_compatible(admission, &prepared.outcome),
-                "agent runtime projection admission should not miss an active prompt"
-            );
             session_projection.update(prepared.session.clone());
             agent_runtime_projection.update_session(&prepared.session);
 
@@ -536,19 +521,6 @@ async fn execute_agent_command(
     }
 }
 
-fn prompt_submission_admission_from_projection(
-    agent_runtime_projection: &AgentRuntimeProjectionStore,
-    session_id: &str,
-    agent_id: &str,
-) -> PromptSubmissionAdmission {
-    agent_runtime_projection
-        .get(agent_id)
-        .filter(|projection| projection.session_id == session_id)
-        .and_then(|projection| projection.active_prompt)
-        .map(|_| PromptSubmissionAdmission::Queue)
-        .unwrap_or(PromptSubmissionAdmission::Start)
-}
-
 fn completion_started_next_is_compatible(
     next_queued_prompt: Option<&PromptQueueItem>,
     completion: &PromptCompletion,
@@ -557,19 +529,6 @@ fn completion_started_next_is_compatible(
         (Some(expected), Some(started)) => expected.id() == started.id(),
         _ => true,
     }
-}
-
-fn submission_admission_is_compatible(
-    admission: PromptSubmissionAdmission,
-    outcome: &PromptSubmissionOutcome,
-) -> bool {
-    !matches!(
-        (admission, outcome),
-        (
-            PromptSubmissionAdmission::Queue,
-            PromptSubmissionOutcome::Started { .. }
-        )
-    )
 }
 
 pub(crate) struct AgentActor;
@@ -926,66 +885,5 @@ mod tests {
             }
             _ => panic!("unexpected local response"),
         }
-    }
-
-    #[test]
-    fn prompt_projection_previews_submit_admission() {
-        let store = AgentRuntimeProjectionStore::default();
-        let session_id = "session-1";
-        let agent_id = "agent-1";
-
-        assert_eq!(
-            super::prompt_submission_admission_from_projection(&store, session_id, agent_id),
-            super::PromptSubmissionAdmission::Start
-        );
-
-        store.update_agent_prompt_state(
-            session_id,
-            agent_id,
-            Some(crate::session::PromptQueueItem::new(
-                "prompt-1",
-                "attachment-1",
-                agent_id,
-                "active",
-                PromptStatus::Queued,
-            )),
-            None,
-            0,
-        );
-
-        assert_eq!(
-            super::prompt_submission_admission_from_projection(&store, session_id, agent_id),
-            super::PromptSubmissionAdmission::Queue
-        );
-        assert!(
-            super::submission_admission_is_compatible(
-                super::PromptSubmissionAdmission::Queue,
-                &PromptSubmissionOutcome::Queued {
-                    prompt: crate::session::PromptQueueItem::new(
-                        "prompt-2",
-                        "attachment-1",
-                        agent_id,
-                        "queued",
-                        PromptStatus::Queued,
-                    )
-                },
-            ),
-            "runtime queue admission should accept queued compatibility outcomes"
-        );
-        assert!(
-            !super::submission_admission_is_compatible(
-                super::PromptSubmissionAdmission::Queue,
-                &PromptSubmissionOutcome::Started {
-                    prompt: crate::session::PromptQueueItem::new(
-                        "prompt-2",
-                        "attachment-1",
-                        agent_id,
-                        "unexpected start",
-                        PromptStatus::Queued,
-                    )
-                },
-            ),
-            "runtime queue admission must reject compatibility starts"
-        );
     }
 }

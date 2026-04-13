@@ -140,9 +140,8 @@ impl DaemonApp {
         dispatch: KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
-        let _ = self
-            .sessions
-            .cancel_active_prompt(&dispatch.session_id, &dispatch.agent_id);
+        let _ =
+            self.prompt_owner_cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
         flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
         let _ = self.publish_session_projection(&dispatch.session_id);
         self.record_notice(
@@ -420,19 +419,10 @@ impl DaemonApp {
             ProviderRunLivenessReconciliation::StillRunning(_) => {}
         }
 
-        let had_active_prompt = self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(&agent_id)
-            .is_some();
-        let active_prompt_status = if had_active_prompt {
-            self.sessions
-                .get_session(session_id)?
-                .active_prompt_for_agent(&agent_id)
-                .map(|prompt| prompt.status())
-        } else {
-            None
-        };
+        let active_prompt_status = self
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .map(|prompt| prompt.status());
+        let had_active_prompt = active_prompt_status.is_some();
         let process_running = match self.pty.poll_process_state(provider_run_id) {
             Ok(PtyProcessState::Running) => true,
             Ok(PtyProcessState::Exited) => false,

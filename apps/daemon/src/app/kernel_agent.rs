@@ -44,7 +44,9 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: &str,
     ) {
-        let _ = self.app.sessions.cancel_active_prompt(session_id, agent_id);
+        let _ = self
+            .app
+            .prompt_owner_cancel_active_prompt_only(session_id, agent_id);
         flow_control::clear_prompt_activity(self.app, provider_run_id);
     }
 
@@ -68,8 +70,9 @@ impl<'a> KernelAgentService<'a> {
             .to_string();
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         let remote_execution = target_agent.remote_execution().cloned();
-        let queued_while_active = session_before
-            .active_prompt_for_agent(&target_agent_id)
+        let queued_while_active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &target_agent_id)?
             .is_some();
         let provider_run_id = if remote_execution.is_some() {
             None
@@ -97,23 +100,19 @@ impl<'a> KernelAgentService<'a> {
             &attachments,
         );
 
-        let (_session, outcome) = if provider_run_is_starting {
-            self.app.sessions.queue_prompt(
-                session_id,
-                attachment_id,
-                &target_agent_id,
-                prompt,
-                attachments.clone(),
-            )?
-        } else {
-            self.app.sessions.submit_prompt(
-                session_id,
-                attachment_id,
-                &target_agent_id,
-                prompt,
-                attachments.clone(),
-            )?
-        };
+        let prepared_prompt = PromptQueueItem::new(
+            self.app.sessions_mut().reserve_prompt_id(),
+            attachment_id,
+            &target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        )
+        .with_attachments(attachments.clone());
+        let outcome = self.app.prompt_owner_submit_prepared_prompt(
+            session_id,
+            prepared_prompt,
+            provider_run_is_starting,
+        )?;
 
         match &outcome {
             PromptSubmissionOutcome::Started { prompt } => {
@@ -140,20 +139,20 @@ impl<'a> KernelAgentService<'a> {
                             provider_run_id, ..
                         }) => provider_run_id,
                         Ok(other) => {
-                            let _ = self
-                                .app
-                                .sessions
-                                .cancel_active_prompt(session_id, &target_agent_id);
+                            let _ = self.app.prompt_owner_cancel_active_prompt_only(
+                                session_id,
+                                &target_agent_id,
+                            );
                             return Err(DaemonError::LocalTransport {
                                 operation: "submit remote prompt",
                                 message: format!("unexpected remote prompt response: {other:?}"),
                             });
                         }
                         Err(error) => {
-                            let _ = self
-                                .app
-                                .sessions
-                                .cancel_active_prompt(session_id, &target_agent_id);
+                            let _ = self.app.prompt_owner_cancel_active_prompt_only(
+                                session_id,
+                                &target_agent_id,
+                            );
                             return Err(error);
                         }
                     };
@@ -209,6 +208,10 @@ impl<'a> KernelAgentService<'a> {
                 flow_control::note_prompt_started(self.app, provider_run_id);
             }
             PromptSubmissionOutcome::Queued { prompt } => {
+                let queue_depth = self
+                    .app
+                    .prompt_owner_queued_prompt_count_for_agent(session_id, &target_agent_id)
+                    .unwrap_or(0);
                 if let Some(provider_run_id) = provider_run_id.as_deref() {
                     self.app.echo_prompt_to_other_attachments(
                         session_id,
@@ -228,11 +231,7 @@ impl<'a> KernelAgentService<'a> {
                         target_agent_id,
                         session_id,
                         prompt.id(),
-                        session_before
-                            .queued_prompts_for_agent(&target_agent_id)
-                            .map(|queue| queue.len())
-                            .unwrap_or(0)
-                            + 1
+                        queue_depth
                     ),
                 );
             }
@@ -251,7 +250,6 @@ impl<'a> KernelAgentService<'a> {
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         self.app
             .ensure_attachment_in_session(session_id, &attachment_id)?;
-        let session_before = self.app.sessions.get_session(session_id)?;
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.remote_execution().is_some() {
@@ -262,15 +260,11 @@ impl<'a> KernelAgentService<'a> {
                 prepared.prompt.prompt(),
                 prepared.prompt.attachments(),
             );
-            let (_session, outcome) = if prepared.force_queue {
-                self.app
-                    .sessions
-                    .queue_prepared_prompt(session_id, prepared.prompt.clone())?
-            } else {
-                self.app
-                    .sessions
-                    .submit_prepared_prompt(session_id, prepared.prompt.clone())?
-            };
+            let outcome = self.app.prompt_owner_submit_prepared_prompt(
+                session_id,
+                prepared.prompt.clone(),
+                prepared.force_queue,
+            )?;
             if let PromptSubmissionOutcome::Started { prompt } = &outcome {
                 let remote_execution = target_agent
                     .remote_execution()
@@ -299,8 +293,7 @@ impl<'a> KernelAgentService<'a> {
                     Ok(other) => {
                         let _ = self
                             .app
-                            .sessions
-                            .cancel_active_prompt(session_id, &target_agent_id);
+                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                         return Err(DaemonError::LocalTransport {
                             operation: "submit remote prepared prompt",
                             message: format!("unexpected remote prompt response: {other:?}"),
@@ -309,8 +302,7 @@ impl<'a> KernelAgentService<'a> {
                     Err(error) => {
                         let _ = self
                             .app
-                            .sessions
-                            .cancel_active_prompt(session_id, &target_agent_id);
+                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                         return Err(error);
                     }
                 };
@@ -330,8 +322,9 @@ impl<'a> KernelAgentService<'a> {
             });
         }
 
-        let queued_while_active = session_before
-            .active_prompt_for_agent(&target_agent_id)
+        let queued_while_active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &target_agent_id)?
             .is_some();
         let provider_run_id = if queued_while_active {
             self.app
@@ -357,15 +350,11 @@ impl<'a> KernelAgentService<'a> {
             prepared.prompt.attachments(),
         );
 
-        let (_session, outcome) = if prepared.force_queue || provider_run_is_starting {
-            self.app
-                .sessions
-                .queue_prepared_prompt(session_id, prepared.prompt.clone())?
-        } else {
-            self.app
-                .sessions
-                .submit_prepared_prompt(session_id, prepared.prompt.clone())?
-        };
+        let outcome = self.app.prompt_owner_submit_prepared_prompt(
+            session_id,
+            prepared.prompt.clone(),
+            prepared.force_queue || provider_run_is_starting,
+        )?;
 
         let mut dispatch = None;
         match &outcome {
@@ -431,8 +420,7 @@ impl<'a> KernelAgentService<'a> {
                 ) {
                     let _ = self
                         .app
-                        .sessions
-                        .cancel_active_prompt(session_id, &target_agent_id);
+                        .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                     flow_control::clear_prompt_activity(self.app, provider_run_id);
                     return Err(error);
                 } else {
@@ -440,6 +428,10 @@ impl<'a> KernelAgentService<'a> {
                 }
             }
             PromptSubmissionOutcome::Queued { prompt } => {
+                let queue_depth = self
+                    .app
+                    .prompt_owner_queued_prompt_count_for_agent(session_id, &target_agent_id)
+                    .unwrap_or(0);
                 if let Some(provider_run_id) = provider_run_id.as_deref() {
                     self.app.echo_prompt_to_other_attachments(
                         session_id,
@@ -459,11 +451,7 @@ impl<'a> KernelAgentService<'a> {
                         target_agent_id,
                         session_id,
                         prompt.id(),
-                        session_before
-                            .queued_prompts_for_agent(&target_agent_id)
-                            .map(|queue| queue.len())
-                            .unwrap_or(0)
-                            + 1
+                        queue_depth
                     ),
                 );
             }
@@ -520,10 +508,9 @@ impl<'a> KernelAgentService<'a> {
                         });
                     }
                 };
-            let (_session, completed) = self
+            let completed = self
                 .app
-                .sessions
-                .complete_active_prompt_only(session_id, agent_id)?;
+                .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
             let recipient_attachment_ids =
                 self.app.attachments.list_session_attachment_ids(session_id);
             self.app.record_assistant_message_completion(
@@ -537,9 +524,7 @@ impl<'a> KernelAgentService<'a> {
             );
             let started_next = if self
                 .app
-                .sessions
-                .get_session(session_id)?
-                .active_prompt_for_agent(agent_id)
+                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
                 .is_none()
             {
                 self.advance_next_queued_prompt_remote(
@@ -561,10 +546,9 @@ impl<'a> KernelAgentService<'a> {
                 started_next,
             });
         }
-        let (_session, completed) = self
+        let completed = self
             .app
-            .sessions
-            .complete_active_prompt_only(session_id, agent_id)?;
+            .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
         if !flow_control::prompt_completion_recorded(self.app, provider_run_id.unwrap_or(agent_id))
         {
             let recipient_attachment_ids =
@@ -592,9 +576,7 @@ impl<'a> KernelAgentService<'a> {
         }
         let started_next = if self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
             .is_none()
         {
             self.advance_next_queued_prompt(session_id, agent_id, next_queued_prompt)?
@@ -704,7 +686,7 @@ impl<'a> KernelAgentService<'a> {
                 .ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
                 if is_workflow_prompt {
-                    let active = self.app.sessions.activate_prompt(session_id, next)?.1;
+                    let active = self.app.prompt_owner_activate_prompt(session_id, next)?;
                     if let Err(dispatch_error) = self.app.dispatch_prompt_to_provider(
                         session_id,
                         &provider_run_id,
@@ -714,9 +696,7 @@ impl<'a> KernelAgentService<'a> {
                     ) {
                         let cancelled = self
                             .app
-                            .sessions
-                            .cancel_active_prompt(session_id, &target_agent_id)?
-                            .1;
+                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id)?;
                         self.app
                             .cancel_workflow_prompt_from_runtime(session_id, &cancelled)?;
                         flow_control::clear_prompt_activity(self.app, &provider_run_id);
@@ -770,13 +750,12 @@ impl<'a> KernelAgentService<'a> {
                 );
                 let _ = self
                     .app
-                    .sessions
-                    .cancel_active_prompt(session_id, &target_agent_id);
+                    .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             }
 
-            let active = self.app.sessions.activate_prompt(session_id, next)?.1;
+            let active = self.app.prompt_owner_activate_prompt(session_id, next)?;
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
                 (active.workflow_run_id(), active.workflow_node_run_id())
             {
@@ -898,7 +877,7 @@ impl<'a> KernelAgentService<'a> {
     }
 
     fn peek_next_queued_prompt(
-        &self,
+        &mut self,
         session_id: &str,
         agent_id: &str,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
@@ -910,12 +889,11 @@ impl<'a> KernelAgentService<'a> {
             return Ok(Some(prompt));
         }
         self.app
-            .sessions
-            .peek_next_queued_prompt(session_id, agent_id)
+            .prompt_owner_peek_next_queued_prompt(session_id, agent_id)
     }
 
     fn next_queued_prompt_candidate(
-        &self,
+        &mut self,
         session_id: &str,
         agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
@@ -944,16 +922,14 @@ impl<'a> KernelAgentService<'a> {
         ),
         DaemonError,
     > {
-        if let Some(expected_next) = expected_next {
-            return self.app.sessions.activate_expected_next_queued_prompt(
-                session_id,
-                agent_id,
-                expected_next.id(),
-            );
-        }
-        self.app
-            .sessions
-            .activate_next_queued_prompt(session_id, agent_id)
+        let expected_prompt_id = expected_next.map(PromptQueueItem::id);
+        let next = self.app.prompt_owner_activate_next_queued_prompt(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+        )?;
+        let session = self.app.local_api_session_snapshot(session_id)?;
+        Ok((session, next))
     }
 
     pub(crate) fn cancel_active_prompt(
@@ -965,9 +941,7 @@ impl<'a> KernelAgentService<'a> {
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_agent_id()
+            .prompt_owner_active_prompt_agent_id(session_id)?
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -980,9 +954,7 @@ impl<'a> KernelAgentService<'a> {
     ) -> Result<PromptCancellation, DaemonError> {
         let target_agent_id = self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_agent_id()
+            .prompt_owner_active_prompt_agent_id(session_id)?
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -997,10 +969,7 @@ impl<'a> KernelAgentService<'a> {
     ) -> Result<PromptCancellation, DaemonError> {
         let active_prompt = self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
-            .cloned()
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -1034,10 +1003,9 @@ impl<'a> KernelAgentService<'a> {
                     });
                 }
             }
-            let (_session, prompt) = self
+            let prompt = self
                 .app
-                .sessions
-                .begin_cancelling_active_prompt(session_id, agent_id)?;
+                .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
             let recipients = match attachment_id {
                 Some(attachment_id) => self.app.other_attachment_ids(session_id, attachment_id),
                 None => self.app.attachments.list_session_attachment_ids(session_id),
@@ -1087,10 +1055,9 @@ impl<'a> KernelAgentService<'a> {
             )?;
         }
 
-        let (_session, prompt) = self
+        let prompt = self
             .app
-            .sessions
-            .begin_cancelling_active_prompt(session_id, agent_id)?;
+            .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
         if uses_structured_prompt_io {
             self.app
@@ -1129,10 +1096,9 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
-        let (_session, prompt) = self
+        let prompt = self
             .app
-            .sessions
-            .finalize_active_prompt_cancellation(session_id, agent_id)?;
+            .prompt_owner_finalize_active_prompt_cancellation(session_id, agent_id)?;
         self.app
             .cancel_workflow_prompt_from_runtime(session_id, &prompt)?;
         let cancellation_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
@@ -1146,9 +1112,7 @@ impl<'a> KernelAgentService<'a> {
         }
         let started_next = if self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
             .is_none()
         {
             self.advance_next_queued_prompt(session_id, agent_id, None)?
@@ -1191,10 +1155,7 @@ impl<'a> KernelAgentService<'a> {
 
         let active_prompt = self
             .app
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(target_agent_id)
-            .cloned()
+            .prompt_owner_active_prompt_for_agent(session_id, target_agent_id)?
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -1236,10 +1197,9 @@ impl<'a> KernelAgentService<'a> {
             None
         };
 
-        let (_session, prompt) = self
+        let prompt = self
             .app
-            .sessions
-            .begin_cancelling_active_prompt(session_id, target_agent_id)?;
+            .prompt_owner_begin_cancelling_active_prompt(session_id, target_agent_id)?;
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
         self.app.record_notice(
             session_id,
@@ -1274,7 +1234,12 @@ fn select_next_queued_prompt_candidate(
 #[cfg(test)]
 mod tests {
     use super::select_next_queued_prompt_candidate;
-    use crate::session::{PromptQueueItem, PromptStatus};
+    use crate::attachment::ClientCapabilityLevel;
+    use crate::local::{
+        AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+    };
+    use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
+    use crate::{DaemonApp, DaemonConfig};
 
     #[test]
     fn queue_candidate_selection_prefers_runtime_expected_prompt() {
@@ -1286,6 +1251,84 @@ mod tests {
                 .expect("candidate should be selected");
 
         assert_eq!(selected.id(), "prompt-runtime");
+    }
+
+    #[test]
+    fn completion_uses_prompt_owner_when_session_mirror_is_stale() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "cli-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+        let provider_run = match app
+            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+                LaunchProviderRunRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(agent.id().to_string()),
+                    adapter_key: "dev-stub".to_string(),
+                    provider: "claude-code".to_string(),
+                    account_profile: "default".to_string(),
+                    model: "sonnet".to_string(),
+                    variant: None,
+                },
+            ))
+            .expect("provider launch should succeed")
+        {
+            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+            _ => panic!("unexpected local response"),
+        };
+
+        let outcome = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "hello",
+                Vec::new(),
+            )
+            .expect("prompt submit should succeed");
+        let prompt_id = match outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            _ => panic!("prompt should start"),
+        };
+
+        app.sessions_mut()
+            .cancel_active_prompt(session.id(), agent.id())
+            .expect("test should be able to corrupt only the compatibility mirror");
+        assert!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session mirror should exist")
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "compatibility mirror is intentionally stale"
+        );
+
+        let completion = app
+            .complete_active_prompt(session.id(), agent.id(), Some(provider_run.id()))
+            .expect("prompt owner should still complete active prompt");
+
+        assert_eq!(completion.completed.id(), prompt_id);
+        assert!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session mirror should exist")
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "owner completion should remirror the idle state"
+        );
     }
 
     fn prompt_item(id: &str) -> PromptQueueItem {

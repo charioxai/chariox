@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{
-    AgentPromptState, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, SchedulerState,
-};
+#[cfg(test)]
+use super::types::PromptSubmissionOutcome;
+use super::types::{AgentPromptState, PromptQueueItem, PromptStatus, SchedulerState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::session) struct PromptRuntimeState {
@@ -57,6 +57,24 @@ impl PromptRuntimeState {
             .map(AgentPromptState::queued_prompts)
     }
 
+    pub(in crate::session) fn mirror_agent_prompt_state(
+        &mut self,
+        agent_id: &str,
+        active_prompt: Option<PromptQueueItem>,
+        queued_prompts: VecDeque<PromptQueueItem>,
+        focused_agent_id: Option<&str>,
+    ) {
+        if active_prompt.is_none() && queued_prompts.is_empty() {
+            self.prompt_states.remove(agent_id);
+        } else {
+            self.prompt_states.insert(
+                agent_id.to_string(),
+                AgentPromptState::from_parts(active_prompt, queued_prompts),
+            );
+        }
+        self.refresh_after_mutation(focused_agent_id);
+    }
+
     pub(in crate::session) fn has_any_active_prompt(&self) -> bool {
         self.prompt_states
             .values()
@@ -73,6 +91,7 @@ impl PromptRuntimeState {
         self.scheduler_state
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn submit_prompt(
         &mut self,
         prompt: PromptQueueItem,
@@ -95,20 +114,7 @@ impl PromptRuntimeState {
         outcome
     }
 
-    pub(in crate::session) fn queue_prompt(
-        &mut self,
-        prompt: PromptQueueItem,
-        focused_agent_id: Option<&str>,
-    ) -> PromptSubmissionOutcome {
-        let agent_id = prompt.target_agent_id().to_string();
-        let prompt_state = self.prompt_states.entry(agent_id).or_default();
-        let mut queued = prompt;
-        queued.set_status(PromptStatus::Queued);
-        prompt_state.queued_prompts.push_back(queued.clone());
-        self.refresh_after_mutation(focused_agent_id);
-        PromptSubmissionOutcome::Queued { prompt: queued }
-    }
-
+    #[cfg(test)]
     pub(in crate::session) fn complete_active_prompt_only(
         &mut self,
         agent_id: &str,
@@ -133,49 +139,6 @@ impl PromptRuntimeState {
         self.drop_empty_prompt_state(agent_id);
         self.refresh_after_mutation(focused_agent_id);
         Some(cancelled)
-    }
-
-    pub(in crate::session) fn begin_cancelling_active_prompt(
-        &mut self,
-        agent_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> Option<PromptQueueItem> {
-        self.prompt_states
-            .get_mut(agent_id)?
-            .active_prompt
-            .as_mut()?
-            .set_status(PromptStatus::Cancelling);
-        self.refresh_after_mutation(focused_agent_id);
-        self.prompt_states
-            .get(agent_id)
-            .and_then(|state| state.active_prompt.clone())
-    }
-
-    pub(in crate::session) fn finalize_active_prompt_cancellation(
-        &mut self,
-        agent_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> Option<PromptQueueItem> {
-        let active = self.prompt_states.get(agent_id)?.active_prompt.as_ref()?;
-        if active.status() != PromptStatus::Cancelling {
-            return None;
-        }
-
-        let prompt_state = self.prompt_states.get_mut(agent_id)?;
-        let mut cancelled = prompt_state.active_prompt.take()?;
-        cancelled.set_status(PromptStatus::Cancelled);
-        self.drop_empty_prompt_state(agent_id);
-        self.refresh_after_mutation(focused_agent_id);
-        Some(cancelled)
-    }
-
-    pub(in crate::session) fn peek_next_queued_prompt(
-        &self,
-        agent_id: &str,
-    ) -> Option<PromptQueueItem> {
-        self.prompt_states
-            .get(agent_id)
-            .and_then(|state| state.queued_prompts.front().cloned())
     }
 
     pub(in crate::session) fn remove_queued_prompts_by_attachment(
@@ -220,6 +183,17 @@ impl PromptRuntimeState {
         removed
     }
 
+    #[cfg(test)]
+    pub(in crate::session) fn peek_next_queued_prompt(
+        &self,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        self.prompt_states
+            .get(agent_id)
+            .and_then(|state| state.queued_prompts.front().cloned())
+    }
+
+    #[cfg(test)]
     pub(in crate::session) fn pop_next_queued_prompt(
         &mut self,
         agent_id: &str,
@@ -235,6 +209,7 @@ impl PromptRuntimeState {
         next
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn activate_prompt(
         &mut self,
         mut prompt: PromptQueueItem,

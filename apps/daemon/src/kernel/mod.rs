@@ -3,6 +3,7 @@ pub mod capability_executor;
 pub mod command;
 pub mod event_log;
 pub mod projection;
+pub mod prompt_state;
 pub mod router;
 pub mod session_actor;
 pub mod workflow_actor;

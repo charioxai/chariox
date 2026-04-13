@@ -10,6 +10,7 @@ use tokio::runtime::{Handle, Runtime};
 mod kernel_agent;
 mod kernel_session;
 mod prompt_lifecycle;
+mod prompt_state_owner;
 mod provider_output;
 mod provider_runtime;
 mod session_runtime;
@@ -43,6 +44,7 @@ use crate::kernel::projection::{
     ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
     SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
+use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
     LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
@@ -89,6 +91,7 @@ pub struct DaemonApp {
     pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
     prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
     pub(crate) prompt_idle_timeout: Duration,
+    prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionService,
     history: SessionHistoryStore,
     config_projection: DaemonConfigProjectionStore,
@@ -191,6 +194,7 @@ impl DaemonApp {
             prompt_activity: BTreeMap::new(),
             prompt_workspace_claims: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
+            prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionService::new(&config),
             history: SessionHistoryStore::new_with_read_delay(
                 config.session_history_root.clone(),
@@ -814,13 +818,25 @@ impl DaemonApp {
         for session in sessions {
             let recipient_attachment_ids =
                 self.attachments.list_session_attachment_ids(session.id());
-            for agent_id in session.prompt_states().keys() {
-                if session.active_prompt_for_agent(agent_id).is_none() {
+            let mut agent_ids = session
+                .agents()
+                .iter()
+                .map(|agent| agent.id().to_string())
+                .collect::<Vec<_>>();
+            agent_ids.extend(session.prompt_states().keys().cloned());
+            agent_ids.sort();
+            agent_ids.dedup();
+            for agent_id in agent_ids {
+                if self
+                    .prompt_state_owner
+                    .active_prompt_for_agent_snapshot(&session, &agent_id)
+                    .is_none()
+                {
                     continue;
                 }
                 let Some(provider_run_id) = self
                     .providers
-                    .get_run_for_agent(session.id(), agent_id)
+                    .get_run_for_agent(session.id(), &agent_id)
                     .map(|run| run.id().to_string())
                 else {
                     continue;
@@ -1113,9 +1129,7 @@ impl DaemonApp {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
         let active_prompt_status = self
-            .sessions
-            .get_session(session_id)?
-            .active_prompt_for_agent(agent_id)
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
             .map(|prompt| prompt.status());
         if active_prompt_status == Some(PromptStatus::Cancelling) {
             if prompt_completed {
@@ -1465,11 +1479,11 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        let session = self
-            .sessions
-            .get_session(&leased_agent.backing_session_id)?;
-        Ok(session
-            .active_prompt_for_agent(&leased_agent.backing_agent_id)
+        Ok(self
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
             .map(|prompt| prompt.attachments().to_vec())
             .unwrap_or_default())
     }
@@ -1700,15 +1714,11 @@ impl DaemonApp {
         }
         if saw_completion
             && self
-                .sessions
-                .get_session(session_id)?
-                .active_prompt_for_agent(agent_id)
+                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
                 .is_some()
         {
             let remote_execution = self.agents.get_agent(agent_id)?.remote_execution().cloned();
-            let (_session, completed) = self
-                .sessions
-                .complete_active_prompt_only(session_id, agent_id)?;
+            let completed = self.prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
             self.complete_workflow_prompt_from_runtime(
                 session_id,
                 &completed,
@@ -1716,9 +1726,7 @@ impl DaemonApp {
             )?;
             if let Some(remote_execution) = remote_execution {
                 if self
-                    .sessions
-                    .get_session(session_id)?
-                    .active_prompt_for_agent(agent_id)
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
                     .is_none()
                 {
                     let started_next = self.advance_next_queued_prompt_remote(

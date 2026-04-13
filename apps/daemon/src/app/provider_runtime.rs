@@ -27,7 +27,10 @@ impl DaemonApp {
             if let Ok(active_run) = self.providers.get_run(active_provider_run_id) {
                 let active_run_agent_id = active_run.agent_instance_id();
                 let active_prompt_is_running = active_run_agent_id
-                    .and_then(|agent_id| session.active_prompt_for_agent(agent_id))
+                    .and_then(|agent_id| {
+                        self.prompt_state_owner
+                            .active_prompt_for_agent_snapshot(session, agent_id)
+                    })
                     .is_some();
                 if active_run.state() == ProviderRunState::Running && active_prompt_is_running {
                     return;

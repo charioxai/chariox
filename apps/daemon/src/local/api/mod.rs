@@ -696,12 +696,16 @@ impl DaemonApp {
                     .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
                     .id()
                     .to_string();
-                let should_cancel_active_prompt = self
-                    .sessions()
-                    .get_session(&request.session_id)?
-                    .active_prompt()
-                    .and_then(|prompt| prompt.workflow_run_id())
-                    == Some(workflow_run_id.as_str());
+                let active_prompt_workflow_run_id = if let Some(agent_id) =
+                    self.prompt_owner_active_prompt_agent_id(&request.session_id)?
+                {
+                    self.prompt_owner_active_prompt_for_agent(&request.session_id, &agent_id)?
+                        .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+                } else {
+                    None
+                };
+                let should_cancel_active_prompt =
+                    active_prompt_workflow_run_id.as_deref() == Some(workflow_run_id.as_str());
                 if should_cancel_active_prompt {
                     let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
                         self,
@@ -711,6 +715,10 @@ impl DaemonApp {
                 let workflow_run = self
                     .sessions_mut()
                     .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+                let _ = self.prompt_owner_remove_queued_prompts_by_workflow_run(
+                    &request.session_id,
+                    &workflow_run_id,
+                )?;
                 let _ = self.drain_session_workflow_launch_queue(&request.session_id)?;
                 let session = self.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::WorkflowRunCancelled {

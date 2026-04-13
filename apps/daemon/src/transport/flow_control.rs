@@ -109,7 +109,7 @@ pub(crate) fn maybe_complete_active_prompt(
 }
 
 fn prompt_settlement_action(
-    app: &DaemonApp,
+    app: &mut DaemonApp,
     session_id: &str,
     provider_run_id: &str,
 ) -> Result<PromptSettlementAction, DaemonError> {
@@ -124,7 +124,7 @@ fn prompt_settlement_action(
 }
 
 fn active_prompt_for_settlement(
-    app: &DaemonApp,
+    app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<PromptQueueItem>, DaemonError> {
@@ -136,11 +136,7 @@ fn active_prompt_for_settlement(
     {
         return Ok(Some(prompt));
     }
-    Ok(app
-        .sessions()
-        .get_session(session_id)?
-        .active_prompt_for_agent(agent_id)
-        .cloned())
+    app.prompt_owner_active_prompt_for_agent(session_id, agent_id)
 }
 
 fn provider_run_agent_id(app: &DaemonApp, provider_run_id: &str) -> Result<String, DaemonError> {
@@ -216,7 +212,7 @@ mod tests {
             .expect("session active prompt should be removed without refreshing projection");
 
         assert_eq!(
-            prompt_settlement_action(&app, &session_id, &provider_run_id)
+            prompt_settlement_action(&mut app, &session_id, &provider_run_id)
                 .expect("settlement action should resolve"),
             PromptSettlementAction::Complete
         );

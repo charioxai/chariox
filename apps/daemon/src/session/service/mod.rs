@@ -9,16 +9,17 @@ use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
 };
 use super::{
-    unix_epoch_ms, CreateSessionRequest, PromptAttachment, PromptDetachEffect, PromptQueueItem,
-    PromptSubmissionOutcome, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource, RuntimeSession,
-    SessionConfigState, SessionStatus, SessionStore, WorkflowCompletionSnapshot, WorkflowConsole,
-    WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition,
-    WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload, WorkflowLaunchPolicy,
-    WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus,
-    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
+    unix_epoch_ms, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, QueuedWorkflowLaunch,
+    QueuedWorkflowLaunchSource, RuntimeSession, SessionConfigState, SessionStatus, SessionStore,
+    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
+    WorkflowHandoffPayload, WorkflowLaunchPolicy, WorkflowMessage, WorkflowNodeDefinition,
+    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowOutputValidationPolicy,
+    WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
+#[cfg(test)]
+use super::{PromptAttachment, PromptSubmissionOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDispatch {
