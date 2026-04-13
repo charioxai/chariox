@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
@@ -56,6 +56,7 @@ pub(crate) struct AgentRuntimePromptState {
     pub(crate) agent_id: String,
     pub(crate) active_prompt: Option<PromptQueueItem>,
     pub(crate) next_queued_prompt: Option<PromptQueueItem>,
+    pub(crate) queued_prompts: VecDeque<PromptQueueItem>,
     pub(crate) queued_prompt_count: usize,
 }
 
@@ -102,6 +103,9 @@ impl AgentRuntimePromptStateStore {
                     active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
                     next_queued_prompt: prompt_state
                         .and_then(|state| state.queued_prompts().front().cloned()),
+                    queued_prompts: prompt_state
+                        .map(|state| state.queued_prompts().clone())
+                        .unwrap_or_default(),
                     queued_prompt_count: prompt_state
                         .map(|state| state.queued_prompts().len())
                         .unwrap_or(0),
@@ -116,6 +120,7 @@ impl AgentRuntimePromptStateStore {
                     agent_id: agent_id.clone(),
                     active_prompt: prompt_state.active_prompt().cloned(),
                     next_queued_prompt: prompt_state.queued_prompts().front().cloned(),
+                    queued_prompts: prompt_state.queued_prompts().clone(),
                     queued_prompt_count: prompt_state.queued_prompts().len(),
                 });
         }
@@ -151,10 +156,8 @@ impl AgentRuntimePromptStateStore {
                 state.active_prompt = Some(prompt.clone());
             }
             PromptSubmissionOutcome::Queued { prompt } => {
-                if state.next_queued_prompt.is_none() {
-                    state.next_queued_prompt = Some(prompt.clone());
-                }
-                state.queued_prompt_count = state.queued_prompt_count.saturating_add(1);
+                state.queued_prompts.push_back(prompt.clone());
+                refresh_prompt_queue_summary(state);
             }
         }
     }
@@ -185,8 +188,8 @@ impl AgentRuntimePromptStateStore {
             .clone()
             .or_else(|| Some(cancellation.prompt.clone()));
         if cancellation.started_next.is_some() {
-            state.queued_prompt_count = state.queued_prompt_count.saturating_sub(1);
-            state.next_queued_prompt = None;
+            let _ = state.queued_prompts.pop_front();
+            refresh_prompt_queue_summary(state);
         }
     }
 
@@ -205,8 +208,8 @@ impl AgentRuntimePromptStateStore {
             .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
         state.active_prompt = completion.started_next.clone();
         if completion.started_next.is_some() {
-            state.queued_prompt_count = state.queued_prompt_count.saturating_sub(1);
-            state.next_queued_prompt = None;
+            let _ = state.queued_prompts.pop_front();
+            refresh_prompt_queue_summary(state);
         }
     }
 
@@ -231,8 +234,14 @@ fn empty_agent_prompt_state(session_id: &str, agent_id: &str) -> AgentRuntimePro
         agent_id: agent_id.to_string(),
         active_prompt: None,
         next_queued_prompt: None,
+        queued_prompts: VecDeque::new(),
         queued_prompt_count: 0,
     }
+}
+
+fn refresh_prompt_queue_summary(state: &mut AgentRuntimePromptState) {
+    state.next_queued_prompt = state.queued_prompts.front().cloned();
+    state.queued_prompt_count = state.queued_prompts.len();
 }
 
 #[derive(Clone)]
@@ -552,6 +561,9 @@ fn agent_prompt_state_from_session(
         agent_id: agent_id.to_string(),
         active_prompt: prompt_state.and_then(|state| state.active_prompt().cloned()),
         next_queued_prompt: prompt_state.and_then(|state| state.queued_prompts().front().cloned()),
+        queued_prompts: prompt_state
+            .map(|state| state.queued_prompts().clone())
+            .unwrap_or_default(),
         queued_prompt_count: prompt_state
             .map(|state| state.queued_prompts().len())
             .unwrap_or(0),
@@ -1007,6 +1019,14 @@ mod tests {
             state.next_queued_prompt.as_ref().map(|prompt| prompt.id()),
             Some("prompt-2")
         );
+        assert_eq!(
+            state
+                .queued_prompts
+                .iter()
+                .map(|prompt| prompt.id().to_string())
+                .collect::<Vec<_>>(),
+            vec!["prompt-2".to_string()]
+        );
         assert_eq!(state.queued_prompt_count, 1);
 
         store.apply_cancellation(
@@ -1040,6 +1060,8 @@ mod tests {
             state.active_prompt.as_ref().map(|prompt| prompt.id()),
             Some("prompt-2")
         );
+        assert!(state.queued_prompts.is_empty());
+        assert!(state.next_queued_prompt.is_none());
         assert_eq!(state.queued_prompt_count, 0);
     }
 
