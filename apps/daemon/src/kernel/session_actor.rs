@@ -6,7 +6,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::attachment::AttachRequest;
 use crate::error::DaemonError;
-use crate::kernel::projection::{ActorQueueSnapshot, SessionStateProjectionStore};
+use crate::kernel::projection::{
+    ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -52,6 +54,7 @@ pub(crate) struct SessionRuntime {
     queue_limit: usize,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
 }
 
@@ -61,12 +64,14 @@ impl SessionRuntime {
         queue_limit: usize,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
         Self {
             app,
             queue_limit,
             focus_projection,
             session_projection,
+            agent_runtime_projection,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -158,6 +163,8 @@ impl SessionRuntime {
         tokio::spawn(run_session_command_lane(
             Arc::clone(&self.app),
             self.focus_projection.clone(),
+            self.session_projection.clone(),
+            self.agent_runtime_projection.clone(),
             session_id.to_string(),
             rx,
         ));
@@ -225,6 +232,8 @@ impl SessionRuntime {
 async fn run_session_command_lane(
     app: Arc<Mutex<DaemonApp>>,
     focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     session_id: String,
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
@@ -238,7 +247,7 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let (result, focused_agent_id) = {
+        let (result, projected_session) = {
             let mut app = app.lock().await;
             let result = SessionActor::handle_interactive_command(&mut app, envelope.request)
                 .unwrap_or_else(|| {
@@ -247,21 +256,25 @@ async fn run_session_command_lane(
                         message: "request is not handled by the session runtime".to_string(),
                     })
                 });
-            let focused_agent_id = if result.is_ok() {
-                app.sessions()
-                    .get_session(&session_id)
-                    .ok()
-                    .and_then(|session| session.focused_agent_id().map(str::to_string))
+            let projected_session = if result.is_ok() {
+                session_id_for_projection_refresh(&result)
+                    .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
             } else {
                 None
             };
-            (result, focused_agent_id)
+            (result, projected_session)
         };
+        if let Some(session) = projected_session.as_ref() {
+            agent_runtime_projection.update_session(session);
+            session_projection.update(session.clone());
+        }
         update_focus_projection_after_session_command(
             &focus_projection,
             &session_id,
             &result,
-            focused_agent_id.as_deref(),
+            projected_session
+                .as_ref()
+                .and_then(|session| session.focused_agent_id()),
         )
         .await;
         let _ = envelope.result_tx.send(result);
@@ -283,6 +296,24 @@ async fn update_focus_projection_after_session_command(
             focus_projection.update(session_id, focused_agent_id).await;
         }
         Err(_) => {}
+    }
+}
+
+fn session_id_for_projection_refresh(
+    result: &Result<LocalDaemonResponse, DaemonError>,
+) -> Option<String> {
+    match result {
+        Ok(LocalDaemonResponse::SessionAttached { attachment })
+        | Ok(LocalDaemonResponse::SessionDetached { attachment }) => {
+            Some(attachment.session_id().to_string())
+        }
+        Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
+        Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
+            Some(agent.session_id().to_string())
+        }
+        Ok(LocalDaemonResponse::AgentFocusCycled { agent: None }) => None,
+        Ok(LocalDaemonResponse::TerminalResized { session_id, .. }) => Some(session_id.clone()),
+        _ => None,
     }
 }
 

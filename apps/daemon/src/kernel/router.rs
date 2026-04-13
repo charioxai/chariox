@@ -102,6 +102,7 @@ impl CommandRouter {
             session_capacity,
             focus_projection.clone(),
             session_projection.clone(),
+            agent_runtime_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -171,6 +172,7 @@ impl CommandRouter {
             crate::kernel::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
             focus_projection.clone(),
             session_projection.clone(),
+            agent_runtime_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -807,7 +809,6 @@ fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusProjectionRefr
 enum SessionProjectionRefresh {
     None,
     SnapshotRequestSession { session_id: String },
-    SnapshotAttachmentResponse,
     SnapshotAgentResponse,
 }
 
@@ -818,13 +819,6 @@ impl SessionProjectionRefresh {
             SessionProjectionRefresh::SnapshotRequestSession { session_id } => {
                 vec![session_id.clone()]
             }
-            SessionProjectionRefresh::SnapshotAttachmentResponse => match response {
-                LocalDaemonResponse::SessionAttached { attachment }
-                | LocalDaemonResponse::SessionDetached { attachment } => {
-                    vec![attachment.session_id().to_string()]
-                }
-                _ => Vec::new(),
-            },
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
                 LocalDaemonResponse::AgentSpawned { agent }
                 | LocalDaemonResponse::AgentDestroyed { agent }
@@ -842,13 +836,13 @@ impl SessionProjectionRefresh {
 
 fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
     match request {
-        LocalDaemonRequest::AttachToSession(_) | LocalDaemonRequest::DetachFromSession(_) => {
-            SessionProjectionRefresh::SnapshotAttachmentResponse
+        LocalDaemonRequest::AttachToSession(_)
+        | LocalDaemonRequest::DetachFromSession(_)
+        | LocalDaemonRequest::FocusAgent(_)
+        | LocalDaemonRequest::CycleAgentFocus(_) => SessionProjectionRefresh::None,
+        LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_) => {
+            SessionProjectionRefresh::SnapshotAgentResponse
         }
-        LocalDaemonRequest::FocusAgent(_)
-        | LocalDaemonRequest::CycleAgentFocus(_)
-        | LocalDaemonRequest::SpawnAgent(_)
-        | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
             SessionProjectionRefresh::None
         }
@@ -1653,6 +1647,95 @@ mod tests {
         ));
 
         let _ = catalog_task.await.expect("catalog task should join");
+    }
+
+    #[tokio::test]
+    async fn session_runtime_publishes_attach_and_focus_projection_without_router_snapshot() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, first_agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let second_agent = match app
+            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: session_id.clone(),
+                alias: Some("reviewer".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                effort: None,
+                worktree_id: None,
+                machine_ref: None,
+            }))
+            .expect("spawn should succeed")
+        {
+            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            _ => panic!("unexpected spawn response"),
+        };
+        assert_ne!(first_agent.id(), second_agent.id());
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let attach_request = attach_request(&session_id, "cli-session-projection");
+        let attach_command = KernelCommand::from_local_request(
+            "cmd-session-projection-attach",
+            None,
+            None,
+            &attach_request,
+        );
+        let attachment_id = match router
+            .dispatch(attach_command, attach_request)
+            .await
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+            _ => panic!("unexpected attach response"),
+        };
+
+        let focus_request = focus_request(&session_id, second_agent.id());
+        let focus_command = KernelCommand::from_local_request(
+            "cmd-session-projection-focus",
+            None,
+            None,
+            &focus_request,
+        );
+        router
+            .dispatch(focus_command, focus_request)
+            .await
+            .expect("focus should succeed");
+
+        let app_guard = app.lock().await;
+        let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let state_command = KernelCommand::from_local_request(
+            "cmd-session-projection-state",
+            None,
+            None,
+            &state_request,
+        );
+        let state_router = router.clone();
+        let state_task =
+            tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            state_task.is_finished(),
+            "session state should come from the SessionRuntime-published projection without taking the app lock"
+        );
+        drop(app_guard);
+
+        let state_response = state_task
+            .await
+            .expect("state task should join")
+            .expect("state should resolve");
+        match state_response {
+            LocalDaemonResponse::SessionState { session } => {
+                assert!(session.has_attachment(&attachment_id));
+                assert_eq!(session.focused_agent_id(), Some(second_agent.id()));
+            }
+            _ => panic!("unexpected session state response"),
+        }
     }
 
     #[tokio::test]
