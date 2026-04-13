@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::app::DaemonApp;
 use crate::attachment::AttachRequest;
 use crate::error::DaemonError;
-use crate::kernel::projection::ActorQueueSnapshot;
+use crate::kernel::projection::{ActorQueueSnapshot, SessionStateProjectionStore};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -51,6 +51,7 @@ pub(crate) struct SessionRuntime {
     app: Arc<Mutex<DaemonApp>>,
     queue_limit: usize,
     focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
 }
 
@@ -59,11 +60,13 @@ impl SessionRuntime {
         app: Arc<Mutex<DaemonApp>>,
         queue_limit: usize,
         focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
     ) -> Self {
         Self {
             app,
             queue_limit,
             focus_projection,
+            session_projection,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -112,6 +115,12 @@ impl SessionRuntime {
             LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::DeleteSession(request) => {
+                if let Some(session_id) = self
+                    .session_projection
+                    .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
+                {
+                    return Ok(session_id);
+                }
                 let app = self.app.lock().await;
                 Ok(app
                     .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?
@@ -119,6 +128,12 @@ impl SessionRuntime {
                     .to_string())
             }
             LocalDaemonRequest::DetachFromSession(request) => {
+                if let Some(session_id) = self
+                    .session_projection
+                    .session_id_for_attachment(&request.attachment_id)
+                {
+                    return Ok(session_id);
+                }
                 let app = self.app.lock().await;
                 Ok(app
                     .attachments()

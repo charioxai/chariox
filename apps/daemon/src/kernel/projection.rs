@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
 use crate::kernel::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
-use crate::session::{unix_epoch_ms, RuntimeSession};
+use crate::session::{unix_epoch_ms, RuntimeSession, SessionStatus};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +133,83 @@ impl SessionStateProjectionStore {
             .cloned()
             .unwrap_or_else(|| state.session_states.values().cloned().collect());
         workspace_coordination_snapshot(sessions, active_operation_claims)
+    }
+
+    pub(crate) fn resolve_session_ref_id(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Option<String> {
+        let normalized_ref = session_ref.trim().to_lowercase();
+        if normalized_ref.is_empty() {
+            return None;
+        }
+        let sessions = self.projected_sessions();
+        let visible_sessions = sessions
+            .iter()
+            .filter(|session| session.status() != SessionStatus::Ended)
+            .collect::<Vec<_>>();
+        let workspace_sessions = visible_sessions
+            .iter()
+            .copied()
+            .filter(|session| {
+                workspace_id.is_none_or(|workspace| session.workspace_id() == workspace)
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(session) = visible_sessions
+            .iter()
+            .find(|session| session.id() == normalized_ref)
+        {
+            return Some(session.id().to_string());
+        }
+        if let Some(session) = workspace_sessions
+            .iter()
+            .find(|session| session.alias() == Some(normalized_ref.as_str()))
+        {
+            return Some(session.id().to_string());
+        }
+
+        let id_matches = visible_sessions
+            .iter()
+            .filter(|session| session.id().starts_with(&normalized_ref))
+            .collect::<Vec<_>>();
+        if id_matches.len() == 1 {
+            return Some(id_matches[0].id().to_string());
+        }
+
+        let alias_matches = workspace_sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .alias()
+                    .is_some_and(|alias| alias.starts_with(normalized_ref.as_str()))
+            })
+            .collect::<Vec<_>>();
+        if alias_matches.len() == 1 {
+            return Some(alias_matches[0].id().to_string());
+        }
+
+        None
+    }
+
+    pub(crate) fn session_id_for_attachment(&self, attachment_id: &str) -> Option<String> {
+        self.projected_sessions()
+            .into_iter()
+            .find(|session| session.has_attachment(attachment_id))
+            .map(|session| session.id().to_string())
+    }
+
+    fn projected_sessions(&self) -> Vec<RuntimeSession> {
+        let state = self
+            .state
+            .lock()
+            .expect("session projection lock should not be poisoned");
+        state
+            .session_list
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.session_states.values().cloned().collect())
     }
 }
 

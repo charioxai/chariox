@@ -98,6 +98,7 @@ impl CommandRouter {
             Arc::clone(&app),
             session_capacity,
             focus_projection.clone(),
+            session_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -163,6 +164,7 @@ impl CommandRouter {
             Arc::clone(&app),
             crate::kernel::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
             focus_projection.clone(),
+            session_projection.clone(),
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
@@ -1425,6 +1427,77 @@ mod tests {
         assert!(
             !router.session_runtime.has_lane(&session_id).await,
             "ending a session should remove its mailbox registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_session_resolves_lane_from_warmed_projection_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let create_request = LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-delete-projection", "worktree")
+                .with_alias("doomed"),
+        );
+        let create_command = KernelCommand::from_local_request(
+            "cmd-delete-projection-create",
+            None,
+            None,
+            &create_request,
+        );
+        let session_id = match router
+            .dispatch(create_command, create_request)
+            .await
+            .expect("create should warm session projection")
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+            _ => panic!("unexpected create response"),
+        };
+
+        let app_guard = app.lock().await;
+        let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: "doomed".to_string(),
+            workspace_id: Some("workspace-delete-projection".to_string()),
+        });
+        let delete_command =
+            KernelCommand::from_local_request("cmd-delete-projection", None, None, &delete_request);
+        let delete_router = router.clone();
+        let delete_task =
+            tokio::spawn(
+                async move { delete_router.dispatch(delete_command, delete_request).await },
+            );
+
+        let mut lane_created = false;
+        for _ in 0..50 {
+            if router.session_runtime.has_lane(&session_id).await {
+                lane_created = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            lane_created,
+            "delete should resolve the session lane from the warmed projection before touching the app lock"
+        );
+        assert!(
+            !delete_task.is_finished(),
+            "session worker should still wait on the deliberately held app lock"
+        );
+
+        drop(app_guard);
+        let delete_response = delete_task
+            .await
+            .expect("delete task should join")
+            .expect("delete should succeed");
+        assert!(matches!(
+            delete_response,
+            LocalDaemonResponse::SessionDeleted { .. }
+        ));
+        assert!(
+            !router.session_runtime.has_lane(&session_id).await,
+            "deleting a session should remove its mailbox registration"
         );
     }
 
