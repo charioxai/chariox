@@ -3,7 +3,7 @@ use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, ProviderRunState};
-use crate::session::{RuntimeSession, SessionStatus};
+use crate::session::{CreateSessionRequest, RuntimeSession, SessionStatus};
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
@@ -12,6 +12,31 @@ pub(crate) struct KernelSessionService<'a> {
 impl<'a> KernelSessionService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
+    }
+
+    pub(crate) fn create_session(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        let session = self.app.sessions.create_session(request)?;
+        let agent_request =
+            CreateAgentRequest::new(session.id(), "default").with_worktree(session.worktree_id());
+        let agent = self
+            .app
+            .agents
+            .create_agent(agent_request, &mut self.app.sessions)?;
+
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session created with default agent",
+            serde_json::json!({
+                "session_id": session.id(),
+                "agent_id": agent.id(),
+                "agent_ref": agent.agent_ref(),
+            }),
+        );
+
+        Ok((session, agent))
     }
 
     pub(crate) fn attach(

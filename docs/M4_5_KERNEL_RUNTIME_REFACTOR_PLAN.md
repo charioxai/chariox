@@ -39,7 +39,7 @@ Status as of 2026-04-13:
 - Landed: provider-run actors for structured provider submit, abort, and output polling, including runtime-slot tombstones/generations that prevent cleanup races from restoring stale provider runtime state.
 - Landed: provider output polling no longer holds provider-family global locks while performing provider I/O.
 - Landed: reserved-listener WebSocket integration harness startup to remove the observed free-port race.
-- Landed: `KernelSessionService` now owns attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the public `DaemonApp` compatibility methods.
+- Landed: `KernelSessionService` now owns public session creation/default-agent bootstrap plus attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the public `DaemonApp` compatibility methods.
 - Landed: `KernelAgentService` now owns prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind the public `DaemonApp` compatibility methods.
 - Landed: `AgentRuntime` per-agent command mailboxes for prompt submit/cancel admission, so agent-scoped prompt commands are not rejected behind unrelated generic interactive work.
 - Landed: `SessionRuntime` per-session command mailboxes for attach/detach/focus/cycle/resize/end/delete admission, so session-scoped UI and lifecycle commands are isolated from the generic interactive queue and from other sessions.

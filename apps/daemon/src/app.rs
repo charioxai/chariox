@@ -227,31 +227,7 @@ impl DaemonApp {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
-        // Create the session
-        let session = self.sessions.create_session(request)?;
-
-        // Create default agent automatically (without provider - user launches it separately)
-        let agent_request = CreateAgentRequest::new(
-            session.id(),
-            "default", // Provider will be set when user launches it
-        )
-        .with_worktree(session.worktree_id());
-
-        let agent = self
-            .agents
-            .create_agent(agent_request, &mut self.sessions)?;
-
-        crate::logging::info_with_fields(
-            "daemon.app",
-            "session created with default agent",
-            serde_json::json!({
-                "session_id": session.id(),
-                "agent_id": agent.id(),
-                "agent_ref": agent.agent_ref(),
-            }),
-        );
-
-        Ok((session, agent))
+        self.kernel_sessions().create_session(request)
     }
 
     pub fn config(&self) -> &DaemonConfig {
