@@ -3451,16 +3451,34 @@ mod tests {
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+        let list_command = KernelCommand::from_local_request(
+            "cmd-runtime-notices-warm",
+            None,
+            None,
+            &list_request,
+        );
+        router
+            .dispatch(list_command, list_request)
+            .await
+            .expect("initial list should warm session projection");
+
+        let app_guard = app.lock().await;
         let poll_request = LocalDaemonRequest::PollRuntimeNotices(PollRuntimeNoticesRequest {
             session_id: session_id.clone(),
             attachment_id: recipient.id().to_string(),
         });
         let poll_command =
             KernelCommand::from_local_request("cmd-runtime-notices", None, None, &poll_request);
-        let poll_response = router
-            .dispatch(poll_command, poll_request)
+        let poll_router = router.clone();
+        let poll_task =
+            tokio::spawn(async move { poll_router.dispatch(poll_command, poll_request).await });
+        let poll_response = timeout(Duration::from_millis(100), poll_task)
             .await
+            .expect("notice poll should not wait for the app lock")
+            .expect("poll task should join")
             .expect("notice poll should succeed");
+        drop(app_guard);
 
         assert!(
             router.session_runtime.has_lane(&session_id).await,

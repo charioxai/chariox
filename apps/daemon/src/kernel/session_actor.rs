@@ -270,7 +270,19 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let (result, projected_session) = {
+        let (result, projected_session) = if let Some(result) = projected_runtime_notices_response(
+            &session_projection,
+            &terminal_stream,
+            &envelope.request,
+        ) {
+            let projected_session = if result.is_ok() {
+                session_id_for_projection_refresh(&result)
+                    .and_then(|session_id| session_projection.get(&session_id))
+            } else {
+                None
+            };
+            (result, projected_session)
+        } else {
             let mut app = app.lock().await;
             let result = SessionActor::handle_interactive_command(
                 &mut app,
@@ -324,6 +336,38 @@ async fn update_focus_projection_after_session_command(
         }
         Err(_) => {}
     }
+}
+
+fn projected_runtime_notices_response(
+    session_projection: &SessionStateProjectionStore,
+    terminal_stream: &TerminalStreamStore,
+    request: &LocalDaemonRequest,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    let LocalDaemonRequest::PollRuntimeNotices(request) = request else {
+        return None;
+    };
+    if session_projection
+        .get(&request.session_id)
+        .is_some_and(|session| session.has_attachment(&request.attachment_id))
+    {
+        return Some(Ok(LocalDaemonResponse::RuntimeNotices {
+            notices: terminal_stream
+                .drain_notice_records(&request.session_id, &request.attachment_id),
+        }));
+    }
+    if !session_projection.has_warmed_list() {
+        return None;
+    }
+    let result = match session_projection.session_id_for_attachment(&request.attachment_id) {
+        Some(_) => Err(DaemonError::AttachmentNotInSession {
+            session_id: request.session_id.clone(),
+            attachment_id: request.attachment_id.clone(),
+        }),
+        None => Err(DaemonError::AttachmentNotFound {
+            attachment_id: request.attachment_id.clone(),
+        }),
+    };
+    Some(result)
 }
 
 fn session_id_for_projection_refresh(
