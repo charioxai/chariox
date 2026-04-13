@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalInputRecord {
     pub session_id: String,
@@ -62,11 +64,24 @@ pub struct TerminalStreamService {
     output_records: Vec<TerminalOutputRecord>,
     notice_records: Vec<RuntimeNoticeRecord>,
     completion_records: Vec<AssistantMessageCompletionRecord>,
+    pending_output_record_limit_per_attachment: usize,
 }
 
 impl TerminalStreamService {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            pending_output_record_limit_per_attachment:
+                DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_pending_output_record_limit_per_attachment(limit: usize) -> Self {
+        Self {
+            pending_output_record_limit_per_attachment: limit,
+            ..Self::new()
+        }
     }
 
     pub fn record_input(
@@ -107,6 +122,7 @@ impl TerminalStreamService {
         };
 
         self.output_records.push(record.clone());
+        self.enforce_pending_output_record_limits();
         record
     }
 
@@ -162,6 +178,26 @@ impl TerminalStreamService {
         self.output_records
             .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
         drained
+    }
+
+    fn enforce_pending_output_record_limits(&mut self) {
+        if self.pending_output_record_limit_per_attachment == 0 {
+            self.output_records.clear();
+            return;
+        }
+
+        let mut pending_counts = std::collections::BTreeMap::<String, usize>::new();
+        for record in self.output_records.iter_mut().rev() {
+            record
+                .pending_recipient_attachment_ids
+                .retain(|attachment_id| {
+                    let count = pending_counts.entry(attachment_id.clone()).or_default();
+                    *count += 1;
+                    *count <= self.pending_output_record_limit_per_attachment
+                });
+        }
+        self.output_records
+            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
     }
 
     pub fn notice_records(&self) -> &[RuntimeNoticeRecord] {
@@ -307,6 +343,34 @@ mod tests {
 
         let second = terminal.drain_output_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
+        assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn output_backlog_is_bounded_per_slow_recipient() {
+        let mut terminal =
+            TerminalStreamService::with_pending_output_record_limit_per_attachment(2);
+        for index in 0..4 {
+            terminal.fan_out_output(
+                "session-1",
+                "provider-run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                vec!["slow-attachment".to_string(), "fast-attachment".to_string()],
+                format!("chunk-{index}").as_bytes(),
+            );
+        }
+
+        let slow_records = terminal.drain_output_records("session-1", "slow-attachment");
+        assert_eq!(slow_records.len(), 2);
+        assert_eq!(slow_records[0].bytes, b"chunk-2");
+        assert_eq!(slow_records[1].bytes, b"chunk-3");
+
+        let fast_records = terminal.drain_output_records("session-1", "fast-attachment");
+        assert_eq!(fast_records.len(), 2);
+        assert_eq!(fast_records[0].bytes, b"chunk-2");
+        assert_eq!(fast_records[1].bytes, b"chunk-3");
         assert!(terminal.output_records().is_empty());
     }
 
