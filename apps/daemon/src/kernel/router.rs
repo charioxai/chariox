@@ -1840,6 +1840,73 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn create_session_uses_session_runtime_when_interactive_lane_is_full() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+
+        let blocked_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let blocked_command = KernelCommand::from_local_request(
+            "cmd-blocked-generic-create",
+            None,
+            None,
+            &blocked_request,
+        );
+        let (blocked_result_tx, blocked_result_rx) = tokio::sync::oneshot::channel();
+        router
+            .interactive_tx
+            .try_send(super::InteractiveCommandEnvelope {
+                command: blocked_command,
+                request: blocked_request,
+                result_tx: blocked_result_tx,
+            })
+            .expect("generic interactive lane should fill");
+
+        let create_request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-create-runtime",
+            "worktree-create-runtime",
+        ));
+        let create_command =
+            KernelCommand::from_local_request("cmd-create-runtime", None, None, &create_request);
+        let create_router = router.clone();
+        let create_task =
+            tokio::spawn(
+                async move { create_router.dispatch(create_command, create_request).await },
+            );
+
+        tokio::task::yield_now().await;
+        assert!(
+            !create_task.is_finished(),
+            "create should be admitted to the session runtime instead of failing on the full generic lane"
+        );
+        assert!(
+            router
+                .session_runtime
+                .has_lane(crate::kernel::session_actor::SESSION_CREATE_LANE_ID)
+                .await
+        );
+
+        drop(app_guard);
+        let _ = blocked_result_rx
+            .await
+            .expect("blocked generic command should resolve");
+        let create_response = create_task
+            .await
+            .expect("create task should join")
+            .expect("create should succeed");
+        let session_id = match create_response {
+            LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+            _ => panic!("unexpected create response"),
+        };
+        assert!(
+            router.session_projection.get(&session_id).is_some(),
+            "session runtime should publish the created session projection"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn prompt_submit_does_not_wait_behind_slow_history_load() {
         let mut config = DaemonConfig::for_tests();

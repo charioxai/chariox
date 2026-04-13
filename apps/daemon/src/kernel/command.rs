@@ -143,6 +143,9 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::CreateSession(_) => {
+            LocalRequestMetadata::new("session.create", Interactive)
+        }
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
@@ -329,6 +332,7 @@ mod tests {
         GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest, SubmitPromptRequest,
         UpdateSessionConfigRequest,
     };
+    use crate::session::CreateSessionRequest;
 
     #[test]
     fn normalizes_prompt_submit_to_interactive_kernel_command() {
@@ -356,6 +360,12 @@ mod tests {
 
     #[test]
     fn normalizes_attach_and_focus_as_interactive_commands() {
+        let create = KernelCommand::from_local_request(
+            "create-1",
+            None,
+            None,
+            &LocalDaemonRequest::CreateSession(CreateSessionRequest::new("workspace", "worktree")),
+        );
         let attach = KernelCommand::from_local_request(
             "attach-1",
             None,
@@ -376,6 +386,9 @@ mod tests {
             }),
         );
 
+        assert_eq!(create.command_type, "session.create");
+        assert_eq!(create.priority, KernelCommandPriority::Interactive);
+        assert_eq!(create.session_id.as_deref(), None);
         assert_eq!(attach.command_type, "session.attach");
         assert_eq!(attach.priority, KernelCommandPriority::Interactive);
         assert_eq!(attach.correlation_id, "attach-1");

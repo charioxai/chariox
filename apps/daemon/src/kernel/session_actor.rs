@@ -13,6 +13,7 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::terminal::TerminalStreamStore;
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
+pub(crate) const SESSION_CREATE_LANE_ID: &str = "__session_create__";
 
 #[derive(Clone, Default)]
 pub(crate) struct FocusedAgentProjection {
@@ -118,6 +119,7 @@ impl SessionRuntime {
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         match request {
+            LocalDaemonRequest::CreateSession(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),
             LocalDaemonRequest::AttachToSession(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
@@ -404,6 +406,14 @@ async fn update_focus_projection_after_session_command(
     focused_agent_id: Option<&str>,
 ) {
     match result {
+        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => {
+            focus_projection
+                .update(
+                    session.id(),
+                    focused_agent_id.or_else(|| session.focused_agent_id()),
+                )
+                .await;
+        }
         Ok(LocalDaemonResponse::SessionEnded { .. })
         | Ok(LocalDaemonResponse::SessionDeleted { .. }) => {
             focus_projection.remove(session_id).await;
@@ -541,6 +551,7 @@ fn session_id_for_projection_refresh(
         | Ok(LocalDaemonResponse::SessionDetached { attachment }) => {
             Some(attachment.session_id().to_string())
         }
+        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
             Some(agent.session_id().to_string())
@@ -561,7 +572,8 @@ impl SessionActor {
     pub(crate) fn is_session_interactive_command(request: &LocalDaemonRequest) -> bool {
         matches!(
             request,
-            LocalDaemonRequest::AttachToSession(_)
+            LocalDaemonRequest::CreateSession(_)
+                | LocalDaemonRequest::AttachToSession(_)
                 | LocalDaemonRequest::DetachFromSession(_)
                 | LocalDaemonRequest::FocusAgent(_)
                 | LocalDaemonRequest::CycleAgentFocus(_)
@@ -579,6 +591,26 @@ impl SessionActor {
         terminal_stream: &TerminalStreamStore,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if let LocalDaemonRequest::CreateSession(request) = request {
+            return Some(app.create_session(request).map(|(mut session, agent)| {
+                let agents = app.agents().get_session_agents(session.id());
+                session.set_agents(agents);
+                crate::logging::info_with_fields(
+                    "daemon.session",
+                    "session created with default agent",
+                    serde_json::json!({
+                        "session_id": session.id(),
+                        "session_alias": session.alias(),
+                        "workspace_id": session.workspace_id(),
+                        "worktree_id": session.worktree_id(),
+                        "execution_mode": format!("{:?}", session.execution_mode()),
+                        "agent_id": agent.id(),
+                        "agent_ref": agent.agent_ref(),
+                    }),
+                );
+                LocalDaemonResponse::SessionCreated { session, agent }
+            }));
+        }
         if let LocalDaemonRequest::UpdateSessionConfig(request) = request {
             let session_id = request.session_id.clone();
             return Some(
