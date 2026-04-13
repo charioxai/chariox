@@ -502,7 +502,7 @@ async fn execute_agent_command(
             target_agent_id,
             next_queued_prompt,
         } => {
-            let (completion, session) = {
+            let completion = {
                 let mut app = app.lock().await;
                 let provider_run_id = app
                     .providers()
@@ -514,9 +514,13 @@ async fn execute_agent_command(
                     provider_run_id.as_deref(),
                     next_queued_prompt.as_ref(),
                 )?;
-                let session = app.local_api_session_snapshot(&request.session_id)?;
-                (completion, session)
+                completion
             };
+            let session = session_projection.get(&request.session_id).ok_or_else(|| {
+                DaemonError::SessionNotFound {
+                    session_id: request.session_id.clone(),
+                }
+            })?;
             session_projection.update(session.clone());
             debug_assert!(
                 completion_started_next_is_compatible(next_queued_prompt.as_ref(), &completion),
