@@ -316,6 +316,10 @@ async fn run_session_command_lane(
             };
             (result, projected_session)
         } else if let Some(result) =
+            projected_config_update_absence_response(&session_projection, &envelope.request)
+        {
+            (result, None)
+        } else if let Some(result) =
             projected_session_absence_response(&session_projection, &envelope.request)
         {
             (result, None)
@@ -428,6 +432,34 @@ fn projected_resize_terminal_response(
     Some(Err(DaemonError::SessionNotFound {
         session_id: request.session_id.clone(),
     }))
+}
+
+fn projected_config_update_absence_response(
+    session_projection: &SessionStateProjectionStore,
+    request: &LocalDaemonRequest,
+) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    let LocalDaemonRequest::UpdateSessionConfig(request) = request else {
+        return None;
+    };
+    if session_projection
+        .get(&request.session_id)
+        .is_some_and(|session| session.has_attachment(&request.attachment_id))
+    {
+        return None;
+    }
+    if !session_projection.has_warmed_list() {
+        return None;
+    }
+    let result = match session_projection.session_id_for_attachment(&request.attachment_id) {
+        Some(_) => Err(DaemonError::AttachmentNotInSession {
+            session_id: request.session_id.clone(),
+            attachment_id: request.attachment_id.clone(),
+        }),
+        None => Err(DaemonError::AttachmentNotFound {
+            attachment_id: request.attachment_id.clone(),
+        }),
+    };
+    Some(result)
 }
 
 fn projected_session_absence_response(
@@ -602,10 +634,14 @@ impl SessionActor {
 mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+    use crate::kernel::session_actor::{
+        projected_config_update_absence_response, FocusedAgentProjection, SessionActor,
+        SessionRuntime,
+    };
     use crate::local::{
         AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
         LocalDaemonResponse, ResizeTerminalRequest, SpawnAgentRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -656,6 +692,37 @@ mod tests {
             !runtime.has_lane("missing-session").await,
             "missing direct session should be rejected before creating a session lane"
         );
+    }
+
+    #[tokio::test]
+    async fn config_update_rejects_warmed_missing_attachment_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+            session_id: "missing-session".to_string(),
+            attachment_id: "missing-attachment".to_string(),
+            values: Default::default(),
+            requires_idle: false,
+        });
+
+        let _locked_app = app.lock().await;
+        let result = timeout(Duration::from_millis(100), async {
+            projected_config_update_absence_response(&session_projection, &request)
+        })
+        .await
+        .expect("projected config validation should not wait for the app lock")
+        .expect("warmed projection should handle missing attachment");
+        let error = result.expect_err("missing attachment should fail");
+
+        match error {
+            DaemonError::AttachmentNotFound { attachment_id } => {
+                assert_eq!(attachment_id, "missing-attachment");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
     }
 
     #[test]
