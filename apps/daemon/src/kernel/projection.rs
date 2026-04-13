@@ -885,6 +885,7 @@ pub struct DaemonHealthProjection {
     pub metadata: ProjectionMetadata,
     pub session_command_lanes: Vec<ActorQueueSnapshot>,
     pub agent_command_lanes: Vec<ActorQueueSnapshot>,
+    pub workflow_command_lanes: Vec<ActorQueueSnapshot>,
     pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
     pub provider_run_actor: ProviderRunActorHealthSnapshot,
     pub session_projection: SessionProjectionHealthSnapshot,
@@ -900,6 +901,7 @@ impl DaemonHealthProjection {
         last_event_id: u64,
         session_command_lanes: Vec<ActorQueueSnapshot>,
         agent_command_lanes: Vec<ActorQueueSnapshot>,
+        workflow_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
         provider_run_actor: ProviderRunActorHealthSnapshot,
         mut session_projection: SessionProjectionHealthSnapshot,
@@ -920,6 +922,7 @@ impl DaemonHealthProjection {
             metadata: ProjectionMetadata::new(1, last_event_id),
             session_command_lanes,
             agent_command_lanes,
+            workflow_command_lanes,
             provider_runtime_lanes,
             provider_run_actor,
             session_projection,
@@ -971,6 +974,7 @@ mod tests {
             7,
             vec![ActorQueueSnapshot::new("session-1", 128, 2)],
             vec![ActorQueueSnapshot::new("agent-1", 128, 1)],
+            vec![ActorQueueSnapshot::new("workflow-session-1", 128, 3)],
             vec![ActorQueueSnapshot::new("provider-run-1", 1, 1)],
             ProviderRunActorHealthSnapshot {
                 enqueued_commands: 5,
@@ -1034,6 +1038,11 @@ mod tests {
         assert_eq!(projection.session_command_lanes[0].queued_commands, 2);
         assert_eq!(projection.agent_command_lanes[0].lane_id, "agent-1");
         assert_eq!(projection.agent_command_lanes[0].queued_commands, 1);
+        assert_eq!(
+            projection.workflow_command_lanes[0].lane_id,
+            "workflow-session-1"
+        );
+        assert_eq!(projection.workflow_command_lanes[0].queued_commands, 3);
         assert_eq!(
             projection.provider_runtime_lanes[0].lane_id,
             "provider-run-1"

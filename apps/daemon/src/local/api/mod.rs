@@ -116,6 +116,7 @@ impl DaemonApp {
                     0,
                     Vec::new(),
                     Vec::new(),
+                    Vec::new(),
                     self.provider_run_operation_lanes().queue_snapshots(),
                     self.provider_run_operation_lanes().health_snapshot(),
                     self.session_state_projection_store().health_snapshot(),

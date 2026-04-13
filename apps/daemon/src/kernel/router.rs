@@ -16,6 +16,7 @@ use crate::kernel::projection::{
     SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::local::provider_requests::{
     launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
@@ -43,6 +44,7 @@ pub(crate) struct CommandRouter {
     interactive_tx: mpsc::Sender<InteractiveCommandEnvelope>,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
+    workflow_runtime: WorkflowRuntime,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
@@ -104,6 +106,11 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
+        let workflow_runtime = WorkflowRuntime::new(
+            Arc::clone(&app),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+        );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             interactive_rx,
@@ -113,6 +120,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            workflow_runtime,
             provider_runtime_lanes,
             focus_projection,
             session_projection,
@@ -174,6 +182,11 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
+        let workflow_runtime = WorkflowRuntime::new(
+            Arc::clone(&app),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+        );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
             interactive_rx,
@@ -183,6 +196,7 @@ impl CommandRouter {
             interactive_tx,
             agent_runtime,
             session_runtime,
+            workflow_runtime,
             provider_runtime_lanes,
             focus_projection,
             session_projection,
@@ -236,6 +250,12 @@ impl CommandRouter {
             return self
                 .agent_runtime
                 .dispatch_prompt_complete(&command, request.clone())
+                .await;
+        }
+        if is_workflow_command(&request) {
+            return self
+                .workflow_runtime
+                .dispatch_workflow_command(command, request)
                 .await;
         }
         if let LocalDaemonRequest::GetProviderRun(request) = &request {
@@ -447,6 +467,7 @@ impl CommandRouter {
             last_event_id,
             self.session_runtime.queue_snapshots().await,
             self.agent_runtime.queue_snapshots().await,
+            self.workflow_runtime.queue_snapshots().await,
             self.provider_runtime_lanes.queue_snapshots(),
             self.provider_runtime_lanes.health_snapshot(),
             self.session_projection.health_snapshot(),
@@ -1910,6 +1931,17 @@ mod tests {
             .await
             .expect("prompt should create an agent lane");
 
+        let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("health-workflow".to_string()),
+        });
+        let workflow_command =
+            KernelCommand::from_local_request("cmd-workflow", None, None, &workflow_request);
+        router
+            .dispatch(workflow_command, workflow_request)
+            .await
+            .expect("workflow command should create a workflow lane");
+
         let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
         let health_command =
             KernelCommand::from_local_request("cmd-health", None, None, &health_request);
@@ -1929,6 +1961,10 @@ mod tests {
             .agent_command_lanes
             .iter()
             .any(|lane| lane.lane_id == agent_id && lane.queue_limit == 128));
+        assert!(projection
+            .workflow_command_lanes
+            .iter()
+            .any(|lane| lane.lane_id == session_id && lane.queue_limit == 128));
         assert_eq!(projection.session_projection.projected_sessions, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 0);

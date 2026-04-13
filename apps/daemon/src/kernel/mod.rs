@@ -5,4 +5,5 @@ pub mod event_log;
 pub mod projection;
 pub mod router;
 pub mod session_actor;
+pub mod workflow_actor;
 pub mod workspace_coordinator;

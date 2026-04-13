@@ -81,6 +81,7 @@ Status as of 2026-04-12:
 - Landed: provider-run exit prompt settlement is isolated behind a dedicated prompt-lifecycle boundary helper. Unexpected provider exits now choose cancellation finalization, completion, or idle sync in one place before Phase 5 moves more liveness ownership into `ProviderRunActor`.
 - Landed: provider-run exit prompt settlement now uses an explicit settlement decision object, separating the active-prompt-status decision from the compatibility mutations it currently triggers.
 - Landed: provider-run liveness reconciliation now lives behind the provider runtime boundary. `DaemonApp` still observes PTY process state during compatibility migration, but provider state transitions, active-run cleanup, runtime cleanup, and ended/external/still-running/newly-ended classification are no longer open-coded in prompt lifecycle handling.
+- Landed: `WorkflowRuntime` baseline with bounded per-session workflow command lanes. Workflow creation/graph/run/watchdog/ack/validation/queue commands now enter a workflow-owned mailbox before hitting compatibility mutation, and daemon health exposes workflow lane pressure separately from session/agent/provider lanes.
 - Landed: `FocusedAgentProjection` shared by `SessionRuntime`, `AgentRuntime`, and router-side agent lifecycle refreshes, so focus changes captured by the session mailbox or local agent spawn/destroy responses let untargeted prompt submit/cancel route to the focused agent without synchronously taking the compatibility app lock for focus lookup.
 - Landed: `SessionStateProjectionStore` for warmed session/list/resolve/prompt-state snapshots. `GetSessionState`, successful `ResolveSession`, and warmed `ListSessions` can return projected session data without taking the compatibility app lock after the projection has been warmed by list responses, prompt/session/agent/workflow responses, prompt lifecycle publications, or transitional post-mutation snapshots. List warm-up now hydrates per-session projection entries, so follow-up state and successful resolve reads can stay projection-first without requiring a separate session-state read.
 - Landed: `AgentRuntime` focus fallback through the warmed session projection. Untargeted prompt submit/cancel now checks projected focused-agent state before falling back to the compatibility app lock when the dedicated focus projection is cold.
@@ -400,6 +401,8 @@ Provider-run worker decision: keep the current thread-per-provider-run mailbox w
 - Move workflow run progression out of shared app mutation and into `WorkflowRunActor`.
 - Move file/tree/screenshot/shell/MCP capability jobs behind `CapabilityExecutor`.
 - Connect capability progress/results to events and projections.
+
+Current status: Phase 6 has started. Workflow commands are admitted through bounded per-session `WorkflowRuntime` lanes and publish session/agent-runtime projections from the lane worker after compatibility mutation. This establishes a workflow-owned command boundary before moving run progression and capability result application out of direct `DaemonApp` mutation.
 
 ### Phase 7. WorkspaceCoordinator and RelayRuntime
 
