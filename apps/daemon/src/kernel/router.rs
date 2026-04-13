@@ -311,9 +311,9 @@ impl CommandRouter {
                 }
             },
         };
-        self.apply_focus_projection_refresh(focus_refresh, &result)
-            .await;
         self.apply_session_projection_refresh(session_refresh, &result)
+            .await;
+        self.apply_focus_projection_refresh(focus_refresh, &result)
             .await;
         self.apply_provider_run_projection_refresh(&result).await;
         self.apply_provider_launch_projection_state(&result).await;
@@ -564,13 +564,17 @@ impl CommandRouter {
                 }
             }
             FocusProjectionRefresh::SnapshotSession { session_id } => {
-                let focused_agent_id = {
-                    let app = self.app.lock().await;
-                    app.sessions()
-                        .get_session(&session_id)
-                        .ok()
-                        .and_then(|session| session.focused_agent_id().map(str::to_string))
-                };
+                let focused_agent_id =
+                    if let Some(session) = self.session_projection.get(&session_id) {
+                        session.focused_agent_id().map(str::to_string)
+                    } else if let Ok(app) = self.app.try_lock() {
+                        app.sessions()
+                            .get_session(&session_id)
+                            .ok()
+                            .and_then(|session| session.focused_agent_id().map(str::to_string))
+                    } else {
+                        return;
+                    };
                 self.focus_projection
                     .update(&session_id, focused_agent_id.as_deref())
                     .await;
