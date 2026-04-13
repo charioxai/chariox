@@ -128,6 +128,7 @@ impl DaemonApp {
                         crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
                         crate::kernel_transport::INBOUND_REQUEST_LIMIT,
                     ),
+                    self.terminal().health_snapshot(),
                     self.session_state_projection_store()
                         .workspace_coordination_snapshot(
                             self.workspace_coordinator().active_claims(),

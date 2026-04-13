@@ -58,6 +58,15 @@ pub struct AssistantMessageCompletionRecord {
     pub completed_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TerminalStreamHealthSnapshot {
+    pub pending_output_records: usize,
+    pub pending_notice_records: usize,
+    pub pending_completion_records: usize,
+    pub pending_output_record_limit_per_attachment: usize,
+    pub trimmed_pending_output_recipients: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TerminalStreamService {
     input_records: Vec<TerminalInputRecord>,
@@ -65,6 +74,7 @@ pub struct TerminalStreamService {
     notice_records: Vec<RuntimeNoticeRecord>,
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
+    trimmed_pending_output_recipients: u64,
 }
 
 impl TerminalStreamService {
@@ -155,6 +165,17 @@ impl TerminalStreamService {
         &self.output_records
     }
 
+    pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
+        TerminalStreamHealthSnapshot {
+            pending_output_records: self.output_records.len(),
+            pending_notice_records: self.notice_records.len(),
+            pending_completion_records: self.completion_records.len(),
+            pending_output_record_limit_per_attachment: self
+                .pending_output_record_limit_per_attachment,
+            trimmed_pending_output_recipients: self.trimmed_pending_output_recipients,
+        }
+    }
+
     pub fn drain_output_records(
         &mut self,
         session_id: &str,
@@ -182,20 +203,36 @@ impl TerminalStreamService {
 
     fn enforce_pending_output_record_limits(&mut self) {
         if self.pending_output_record_limit_per_attachment == 0 {
+            let trimmed = self
+                .output_records
+                .iter()
+                .map(|record| record.pending_recipient_attachment_ids.len() as u64)
+                .sum::<u64>();
+            self.trimmed_pending_output_recipients = self
+                .trimmed_pending_output_recipients
+                .saturating_add(trimmed);
             self.output_records.clear();
             return;
         }
 
         let mut pending_counts = std::collections::BTreeMap::<String, usize>::new();
+        let mut trimmed = 0_u64;
         for record in self.output_records.iter_mut().rev() {
             record
                 .pending_recipient_attachment_ids
                 .retain(|attachment_id| {
                     let count = pending_counts.entry(attachment_id.clone()).or_default();
                     *count += 1;
-                    *count <= self.pending_output_record_limit_per_attachment
+                    let keep = *count <= self.pending_output_record_limit_per_attachment;
+                    if !keep {
+                        trimmed += 1;
+                    }
+                    keep
                 });
         }
+        self.trimmed_pending_output_recipients = self
+            .trimmed_pending_output_recipients
+            .saturating_add(trimmed);
         self.output_records
             .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
     }
@@ -372,6 +409,45 @@ mod tests {
         assert_eq!(fast_records[0].bytes, b"chunk-2");
         assert_eq!(fast_records[1].bytes, b"chunk-3");
         assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn health_reports_output_backlog_pressure() {
+        let mut terminal =
+            TerminalStreamService::with_pending_output_record_limit_per_attachment(2);
+        for index in 0..4 {
+            terminal.fan_out_output(
+                "session-1",
+                "provider-run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                vec!["slow-attachment".to_string()],
+                format!("chunk-{index}").as_bytes(),
+            );
+        }
+        terminal.record_notice(
+            "session-1",
+            None,
+            None,
+            vec!["attachment-1".to_string()],
+            "n",
+        );
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            vec!["attachment-1".to_string()],
+            "message-1",
+            42,
+        );
+
+        let health = terminal.health_snapshot();
+        assert_eq!(health.pending_output_records, 2);
+        assert_eq!(health.pending_notice_records, 1);
+        assert_eq!(health.pending_completion_records, 1);
+        assert_eq!(health.pending_output_record_limit_per_attachment, 2);
+        assert_eq!(health.trimmed_pending_output_recipients, 2);
     }
 
     #[test]

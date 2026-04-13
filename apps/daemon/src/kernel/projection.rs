@@ -11,6 +11,7 @@ use crate::kernel::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, PromptQueueItem, RuntimeSession, SessionStatus};
 use crate::session_history_page::{paginate_session_history, SessionHistoryPage};
+use crate::terminal::TerminalStreamHealthSnapshot;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -890,6 +891,7 @@ pub struct DaemonHealthProjection {
     pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
     pub transport: TransportHealthSnapshot,
+    pub terminal_stream: TerminalStreamHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
 }
 
@@ -904,6 +906,7 @@ impl DaemonHealthProjection {
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
         transport: TransportHealthSnapshot,
+        terminal_stream: TerminalStreamHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     ) -> Self {
         // Compatibility: legacy clients may still read prompt counts from the
@@ -923,6 +926,7 @@ impl DaemonHealthProjection {
             agent_runtime_projection,
             provider_catalog,
             transport,
+            terminal_stream,
             workspace_coordination,
         }
     }
@@ -942,6 +946,7 @@ mod tests {
         SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::CreateSessionRequest;
+    use crate::terminal::TerminalStreamHealthSnapshot;
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -1002,6 +1007,13 @@ mod tests {
                 outgoing_queue_overflows: 1,
                 slow_consumer_closes: 1,
             },
+            TerminalStreamHealthSnapshot {
+                pending_output_records: 4,
+                pending_notice_records: 3,
+                pending_completion_records: 2,
+                pending_output_record_limit_per_attachment: 4096,
+                trimmed_pending_output_recipients: 1,
+            },
             WorkspaceCoordinationHealthSnapshot {
                 active_worktree_claims: vec![crate::kernel::projection::WorktreeClaimSnapshot {
                     workspace_id: "workspace-1".to_string(),
@@ -1035,6 +1047,11 @@ mod tests {
         assert!(projection.provider_catalog.cached);
         assert_eq!(projection.transport.active_connections, 2);
         assert_eq!(projection.transport.slow_consumer_closes, 1);
+        assert_eq!(projection.terminal_stream.pending_output_records, 4);
+        assert_eq!(
+            projection.terminal_stream.trimmed_pending_output_recipients,
+            1
+        );
         assert_eq!(
             projection.workspace_coordination.worktree_collisions.len(),
             1

@@ -458,6 +458,10 @@ impl CommandRouter {
                 crate::kernel_transport::COMMAND_RESULT_CACHE_LIMIT,
                 crate::kernel_transport::INBOUND_REQUEST_LIMIT,
             ),
+            {
+                let app = self.app.lock().await;
+                app.terminal().health_snapshot()
+            },
             self.session_projection
                 .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
         )
