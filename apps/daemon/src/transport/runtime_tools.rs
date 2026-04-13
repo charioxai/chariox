@@ -351,6 +351,7 @@ pub fn dispatch_runtime_tool_call(
         &call.context.workflow_node_run_id,
         WorkflowRuntimeToolCallEvent::new(canonical_tool_name, arguments_json, result_json, ok),
     );
+    let _ = app.publish_session_projection(&call.context.session_id);
 
     result
 }
@@ -1154,20 +1155,23 @@ mod tests {
         let envelope = node_run
             .turn_envelope()
             .expect("turn envelope should be prepared");
+        let node_run_id = node_run.id().to_string();
+        let delivery_token = envelope.delivery_token().to_string();
         assert_eq!(envelope.state(), WorkflowTurnRuntimeState::Dispatched);
+        app.remove_session_projection(session.id());
 
         let result = dispatch_runtime_tool_call(
             &mut app,
             RuntimeToolCall {
                 tool_name: ACK_WORKFLOW_TURN_TOOL.to_string(),
                 arguments: serde_json::json!({
-                    "delivery_token": envelope.delivery_token(),
+                    "delivery_token": delivery_token.clone(),
                 }),
                 context: WorkflowRuntimeToolContext {
                     session_id: session.id().to_string(),
                     workflow_run_ref: workflow_run.id().to_string(),
-                    workflow_node_run_id: node_run.id().to_string(),
-                    delivery_token: Some(envelope.delivery_token().to_string()),
+                    workflow_node_run_id: node_run_id.clone(),
+                    delivery_token: Some(delivery_token),
                     allowed_output_schema_refs: Vec::new(),
                     workflow_run_output_schema_ref: None,
                     workflow_intermediate_output_schema_ref: None,
@@ -1186,12 +1190,30 @@ mod tests {
         let updated_node_run = updated_run
             .node_runs()
             .iter()
-            .find(|candidate| candidate.id() == node_run.id())
+            .find(|candidate| candidate.id() == node_run_id)
             .expect("updated node run should exist");
         assert_eq!(
             updated_node_run
                 .turn_envelope()
                 .expect("updated envelope should exist")
+                .state(),
+            WorkflowTurnRuntimeState::Acknowledged
+        );
+        let projected_session = app
+            .session_state_projection_store()
+            .get(session.id())
+            .expect("runtime tool mutation should republish session projection");
+        let projected_node_run = projected_session
+            .workflow_run(workflow_run.id())
+            .expect("projected workflow run should exist")
+            .node_runs()
+            .iter()
+            .find(|candidate| candidate.id() == node_run_id)
+            .expect("projected node run should exist");
+        assert_eq!(
+            projected_node_run
+                .turn_envelope()
+                .expect("projected envelope should exist")
                 .state(),
             WorkflowTurnRuntimeState::Acknowledged
         );
