@@ -178,40 +178,6 @@ impl PromptRuntimeState {
             .and_then(|state| state.queued_prompts.front().cloned())
     }
 
-    pub(in crate::session) fn activate_next_queued_prompt(
-        &mut self,
-        agent_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> Option<PromptQueueItem> {
-        let prompt_state = self.prompt_states.get_mut(agent_id)?;
-        let mut next = prompt_state.queued_prompts.pop_front()?;
-        next.set_status(PromptStatus::Running);
-        prompt_state.active_prompt = Some(next.clone());
-        self.refresh_after_mutation(focused_agent_id);
-        Some(next)
-    }
-
-    pub(in crate::session) fn clear_active_prompt_if(
-        &mut self,
-        prompt_id: &str,
-        focused_agent_id: Option<&str>,
-    ) -> bool {
-        let target_agent_id = self.prompt_states.iter().find_map(|(agent_id, state)| {
-            (state.active_prompt.as_ref().map(|prompt| prompt.id()) == Some(prompt_id))
-                .then(|| agent_id.clone())
-        });
-        if let Some(agent_id) = target_agent_id {
-            if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
-                prompt_state.active_prompt = None;
-            }
-            self.drop_empty_prompt_state(&agent_id);
-            self.refresh_after_mutation(focused_agent_id);
-            return true;
-        }
-
-        false
-    }
-
     pub(in crate::session) fn remove_queued_prompts_by_attachment(
         &mut self,
         attachment_id: &str,

@@ -38,7 +38,7 @@ impl<'a> KernelAgentService<'a> {
         )
     }
 
-    fn cancel_active_after_prompt_start_failure(
+    pub(crate) fn cancel_active_after_prompt_start_failure(
         &mut self,
         session_id: &str,
         agent_id: &str,

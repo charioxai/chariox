@@ -105,8 +105,8 @@ impl DaemonApp {
         result: Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
         if let Err(error) = result {
-            let _ = self.sessions.cancel_active_prompt(&session_id, &agent_id);
-            flow_control::clear_prompt_activity(self, &provider_run_id);
+            self.kernel_agents()
+                .cancel_active_after_prompt_start_failure(&session_id, &agent_id, &provider_run_id);
             let _ = self.publish_session_projection(&session_id);
             self.record_notice(
                 &session_id,
