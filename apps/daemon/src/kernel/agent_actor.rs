@@ -462,6 +462,16 @@ impl AgentRuntime {
         {
             return Ok(agent_id);
         }
+        if let Some(agent_id) =
+            single_agent_prompt_state_id(&self.prompt_state.list_for_session(session_id))
+        {
+            return Ok(agent_id);
+        }
+        if let Some(agent_id) =
+            single_agent_projection_id(&self.agent_runtime_projection.list_for_session(session_id))
+        {
+            return Ok(agent_id);
+        }
         let app = self.app.lock().await;
         app.sessions()
             .get_session(session_id)?
@@ -627,6 +637,34 @@ fn active_prompt_agent_id_from_state(
     let agent_id = active_agents.next()?;
     if active_agents.next().is_none() {
         Some(agent_id)
+    } else {
+        None
+    }
+}
+
+fn single_agent_projection_id(projections: &[AgentRuntimeProjection]) -> Option<String> {
+    let mut agent_ids = projections
+        .iter()
+        .map(|projection| projection.agent_id.clone())
+        .collect::<Vec<_>>();
+    agent_ids.sort();
+    agent_ids.dedup();
+    if agent_ids.len() == 1 {
+        agent_ids.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn single_agent_prompt_state_id(states: &[AgentRuntimePromptState]) -> Option<String> {
+    let mut agent_ids = states
+        .iter()
+        .map(|state| state.agent_id.clone())
+        .collect::<Vec<_>>();
+    agent_ids.sort();
+    agent_ids.dedup();
+    if agent_ids.len() == 1 {
+        agent_ids.into_iter().next()
     } else {
         None
     }
@@ -857,17 +895,57 @@ impl AgentActor {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+    use tokio::time::{timeout, Duration};
+
     use crate::attachment::ClientCapabilityLevel;
-    use crate::kernel::agent_actor::AgentActor;
+    use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
+    use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::{
         AttachToSessionRequest, CancelActivePromptRequest, LaunchProviderRunRequest,
         LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
+    use crate::provider::ProviderRunOperationLanes;
     use crate::session::{
         CreateSessionRequest, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
         PromptSubmissionOutcome,
     };
     use crate::{DaemonApp, DaemonConfig};
+
+    #[tokio::test]
+    async fn submit_agent_resolution_uses_single_agent_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_snapshot = app
+            .local_api_session_snapshot(session.id())
+            .expect("session projection fixture should be available");
+        let agent_runtime_projection = AgentRuntimeProjectionStore::default();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            Arc::clone(&app),
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            agent_runtime_projection,
+        );
+
+        let _locked_app = app.lock().await;
+        let resolved = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_submit_agent_id(session.id(), None),
+        )
+        .await
+        .expect("projection-backed resolution should not wait for the app lock")
+        .expect("single projected agent should resolve");
+
+        assert_eq!(resolved, agent.id());
+    }
 
     #[test]
     fn handles_prompt_submit_through_agent_actor_surface() {
