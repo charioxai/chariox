@@ -546,7 +546,9 @@ impl CommandRouter {
         let mut refreshed_session_ids = Vec::new();
         for session in response_sessions(response) {
             refreshed_session_ids.push(session.id().to_string());
-            self.agent_runtime_projection.update_session(&session);
+            if should_update_agent_runtime_projection_from_response(response) {
+                self.agent_runtime_projection.update_session(&session);
+            }
             self.session_projection.update(session);
         }
         if let LocalDaemonResponse::SessionsListed { sessions } = response {
@@ -895,6 +897,10 @@ fn response_sessions(response: &LocalDaemonResponse) -> Vec<crate::session::Runt
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => vec![session.clone()],
         _ => Vec::new(),
     }
+}
+
+fn should_update_agent_runtime_projection_from_response(response: &LocalDaemonResponse) -> bool {
+    !matches!(response, LocalDaemonResponse::PromptSubmitted { .. })
 }
 
 fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
