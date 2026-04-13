@@ -8,7 +8,9 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryStore;
 use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
-use crate::kernel::capability_executor::execute_capability_request;
+use crate::kernel::capability_executor::{
+    execute_capability_request, CapabilityExecutorHealthStore,
+};
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
     page_history_entries, AgentRuntimeProjectionStore, DaemonHealthProjection,
@@ -54,6 +56,7 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    capability_health: CapabilityExecutorHealthStore,
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
@@ -130,6 +133,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            capability_health: CapabilityExecutorHealthStore::default(),
             transport_health: TransportHealthStore::default(),
             workspace_coordinator,
             pending_provider_launch_sessions,
@@ -206,6 +210,7 @@ impl CommandRouter {
             provider_catalog_projection,
             provider_run_projection,
             provider_process_projection,
+            capability_health: CapabilityExecutorHealthStore::default(),
             transport_health,
             workspace_coordinator,
             pending_provider_launch_sessions,
@@ -297,7 +302,12 @@ impl CommandRouter {
                     self.dispatch_interactive(command, request).await
                 }
                 KernelCommandPriority::Normal | KernelCommandPriority::Background => {
-                    execute_local_request_with_async_boundaries(&self.app, request).await
+                    execute_local_request_with_async_boundaries(
+                        &self.app,
+                        self.capability_health.clone(),
+                        request,
+                    )
+                    .await
                 }
             },
         };
@@ -470,6 +480,7 @@ impl CommandRouter {
             self.workflow_runtime.queue_snapshots().await,
             self.provider_runtime_lanes.queue_snapshots(),
             self.provider_runtime_lanes.health_snapshot(),
+            self.capability_health.snapshot(),
             self.session_projection.health_snapshot(),
             self.agent_runtime_projection.health_snapshot(),
             self.provider_catalog_projection
@@ -983,6 +994,7 @@ async fn execute_interactive_request(
 
 pub(crate) async fn execute_local_request_with_async_boundaries(
     app: &Arc<Mutex<DaemonApp>>,
+    capability_health: CapabilityExecutorHealthStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -1076,14 +1088,16 @@ pub(crate) async fn execute_local_request_with_async_boundaries(
         LocalDaemonRequest::TeardownProviderProcesses(request) => {
             execute_teardown_provider_processes_request(app, request).await
         }
-        request if is_capability_request(&request) => execute_capability_request(app, request)
-            .await
-            .unwrap_or_else(|| {
-                Err(DaemonError::LocalTransport {
-                    operation: "route capability request",
-                    message: "capability request was not handled by executor".to_string(),
+        request if is_capability_request(&request) => {
+            execute_capability_request(app, capability_health, request)
+                .await
+                .unwrap_or_else(|| {
+                    Err(DaemonError::LocalTransport {
+                        operation: "route capability request",
+                        message: "capability request was not handled by executor".to_string(),
+                    })
                 })
-            }),
+        }
         request => {
             if is_blocking_local_request(&request) {
                 let app = Arc::clone(app);
@@ -1282,8 +1296,8 @@ mod tests {
         LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
         ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
         ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
-        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest, SpawnAgentRequest,
-        SubmitPromptRequest,
+        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
@@ -1945,6 +1959,23 @@ mod tests {
             .await
             .expect("workflow command should create a workflow lane");
 
+        let shell_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            command: "/bin/true".to_string(),
+            args: Vec::new(),
+            working_directory: None,
+            timeout_ms: Some(1_000),
+        });
+        let shell_command =
+            KernelCommand::from_local_request("cmd-capability", None, None, &shell_request);
+        router
+            .dispatch(shell_command, shell_request)
+            .await
+            .expect_err(
+                "capability command should report executor failure for missing test worktree",
+            );
+
         let health_request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
         let health_command =
             KernelCommand::from_local_request("cmd-health", None, None, &health_request);
@@ -1974,6 +2005,9 @@ mod tests {
         assert_eq!(projection.agent_runtime_projection.projected_agents, 1);
         assert_eq!(projection.agent_runtime_projection.active_prompts, 1);
         assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
+        assert_eq!(projection.capability_executor.submitted_jobs, 1);
+        assert_eq!(projection.capability_executor.completed_jobs, 0);
+        assert_eq!(projection.capability_executor.failed_jobs, 1);
         assert!(!projection.provider_catalog.cached);
     }
 

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
+use crate::kernel::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::kernel::workspace_coordinator::WorkspaceOperationClaimSnapshot;
 use crate::provider::{OpenCodeProviderCatalog, ProviderProcessInfo, RuntimeProviderRun};
 use crate::session::{unix_epoch_ms, PromptQueueItem, RuntimeSession, SessionStatus};
@@ -888,6 +889,7 @@ pub struct DaemonHealthProjection {
     pub workflow_command_lanes: Vec<ActorQueueSnapshot>,
     pub provider_runtime_lanes: Vec<ActorQueueSnapshot>,
     pub provider_run_actor: ProviderRunActorHealthSnapshot,
+    pub capability_executor: CapabilityExecutorHealthSnapshot,
     pub session_projection: SessionProjectionHealthSnapshot,
     pub agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
     pub provider_catalog: ProviderCatalogHealthSnapshot,
@@ -904,6 +906,7 @@ impl DaemonHealthProjection {
         workflow_command_lanes: Vec<ActorQueueSnapshot>,
         provider_runtime_lanes: Vec<ActorQueueSnapshot>,
         provider_run_actor: ProviderRunActorHealthSnapshot,
+        capability_executor: CapabilityExecutorHealthSnapshot,
         mut session_projection: SessionProjectionHealthSnapshot,
         agent_runtime_projection: AgentRuntimeProjectionHealthSnapshot,
         provider_catalog: ProviderCatalogHealthSnapshot,
@@ -925,6 +928,7 @@ impl DaemonHealthProjection {
             workflow_command_lanes,
             provider_runtime_lanes,
             provider_run_actor,
+            capability_executor,
             session_projection,
             agent_runtime_projection,
             provider_catalog,
@@ -938,6 +942,7 @@ impl DaemonHealthProjection {
 #[cfg(test)]
 mod tests {
     use crate::attachment::ClientCapabilityLevel;
+    use crate::kernel::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::kernel::projection::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
         DaemonHealthProjection, ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot,
@@ -979,6 +984,13 @@ mod tests {
             ProviderRunActorHealthSnapshot {
                 enqueued_commands: 5,
                 enqueue_rejections: 1,
+            },
+            CapabilityExecutorHealthSnapshot {
+                submitted_jobs: 8,
+                running_jobs: 1,
+                completed_jobs: 6,
+                failed_jobs: 1,
+                join_errors: 0,
             },
             SessionProjectionHealthSnapshot {
                 projected_sessions: 3,
@@ -1049,6 +1061,8 @@ mod tests {
         );
         assert_eq!(projection.provider_run_actor.enqueued_commands, 5);
         assert_eq!(projection.provider_run_actor.enqueue_rejections, 1);
+        assert_eq!(projection.capability_executor.submitted_jobs, 8);
+        assert_eq!(projection.capability_executor.running_jobs, 1);
         assert_eq!(projection.session_projection.active_prompts, 1);
         assert_eq!(projection.session_projection.queued_prompts, 2);
         assert_eq!(projection.agent_runtime_projection.projected_agents, 3);

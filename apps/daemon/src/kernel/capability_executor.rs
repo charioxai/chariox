@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -12,9 +13,41 @@ use crate::capability::{
 };
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CapabilityExecutorHealthSnapshot {
+    pub submitted_jobs: u64,
+    pub running_jobs: u64,
+    pub completed_jobs: u64,
+    pub failed_jobs: u64,
+    pub join_errors: u64,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct CapabilityExecutorHealthStore {
+    submitted_jobs: Arc<AtomicU64>,
+    running_jobs: Arc<AtomicU64>,
+    completed_jobs: Arc<AtomicU64>,
+    failed_jobs: Arc<AtomicU64>,
+    join_errors: Arc<AtomicU64>,
+}
+
+impl CapabilityExecutorHealthStore {
+    pub(crate) fn snapshot(&self) -> CapabilityExecutorHealthSnapshot {
+        CapabilityExecutorHealthSnapshot {
+            submitted_jobs: self.submitted_jobs.load(Ordering::Relaxed),
+            running_jobs: self.running_jobs.load(Ordering::Relaxed),
+            completed_jobs: self.completed_jobs.load(Ordering::Relaxed),
+            failed_jobs: self.failed_jobs.load(Ordering::Relaxed),
+            join_errors: self.join_errors.load(Ordering::Relaxed),
+        }
+    }
+}
 
 pub(crate) async fn execute_capability_request(
     app: &Arc<Mutex<DaemonApp>>,
+    health: CapabilityExecutorHealthStore,
     request: LocalDaemonRequest,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     match request {
@@ -23,7 +56,7 @@ pub(crate) async fn execute_capability_request(
                 capability_context(app, &request.session_id, &request.attachment_id, "shell").await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("run shell command", move || {
+                    spawn_capability("run shell command", health, move || {
                         ShellCommandService::new()
                             .run(
                                 RunShellCommandRequest::new(
@@ -53,7 +86,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("read directory tree", move || {
+                    spawn_capability("read directory tree", health, move || {
                         DirectoryTreeService::new()
                             .read_tree(ReadDirectoryTreeRequest::new(
                                 request.session_id,
@@ -79,7 +112,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("read file", move || {
+                    spawn_capability("read file", health, move || {
                         FileCapabilityService::new()
                             .read_file(ReadFileRequest::new(
                                 request.session_id,
@@ -104,7 +137,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("edit file", move || {
+                    spawn_capability("edit file", health, move || {
                         let _claim = context.workspace_coordinator.acquire_worktree_write_claim(
                             context.workspace_id.clone(),
                             context.worktree_root.display().to_string(),
@@ -137,7 +170,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("inspect git", move || {
+                    spawn_capability("inspect git", health, move || {
                         GitCapabilityService::new()
                             .inspect(InspectGitRequest::new(
                                 request.session_id,
@@ -162,7 +195,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("capture screenshot", move || {
+                    spawn_capability("capture screenshot", health, move || {
                         ScreenshotCapabilityService::new()
                             .capture(CaptureScreenshotRequest::new(
                                 request.session_id,
@@ -186,7 +219,7 @@ pub(crate) async fn execute_capability_request(
             .await;
             Some(match context {
                 Ok(context) => {
-                    spawn_capability("store transferred file", move || {
+                    spawn_capability("store transferred file", health, move || {
                         let _claim = context.workspace_coordinator.acquire_worktree_write_claim(
                             context.workspace_id.clone(),
                             context.worktree_root.display().to_string(),
@@ -250,15 +283,37 @@ async fn capability_context(
 
 async fn spawn_capability<F>(
     operation: &'static str,
+    health: CapabilityExecutorHealthStore,
     task: F,
 ) -> Result<LocalDaemonResponse, DaemonError>
 where
     F: FnOnce() -> Result<LocalDaemonResponse, DaemonError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(task)
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        })?
+    health.submitted_jobs.fetch_add(1, Ordering::Relaxed);
+    health.running_jobs.fetch_add(1, Ordering::Relaxed);
+    let joined = tokio::task::spawn_blocking(task).await;
+    decrement_saturating(&health.running_jobs);
+    match joined {
+        Ok(Ok(response)) => {
+            health.completed_jobs.fetch_add(1, Ordering::Relaxed);
+            Ok(response)
+        }
+        Ok(Err(error)) => {
+            health.failed_jobs.fetch_add(1, Ordering::Relaxed);
+            Err(error)
+        }
+        Err(error) => {
+            health.join_errors.fetch_add(1, Ordering::Relaxed);
+            Err(DaemonError::LocalTransport {
+                operation,
+                message: error.to_string(),
+            })
+        }
+    }
+}
+
+fn decrement_saturating(value: &AtomicU64) {
+    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_sub(1)
+    });
 }
