@@ -188,9 +188,8 @@ impl AgentRuntimePromptStateStore {
             .started_next
             .clone()
             .or_else(|| Some(cancellation.prompt.clone()));
-        if cancellation.started_next.is_some() {
-            let _ = state.queued_prompts.pop_front();
-            refresh_prompt_queue_summary(state);
+        if let Some(started_next) = cancellation.started_next.as_ref() {
+            activate_queued_prompt(state, started_next);
         }
     }
 
@@ -208,9 +207,8 @@ impl AgentRuntimePromptStateStore {
             .entry(agent_id.to_string())
             .or_insert_with(|| empty_agent_prompt_state(session_id, agent_id));
         state.active_prompt = completion.started_next.clone();
-        if completion.started_next.is_some() {
-            let _ = state.queued_prompts.pop_front();
-            refresh_prompt_queue_summary(state);
+        if let Some(started_next) = completion.started_next.as_ref() {
+            activate_queued_prompt(state, started_next);
         }
     }
 
@@ -253,6 +251,22 @@ fn empty_agent_prompt_state(session_id: &str, agent_id: &str) -> AgentRuntimePro
 fn refresh_prompt_queue_summary(state: &mut AgentRuntimePromptState) {
     state.next_queued_prompt = state.queued_prompts.front().cloned();
     state.queued_prompt_count = state.queued_prompts.len();
+}
+
+fn activate_queued_prompt(state: &mut AgentRuntimePromptState, started_next: &PromptQueueItem) {
+    state.active_prompt = Some(started_next.clone());
+    if state
+        .queued_prompts
+        .front()
+        .is_some_and(|prompt| prompt.id() == started_next.id())
+    {
+        let _ = state.queued_prompts.pop_front();
+    } else {
+        state
+            .queued_prompts
+            .retain(|prompt| prompt.id() != started_next.id());
+    }
+    refresh_prompt_queue_summary(state);
 }
 
 #[derive(Clone)]
@@ -1178,6 +1192,30 @@ mod tests {
                 started_next: Some(prompt_item("prompt-3", agent_id, "wrong")),
             }
         ));
+    }
+
+    #[test]
+    fn prompt_state_store_activates_matching_queued_prompt_by_id() {
+        let mut state = super::empty_agent_prompt_state("session-1", "agent-1");
+        state
+            .queued_prompts
+            .push_back(prompt_item("prompt-2", "agent-1", "queued"));
+        state
+            .queued_prompts
+            .push_back(prompt_item("prompt-3", "agent-1", "second queued"));
+        super::refresh_prompt_queue_summary(&mut state);
+
+        super::activate_queued_prompt(&mut state, &prompt_item("prompt-2", "agent-1", "queued"));
+
+        assert_eq!(
+            state.active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-2")
+        );
+        assert_eq!(
+            state.next_queued_prompt.as_ref().map(|prompt| prompt.id()),
+            Some("prompt-3")
+        );
+        assert_eq!(state.queued_prompt_count, 1);
     }
 
     fn prompt_item(id: &str, agent_id: &str, prompt: &str) -> PromptQueueItem {
