@@ -95,6 +95,7 @@ impl CommandRouter {
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
             session_projection.clone(),
+            agent_runtime_projection.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -163,6 +164,7 @@ impl CommandRouter {
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
             session_projection.clone(),
+            agent_runtime_projection.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),

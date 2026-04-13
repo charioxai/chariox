@@ -1068,12 +1068,17 @@ impl<'a> KernelAgentService<'a> {
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.remote_execution().is_some() {
-            return self
-                .cancel_active_prompt_internal(session_id, target_agent_id, Some(attachment_id))
-                .map(|cancellation| KernelPromptCancellation {
-                    cancellation,
-                    dispatch: None,
-                });
+            let cancellation = self.cancel_active_prompt_internal(
+                session_id,
+                target_agent_id,
+                Some(attachment_id),
+            )?;
+            let session = self.app.local_api_session_snapshot(session_id)?;
+            return Ok(KernelPromptCancellation {
+                cancellation,
+                session,
+                dispatch: None,
+            });
         }
 
         let active_prompt = self
@@ -1086,11 +1091,13 @@ impl<'a> KernelAgentService<'a> {
                 session_id: session_id.to_string(),
             })?;
         if active_prompt.status() == PromptStatus::Cancelling {
+            let session = self.app.local_api_session_snapshot(session_id)?;
             return Ok(KernelPromptCancellation {
                 cancellation: PromptCancellation {
                     prompt: active_prompt,
                     started_next: None,
                 },
+                session,
                 dispatch: None,
             });
         }
@@ -1136,13 +1143,14 @@ impl<'a> KernelAgentService<'a> {
                 provider_run.id()
             ),
         );
-        self.app.publish_session_projection(session_id)?;
+        let session = self.app.publish_session_projection(session_id)?;
 
         Ok(KernelPromptCancellation {
             cancellation: PromptCancellation {
                 prompt,
                 started_next: None,
             },
+            session,
             dispatch,
         })
     }

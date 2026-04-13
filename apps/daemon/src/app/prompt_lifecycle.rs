@@ -27,6 +27,7 @@ pub(crate) struct KernelPromptDispatch {
 
 pub(crate) struct KernelPromptCancellation {
     pub(crate) cancellation: PromptCancellation,
+    pub(crate) session: crate::session::RuntimeSession,
     pub(crate) dispatch: Option<KernelPromptAbortDispatch>,
 }
 

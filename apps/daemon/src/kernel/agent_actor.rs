@@ -5,7 +5,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::kernel::projection::{ActorQueueSnapshot, SessionStateProjectionStore};
+use crate::kernel::projection::{
+    ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunOperationLanes;
@@ -36,6 +38,7 @@ pub(crate) struct AgentRuntime {
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -46,12 +49,14 @@ impl AgentRuntime {
         provider_runtime_lanes: ProviderRunOperationLanes,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
         Self {
             app,
             provider_runtime_lanes,
             focus_projection,
             session_projection,
+            agent_runtime_projection,
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -180,6 +185,7 @@ impl AgentRuntime {
         tokio::spawn(run_agent_command_lane(
             Arc::clone(&self.app),
             self.provider_runtime_lanes.clone(),
+            self.agent_runtime_projection.clone(),
             agent_id.to_string(),
             rx,
         ));
@@ -221,6 +227,7 @@ impl AgentRuntime {
 async fn run_agent_command_lane(
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
     agent_id: String,
     mut rx: mpsc::Receiver<AgentCommandEnvelope>,
 ) {
@@ -234,7 +241,13 @@ async fn run_agent_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let result = execute_agent_command(&app, &provider_runtime_lanes, envelope.command).await;
+        let result = execute_agent_command(
+            &app,
+            &provider_runtime_lanes,
+            &agent_runtime_projection,
+            envelope.command,
+        )
+        .await;
         let _ = envelope.result_tx.send(result);
     }
 }
@@ -242,6 +255,7 @@ async fn run_agent_command_lane(
 async fn execute_agent_command(
     app: &Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: &ProviderRunOperationLanes,
+    agent_runtime_projection: &AgentRuntimeProjectionStore,
     command: AgentCommand,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match command {
@@ -256,6 +270,7 @@ async fn execute_agent_command(
                     request.attachments,
                 )?
             };
+            agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_dispatch_operation(
@@ -282,6 +297,7 @@ async fn execute_agent_command(
                     &request.attachment_id,
                 )?
             };
+            agent_runtime_projection.update_session(&prepared.session);
 
             if let Some(dispatch) = prepared.dispatch {
                 DaemonApp::spawn_kernel_prompt_abort_operation(
