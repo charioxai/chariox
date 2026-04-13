@@ -432,22 +432,12 @@ impl DaemonApp {
         self.update_provider_run_projection(ended_run.clone());
         let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
 
-        let started_next = if had_active_prompt {
-            if active_prompt_status == Some(PromptStatus::Cancelling) {
-                self.finalize_active_prompt_cancellation(
-                    session_id,
-                    &agent_id,
-                    Some(provider_run_id),
-                )?
-                .started_next
-            } else {
-                self.complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?
-                    .started_next
-            }
-        } else {
-            self.sync_focused_provider_run_if_idle(session_id)?;
-            None
-        };
+        let started_next = self.settle_provider_exit_prompt_state(
+            session_id,
+            &agent_id,
+            provider_run_id,
+            active_prompt_status,
+        )?;
         self.providers.clear_runtime(provider_run_id);
 
         self.record_notice(
@@ -471,6 +461,27 @@ impl DaemonApp {
         );
 
         Ok(true)
+    }
+
+    fn settle_provider_exit_prompt_state(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        active_prompt_status: Option<PromptStatus>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        match active_prompt_status {
+            Some(PromptStatus::Cancelling) => Ok(self
+                .finalize_active_prompt_cancellation(session_id, agent_id, Some(provider_run_id))?
+                .started_next),
+            Some(_) => Ok(self
+                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?
+                .started_next),
+            None => {
+                self.sync_focused_provider_run_if_idle(session_id)?;
+                Ok(None)
+            }
+        }
     }
 
     pub(crate) fn finalize_active_prompt_cancellation(
