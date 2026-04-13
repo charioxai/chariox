@@ -118,14 +118,26 @@ impl SessionRuntime {
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         match request {
-            LocalDaemonRequest::AttachToSession(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::FocusAgent(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::CycleAgentFocus(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::AttachToSession(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::FocusAgent(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::ResizeTerminal(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
             LocalDaemonRequest::PollRuntimeNotices(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::UpdateSessionConfig(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::AliasSession(request) => Ok(request.session_id.clone()),
-            LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::AliasSession(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::EndSession(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
             LocalDaemonRequest::DeleteSession(request) => {
                 if let Some(session_id) = self
                     .session_projection
@@ -172,6 +184,17 @@ impl SessionRuntime {
                 message: "request is not handled by the session runtime".to_string(),
             }),
         }
+    }
+
+    fn resolve_direct_session_lane_key(&self, session_id: &str) -> Result<String, DaemonError> {
+        if self.session_projection.get(session_id).is_some()
+            || !self.session_projection.has_warmed_list()
+        {
+            return Ok(session_id.to_string());
+        }
+        Err(DaemonError::SessionNotFound {
+            session_id: session_id.to_string(),
+        })
     }
 
     async fn session_lane(&self, session_id: &str) -> mpsc::Sender<SessionCommandEnvelope> {
@@ -578,13 +601,62 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
-    use crate::kernel::session_actor::SessionActor;
+    use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
     use crate::local::{
         AttachToSessionRequest, FocusAgentRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-        LocalDaemonResponse, SpawnAgentRequest, SubmitPromptRequest,
+        LocalDaemonResponse, ResizeTerminalRequest, SpawnAgentRequest, SubmitPromptRequest,
     };
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
-    use crate::{DaemonApp, DaemonConfig};
+    use crate::{DaemonApp, DaemonConfig, DaemonError};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn direct_session_lane_resolution_rejects_warmed_missing_session_without_lane() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        session_projection.update_list(Vec::new());
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            Arc::clone(&app),
+            1,
+            FocusedAgentProjection::default(),
+            session_projection,
+            AgentRuntimeProjectionStore::default(),
+            {
+                let app = app.lock().await;
+                app.terminal_stream_store()
+            },
+        );
+
+        let _locked_app = app.lock().await;
+        let request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+            session_id: "missing-session".to_string(),
+            cols: 80,
+            rows: 24,
+        });
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.resolve_session_lane_key(&request),
+        )
+        .await
+        .expect("warmed missing session lane resolution should not wait for the app lock")
+        .expect_err("missing direct session lane should fail");
+
+        match error {
+            DaemonError::SessionNotFound { session_id } => {
+                assert_eq!(session_id, "missing-session");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+        assert!(
+            !runtime.has_lane("missing-session").await,
+            "missing direct session should be rejected before creating a session lane"
+        );
+    }
 
     #[test]
     fn handles_attach_through_session_actor_surface() {
