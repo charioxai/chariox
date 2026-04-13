@@ -1510,15 +1510,15 @@ mod tests {
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
-        AttachToSessionRequest, CancelActivePromptRequest, CompletePromptRequest,
-        ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest,
-        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
-        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-        ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
-        ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatusRequest,
-        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        AliasSessionRequest, AttachToSessionRequest, CancelActivePromptRequest,
+        CompletePromptRequest, ConfigureRelayRequest, CreateWorkflowRequest, DeleteSessionRequest,
+        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
+        GetDaemonHealthRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
+        RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
         RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
         UpdateSessionConfigRequest,
     };
@@ -3269,6 +3269,71 @@ mod tests {
                 );
             }
             _ => panic!("unexpected state response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn alias_session_uses_session_runtime_projection_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let alias_request = LocalDaemonRequest::AliasSession(AliasSessionRequest {
+            session_id: session_id.clone(),
+            alias: "review entry".to_string(),
+        });
+        let alias_command =
+            KernelCommand::from_local_request("cmd-session-alias", None, None, &alias_request);
+        let alias_response = router
+            .dispatch(alias_command, alias_request)
+            .await
+            .expect("session alias should succeed");
+        match alias_response {
+            LocalDaemonResponse::SessionAliased { session } => {
+                assert_eq!(session.alias(), Some("review_entry"));
+            }
+            _ => panic!("unexpected alias response"),
+        }
+
+        let app_guard = app.lock().await;
+        let resolve_request = LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+            session_ref: "review_entry".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        });
+        let resolve_command = KernelCommand::from_local_request(
+            "cmd-session-alias-resolve",
+            None,
+            None,
+            &resolve_request,
+        );
+        let resolve_router = router.clone();
+        let resolve_task = tokio::spawn(async move {
+            resolve_router
+                .dispatch(resolve_command, resolve_request)
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            resolve_task.is_finished(),
+            "session alias should publish a projection that resolves without app lock access"
+        );
+
+        drop(app_guard);
+        let resolve_response = resolve_task
+            .await
+            .expect("resolve task should join")
+            .expect("resolve should succeed");
+        match resolve_response {
+            LocalDaemonResponse::SessionResolved { session } => {
+                assert_eq!(session.id(), session_id);
+                assert_eq!(session.alias(), Some("review_entry"));
+            }
+            _ => panic!("unexpected resolve response"),
         }
     }
 

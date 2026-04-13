@@ -4,7 +4,7 @@ mod ipc;
 pub(crate) mod provider_requests;
 
 pub use api::{
-    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
+    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
     BindWorkflowEndpointRequest, CancelActivePromptRequest, CancelWorkflowRunRequest,
     CaptureScreenshotCapabilityRequest, ClearQueuedWorkflowLaunchesRequest, CompletePromptRequest,

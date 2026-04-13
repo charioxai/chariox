@@ -119,6 +119,7 @@ impl SessionRuntime {
             LocalDaemonRequest::CycleAgentFocus(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::ResizeTerminal(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::UpdateSessionConfig(request) => Ok(request.session_id.clone()),
+            LocalDaemonRequest::AliasSession(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::EndSession(request) => Ok(request.session_id.clone()),
             LocalDaemonRequest::DeleteSession(request) => {
                 if let Some(session_id) = self
@@ -331,6 +332,7 @@ fn session_id_for_projection_refresh(
         Ok(LocalDaemonResponse::SessionConfigUpdated { session, .. }) => {
             Some(session.id().to_string())
         }
+        Ok(LocalDaemonResponse::SessionAliased { session }) => Some(session.id().to_string()),
         _ => None,
     }
 }
@@ -347,6 +349,7 @@ impl SessionActor {
                 | LocalDaemonRequest::CycleAgentFocus(_)
                 | LocalDaemonRequest::ResizeTerminal(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
+                | LocalDaemonRequest::AliasSession(_)
                 | LocalDaemonRequest::EndSession(_)
                 | LocalDaemonRequest::DeleteSession(_)
         )
@@ -370,6 +373,14 @@ impl SessionActor {
                         LocalDaemonResponse::SessionConfigUpdated { config, session }
                     })
                 }),
+            );
+        }
+        if let LocalDaemonRequest::AliasSession(request) = request {
+            return Some(
+                app.sessions_mut()
+                    .assign_session_alias(&request.session_id, request.alias)
+                    .and_then(|_| app.local_api_session_snapshot(&request.session_id))
+                    .map(|session| LocalDaemonResponse::SessionAliased { session }),
             );
         }
 
