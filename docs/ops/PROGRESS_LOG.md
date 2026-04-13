@@ -71,6 +71,7 @@ Chronological notes to preserve execution context between contributors/agents.
 - Hardened `WorkflowRuntime` lane admission and projection refresh. Warmed missing-session workflow mutations now fail from `SessionStateProjectionStore` without creating a workflow lane or waiting on the compatibility app lock, and workflow workers refresh session/agent-runtime projections directly from session-bearing workflow responses before falling back to a compatibility snapshot.
 - Hardened `SessionRuntime` projection publication. Session mailbox workers now publish session-bearing create/config/alias/end responses directly, remove deleted-session projections at the mailbox boundary, and only fall back to compatibility snapshots for responses that do not carry enough session state.
 - Trimmed prompt-completion app-lock work in `AgentRuntime`. The agent mailbox now consumes the session projection published by the prompt lifecycle service instead of taking a second compatibility session snapshot after completing a prompt.
+- Deferred kernel prompt-submit side effects out of the agent-mailbox acknowledgement path. User-prompt history appends now run through spawned blocking persistence with projection refresh after success, and remote relay prompt submit now returns a dispatch object that is spawned after owner mutation; remote dispatch failure cancels the active prompt, refreshes projections, and records a notice.
 - Removed the unused direct complete-and-auto-advance prompt mutation API from `RuntimeSession` and `PromptRuntimeState`, leaving completion on the kernel lifecycle path that reconciles against the agent-runtime queue-front preview before explicit queue advancement.
 - Aligned direct compatibility complete/cancel owner resolution with the agent runtime rule: prefer the focused agent only when it is active, otherwise resolve the single active agent and reject ambiguous multi-active ownership.
 - Narrowed compatibility prompt mutation visibility. `RuntimeSession` prompt mutators are now private to the session module tree, and provider dispatch failure cleanup now calls back into `KernelAgentService` instead of reaching into `SessionService` directly.
@@ -83,7 +84,7 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### Remaining M4.5 work
 
-- Move `KernelSessionService` session state into the new `SessionRuntime` mailbox owner, then finish removing prompt lifecycle hot paths from the shared app lock.
+- Move `KernelSessionService` session state into the new `SessionRuntime` mailbox owner, then finish removing the remaining prompt claim/mirror side effects from the shared app lock.
 - Expand actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models no longer require synchronous compatibility-store access.
 - Keep current workspace claims bounded until actor/projection ownership is complete; return to file-level scopes, port claims, harness enforcement, and transactional mutation/rebase semantics in the final I/O-coordination slice.
 - Retire remaining hot request paths that depend on `Arc<Mutex<DaemonApp>>`.

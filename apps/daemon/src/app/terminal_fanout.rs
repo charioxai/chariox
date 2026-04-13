@@ -24,6 +24,25 @@ impl DaemonApp {
         );
     }
 
+    pub(crate) fn spawn_user_prompt_history_append(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<(), crate::error::DaemonError> {
+        let session = self.local_api_session_snapshot(session_id)?;
+        let entry = SessionHistoryEntry::user_prompt(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            render_prompt_transcript(prompt, attachments),
+        );
+        self.spawn_history_append(session, entry);
+        Ok(())
+    }
+
     pub(crate) fn fan_out_output(
         &mut self,
         session_id: &str,
@@ -142,6 +161,36 @@ impl DaemonApp {
             self.history_projection.append(entry);
         }
     }
+
+    fn spawn_history_append(
+        &self,
+        session: crate::session::RuntimeSession,
+        entry: SessionHistoryEntry,
+    ) {
+        let history = self.history.clone();
+        let history_projection = self.history_projection.clone();
+        let session_id = session.id().to_string();
+        let append = move || {
+            if let Err(error) = history.append(&session, &entry) {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append session history",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            } else {
+                history_projection.append(entry);
+            }
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(append);
+        } else {
+            append();
+        }
+    }
+
     pub(crate) fn echo_prompt_to_other_attachments(
         &mut self,
         session_id: &str,

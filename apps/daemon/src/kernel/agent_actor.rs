@@ -464,6 +464,9 @@ async fn execute_agent_command(
                     dispatch,
                 );
             }
+            if let Some(dispatch) = prepared.remote_dispatch {
+                DaemonApp::spawn_kernel_remote_prompt_dispatch_operation(Arc::clone(app), dispatch);
+            }
 
             Ok(LocalDaemonResponse::PromptSubmitted {
                 outcome: prepared.outcome,

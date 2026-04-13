@@ -1,6 +1,6 @@
 use super::prompt_lifecycle::{
     KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission,
+    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use super::DaemonApp;
 use crate::error::DaemonError;
@@ -252,73 +252,38 @@ impl<'a> KernelAgentService<'a> {
             .ensure_attachment_in_session(session_id, &attachment_id)?;
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
-        if target_agent.remote_execution().is_some() {
-            self.app.append_user_prompt_history(
+        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+            self.app.spawn_user_prompt_history_append(
                 session_id,
                 &attachment_id,
                 &target_agent_id,
                 prepared.prompt.prompt(),
                 prepared.prompt.attachments(),
-            );
+            )?;
             let outcome = self.app.prompt_owner_submit_prepared_prompt(
                 session_id,
                 prepared.prompt.clone(),
                 prepared.force_queue,
             )?;
+            let mut remote_dispatch = None;
             if let PromptSubmissionOutcome::Started { prompt } = &outcome {
-                let remote_execution = target_agent
-                    .remote_execution()
-                    .expect("remote execution should be available for remote agent");
-                let response =
-                    self.app
-                        .block_on_relay_future(send_peer_request_via_temporary_connection(
-                            self.app.config(),
-                            ClientTarget {
-                                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                                daemon_alias: None,
-                            },
-                            RelayPeerRequest::SubmitLeasedPrompt {
-                                leased_agent_id: remote_execution.leased_agent_id.clone(),
-                                prompt: prompt.prompt().to_string(),
-                                attachments: self
-                                    .app
-                                    .serialize_remote_prompt_attachments(prompt.attachments())?,
-                                workflow_context: None,
-                            },
-                        ));
-                let remote_provider_run_id = match response {
-                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                        provider_run_id, ..
-                    }) => provider_run_id,
-                    Ok(other) => {
-                        let _ = self
-                            .app
-                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
-                        return Err(DaemonError::LocalTransport {
-                            operation: "submit remote prepared prompt",
-                            message: format!("unexpected remote prompt response: {other:?}"),
-                        });
-                    }
-                    Err(error) => {
-                        let _ = self
-                            .app
-                            .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id);
-                        return Err(error);
-                    }
-                };
-                self.app.echo_prompt_to_other_attachments(
-                    session_id,
-                    &remote_provider_run_id,
-                    prompt.source_attachment_id(),
-                    prompt.prompt(),
-                    prompt.attachments(),
-                );
+                remote_dispatch = Some(KernelRemotePromptDispatch {
+                    session_id: session_id.to_string(),
+                    agent_id: target_agent_id.clone(),
+                    worker_kernel_id: remote_execution.worker_kernel_id,
+                    leased_agent_id: remote_execution.leased_agent_id,
+                    source_attachment_id: prompt.source_attachment_id().to_string(),
+                    prompt: prompt.prompt().to_string(),
+                    attachments: prompt.attachments().to_vec(),
+                    workflow_context: None,
+                });
             }
             let session = self.app.local_api_session_snapshot(session_id)?;
             return Ok(KernelPromptSubmission {
                 outcome,
                 session,
                 dispatch: None,
+                remote_dispatch,
             });
         }
 
@@ -342,13 +307,13 @@ impl<'a> KernelAgentService<'a> {
             .and_then(|provider_run_id| self.app.providers.get_run(provider_run_id).ok())
             .is_some_and(|run| run.state() == ProviderRunState::Starting);
 
-        self.app.append_user_prompt_history(
+        self.app.spawn_user_prompt_history_append(
             session_id,
             &attachment_id,
             &target_agent_id,
             prepared.prompt.prompt(),
             prepared.prompt.attachments(),
-        );
+        )?;
 
         let outcome = self.app.prompt_owner_submit_prepared_prompt(
             session_id,
@@ -429,6 +394,7 @@ impl<'a> KernelAgentService<'a> {
             outcome,
             session,
             dispatch,
+            remote_dispatch: None,
         })
     }
 
@@ -1201,11 +1167,15 @@ fn select_next_queued_prompt_candidate(
 #[cfg(test)]
 mod tests {
     use super::select_next_queued_prompt_candidate;
+    use crate::agent::RemoteAgentBinding;
+    use crate::app::KernelPreparedPromptSubmission;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
         AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
     };
-    use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
+    use crate::session::{
+        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    };
     use crate::{DaemonApp, DaemonConfig};
 
     #[test]
@@ -1218,6 +1188,73 @@ mod tests {
                 .expect("candidate should be selected");
 
         assert_eq!(selected.id(), "prompt-runtime");
+    }
+
+    #[test]
+    fn prepared_remote_submit_returns_dispatch_without_relay_io() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let attachment = match app
+            .handle_local_request(LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: session.id().to_string(),
+                    client_id: "cli-remote-submit".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                },
+            ))
+            .expect("attach should succeed")
+        {
+            LocalDaemonResponse::SessionAttached { attachment } => attachment,
+            _ => panic!("unexpected local response"),
+        };
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "remote prompt should dispatch after ack",
+            PromptStatus::Queued,
+        );
+
+        let prepared = app
+            .kernel_agents()
+            .submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt,
+                force_queue: false,
+            })
+            .expect("prepared remote submit should not require relay I/O");
+
+        assert!(prepared.dispatch.is_none());
+        let remote_dispatch = prepared
+            .remote_dispatch
+            .expect("started remote prompt should return deferred relay dispatch");
+        assert_eq!(remote_dispatch.worker_kernel_id, "worker-kernel-1");
+        assert_eq!(remote_dispatch.leased_agent_id, "leased-agent-1");
+        match prepared.outcome {
+            PromptSubmissionOutcome::Started { prompt } => {
+                assert_eq!(prompt.prompt(), "remote prompt should dispatch after ack");
+            }
+            PromptSubmissionOutcome::Queued { .. } => panic!("remote prompt should start"),
+        }
+        assert!(
+            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                .expect("prompt owner should resolve")
+                .is_some(),
+            "remote relay dispatch is now a deferred side effect; prompt ownership is already recorded"
+        );
     }
 
     #[test]

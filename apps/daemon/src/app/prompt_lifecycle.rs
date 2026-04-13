@@ -1,5 +1,6 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::execution_lease::RemoteWorkflowTurnContext;
 use crate::provider::{
     ProviderRunLivenessReconciliation, ProviderRunOperationLanes, ProviderRunState,
 };
@@ -9,7 +10,10 @@ use crate::session::{
     PromptSubmissionOutcome,
 };
 use crate::transport::flow_control;
+use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::RelayPromptAttachment;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use arroba_relay::protocol::ClientTarget;
 use base64::Engine;
 use std::fs;
 use std::time::Duration;
@@ -18,6 +22,7 @@ pub(crate) struct KernelPromptSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
     pub(crate) session: crate::session::RuntimeSession,
     pub(crate) dispatch: Option<KernelPromptDispatch>,
+    pub(crate) remote_dispatch: Option<KernelRemotePromptDispatch>,
 }
 
 pub(crate) struct KernelPreparedPromptSubmission {
@@ -33,6 +38,17 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
     pub(crate) attachments: Vec<PromptAttachment>,
+}
+
+pub(crate) struct KernelRemotePromptDispatch {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) worker_kernel_id: String,
+    pub(crate) leased_agent_id: String,
+    pub(crate) source_attachment_id: String,
+    pub(crate) prompt: String,
+    pub(crate) attachments: Vec<PromptAttachment>,
+    pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -173,6 +189,40 @@ impl DaemonApp {
         Err(error)
     }
 
+    pub(crate) fn finish_kernel_remote_prompt_dispatch(
+        &mut self,
+        dispatch: KernelRemotePromptDispatch,
+        result: Result<String, DaemonError>,
+    ) -> Result<(), DaemonError> {
+        match result {
+            Ok(remote_provider_run_id) => {
+                self.echo_prompt_to_other_attachments(
+                    &dispatch.session_id,
+                    &remote_provider_run_id,
+                    &dispatch.source_attachment_id,
+                    &dispatch.prompt,
+                    &dispatch.attachments,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.prompt_owner_cancel_active_prompt_only(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                );
+                let _ = self.publish_session_projection(&dispatch.session_id);
+                self.record_notice(
+                    &dispatch.session_id,
+                    None,
+                    self.attachments
+                        .list_session_attachment_ids(&dispatch.session_id),
+                    format!("Remote prompt dispatch failed after acknowledgement: {error}"),
+                );
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) fn spawn_kernel_prompt_dispatch_operation(
         app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,
@@ -186,6 +236,61 @@ impl DaemonApp {
             if let Err(error) = app.enqueue_kernel_prompt_dispatch(&dispatch) {
                 let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
             }
+        });
+    }
+
+    pub(crate) fn spawn_kernel_remote_prompt_dispatch_operation(
+        app: std::sync::Arc<tokio::sync::Mutex<DaemonApp>>,
+        dispatch: KernelRemotePromptDispatch,
+    ) {
+        tokio::spawn(async move {
+            let config = {
+                let app = app.lock().await;
+                app.config().clone()
+            };
+            let attachments = dispatch.attachments.clone();
+            let serialized_attachments = match tokio::task::spawn_blocking(move || {
+                serialize_remote_prompt_attachments(&attachments)
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(DaemonError::LocalTransport {
+                    operation: "serialize remote prompt attachments",
+                    message: error.to_string(),
+                }),
+            };
+            let result = match serialized_attachments {
+                Ok(attachments) => {
+                    match send_peer_request_via_temporary_connection(
+                        &config,
+                        ClientTarget {
+                            daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::SubmitLeasedPrompt {
+                            leased_agent_id: dispatch.leased_agent_id.clone(),
+                            prompt: dispatch.prompt.clone(),
+                            attachments,
+                            workflow_context: dispatch.workflow_context.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                            provider_run_id, ..
+                        }) => Ok(provider_run_id),
+                        Ok(other) => Err(DaemonError::LocalTransport {
+                            operation: "submit remote prepared prompt",
+                            message: format!("unexpected remote prompt response: {other:?}"),
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            let mut app = app.lock().await;
+            let _ = app.finish_kernel_remote_prompt_dispatch(dispatch, result);
         });
     }
 
@@ -377,37 +482,7 @@ impl DaemonApp {
         &self,
         attachments: &[PromptAttachment],
     ) -> Result<Vec<RelayPromptAttachment>, DaemonError> {
-        attachments
-            .iter()
-            .map(|attachment| {
-                let local_path = attachment
-                    .url()
-                    .strip_prefix("file://localhost")
-                    .or_else(|| attachment.url().strip_prefix("file://"))
-                    .filter(|path| path.starts_with('/'));
-                if let Some(local_path) = local_path {
-                    let bytes =
-                        fs::read(local_path).map_err(|error| DaemonError::LocalTransport {
-                            operation: "read remote prompt attachment",
-                            message: error.to_string(),
-                        })?;
-                    return Ok(RelayPromptAttachment {
-                        url: attachment.url().to_string(),
-                        mime: attachment.mime().to_string(),
-                        filename: attachment.filename().map(str::to_string),
-                        contents_base64: Some(
-                            base64::engine::general_purpose::STANDARD.encode(bytes),
-                        ),
-                    });
-                }
-                Ok(RelayPromptAttachment {
-                    url: attachment.url().to_string(),
-                    mime: attachment.mime().to_string(),
-                    filename: attachment.filename().map(str::to_string),
-                    contents_base64: None,
-                })
-            })
-            .collect()
+        serialize_remote_prompt_attachments(attachments)
     }
 
     pub(crate) fn reconcile_provider_run_exit(
@@ -525,4 +600,37 @@ impl DaemonApp {
             provider_run_id,
         )
     }
+}
+
+fn serialize_remote_prompt_attachments(
+    attachments: &[PromptAttachment],
+) -> Result<Vec<RelayPromptAttachment>, DaemonError> {
+    attachments
+        .iter()
+        .map(|attachment| {
+            let local_path = attachment
+                .url()
+                .strip_prefix("file://localhost")
+                .or_else(|| attachment.url().strip_prefix("file://"))
+                .filter(|path| path.starts_with('/'));
+            if let Some(local_path) = local_path {
+                let bytes = fs::read(local_path).map_err(|error| DaemonError::LocalTransport {
+                    operation: "read remote prompt attachment",
+                    message: error.to_string(),
+                })?;
+                return Ok(RelayPromptAttachment {
+                    url: attachment.url().to_string(),
+                    mime: attachment.mime().to_string(),
+                    filename: attachment.filename().map(str::to_string),
+                    contents_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                });
+            }
+            Ok(RelayPromptAttachment {
+                url: attachment.url().to_string(),
+                mime: attachment.mime().to_string(),
+                filename: attachment.filename().map(str::to_string),
+                contents_base64: None,
+            })
+        })
+        .collect()
 }
