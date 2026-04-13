@@ -271,8 +271,7 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            let console = crate::scheduler::runtime::read_workflow_console(
-                app,
+            let console = app.read_workflow_console_from_runtime(
                 &call.context.session_id,
                 workflow_run.workflow_id(),
             )?;
@@ -300,8 +299,7 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            let entry = crate::scheduler::runtime::write_workflow_console(
-                app,
+            let entry = app.write_workflow_console_from_runtime(
                 &call.context.session_id,
                 workflow_run.workflow_id(),
                 &call.context.workflow_node_run_id,
@@ -322,8 +320,7 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            crate::scheduler::runtime::clear_workflow_console(
-                app,
+            app.clear_workflow_console_from_runtime(
                 &call.context.session_id,
                 workflow_run.workflow_id(),
             )?;

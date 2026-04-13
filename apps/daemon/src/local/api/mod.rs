@@ -711,8 +711,7 @@ impl DaemonApp {
                 })
             }
             LocalDaemonRequest::ResumeWorkflowRun(request) => {
-                let workflow_run = crate::scheduler::runtime::resume_workflow_run(
-                    self,
+                let workflow_run = self.resume_workflow_run_from_runtime(
                     &request.session_id,
                     &request.workflow_run_ref,
                 )?;

@@ -2,10 +2,116 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{
     unix_epoch_ms, PromptQueueItem, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource,
-    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun,
-    WorkflowWatchdogTickPlan,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEndpointDefinition,
+    WorkflowLaunchAdmission, WorkflowRun, WorkflowWatchdogTickPlan,
 };
 use std::collections::BTreeSet;
+
+struct WorkflowProgression;
+
+impl WorkflowProgression {
+    fn is_workflow_prompt_attachment(attachment_id: &str) -> bool {
+        crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
+    }
+
+    fn ensure_provider_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(app, session_id, agent_id)
+    }
+
+    fn validate_agents(
+        app: &DaemonApp,
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::validate_workflow_agents(app, session_id, workflow)
+    }
+
+    fn schedule_entry_node(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_run: &WorkflowRun,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::schedule_workflow_run_entry_node(app, session_id, workflow_run)
+    }
+
+    fn on_prompt_started(
+        app: &mut DaemonApp,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_started(app, session_id, prompt)
+    }
+
+    fn on_prompt_completed(
+        app: &mut DaemonApp,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_completed(
+            app,
+            session_id,
+            prompt,
+            provider_run_id,
+        )
+    }
+
+    fn on_prompt_cancelled(
+        app: &mut DaemonApp,
+        session_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        crate::scheduler::runtime::on_workflow_prompt_cancelled(app, session_id, prompt)
+    }
+
+    fn retry_blocked_claims(app: &mut DaemonApp) {
+        crate::scheduler::runtime::retry_blocked_workflow_claims(app);
+    }
+
+    fn resume_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        crate::scheduler::runtime::resume_workflow_run(app, session_id, workflow_run_ref)
+    }
+
+    fn read_console(
+        app: &DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        crate::scheduler::runtime::read_workflow_console(app, session_id, workflow_id)
+    }
+
+    fn write_console(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+        workflow_node_run_id: &str,
+        text: &str,
+    ) -> Result<WorkflowConsoleEntry, DaemonError> {
+        crate::scheduler::runtime::write_workflow_console(
+            app,
+            session_id,
+            workflow_id,
+            workflow_node_run_id,
+            text,
+        )
+    }
+
+    fn clear_console(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        crate::scheduler::runtime::clear_workflow_console(app, session_id, workflow_id)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowLaunchOutcome {
@@ -22,12 +128,16 @@ pub enum WorkflowLaunchOutcome {
 }
 
 impl DaemonApp {
+    pub(crate) fn is_workflow_prompt_source(&self, attachment_id: &str) -> bool {
+        WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
+    }
+
     pub(crate) fn start_workflow_prompt_from_runtime(
         &mut self,
         session_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        crate::scheduler::runtime::on_workflow_prompt_started(self, session_id, prompt)
+        WorkflowProgression::on_prompt_started(self, session_id, prompt)
     }
 
     pub(crate) fn complete_workflow_prompt_from_runtime(
@@ -36,12 +146,7 @@ impl DaemonApp {
         prompt: &PromptQueueItem,
         provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        crate::scheduler::runtime::on_workflow_prompt_completed(
-            self,
-            session_id,
-            prompt,
-            provider_run_id,
-        )
+        WorkflowProgression::on_prompt_completed(self, session_id, prompt, provider_run_id)
     }
 
     pub(crate) fn cancel_workflow_prompt_from_runtime(
@@ -49,7 +154,7 @@ impl DaemonApp {
         session_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        crate::scheduler::runtime::on_workflow_prompt_cancelled(self, session_id, prompt)
+        WorkflowProgression::on_prompt_cancelled(self, session_id, prompt)
     }
 
     pub(crate) fn ensure_workflow_provider_run_from_runtime(
@@ -57,9 +162,51 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<String, DaemonError> {
-        crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(
-            self, session_id, agent_id,
+        WorkflowProgression::ensure_provider_run(self, session_id, agent_id)
+    }
+
+    pub(crate) fn retry_blocked_workflow_claims_from_runtime(&mut self) {
+        WorkflowProgression::retry_blocked_claims(self);
+    }
+
+    pub(crate) fn resume_workflow_run_from_runtime(
+        &mut self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        WorkflowProgression::resume_run(self, session_id, workflow_run_ref)
+    }
+
+    pub(crate) fn read_workflow_console_from_runtime(
+        &self,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        WorkflowProgression::read_console(self, session_id, workflow_id)
+    }
+
+    pub(crate) fn write_workflow_console_from_runtime(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        workflow_node_run_id: &str,
+        text: &str,
+    ) -> Result<WorkflowConsoleEntry, DaemonError> {
+        WorkflowProgression::write_console(
+            self,
+            session_id,
+            workflow_id,
+            workflow_node_run_id,
+            text,
         )
+    }
+
+    pub(crate) fn clear_workflow_console_from_runtime(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+    ) -> Result<WorkflowConsole, DaemonError> {
+        WorkflowProgression::clear_console(self, session_id, workflow_id)
     }
 
     pub fn invoke_workflow_endpoint_with_admission(
@@ -77,7 +224,7 @@ impl DaemonApp {
             workflow_ref,
             endpoint_ref,
         )?;
-        crate::scheduler::runtime::validate_workflow_agents(self, session_id, &workflow)?;
+        WorkflowProgression::validate_agents(self, session_id, &workflow)?;
         match self.sessions_mut().admit_manual_workflow_launch(
             session_id,
             workflow.id(),
@@ -92,11 +239,7 @@ impl DaemonApp {
                     endpoint.id(),
                     prompt,
                 )?;
-                crate::scheduler::runtime::schedule_workflow_run_entry_node(
-                    self,
-                    session_id,
-                    &workflow_run,
-                )?;
+                WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)?;
                 let workflow_run = self
                     .sessions()
                     .resolve_workflow_run_ref(session_id, workflow_run.id())?;
@@ -254,7 +397,7 @@ impl DaemonApp {
             queued_launch.workflow_id(),
             queued_launch.endpoint_id(),
         )?;
-        crate::scheduler::runtime::validate_workflow_agents(self, session_id, &workflow)?;
+        WorkflowProgression::validate_agents(self, session_id, &workflow)?;
         self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
         let workflow_run = self.sessions_mut().invoke_workflow_endpoint(
             session_id,
@@ -262,11 +405,7 @@ impl DaemonApp {
             endpoint.id(),
             queued_launch.invocation_prompt().map(str::to_string),
         )?;
-        crate::scheduler::runtime::schedule_workflow_run_entry_node(
-            self,
-            session_id,
-            &workflow_run,
-        )?;
+        WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)?;
         let workflow_run = self
             .sessions()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;

@@ -625,9 +625,9 @@ impl<'a> KernelAgentService<'a> {
                 return Ok(None);
             };
             let target_agent_id = peeked.target_agent_id().to_string();
-            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
-                peeked.source_attachment_id(),
-            );
+            let is_workflow_prompt = self
+                .app
+                .is_workflow_prompt_source(peeked.source_attachment_id());
             let provider_run_id = match self
                 .app
                 .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
@@ -808,9 +808,9 @@ impl<'a> KernelAgentService<'a> {
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
-            let is_workflow_prompt = crate::scheduler::runtime::is_workflow_prompt_attachment(
-                peeked.source_attachment_id(),
-            );
+            let is_workflow_prompt = self
+                .app
+                .is_workflow_prompt_source(peeked.source_attachment_id());
             if let Err(error) = self
                 .app
                 .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
