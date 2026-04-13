@@ -21,6 +21,14 @@ pub(crate) enum ProviderRuntimeBinding {
     OpenCode(OpenCodeRuntimeBinding),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderRunLivenessReconciliation {
+    AlreadyEnded(RuntimeProviderRun),
+    ExternalEndpoint(RuntimeProviderRun),
+    StillRunning(RuntimeProviderRun),
+    NewlyEnded(RuntimeProviderRun),
+}
+
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
@@ -294,6 +302,53 @@ impl ProviderProcessService {
         }
         run.mark_running();
         Ok(run.clone())
+    }
+
+    pub(crate) fn reconcile_run_liveness(
+        &mut self,
+        sessions: &mut SessionService,
+        session_id: &str,
+        run_id: &str,
+        process_running: Option<bool>,
+    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
+        let run_snapshot = self.get_run(run_id)?;
+        if run_snapshot.session_id() != session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: session_id.to_string(),
+                provider_run_id: run_id.to_string(),
+            });
+        }
+
+        if run_snapshot.state() == ProviderRunState::Ended {
+            if sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id) {
+                sessions.set_active_provider_run(session_id, None)?;
+            }
+            self.clear_runtime(run_id);
+            return Ok(ProviderRunLivenessReconciliation::AlreadyEnded(
+                run_snapshot,
+            ));
+        }
+
+        if run_snapshot.endpoint_mode() == crate::provider::AgentEndpointMode::External {
+            return Ok(ProviderRunLivenessReconciliation::ExternalEndpoint(
+                run_snapshot,
+            ));
+        }
+
+        let Some(process_running) = process_running else {
+            return Ok(ProviderRunLivenessReconciliation::StillRunning(
+                run_snapshot,
+            ));
+        };
+
+        if process_running {
+            return Ok(ProviderRunLivenessReconciliation::StillRunning(
+                run_snapshot,
+            ));
+        }
+
+        let ended = self.mark_run_ended(sessions, session_id, run_id)?;
+        Ok(ProviderRunLivenessReconciliation::NewlyEnded(ended))
     }
 
     pub fn get_run_for_agent(
@@ -797,7 +852,10 @@ mod tests {
     };
     use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
 
-    use super::{LaunchProviderRequest, ProviderProcessService, ProviderRunState};
+    use super::{
+        LaunchProviderRequest, ProviderProcessService, ProviderRunLivenessReconciliation,
+        ProviderRunState,
+    };
 
     fn sessions() -> SessionService {
         SessionService::new(&DaemonConfig::for_tests())
@@ -827,6 +885,76 @@ mod tests {
         assert_eq!(run.adapter_key(), "dev-stub");
         assert_eq!(session.active_provider_run_id(), Some(run.id()));
         assert_eq!(session.status(), SessionStatus::Active);
+    }
+
+    #[test]
+    fn liveness_reconciliation_without_process_observation_does_not_end_run() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let reconciliation = providers
+            .reconcile_run_liveness(&mut sessions, session.id(), run.id(), None)
+            .expect("liveness reconciliation should succeed");
+
+        assert!(matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::StillRunning(_)
+        ));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
+        );
+        assert_eq!(
+            providers
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Running
+        );
+    }
+
+    #[test]
+    fn liveness_reconciliation_with_exited_process_marks_run_ended() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let reconciliation = providers
+            .reconcile_run_liveness(&mut sessions, session.id(), run.id(), Some(false))
+            .expect("liveness reconciliation should succeed");
+
+        assert!(matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::NewlyEnded(_)
+        ));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            None
+        );
+        assert_eq!(
+            providers
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Ended
+        );
     }
 
     #[test]

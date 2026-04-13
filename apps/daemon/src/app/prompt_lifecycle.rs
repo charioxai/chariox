@@ -1,6 +1,8 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
+use crate::provider::{
+    ProviderRunLivenessReconciliation, ProviderRunOperationLanes, ProviderRunState,
+};
 use crate::pty::PtyProcessState;
 use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
@@ -402,32 +404,19 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
-        if provider_run.state() == crate::provider::ProviderRunState::Ended {
-            if self
-                .sessions
-                .get_session(session_id)?
-                .active_provider_run_id()
-                == Some(provider_run_id)
-            {
-                self.sessions.set_active_provider_run(session_id, None)?;
+        match self.providers.reconcile_run_liveness(
+            &mut self.sessions,
+            session_id,
+            provider_run_id,
+            None,
+        )? {
+            ProviderRunLivenessReconciliation::AlreadyEnded(_) => {
+                let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
+                return Ok(true);
             }
-            let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
-            self.providers.clear_runtime(provider_run_id);
-            return Ok(true);
-        }
-
-        if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
-            return Ok(false);
-        }
-
-        let process_running = match self.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => true,
-            Ok(PtyProcessState::Exited) => false,
-            Err(DaemonError::PtyProcessNotFound { .. }) => false,
-            Err(error) => return Err(error),
-        };
-        if process_running {
-            return Ok(false);
+            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
+            | ProviderRunLivenessReconciliation::NewlyEnded(_) => return Ok(false),
+            ProviderRunLivenessReconciliation::StillRunning(_) => {}
         }
 
         let had_active_prompt = self
@@ -443,9 +432,23 @@ impl DaemonApp {
         } else {
             None
         };
-        let ended_run =
-            self.providers
-                .mark_run_ended(&mut self.sessions, session_id, provider_run_id)?;
+        let process_running = match self.pty.poll_process_state(provider_run_id) {
+            Ok(PtyProcessState::Running) => true,
+            Ok(PtyProcessState::Exited) => false,
+            Err(DaemonError::PtyProcessNotFound { .. }) => false,
+            Err(error) => return Err(error),
+        };
+        let ended_run = match self.providers.reconcile_run_liveness(
+            &mut self.sessions,
+            session_id,
+            provider_run_id,
+            Some(process_running),
+        )? {
+            ProviderRunLivenessReconciliation::AlreadyEnded(run)
+            | ProviderRunLivenessReconciliation::NewlyEnded(run) => run,
+            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
+            | ProviderRunLivenessReconciliation::StillRunning(_) => return Ok(false),
+        };
         self.update_provider_run_projection(ended_run.clone());
         let _ = self.remove_tracked_provider_process_for_run(provider_run_id)?;
 
@@ -455,7 +458,6 @@ impl DaemonApp {
             provider_run_id,
             active_prompt_status,
         )?;
-        self.providers.clear_runtime(provider_run_id);
 
         self.record_notice(
             session_id,
