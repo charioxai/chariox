@@ -2742,10 +2742,9 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
 
 #[test]
 fn local_request_api_auto_launches_provider_run_for_prompt() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, _default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2753,9 +2752,9 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
-    let prompt_agent = spawn_workflow_test_agent(&mut app, session.id(), "prompt-agent");
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2768,8 +2767,8 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
         _ => panic!("unexpected local response"),
     };
 
-    let response = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let response = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             target_agent_id: Some(prompt_agent.id().to_string()),
@@ -2793,10 +2792,9 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
 
 #[test]
 fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2804,9 +2802,9 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
-    let prompt_agent = spawn_workflow_test_agent(&mut app, session.id(), "prompt-agent");
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2819,8 +2817,8 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
         _ => panic!("unexpected local response"),
     };
 
-    match app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             target_agent_id: Some(prompt_agent.id().to_string()),
@@ -2836,15 +2834,15 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: session.id().to_string(),
             agent_id: default_agent.id().to_string(),
         }))
         .expect("focus should move to the idle default agent");
 
-    match app
-        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: session.id().to_string(),
         }))
         .expect("completion should resolve the single active agent")
@@ -2856,10 +2854,12 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let session_state = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist");
+    let session_state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should still exist")
+            .clone()
+    });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
     assert!(session_state
         .active_prompt_for_agent(prompt_agent.id())
@@ -2868,10 +2868,9 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
 
 #[test]
 fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2879,9 +2878,9 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
-    let prompt_agent = spawn_workflow_test_agent(&mut app, session.id(), "prompt-agent");
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2894,8 +2893,8 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         _ => panic!("unexpected local response"),
     };
 
-    match app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             target_agent_id: Some(prompt_agent.id().to_string()),
@@ -2911,15 +2910,15 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: session.id().to_string(),
             agent_id: default_agent.id().to_string(),
         }))
         .expect("focus should move to the idle default agent");
 
-    match app
-        .handle_local_request(LocalDaemonRequest::CancelActivePrompt(
+    match harness
+        .dispatch(LocalDaemonRequest::CancelActivePrompt(
             CancelActivePromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -2934,10 +2933,12 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let session_state = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist");
+    let session_state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should still exist")
+            .clone()
+    });
     assert_eq!(session_state.focused_agent_id(), Some(default_agent.id()));
     assert_eq!(
         session_state
@@ -3005,10 +3006,9 @@ fn prompt_idle_fallback_completes_after_recorded_completion_without_response_tex
 
 #[test]
 fn local_request_api_rejects_invalid_provider_adapter() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -3017,8 +3017,8 @@ fn local_request_api_rejects_invalid_provider_adapter() {
         _ => panic!("unexpected local response"),
     };
 
-    let error = app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+    let error = harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
             LaunchProviderRunRequest {
                 session_id: session.id().to_string(),
                 agent_id: None,
@@ -3190,11 +3190,10 @@ fn local_request_api_exposes_queue_config_and_notices() {
 
 #[test]
 fn local_request_api_can_cancel_an_active_prompt() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let harness = LocalApiRouterHarness::new();
 
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -3203,8 +3202,8 @@ fn local_request_api_can_cancel_an_active_prompt() {
         _ => panic!("unexpected local response"),
     };
 
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-a".to_string(),
@@ -3217,45 +3216,29 @@ fn local_request_api_can_cancel_an_active_prompt() {
         _ => panic!("unexpected local response"),
     };
 
-    let _provider_run = match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: None,
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider launch should succeed")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-        _ => panic!("unexpected local response"),
-    };
+    let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
 
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
-            target_agent_id: None,
+            target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "first prompt\n".to_string(),
             attachments: Vec::new(),
         }))
         .expect("first prompt should start");
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
-            target_agent_id: None,
+            target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "second prompt\n".to_string(),
             attachments: Vec::new(),
         }))
         .expect("second prompt should queue");
 
-    let response = app
-        .handle_local_request(LocalDaemonRequest::CancelActivePrompt(
+    let response = harness
+        .dispatch(LocalDaemonRequest::CancelActivePrompt(
             CancelActivePromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -3607,19 +3590,19 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
 
 #[test]
 fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session_1, agent_1) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session_1 = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-shared"),
         ))
         .expect("first session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment_1 = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let agent_1 = harness.spawn_workflow_test_agent(session_1.id(), "claim-1");
+    let attachment_1 = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session_1.id().to_string(),
                 client_id: "client-provider-claim-1".to_string(),
@@ -3631,26 +3614,9 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_1.id().to_string(),
-                agent_id: Some(agent_1.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("first provider run should launch")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { .. }
-        | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
-    match app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session_1.id().to_string(),
             attachment_id: attachment_1.id().to_string(),
             target_agent_id: Some(agent_1.id().to_string()),
@@ -3666,8 +3632,8 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         _ => panic!("unexpected local response"),
     }
 
-    let health = app
-        .handle_local_request(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
+    let health = harness
+        .dispatch(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
         .expect("health should be available while provider prompt is active");
     match health {
         LocalDaemonResponse::DaemonHealth { projection } => {
@@ -3684,17 +3650,18 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         _ => panic!("unexpected health response"),
     }
 
-    let (session_2, agent_2) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let session_2 = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-shared"),
         ))
         .expect("second session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment_2 = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let agent_2 = harness.spawn_workflow_test_agent(session_2.id(), "claim-2");
+    let attachment_2 = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session_2.id().to_string(),
                 client_id: "client-provider-claim-2".to_string(),
@@ -3706,27 +3673,10 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_2.id().to_string(),
-                agent_id: Some(agent_2.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("second provider run should launch")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { .. }
-        | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
 
-    let error = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session_2.id().to_string(),
             attachment_id: attachment_2.id().to_string(),
             target_agent_id: Some(agent_2.id().to_string()),
@@ -3746,8 +3696,8 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         other => panic!("unexpected error: {other}"),
     }
 
-    match app
-        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: session_1.id().to_string(),
         }))
         .expect("first prompt should complete")
@@ -3756,11 +3706,12 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         _ => panic!("unexpected local response"),
     }
 
-    assert!(app
-        .workspace_coordinator()
-        .active_claims()
-        .into_iter()
-        .all(|claim| claim.operation != "provider_prompt"));
+    assert!(harness.with_app(|app| {
+        app.workspace_coordinator()
+            .active_claims()
+            .into_iter()
+            .all(|claim| claim.operation != "provider_prompt")
+    }));
 }
 
 #[test]
@@ -4044,27 +3995,5 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
             assert_eq!(result.bytes, 8);
         }
         _ => panic!("unexpected transfer response"),
-    }
-}
-
-fn spawn_workflow_test_agent(
-    app: &mut DaemonApp,
-    session_id: &str,
-    alias: &str,
-) -> crate::agent::AgentInstance {
-    match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-            session_id: session_id.to_string(),
-            alias: Some(alias.to_string()),
-            provider: "dev-stub".to_string(),
-            model: Some("default".to_string()),
-            effort: None,
-            worktree_id: None,
-            machine_ref: None,
-        }))
-        .expect("workflow test agent should spawn")
-    {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
-        _ => panic!("unexpected local response"),
     }
 }
