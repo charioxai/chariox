@@ -195,6 +195,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           backgroundColor={props.promptAreaBackground}
           flexDirection="column"
           gap={0}
+          paddingTop={1}
         >
           <box overflow="hidden">
             <textarea

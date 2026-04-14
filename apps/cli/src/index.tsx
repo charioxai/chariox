@@ -149,6 +149,7 @@ import {
   markDeferredHistoryEntries,
 } from "./transcript-history.js"
 import {
+  computeSharedPaneBorderEdges,
   responsePaneRowSlots,
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
@@ -2034,7 +2035,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const promptInputMaxHeight = () => (
     isAttached()
-      ? Math.max(6, dimensions().height - 10)
+      ? Math.max(6, dimensions().height - 11)
       : 6
   )
   const retainPromptFocus = () => {
@@ -3490,8 +3491,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       scrollbox: ScrollBoxRenderable | undefined,
       agent: AgentInstance | null,
       rowVisibleCount: number,
-      rowIndex: number,
-      panePosition: number,
+      borderEdges: Array<"left" | "top" | "right" | "bottom">,
       focused: boolean,
       visible: boolean,
       showFooter: boolean,
@@ -3513,17 +3513,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pane.paddingRight = 0
       pane.paddingTop = 0
       pane.paddingBottom = 0
-      const sharedBorder = () => {
-        const edges: Array<"left" | "top" | "right" | "bottom"> = ["left", "bottom"]
-        if (rowIndex === 0) {
-          edges.push("top")
-        }
-        if (panePosition === rowVisibleCount - 1) {
-          edges.push("right")
-        }
-        return edges
-      }
-      pane.border = visible ? sharedBorder() : false
+      pane.border = visible ? borderEdges : false
       pane.borderColor = split && focused ? theme.primary : theme.borderSubtle
       pane.backgroundColor = visible && split
         ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
@@ -3542,12 +3532,18 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       if (!rowBox) {
         return
       }
-      const rowVisibleCount = rowSlots.filter((paneIndex) => {
-        if (paneIndex === 0) {
-          return true
-        }
-        return split && Boolean(visibleAgents[paneIndex])
-      }).length
+      const paneVisible = (paneIndex: number) => (
+        paneIndex === 0
+          ? true
+          : !showWorkflowScreen && split && Boolean(visibleAgents[paneIndex])
+      )
+      const visibleRowSlots = rowSlots.filter(paneVisible)
+      const rowVisibleCount = visibleRowSlots.length
+      const panePositionByIndex = new Map(visibleRowSlots.map((paneIndex, position) => [paneIndex, position]))
+      const focusedPaneIndex = visibleAgents.findIndex((agent) => agent.id === focusedAgentId())
+      const nextVisibleRowSlots = (paneRows[rowIndex + 1] ?? []).filter(paneVisible)
+      const rowBelowVisible = nextVisibleRowSlots.length > 0
+      const rowBelowFocused = focusedPaneIndex !== -1 && nextVisibleRowSlots.includes(focusedPaneIndex)
       rowBox.visible = rowIndex === 0 || (split && rowVisibleCount > 0)
       rowBox.flexDirection = "row"
       rowBox.gap = 0
@@ -3555,10 +3551,20 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       rowBox.flexBasis = 0
       rowBox.requestRender?.()
 
-      let panePosition = 0
       for (const paneIndex of rowSlots) {
         const agent = visibleAgents[paneIndex] ?? null
         const focused = agent?.id === focusedAgentId()
+        const panePosition = panePositionByIndex.get(paneIndex) ?? 0
+        const leftNeighborPaneIndex = visibleRowSlots[panePosition - 1]
+        const borderEdges = computeSharedPaneBorderEdges({
+          rowIndex,
+          panePosition,
+          rowVisibleCount,
+          focused: Boolean(focused),
+          leftNeighborFocused: focusedPaneIndex !== -1 && leftNeighborPaneIndex === focusedPaneIndex,
+          rowBelowVisible,
+          rowBelowFocused,
+        })
         if (paneIndex === 0) {
           layoutPane(
             primaryPane,
@@ -3566,14 +3572,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
             transcriptScrollbox,
             agent,
             rowVisibleCount,
-            rowIndex,
-            panePosition,
+            borderEdges,
             Boolean(focused),
             true,
             !showWorkflowScreen,
             theme.backgroundPanel,
           )
-          panePosition += 1
           if (historyLoadingBox) {
             historyLoadingBox.backgroundColor = primaryPane.backgroundColor
             historyLoadingBox.borderColor = split && focused ? theme.primary : theme.borderSubtle
@@ -3588,16 +3592,12 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           responseAuxiliaryScrollboxes[auxiliaryIndex],
           agent,
           rowVisibleCount,
-          rowIndex,
-          panePosition,
+          borderEdges,
           Boolean(focused),
           !showWorkflowScreen && split && Boolean(agent),
           Boolean(agent),
           theme.backgroundElement,
         )
-        if (split && Boolean(agent)) {
-          panePosition += 1
-        }
       }
     })
 

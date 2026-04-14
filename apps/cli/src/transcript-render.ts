@@ -49,7 +49,6 @@ export function buildTranscriptEntryRenderable(
   let currentEntry = entry
   let currentMode = transcriptRenderMode(entry)
   let body: BoxRenderable | null = null
-  let separator: BoxRenderable | null = null
   let textRenderable: TextRenderable | null = null
   let markdownRenderable: MarkdownRenderable | null = null
   let update: (nextEntry: TranscriptEntry) => void
@@ -60,7 +59,6 @@ export function buildTranscriptEntryRenderable(
       child.destroyRecursively()
     }
     body = null
-    separator = null
     textRenderable = null
     markdownRenderable = null
 
@@ -74,6 +72,11 @@ export function buildTranscriptEntryRenderable(
       flexDirection: "column",
       ...(bodyColor ? { backgroundColor: bodyColor } : {}),
     })
+    if (transcriptUsesSeparator(nextEntry)) {
+      body.border = ["bottom"]
+      body.customBorderChars = TranscriptSeparatorBorder.customBorderChars
+      body.borderColor = transcriptAccent(nextEntry)
+    }
 
     if (shouldRenderCollapsedTranscriptBlob(nextEntry)) {
       buildCollapsedTranscriptBlob(renderer, body, nextEntry, onToggleBlob)
@@ -92,18 +95,6 @@ export function buildTranscriptEntryRenderable(
       if (nextEntry.blobCollapsible) {
         body.add(buildBlobToggleLabel(renderer, "click to collapse", () => onToggleBlob(nextEntry.id, true)))
       }
-    }
-
-    if (transcriptUsesSeparator(nextEntry)) {
-      separator = new BoxRenderable(renderer, {
-        width: "100%",
-        border: ["bottom"],
-        customBorderChars: TranscriptSeparatorBorder.customBorderChars,
-        borderColor: transcriptAccent(nextEntry),
-      })
-      separator.add(body)
-      wrapper.add(separator)
-      return
     }
 
     wrapper.add(body)
