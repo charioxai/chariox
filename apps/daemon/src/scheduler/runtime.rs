@@ -274,7 +274,7 @@ fn dispatch_prepared_workflow_node_prompt(
     )
 }
 
-pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) {
+pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) -> BTreeSet<String> {
     let mut blocked = Vec::new();
     for session in app.sessions().list_sessions() {
         let session_id = session.id().to_string();
@@ -302,6 +302,7 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) {
         }
     }
 
+    let mut affected_sessions = BTreeSet::new();
     for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt) in blocked {
         if let Err(error) = dispatch_prepared_workflow_node_prompt(
             app,
@@ -321,7 +322,9 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) {
                 ),
             );
         }
+        affected_sessions.insert(session_id);
     }
+    affected_sessions
 }
 
 pub fn resume_workflow_run(
@@ -724,7 +727,7 @@ pub fn on_workflow_prompt_completed(
         .unwrap_or(false);
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
     if released_claim {
-        retry_blocked_workflow_claims(app);
+        let _ = retry_blocked_workflow_claims(app);
     }
     let state_suffix = match workflow_run.status() {
         WorkflowRunStatus::Waiting => "waiting for downstream handoffs",

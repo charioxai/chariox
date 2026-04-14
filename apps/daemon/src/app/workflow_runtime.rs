@@ -68,8 +68,8 @@ impl WorkflowProgression {
         crate::scheduler::runtime::on_workflow_prompt_cancelled(app, session_id, prompt)
     }
 
-    fn retry_blocked_claims(app: &mut DaemonApp) {
-        crate::scheduler::runtime::retry_blocked_workflow_claims(app);
+    fn retry_blocked_claims(app: &mut DaemonApp) -> BTreeSet<String> {
+        crate::scheduler::runtime::retry_blocked_workflow_claims(app)
     }
 
     fn resume_run(
@@ -166,7 +166,9 @@ impl DaemonApp {
     }
 
     pub(crate) fn retry_blocked_workflow_claims_from_runtime(&mut self) {
-        WorkflowProgression::retry_blocked_claims(self);
+        for session_id in WorkflowProgression::retry_blocked_claims(self) {
+            let _ = self.publish_session_projection(&session_id);
+        }
     }
 
     pub(crate) fn resume_workflow_run_from_runtime(

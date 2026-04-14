@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::attachment::ClientCapabilityLevel;
 use crate::local::test_support::LocalRouterTestHarness;
-use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
+use crate::provider::{LaunchProviderRequest, ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
     WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
@@ -38,23 +38,19 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
-    match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.to_string(),
-                agent_id: Some(agent_id.to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "slow-structured".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("slow structured provider run should launch")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run.id().to_string(),
-        _ => panic!("unexpected local response"),
-    }
+    app.launch_provider(
+        LaunchProviderRequest::new(
+            session_id,
+            "dev-stub",
+            "slow-structured",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent_id),
+    )
+    .expect("slow structured provider run should launch")
+    .id()
+    .to_string()
 }
 
 #[test]
@@ -115,10 +111,9 @@ fn local_request_api_supports_session_attach_and_end() {
 
 #[test]
 fn structured_output_pump_applies_finished_jobs_from_other_runs() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-structured-output", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -126,8 +121,8 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-structured-output".to_string(),
@@ -139,8 +134,8 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    let worker_agent = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let worker_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("worker".to_string()),
             provider: "slow-structured".to_string(),
@@ -155,37 +150,41 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         _ => panic!("unexpected local response"),
     };
 
-    let background_run_id = launch_slow_structured_run(&mut app, session.id(), default_agent.id());
-    let requested_run_id = launch_slow_structured_run(&mut app, session.id(), worker_agent.id());
-    app.providers_mut()
-        .push_finished_structured_output_poll_for_test(
-            background_run_id.clone(),
-            Ok(Some(ProviderPromptSignalBatch {
-                chunks: vec![ProviderPromptChunk {
-                    kind: TerminalOutputKind::ProviderOutput,
-                    merge_key: Some("background-chunk".to_string()),
-                    bytes: b"background-run-output\n".to_vec(),
-                }],
-                ..ProviderPromptSignalBatch::default()
-            })),
-        );
+    let (background_run_id, requested_records) = harness.with_app_mut(|app| {
+        let background_run_id = launch_slow_structured_run(app, session.id(), default_agent.id());
+        let requested_run_id = launch_slow_structured_run(app, session.id(), worker_agent.id());
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                background_run_id.clone(),
+                Ok(Some(ProviderPromptSignalBatch {
+                    chunks: vec![ProviderPromptChunk {
+                        kind: TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("background-chunk".to_string()),
+                        bytes: b"background-run-output\n".to_vec(),
+                    }],
+                    ..ProviderPromptSignalBatch::default()
+                })),
+            );
 
-    let recipient_attachment_ids = app.attachments().list_session_attachment_ids(session.id());
-    let requested_records = ProviderOutputPump::new(&mut app)
-        .pump_provider_output(ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: &requested_run_id,
-            recipient_attachment_ids,
-        })
-        .expect("requested run pump should drain all finished structured jobs");
+        let recipient_attachment_ids = app.attachments().list_session_attachment_ids(session.id());
+        let requested_records = ProviderOutputPump::new(app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: &requested_run_id,
+                recipient_attachment_ids,
+            })
+            .expect("requested run pump should drain all finished structured jobs");
+        (background_run_id, requested_records)
+    });
 
     assert!(
         requested_records.is_empty(),
         "background run output should be buffered for recipients, not returned as requested-run output"
     );
-    let buffered_records = app
-        .terminal_mut()
-        .drain_output_records(session.id(), attachment.id());
+    let buffered_records = harness.with_app_mut(|app| {
+        app.terminal_mut()
+            .drain_output_records(session.id(), attachment.id())
+    });
     assert_eq!(buffered_records.len(), 1);
     assert_eq!(buffered_records[0].provider_run_id, background_run_id);
     assert_eq!(buffered_records[0].bytes, b"background-run-output\n");
@@ -2174,10 +2173,9 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 
 #[test]
 fn detaching_one_attachment_keeps_the_session_open_for_others() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, _default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2186,8 +2184,8 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         _ => panic!("unexpected local response"),
     };
 
-    let first = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let first = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2200,8 +2198,8 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         _ => panic!("unexpected local response"),
     };
 
-    let second = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let second = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-2".to_string(),
@@ -2214,8 +2212,8 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         _ => panic!("unexpected local response"),
     };
 
-    let detached = match app
-        .handle_local_request(LocalDaemonRequest::DetachFromSession(
+    let detached = match harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
             DetachFromSessionRequest {
                 attachment_id: first.id().to_string(),
             },
@@ -2226,8 +2224,8 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         _ => panic!("unexpected local response"),
     };
 
-    let state = match app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -2242,18 +2240,23 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
     assert_eq!(state.status().to_string(), "created");
     assert_eq!(state.attachment_ids().len(), 1);
     assert!(state.has_attachment(second.id()));
-    assert!(app.attachments().get_attachment(second.id()).is_ok());
+    assert!(harness.with_app(|app| app.attachments().get_attachment(second.id()).is_ok()));
 }
 
 #[test]
 fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2266,26 +2269,22 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let _default_run = match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: Some(default_agent.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
+    let _default_run = harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(default_agent.id()),
+        )
         .expect("default provider launch should succeed")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-        _ => panic!("unexpected local response"),
-    };
+    });
 
-    let spawned = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
             provider: "claude-code".to_string(),
@@ -2300,33 +2299,23 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let _focused_run = match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: Some(spawned.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "opus".to_string(),
-                variant: None,
-            },
-        ))
+    let _focused_run = harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "claude-code", "default", "opus")
+                .with_agent_id(spawned.id()),
+        )
         .expect("spawned provider launch should succeed")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-        _ => panic!("unexpected local response"),
-    };
+    });
 
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: session.id().to_string(),
             agent_id: default_agent.id().to_string(),
         }))
         .expect("focusing default agent should succeed");
 
-    let started = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let started = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             target_agent_id: None,
@@ -2345,15 +2334,15 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     }
 
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+    let _ = harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: session.id().to_string(),
             agent_id: spawned.id().to_string(),
         }))
         .expect("focusing spawned agent should succeed");
 
-    let session_state = match app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -2373,12 +2362,14 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut saw_output = false;
     while Instant::now() < deadline {
-        let records = crate::app::provider_output::pump_terminal_output_for_attachment(
-            &mut app,
-            session.id(),
-            attachment.id(),
-        )
-        .expect("terminal output should keep pumping");
+        let records = harness.with_app_mut(|app| {
+            crate::app::provider_output::pump_terminal_output_for_attachment(
+                app,
+                session.id(),
+                attachment.id(),
+            )
+            .expect("terminal output should keep pumping")
+        });
         if !records.is_empty() {
             saw_output = true;
             break;
@@ -2391,41 +2382,54 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         "expected background agent output to continue while unfocused"
     );
 
-    TransportService::pump_active_prompts(&mut app);
-    let session_state = app
-        .sessions()
-        .get_session(session.id())
-        .expect("session should still exist");
-    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
-    assert_eq!(
-        session_state.active_provider_run_id(),
-        Some(_default_run.id())
-    );
-    assert!(
-        session_state
-            .active_prompt_for_agent(default_agent.id())
-            .is_some(),
-        "background prompt should remain owned by the original agent while unfocused"
-    );
+    harness.with_app_mut(|app| TransportService::pump_active_prompts(app));
+    harness.with_app(|app| {
+        let session_state = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+        assert_eq!(
+            session_state.active_provider_run_id(),
+            Some(_default_run.id())
+        );
+        assert!(
+            session_state
+                .active_prompt_for_agent(default_agent.id())
+                .is_some(),
+            "background prompt should remain owned by the original agent while unfocused"
+        );
+    });
 }
 
 #[test]
 fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = app
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-    let attachment = app
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-1",
-            ClientCapabilityLevel::FullTerminal,
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
-        .expect("attachment should attach");
-    let default_run = app
-        .launch_provider(
-            crate::provider::LaunchProviderRequest::new(
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attachment should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+    let default_run = harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
                 "claude-code",
@@ -2434,18 +2438,22 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
             )
             .with_agent_id(default_agent.id()),
         )
-        .expect("provider run should launch");
+        .expect("provider run should launch")
+    });
 
-    app.submit_prompt(
-        session.id(),
-        attachment.id(),
-        Some(default_agent.id()),
-        "keep working\n",
-        Vec::new(),
-    )
-    .expect("prompt should start");
-    let spawned = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    harness
+        .with_app_mut(|app| {
+            app.submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(default_agent.id()),
+                "keep working\n",
+                Vec::new(),
+            )
+        })
+        .expect("prompt should start");
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("observer".to_string()),
             provider: "claude-code".to_string(),
@@ -2460,8 +2468,8 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         _ => panic!("unexpected local response"),
     };
 
-    let session_state = match app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -2517,10 +2525,9 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
 
 #[test]
 fn attaching_the_same_client_replaces_its_stale_attachment() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, _default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2529,8 +2536,8 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    let first = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let first = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2543,8 +2550,8 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    let second = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let second = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -2557,8 +2564,8 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    let state = match app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -2572,7 +2579,7 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
     assert_ne!(first.id(), second.id());
     assert_eq!(state.attachment_ids().len(), 1);
     assert!(state.has_attachment(second.id()));
-    assert!(app.attachments().get_attachment(first.id()).is_err());
+    assert!(harness.with_app(|app| app.attachments().get_attachment(first.id()).is_err()));
 }
 
 #[test]
@@ -2876,10 +2883,9 @@ fn local_request_api_rejects_invalid_provider_adapter() {
 
 #[test]
 fn local_request_api_exposes_queue_config_and_notices() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -2887,8 +2893,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let a = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let a = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-a".to_string(),
@@ -2900,8 +2906,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    let b = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let b = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-b".to_string(),
@@ -2913,22 +2919,19 @@ fn local_request_api_exposes_queue_config_and_notices() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    let _ = app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session.id().to_string(),
-                agent_id: None,
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
+    harness.with_app_mut(|app| {
+        app.launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
         ))
         .expect("provider launch should succeed");
+    });
 
-    let first = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let first = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: a.id().to_string(),
             target_agent_id: None,
@@ -2936,8 +2939,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
             attachments: Vec::new(),
         }))
         .expect("first prompt should start");
-    let second = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let second = harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: b.id().to_string(),
             target_agent_id: None,
@@ -2945,8 +2948,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
             attachments: Vec::new(),
         }))
         .expect("second prompt should queue");
-    let config = app
-        .handle_local_request(LocalDaemonRequest::UpdateSessionConfig(
+    let config = harness
+        .dispatch(LocalDaemonRequest::UpdateSessionConfig(
             UpdateSessionConfigRequest {
                 session_id: session.id().to_string(),
                 attachment_id: a.id().to_string(),
@@ -2982,8 +2985,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
         _ => panic!("unexpected config response"),
     }
 
-    let notices = app
-        .handle_local_request(LocalDaemonRequest::PollRuntimeNotices(
+    let notices = harness
+        .dispatch(LocalDaemonRequest::PollRuntimeNotices(
             PollRuntimeNoticesRequest {
                 session_id: session.id().to_string(),
                 attachment_id: b.id().to_string(),
@@ -2995,8 +2998,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
         _ => panic!("unexpected notices response"),
     }
 
-    let state = app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let state = harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -3010,8 +3013,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
         _ => panic!("unexpected state response"),
     }
 
-    let completed = app
-        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+    let completed = harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: session.id().to_string(),
         }))
         .expect("complete prompt should succeed");
@@ -3546,10 +3549,9 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
 
 #[test]
 fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (interactive_session, interactive_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let (interactive_session, interactive_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-shared"),
         ))
         .expect("interactive session should be created")
@@ -3557,8 +3559,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
-    let interactive_attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let interactive_attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: interactive_session.id().to_string(),
                 client_id: "client-workflow-claim-owner".to_string(),
@@ -3570,25 +3572,21 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-    match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: interactive_session.id().to_string(),
-                agent_id: Some(interactive_agent.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: "default".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("interactive provider run should launch")
-    {
-        LocalDaemonResponse::ProviderRunLaunched { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
-    match app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(
+                interactive_session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(interactive_agent.id()),
+        )
+        .expect("interactive provider run should launch");
+    });
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: interactive_session.id().to_string(),
             attachment_id: interactive_attachment.id().to_string(),
             target_agent_id: Some(interactive_agent.id().to_string()),
@@ -3604,8 +3602,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         _ => panic!("unexpected local response"),
     }
 
-    let workflow_session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let workflow_session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-shared"),
         ))
         .expect("workflow session should be created")
@@ -3613,8 +3611,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let workflow_agent = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let workflow_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: workflow_session.id().to_string(),
             alias: Some("workflow-worker".to_string()),
             provider: "dev-stub".to_string(),
@@ -3628,8 +3626,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::AgentSpawned { agent } => agent,
         _ => panic!("unexpected local response"),
     };
-    let workflow = match app
-        .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: workflow_session.id().to_string(),
             alias: Some("blocked".to_string()),
         }))
@@ -3638,8 +3636,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
         _ => panic!("unexpected local response"),
     };
-    let node = match app
-        .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+    let node = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
             AddWorkflowNodeRequest {
                 session_id: workflow_session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -3651,8 +3649,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
         _ => panic!("unexpected local response"),
     };
-    let endpoint = match app
-        .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
             CreateWorkflowEndpointRequest {
                 session_id: workflow_session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -3665,8 +3663,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
         _ => panic!("unexpected local response"),
     };
-    let blocked_run = match app
-        .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
+    let blocked_run = match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
             InvokeWorkflowEndpointRequest {
                 session_id: workflow_session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -3688,8 +3686,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
     );
 
-    match app
-        .handle_local_request(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
             session_id: interactive_session.id().to_string(),
         }))
         .expect("interactive prompt should complete")
@@ -3698,15 +3696,24 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         _ => panic!("unexpected local response"),
     }
 
-    let retried_run = match app
-        .handle_local_request(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-            session_id: workflow_session.id().to_string(),
-            workflow_run_ref: blocked_run.id().to_string(),
-        }))
-        .expect("workflow run should resolve after retry")
-    {
-        LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-        _ => panic!("unexpected local response"),
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let retried_run = loop {
+        let workflow_run = match harness
+            .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: workflow_session.id().to_string(),
+                workflow_run_ref: blocked_run.id().to_string(),
+            }))
+            .expect("workflow run should resolve after retry")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        if workflow_run.status() == crate::session::WorkflowRunStatus::Running
+            || Instant::now() >= deadline
+        {
+            break workflow_run;
+        }
+        thread::sleep(Duration::from_millis(10));
     };
     assert_eq!(
         retried_run.status(),
@@ -3726,10 +3733,9 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
 fn local_request_api_returns_structured_screenshot_unavailable_result() {
     let _guard = crate::env_lock::lock();
     std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", std::env::temp_dir().display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3737,8 +3743,8 @@ fn local_request_api_returns_structured_screenshot_unavailable_result() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-screenshot".to_string(),
@@ -3751,8 +3757,8 @@ fn local_request_api_returns_structured_screenshot_unavailable_result() {
         _ => panic!("unexpected local response"),
     };
 
-    let response = app
-        .handle_local_request(LocalDaemonRequest::CaptureScreenshot(
+    let response = harness
+        .dispatch(LocalDaemonRequest::CaptureScreenshot(
             CaptureScreenshotCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
