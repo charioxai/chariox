@@ -682,7 +682,7 @@ fn execute_session_runtime_request(
     match request {
         LocalDaemonRequest::CreateSession(request) => app.create_session_response(request),
         LocalDaemonRequest::AttachToSession(request) => Ok(LocalDaemonResponse::SessionAttached {
-            attachment: app.attach(AttachRequest::new(
+            attachment: app.kernel_sessions().attach(AttachRequest::new(
                 request.session_id,
                 request.client_id,
                 request.capability_level,
@@ -690,17 +690,25 @@ fn execute_session_runtime_request(
         }),
         LocalDaemonRequest::DetachFromSession(request) => {
             Ok(LocalDaemonResponse::SessionDetached {
-                attachment: app.detach(&request.attachment_id)?,
+                attachment: app.kernel_sessions().detach(&request.attachment_id)?,
             })
         }
         LocalDaemonRequest::FocusAgent(request) => Ok(LocalDaemonResponse::AgentFocused {
-            agent: app.focus_agent(&request.session_id, &request.agent_id)?,
+            agent: app
+                .kernel_sessions()
+                .focus_agent(&request.session_id, &request.agent_id)?,
         }),
         LocalDaemonRequest::CycleAgentFocus(request) => Ok(LocalDaemonResponse::AgentFocusCycled {
-            agent: app.cycle_agent_focus(&request.session_id)?,
+            agent: app
+                .kernel_sessions()
+                .cycle_agent_focus(&request.session_id)?,
         }),
         LocalDaemonRequest::ResizeTerminal(request) => {
-            app.resize_terminal(&request.session_id, request.cols, request.rows)?;
+            app.kernel_sessions().resize_terminal(
+                &request.session_id,
+                request.cols,
+                request.rows,
+            )?;
             Ok(LocalDaemonResponse::TerminalResized {
                 session_id: request.session_id,
                 cols: request.cols,
@@ -718,7 +726,7 @@ fn execute_session_runtime_request(
         }
         LocalDaemonRequest::UpdateSessionConfig(request) => {
             let session_id = request.session_id.clone();
-            let config = app.update_session_config(
+            let config = app.kernel_sessions().update_session_config(
                 &request.session_id,
                 &request.attachment_id,
                 request.values,
@@ -728,10 +736,9 @@ fn execute_session_runtime_request(
             Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
         }
         LocalDaemonRequest::AliasSession(request) => {
-            let _session = app
-                .sessions_mut()
-                .assign_session_alias(&request.session_id, request.alias)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
+            let session = app
+                .kernel_sessions()
+                .alias_session(&request.session_id, request.alias)?;
             Ok(LocalDaemonResponse::SessionAliased { session })
         }
         LocalDaemonRequest::SpawnAgent(request) => {
@@ -771,10 +778,11 @@ fn execute_session_runtime_request(
             Ok(LocalDaemonResponse::AgentDestroyed { agent })
         }
         LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
-            session: app.end_session(&request.session_id)?,
+            session: app.kernel_sessions().end_session(&request.session_id)?,
         }),
         LocalDaemonRequest::DeleteSession(request) => Ok(LocalDaemonResponse::SessionDeleted {
             session: app
+                .kernel_sessions()
                 .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
         }),
         _ => Err(DaemonError::LocalTransport {

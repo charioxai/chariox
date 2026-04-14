@@ -691,29 +691,12 @@ impl DaemonApp {
         values: BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<SessionConfigState, DaemonError> {
-        self.ensure_attachment_in_session(session_id, attachment_id)?;
-        let (_session, config) =
-            self.sessions
-                .update_config(session_id, attachment_id, values, requires_idle)?;
-
-        let recipient_attachment_ids = self.other_attachment_ids(session_id, attachment_id);
-        if !recipient_attachment_ids.is_empty() {
-            let active_provider_run_id = self
-                .sessions
-                .get_session(session_id)?
-                .active_provider_run_id()
-                .map(str::to_string);
-            self.record_notice(
-                session_id,
-                active_provider_run_id.as_deref(),
-                recipient_attachment_ids,
-                format!(
-                    "Attachment `{attachment_id}` updated configuration for session `{session_id}`."
-                ),
-            );
-        }
-
-        Ok(config)
+        self.kernel_sessions().update_session_config(
+            session_id,
+            attachment_id,
+            values,
+            requires_idle,
+        )
     }
 
     pub fn send_provider_input(
