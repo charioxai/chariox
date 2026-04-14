@@ -23,7 +23,7 @@ impl CompatibilityRuntimeState {
         self.with_app_mut(|app| app.config().clone()).await
     }
 
-    pub(crate) async fn with_app_mut<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
+    async fn with_app_mut<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
         let mut app = self.app.lock().await;
         operation(&mut app)
     }
