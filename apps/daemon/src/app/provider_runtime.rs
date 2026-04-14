@@ -802,12 +802,6 @@ impl DaemonApp {
         Ok(started)
     }
 
-    pub(crate) fn initialize_provider_runtime_binding(
-        run: &RuntimeProviderRun,
-    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
-        ProviderProcessService::initialize_runtime_binding(run)
-    }
-
     pub(crate) fn finish_provider_launch(
         &mut self,
         started: &StartedProviderLaunch,
@@ -916,7 +910,7 @@ impl DaemonApp {
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let started = self.start_provider_launch(request)?;
-        let binding = match Self::initialize_provider_runtime_binding(&started.run) {
+        let binding = match ProviderProcessService::initialize_runtime_binding(&started.run) {
             Ok(binding) => binding,
             Err(error) => {
                 self.fail_provider_launch(&started, &error);

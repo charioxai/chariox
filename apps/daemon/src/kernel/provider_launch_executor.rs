@@ -7,6 +7,7 @@ use crate::app::{DaemonApp, StartedProviderLaunch};
 use crate::error::DaemonError;
 use crate::local::provider_requests::launch_provider_request_from_local;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
+use crate::provider::ProviderProcessService;
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchCommandExecutor {
@@ -38,7 +39,7 @@ impl ProviderLaunchCommandExecutor {
             }
             let run = started.run.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                DaemonApp::initialize_provider_runtime_binding(&run)
+                ProviderProcessService::initialize_runtime_binding(&run)
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {
