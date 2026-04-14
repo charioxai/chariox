@@ -703,21 +703,6 @@ impl DaemonApp {
         )
     }
 
-    pub fn send_provider_input(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        attachment_id: &str,
-        bytes: &[u8],
-    ) -> Result<(), DaemonError> {
-        terminal_input::ProviderTerminalInput::new(self).send_provider_input(
-            session_id,
-            provider_run_id,
-            attachment_id,
-            bytes,
-        )
-    }
-
     pub fn send_terminal_input(
         &mut self,
         session_id: &str,
@@ -732,7 +717,12 @@ impl DaemonApp {
             })?
             .to_string();
 
-        self.send_provider_input(session_id, &provider_run_id, attachment_id, bytes)
+        terminal_input::ProviderTerminalInput::new(self).send_provider_input(
+            session_id,
+            &provider_run_id,
+            attachment_id,
+            bytes,
+        )
     }
 
     pub fn resize_provider_terminal(
