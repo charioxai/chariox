@@ -283,6 +283,35 @@ pub(crate) struct CapabilityRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
 }
 
+struct CapabilityRuntimeContext<'a> {
+    app: &'a DaemonApp,
+}
+
+impl<'a> CapabilityRuntimeContext<'a> {
+    fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn capability_context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityContext, DaemonError> {
+        let context = self
+            .app
+            .capability_context(session_id, attachment_id, capability)?;
+        let workspace_coordinator = self.app.workspace_coordinator();
+        Ok(CapabilityContext {
+            session_id: session_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+            workspace_id: context.workspace_id,
+            worktree_root: context.worktree_root,
+            workspace_coordinator,
+        })
+    }
+}
+
 impl CapabilityRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self { app }
@@ -295,15 +324,11 @@ impl CapabilityRuntimeStore {
         capability: &'static str,
     ) -> Result<CapabilityContext, DaemonError> {
         let app = self.app.lock().await;
-        let context = app.capability_context(session_id, attachment_id, capability)?;
-        let workspace_coordinator = app.workspace_coordinator();
-        Ok(CapabilityContext {
-            session_id: session_id.to_string(),
-            attachment_id: attachment_id.to_string(),
-            workspace_id: context.workspace_id,
-            worktree_root: context.worktree_root,
-            workspace_coordinator,
-        })
+        CapabilityRuntimeContext::new(&app).capability_context(
+            session_id,
+            attachment_id,
+            capability,
+        )
     }
 }
 
