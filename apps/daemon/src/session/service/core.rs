@@ -6,7 +6,7 @@ impl SessionService {
             store: SessionStore::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
-            next_prompt_number: 0,
+            prompt_id_allocator: PromptIdAllocator::default(),
             next_workflow_number: 0,
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,

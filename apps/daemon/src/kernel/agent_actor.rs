@@ -13,7 +13,7 @@ use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
-use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus};
+use crate::session::{PromptCompletion, PromptIdAllocator, PromptQueueItem, PromptStatus};
 
 const AGENT_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -47,6 +47,7 @@ struct AgentRuntimeCommandExecutor {
     provider_runtime_lanes: ProviderRunOperationLanes,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
+    prompt_id_allocator: PromptIdAllocator,
 }
 
 impl AgentRuntimeCommandExecutor {
@@ -55,12 +56,14 @@ impl AgentRuntimeCommandExecutor {
         provider_runtime_lanes: ProviderRunOperationLanes,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
+        prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
         Self {
             app,
             provider_runtime_lanes,
             session_projection,
             agent_runtime_projection,
+            prompt_id_allocator,
         }
     }
 
@@ -96,7 +99,7 @@ impl AgentRuntimeCommandExecutor {
         let prepared = {
             let mut app = self.app.lock().await;
             let prompt = PromptQueueItem::new(
-                app.sessions_mut().reserve_prompt_id(),
+                self.prompt_id_allocator.next_prompt_id(),
                 &request.attachment_id,
                 &target_agent_id,
                 &request.prompt,
@@ -210,6 +213,7 @@ pub(crate) struct AgentRuntime {
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     prompt_state_owner: PromptStateOwner,
+    prompt_id_allocator: PromptIdAllocator,
     queue_limit: usize,
     lanes: Arc<Mutex<HashMap<String, mpsc::Sender<AgentCommandEnvelope>>>>,
 }
@@ -222,6 +226,7 @@ impl AgentRuntime {
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
         prompt_state_owner: PromptStateOwner,
+        prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
         Self {
             app,
@@ -230,6 +235,7 @@ impl AgentRuntime {
             session_projection,
             agent_runtime_projection,
             prompt_state_owner,
+            prompt_id_allocator,
             queue_limit: AGENT_COMMAND_QUEUE_LIMIT,
             lanes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -470,6 +476,7 @@ impl AgentRuntime {
             self.provider_runtime_lanes.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
+            self.prompt_id_allocator.clone(),
         );
         tokio::spawn(run_agent_command_lane(executor, agent_id.to_string(), rx));
         tx
@@ -621,6 +628,7 @@ mod tests {
             SessionStateProjectionStore::default(),
             agent_runtime_projection,
             PromptStateOwner::default(),
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -654,6 +662,7 @@ mod tests {
             session_projection,
             AgentRuntimeProjectionStore::default(),
             PromptStateOwner::default(),
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -721,6 +730,7 @@ mod tests {
             session_projection,
             AgentRuntimeProjectionStore::default(),
             prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -749,6 +759,7 @@ mod tests {
             session_projection,
             AgentRuntimeProjectionStore::default(),
             PromptStateOwner::default(),
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -787,6 +798,7 @@ mod tests {
             session_projection,
             AgentRuntimeProjectionStore::default(),
             PromptStateOwner::default(),
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;
@@ -824,6 +836,7 @@ mod tests {
             session_projection,
             AgentRuntimeProjectionStore::default(),
             PromptStateOwner::default(),
+            crate::session::PromptIdAllocator::default(),
         );
 
         let _locked_app = app.lock().await;

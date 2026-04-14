@@ -38,6 +38,7 @@ use crate::local::{
     ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
+use crate::session::PromptIdAllocator;
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 
@@ -104,6 +105,7 @@ impl CommandRouter {
             terminal_stream,
             workspace_coordinator,
             prompt_state_owner,
+            prompt_id_allocator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -113,6 +115,7 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
             prompt_state_owner.clone(),
+            prompt_id_allocator.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -187,6 +190,7 @@ impl CommandRouter {
             terminal_stream,
             workspace_coordinator,
             prompt_state_owner,
+            prompt_id_allocator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let agent_runtime = AgentRuntime::new(
@@ -196,6 +200,7 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
             prompt_state_owner.clone(),
+            prompt_id_allocator.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
             Arc::clone(&app),
@@ -1493,6 +1498,7 @@ fn router_projection_stores(
     TerminalStreamStore,
     WorkspaceCoordinator,
     PromptStateOwner,
+    PromptIdAllocator,
 ) {
     let app = app
         .try_lock()
@@ -1511,6 +1517,7 @@ fn router_projection_stores(
         app.terminal_stream_store(),
         app.workspace_coordinator(),
         app.prompt_state_owner(),
+        app.prompt_id_allocator(),
     )
 }
 

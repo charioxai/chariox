@@ -3,11 +3,11 @@ mod service;
 mod store;
 mod types;
 
-pub use service::SessionService;
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowLaunchAdmission, WorkflowOutputValidationWarning, WorkflowWatchdogTickPlan,
 };
+pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;
 pub use types::WorkflowOutputValidationPolicy;
 pub use types::{

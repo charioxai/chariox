@@ -1,4 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
@@ -20,6 +24,18 @@ use super::{
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
+
+#[derive(Debug, Clone, Default)]
+pub struct PromptIdAllocator {
+    next_prompt_number: Arc<AtomicU64>,
+}
+
+impl PromptIdAllocator {
+    pub(crate) fn next_prompt_id(&self) -> String {
+        let next = self.next_prompt_number.fetch_add(1, Ordering::SeqCst) + 1;
+        format!("prompt-{next}")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowDispatch {
@@ -73,7 +89,7 @@ pub struct SessionService {
     store: SessionStore,
     host_machine_id: String,
     host_daemon_id: String,
-    next_prompt_number: u64,
+    prompt_id_allocator: PromptIdAllocator,
     next_workflow_number: u64,
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,

@@ -531,12 +531,15 @@ impl SessionService {
         Ok(session)
     }
 
-    pub(crate) fn reserve_prompt_id(&mut self) -> String {
-        self.next_prompt_id()
+    pub(crate) fn reserve_prompt_id(&self) -> String {
+        self.prompt_id_allocator.next_prompt_id()
     }
 
-    pub(super) fn next_prompt_id(&mut self) -> String {
-        self.next_prompt_number += 1;
-        format!("prompt-{}", self.next_prompt_number)
+    pub(crate) fn prompt_id_allocator(&self) -> PromptIdAllocator {
+        self.prompt_id_allocator.clone()
+    }
+
+    pub(super) fn next_prompt_id(&self) -> String {
+        self.reserve_prompt_id()
     }
 }

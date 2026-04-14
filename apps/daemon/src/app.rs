@@ -283,6 +283,10 @@ impl DaemonApp {
         self.prompt_state_owner.clone()
     }
 
+    pub(crate) fn prompt_id_allocator(&self) -> crate::session::PromptIdAllocator {
+        self.sessions.prompt_id_allocator()
+    }
+
     pub(crate) fn update_session_projection(&self, session: RuntimeSession) {
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);
