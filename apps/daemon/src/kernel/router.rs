@@ -10,7 +10,7 @@ use crate::error::DaemonError;
 use crate::history::SessionHistoryStore;
 use crate::kernel::agent_actor::AgentRuntime;
 use crate::kernel::capability_executor::{
-    execute_capability_request, CapabilityExecutorHealthStore,
+    execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
 };
 use crate::kernel::command::{KernelCommand, KernelCommandPriority};
 use crate::kernel::projection::{
@@ -64,6 +64,7 @@ pub(crate) struct CommandRouter {
     config_projection: DaemonConfigProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     capability_health: CapabilityExecutorHealthStore,
+    capability_runtime: CapabilityRuntimeStore,
     transport_health: TransportHealthStore,
     terminal_health: TerminalStreamHealthStore,
     terminal_stream: TerminalStreamStore,
@@ -111,6 +112,7 @@ impl CommandRouter {
             prompt_id_allocator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
@@ -158,6 +160,7 @@ impl CommandRouter {
             config_projection,
             relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
+            capability_runtime,
             transport_health: TransportHealthStore::default(),
             terminal_health,
             terminal_stream,
@@ -205,6 +208,7 @@ impl CommandRouter {
             prompt_id_allocator,
         ) = router_projection_stores(&app);
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
         let agent_runtime = AgentRuntime::new(
             Arc::clone(&app),
             provider_runtime_lanes.clone(),
@@ -252,6 +256,7 @@ impl CommandRouter {
             config_projection,
             relay_state,
             capability_health: CapabilityExecutorHealthStore::default(),
+            capability_runtime,
             transport_health,
             terminal_health,
             terminal_stream,
@@ -720,14 +725,18 @@ impl CommandRouter {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        execute_capability_request(&self.app, self.capability_health.clone(), request)
-            .await
-            .unwrap_or_else(|| {
-                Err(DaemonError::LocalTransport {
-                    operation: "route capability request",
-                    message: "capability request was not handled by executor".to_string(),
-                })
+        execute_capability_request(
+            &self.capability_runtime,
+            self.capability_health.clone(),
+            request,
+        )
+        .await
+        .unwrap_or_else(|| {
+            Err(DaemonError::LocalTransport {
+                operation: "route capability request",
+                message: "capability request was not handled by executor".to_string(),
             })
+        })
     }
 
     async fn execute_configure_relay_request(

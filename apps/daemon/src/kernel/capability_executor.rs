@@ -76,14 +76,15 @@ impl Default for CapabilityExecutorHealthStore {
 }
 
 pub(crate) async fn execute_capability_request(
-    app: &Arc<Mutex<DaemonApp>>,
+    store: &CapabilityRuntimeStore,
     health: CapabilityExecutorHealthStore,
     request: LocalDaemonRequest,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     match request {
         LocalDaemonRequest::RunShellCommand(request) => {
-            let context =
-                capability_context(app, &request.session_id, &request.attachment_id, "shell").await;
+            let context = store
+                .context(&request.session_id, &request.attachment_id, "shell")
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("run shell command", health, move || {
@@ -107,13 +108,13 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::ReadDirectoryTree(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "directory_tree",
-            )
-            .await;
+            let context = store
+                .context(
+                    &request.session_id,
+                    &request.attachment_id,
+                    "directory_tree",
+                )
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("read directory tree", health, move || {
@@ -133,13 +134,9 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::ReadFile(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "file_read",
-            )
-            .await;
+            let context = store
+                .context(&request.session_id, &request.attachment_id, "file_read")
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("read file", health, move || {
@@ -158,13 +155,9 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::EditFile(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "file_edit",
-            )
-            .await;
+            let context = store
+                .context(&request.session_id, &request.attachment_id, "file_edit")
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("edit file", health, move || {
@@ -191,13 +184,9 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::InspectGit(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "git_inspect",
-            )
-            .await;
+            let context = store
+                .context(&request.session_id, &request.attachment_id, "git_inspect")
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("inspect git", health, move || {
@@ -216,13 +205,9 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::CaptureScreenshot(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "screenshot",
-            )
-            .await;
+            let context = store
+                .context(&request.session_id, &request.attachment_id, "screenshot")
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("capture screenshot", health, move || {
@@ -240,13 +225,13 @@ pub(crate) async fn execute_capability_request(
             })
         }
         LocalDaemonRequest::StoreTransferredFile(request) => {
-            let context = capability_context(
-                app,
-                &request.session_id,
-                &request.attachment_id,
-                "transfer_store",
-            )
-            .await;
+            let context = store
+                .context(
+                    &request.session_id,
+                    &request.attachment_id,
+                    "transfer_store",
+                )
+                .await;
             Some(match context {
                 Ok(context) => {
                     spawn_capability("store transferred file", health, move || {
@@ -293,22 +278,33 @@ impl CapabilityContext {
     }
 }
 
-async fn capability_context(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_id: &str,
-    attachment_id: &str,
-    capability: &'static str,
-) -> Result<CapabilityContext, DaemonError> {
-    let app = app.lock().await;
-    let context = app.capability_context(session_id, attachment_id, capability)?;
-    let workspace_coordinator = app.workspace_coordinator();
-    Ok(CapabilityContext {
-        session_id: session_id.to_string(),
-        attachment_id: attachment_id.to_string(),
-        workspace_id: context.workspace_id,
-        worktree_root: context.worktree_root,
-        workspace_coordinator,
-    })
+#[derive(Clone)]
+pub(crate) struct CapabilityRuntimeStore {
+    app: Arc<Mutex<DaemonApp>>,
+}
+
+impl CapabilityRuntimeStore {
+    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
+        Self { app }
+    }
+
+    async fn context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityContext, DaemonError> {
+        let app = self.app.lock().await;
+        let context = app.capability_context(session_id, attachment_id, capability)?;
+        let workspace_coordinator = app.workspace_coordinator();
+        Ok(CapabilityContext {
+            session_id: session_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+            workspace_id: context.workspace_id,
+            worktree_root: context.worktree_root,
+            workspace_coordinator,
+        })
+    }
 }
 
 async fn spawn_capability<F>(
@@ -362,7 +358,9 @@ mod tests {
 
     use tokio::sync::Mutex;
 
-    use super::{execute_capability_request, CapabilityExecutorHealthStore};
+    use super::{
+        execute_capability_request, CapabilityExecutorHealthStore, CapabilityRuntimeStore,
+    };
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::error::DaemonError;
     use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
@@ -386,7 +384,7 @@ mod tests {
         let health = CapabilityExecutorHealthStore::new(0);
 
         let response = execute_capability_request(
-            &app,
+            &CapabilityRuntimeStore::new(app),
             health.clone(),
             LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
                 session_id: session.id().to_string(),
