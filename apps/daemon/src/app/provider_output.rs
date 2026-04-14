@@ -55,7 +55,8 @@ pub(crate) fn pump_terminal_output_for_attachment(
         .map(str::to_string);
 
     if let Some(provider_run_id) = provider_run_id {
-        let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session_id);
+        let recipient_attachment_ids =
+            ProviderOutputRecipientResolver::new(app).session_attachment_ids(session_id);
         let _ = ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
             session_id,
             provider_run_id: &provider_run_id,
@@ -146,6 +147,20 @@ impl<'a> ProviderOutputPump<'a> {
 
 struct ProviderOutputPumpContext<'a> {
     app: &'a mut DaemonApp,
+}
+
+struct ProviderOutputRecipientResolver<'a> {
+    app: &'a DaemonApp,
+}
+
+impl<'a> ProviderOutputRecipientResolver<'a> {
+    fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn session_attachment_ids(&self, session_id: &str) -> Vec<String> {
+        self.app.attachments.list_session_attachment_ids(session_id)
+    }
 }
 
 impl<'a> ProviderOutputPumpContext<'a> {
@@ -286,9 +301,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             let recipient_attachment_ids = if is_requested_run {
                 requested_recipient_attachment_ids.clone()
             } else {
-                self.app
-                    .attachments
-                    .list_session_attachment_ids(&session_id)
+                self.recipient_attachment_ids_for_session(&session_id)
             };
             let records = self.app.apply_structured_output_batch(
                 &session_id,
@@ -312,6 +325,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
     ) -> Result<Vec<PtyOutputChunk>, DaemonError> {
         self.app.pty.drain_output(provider_run_id)
+    }
+
+    fn recipient_attachment_ids_for_session(&self, session_id: &str) -> Vec<String> {
+        ProviderOutputRecipientResolver::new(self.app).session_attachment_ids(session_id)
     }
 
     fn note_prompt_response_content(&mut self, provider_run_id: &str) {
