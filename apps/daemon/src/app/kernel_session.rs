@@ -242,12 +242,22 @@ impl<'a> KernelSessionService<'a> {
             {
                 let run = self.app.providers.get_run(&active_provider_run_id)?;
                 if run.state() != ProviderRunState::Ended {
-                    let parked_run = self.app.providers.park_run(
-                        &mut self.app.sessions,
-                        attachment.session_id(),
-                        &active_provider_run_id,
-                    )?;
-                    self.app.update_provider_run_projection(parked_run);
+                    let outcome = self
+                        .app
+                        .providers
+                        .park_run_provider_only(attachment.session_id(), &active_provider_run_id)?;
+                    if self
+                        .app
+                        .sessions
+                        .get_session(attachment.session_id())?
+                        .active_provider_run_id()
+                        == Some(outcome.run().id())
+                    {
+                        self.app
+                            .sessions
+                            .set_active_provider_run(attachment.session_id(), None)?;
+                    }
+                    self.app.update_provider_run_projection(outcome.into_run());
                 }
             }
             for run in self.app.providers.list_runs() {

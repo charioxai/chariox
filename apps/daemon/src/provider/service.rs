@@ -45,6 +45,21 @@ impl ProviderRunEndedOutcome {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderRunParkedOutcome {
+    run: RuntimeProviderRun,
+}
+
+impl ProviderRunParkedOutcome {
+    pub(crate) fn run(&self) -> &RuntimeProviderRun {
+        &self.run
+    }
+
+    pub(crate) fn into_run(self) -> RuntimeProviderRun {
+        self.run
+    }
+}
+
 fn sync_ended_run_session_pointer(
     sessions: &mut SessionService,
     session_id: &str,
@@ -53,6 +68,23 @@ fn sync_ended_run_session_pointer(
     if sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id) {
         sessions.set_active_provider_run(session_id, None)?;
     }
+    Ok(())
+}
+
+fn clear_active_run_session_pointer(
+    sessions: &mut SessionService,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), DaemonError> {
+    let session = sessions.get_session(session_id)?;
+    if session.active_provider_run_id() != Some(run_id) {
+        return Err(DaemonError::InconsistentActiveProviderRun {
+            session_id: session_id.to_string(),
+            active_provider_run_id: session.active_provider_run_id().map(str::to_owned),
+            requested_provider_run_id: run_id.to_string(),
+        });
+    }
+    sessions.set_active_provider_run(session_id, None)?;
     Ok(())
 }
 
@@ -108,7 +140,13 @@ impl ProviderProcessService {
                     )?;
                 }
                 ProviderRunState::Running => {
-                    self.park_run(sessions, &request.session_id, active_run_id)?;
+                    let outcome =
+                        self.park_run_provider_only(&request.session_id, active_run_id)?;
+                    clear_active_run_session_pointer(
+                        sessions,
+                        &request.session_id,
+                        outcome.run().id(),
+                    )?;
                 }
                 ProviderRunState::Parked => {
                     sessions.set_active_provider_run(&request.session_id, None)?;
@@ -152,22 +190,11 @@ impl ProviderProcessService {
         Ok(run)
     }
 
-    pub fn park_run(
+    pub(crate) fn park_run_provider_only(
         &mut self,
-        sessions: &mut SessionService,
         session_id: &str,
         run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let session = sessions.get_session(session_id)?;
-
-        if session.active_provider_run_id() != Some(run_id) {
-            return Err(DaemonError::InconsistentActiveProviderRun {
-                session_id: session_id.to_string(),
-                active_provider_run_id: session.active_provider_run_id().map(str::to_owned),
-                requested_provider_run_id: run_id.to_string(),
-            });
-        }
-
+    ) -> Result<ProviderRunParkedOutcome, DaemonError> {
         let run_snapshot = self.get_run(run_id)?;
 
         if run_snapshot.session_id() != session_id {
@@ -190,9 +217,8 @@ impl ProviderProcessService {
 
         let run = self.get_run_mut(run_id)?;
         run.mark_parked();
-        sessions.set_active_provider_run(session_id, None)?;
 
-        Ok(run.clone())
+        Ok(ProviderRunParkedOutcome { run: run.clone() })
     }
 
     pub fn resume_run(
@@ -208,7 +234,8 @@ impl ProviderProcessService {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             if active_run_id != run_id {
-                self.park_run(sessions, session_id, active_run_id)?;
+                let outcome = self.park_run_provider_only(session_id, active_run_id)?;
+                clear_active_run_session_pointer(sessions, session_id, outcome.run().id())?;
             }
         }
 
@@ -1086,6 +1113,32 @@ mod tests {
         assert!(!outcome.already_ended);
         assert_eq!(outcome.run().id(), run.id());
         assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
+        );
+    }
+
+    #[test]
+    fn provider_only_park_run_returns_outcome_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let outcome = providers
+            .park_run_provider_only(session.id(), run.id())
+            .expect("provider-only park should succeed");
+
+        assert_eq!(outcome.run().id(), run.id());
+        assert_eq!(outcome.run().state(), ProviderRunState::Parked);
         assert_eq!(
             sessions
                 .get_session(session.id())

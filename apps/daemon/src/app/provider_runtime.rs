@@ -125,7 +125,7 @@ impl<'a> ProviderProcessTracker<'a> {
                     .providers
                     .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
                         self.app,
                         run.session_id(),
                         outcome.run().id(),
@@ -339,10 +339,10 @@ impl ProviderRunLivenessState {
         ) {
             return Ok(());
         }
-        Self::sync_ended_provider_run_session_pointer(app, session_id, provider_run_id)
+        Self::clear_active_provider_run_session_pointer(app, session_id, provider_run_id)
     }
 
-    fn sync_ended_provider_run_session_pointer(
+    fn clear_active_provider_run_session_pointer(
         app: &mut DaemonApp,
         session_id: &str,
         provider_run_id: &str,
@@ -666,7 +666,7 @@ impl DaemonApp {
                     .providers
                     .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
                         self,
                         run.session_id(),
                         outcome.run().id(),
@@ -768,7 +768,7 @@ impl DaemonApp {
             .providers
             .terminate_run_provider_only(started.run.session_id(), started.run.id())
         {
-            ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
                 self,
                 started.run.session_id(),
                 outcome.run().id(),
@@ -903,7 +903,7 @@ impl DaemonApp {
                     .providers
                     .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
                         self,
                         run.session_id(),
                         outcome.run().id(),
@@ -960,12 +960,15 @@ impl DaemonApp {
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
             {
-                let parked_run = self.providers.park_run(
-                    &mut self.sessions,
+                let outcome = self
+                    .providers
+                    .park_run_provider_only(session_id, current_active_run_id)?;
+                ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                    self,
                     session_id,
-                    current_active_run_id,
+                    outcome.run().id(),
                 )?;
-                self.update_provider_run_projection(parked_run);
+                self.update_provider_run_projection(outcome.into_run());
             }
         }
 
@@ -1035,12 +1038,15 @@ impl DaemonApp {
                         if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
                             && active_run.state() == ProviderRunState::Running
                         {
-                            let parked_run = self.providers.park_run(
-                                &mut self.sessions,
+                            let outcome = self
+                                .providers
+                                .park_run_provider_only(session_id, current_active_run_id)?;
+                            ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                                self,
                                 session_id,
-                                current_active_run_id,
+                                outcome.run().id(),
                             )?;
-                            self.update_provider_run_projection(parked_run);
+                            self.update_provider_run_projection(outcome.into_run());
                         }
                     }
                 }
