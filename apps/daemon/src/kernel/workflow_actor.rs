@@ -23,7 +23,7 @@ struct WorkflowCommandEnvelope {
 
 #[derive(Clone)]
 pub(crate) struct WorkflowRuntime {
-    app: Arc<Mutex<DaemonApp>>,
+    store: WorkflowRuntimeStore,
     queue_limit: usize,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -36,8 +36,20 @@ impl WorkflowRuntime {
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
+        Self::with_store(
+            WorkflowRuntimeStore::new(app),
+            session_projection,
+            agent_runtime_projection,
+        )
+    }
+
+    pub(crate) fn with_store(
+        store: WorkflowRuntimeStore,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+    ) -> Self {
         Self {
-            app,
+            store,
             queue_limit: WORKFLOW_COMMAND_QUEUE_LIMIT,
             session_projection,
             agent_runtime_projection,
@@ -96,7 +108,7 @@ impl WorkflowRuntime {
         let (tx, rx) = mpsc::channel(self.queue_limit);
         lanes.insert(session_id.to_string(), tx.clone());
         tokio::spawn(run_workflow_command_lane(
-            Arc::clone(&self.app),
+            self.store.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
             session_id.to_string(),
@@ -132,15 +144,45 @@ impl WorkflowRuntime {
     }
 }
 
-async fn run_workflow_command_lane(
+#[derive(Clone)]
+pub(crate) struct WorkflowRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
+}
+
+impl WorkflowRuntimeStore {
+    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
+        Self { app }
+    }
+
+    async fn execute_request(
+        &self,
+        request: LocalDaemonRequest,
+        session_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let mut app = self.app.lock().await;
+        let result = execute_workflow_runtime_request(&mut app, request);
+        let projected_session = if let Ok(response) = result.as_ref() {
+            workflow_response_session(response)
+                .or_else(|| app.local_api_session_snapshot(session_id).ok())
+        } else {
+            None
+        };
+        (result, projected_session)
+    }
+}
+
+async fn run_workflow_command_lane(
+    store: WorkflowRuntimeStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     session_id: String,
     mut rx: mpsc::Receiver<WorkflowCommandEnvelope>,
 ) {
     let executor = WorkflowRuntimeCommandExecutor::new(
-        app,
+        store,
         session_projection,
         agent_runtime_projection,
         session_id.clone(),
@@ -162,7 +204,7 @@ async fn run_workflow_command_lane(
 
 #[derive(Clone)]
 struct WorkflowRuntimeCommandExecutor {
-    app: Arc<Mutex<DaemonApp>>,
+    store: WorkflowRuntimeStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     session_id: String,
@@ -170,13 +212,13 @@ struct WorkflowRuntimeCommandExecutor {
 
 impl WorkflowRuntimeCommandExecutor {
     fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        store: WorkflowRuntimeStore,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
         session_id: String,
     ) -> Self {
         Self {
-            app,
+            store,
             session_projection,
             agent_runtime_projection,
             session_id,
@@ -187,17 +229,8 @@ impl WorkflowRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (result, projected_session) = {
-            let mut app = self.app.lock().await;
-            let result = execute_workflow_runtime_request(&mut app, request);
-            let projected_session = if let Ok(response) = result.as_ref() {
-                workflow_response_session(response)
-                    .or_else(|| app.local_api_session_snapshot(&self.session_id).ok())
-            } else {
-                None
-            };
-            (result, projected_session)
-        };
+        let (result, projected_session) =
+            self.store.execute_request(request, &self.session_id).await;
         if let Some(session) = projected_session {
             self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
