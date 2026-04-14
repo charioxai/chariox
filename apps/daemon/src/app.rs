@@ -148,10 +148,6 @@ impl DaemonApp {
         KernelSessionService::new(self)
     }
 
-    pub(crate) fn kernel_workflows(&mut self) -> KernelWorkflowService<'_> {
-        KernelWorkflowService::new(self)
-    }
-
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
         attachment_id
             .chars()
