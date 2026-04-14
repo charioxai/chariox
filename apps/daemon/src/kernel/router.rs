@@ -1630,27 +1630,63 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
 
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::KernelCommand;
     use crate::kernel::router::CommandRouter;
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, CancelActivePromptRequest,
-        CompletePromptRequest, ConfigureRelayRequest, CreateWorkflowRequest,
-        CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
-        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
-        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
-        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
-        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        PumpTerminalOutputRequest, RelayStatusRequest, ResizeTerminalRequest,
-        ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
-        SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
-        UpdateSessionConfigRequest,
+        CompletePromptRequest, CreateWorkflowRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
+        GetDaemonHealthRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
+        GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+        GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
+        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
+        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
+        RelayStatusRequest, ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
+        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
+        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
-    use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun};
+    use crate::provider::{
+        LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo, RuntimeProviderRun,
+    };
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
+
+    fn spawn_test_agent(
+        app: &mut DaemonApp,
+        session_id: &str,
+        alias: &str,
+        provider: &str,
+    ) -> crate::agent::AgentInstance {
+        app.spawn_agent(CreateAgentRequest::new(session_id, provider).with_alias(alias))
+            .expect("agent should spawn")
+    }
+
+    fn launch_test_provider(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        model: &str,
+    ) -> RuntimeProviderRun {
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(session_id, adapter_key, provider, "default", model)
+                    .with_agent_id(agent_id),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(provider_run.clone());
+        provider_run
+    }
+
+    fn focus_test_agent(app: &mut DaemonApp, session_id: &str, agent_id: &str) {
+        app.kernel_sessions()
+            .execute_request(focus_request(session_id, agent_id))
+            .expect("focus should succeed");
+    }
 
     #[tokio::test]
     async fn pending_provider_launch_cleanup_does_not_wait_for_app_lock_when_projection_is_cold() {
@@ -1817,18 +1853,14 @@ mod tests {
             "slow history entry",
             &[],
         );
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -1920,18 +1952,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -2039,21 +2067,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let second_agent = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.clone(),
-                alias: Some("reviewer".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("spawn should succeed")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected spawn response"),
-        };
+        let second_agent = spawn_test_agent(&mut app, &session_id, "reviewer", "claude-code");
         assert_ne!(first_agent.id(), second_agent.id());
 
         let app = Arc::new(Mutex::new(app));
@@ -2647,18 +2661,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
         let focus_request = focus_request(&session_id, &agent_id);
@@ -2913,18 +2923,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
         let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -2996,18 +3002,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
         let prompt_request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -3072,18 +3074,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3148,33 +3146,15 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let focused_agent = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.clone(),
-                alias: Some("focused".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("focused agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected spawn response"),
-        };
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(focused_agent.id().to_string()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        let focused_agent = spawn_test_agent(&mut app, &session_id, "focused", "claude-code");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            focused_agent.id(),
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3255,18 +3235,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3381,18 +3357,14 @@ mod tests {
 
         {
             let mut app = app.lock().await;
-            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session_id.clone(),
-                    agent_id: Some(spawned_agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider run should launch");
+            launch_test_provider(
+                &mut app,
+                &session_id,
+                spawned_agent.id(),
+                "dev-stub",
+                "claude-code",
+                "sonnet",
+            );
         }
 
         let app_guard = app.lock().await;
@@ -3464,18 +3436,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3808,18 +3776,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3915,18 +3879,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3998,36 +3958,17 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let spawned_agent = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.clone(),
-                alias: Some("worker".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected spawn response"),
-        };
+        let spawned_agent = spawn_test_agent(&mut app, &session_id, "worker", "claude-code");
         let spawned_agent_id = spawned_agent.id().to_string();
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(spawned_agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
-        app.handle_local_request(focus_request(&session_id, &default_agent_id))
-            .expect("default agent should regain focus");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &spawned_agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
+        focus_test_agent(&mut app, &session_id, &default_agent_id);
         let idle_session_snapshot = app
             .local_api_session_snapshot(&session_id)
             .expect("idle session snapshot should be available");
@@ -4118,18 +4059,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -4233,36 +4170,17 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let spawned_agent = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.clone(),
-                alias: Some("worker".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected spawn response"),
-        };
+        let spawned_agent = spawn_test_agent(&mut app, &session_id, "worker", "claude-code");
         let spawned_agent_id = spawned_agent.id().to_string();
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(spawned_agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
-        app.handle_local_request(focus_request(&session_id, &default_agent_id))
-            .expect("default agent should regain focus");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &spawned_agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
+        focus_test_agent(&mut app, &session_id, &default_agent_id);
         let idle_session_snapshot = app
             .local_api_session_snapshot(&session_id)
             .expect("idle session snapshot should be available");
@@ -4909,18 +4827,14 @@ mod tests {
                     format!("worktree-{idx}"),
                 ))
                 .expect("session should be created");
-            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: provider.to_string(),
-                    account_profile: "default".to_string(),
-                    model: model.to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider run should launch");
+            launch_test_provider(
+                &mut app,
+                session.id(),
+                agent.id(),
+                "dev-stub",
+                provider,
+                model,
+            );
         }
 
         let filtered = app
@@ -4969,18 +4883,14 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        launch_test_provider(
+            &mut app,
+            &session_id,
+            &agent_id,
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        );
         app.list_provider_processes(None)
             .expect("process list should warm projection");
         app.teardown_provider_processes(None)
@@ -5164,11 +5074,9 @@ mod tests {
             default: Default::default(),
             connected: vec!["codex".to_string()],
         });
-        app.handle_local_request(LocalDaemonRequest::ConfigureRelay(ConfigureRelayRequest {
-            relay_url: None,
-            relay_token: None,
-        }))
-        .expect("relay configure should invalidate provider catalog projection");
+        app.configure_relay(None, None)
+            .expect("relay configure should invalidate provider catalog projection");
+        app.invalidate_provider_catalog_projection();
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -5751,25 +5659,16 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let provider_run_id = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session_id.clone(),
-                    agent_id: Some(agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider run should launch")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => {
-                provider_run.id().to_string()
-            }
-            _ => panic!("unexpected launch response"),
-        };
+        let provider_run_id = launch_test_provider(
+            &mut app,
+            &session_id,
+            agent.id(),
+            "dev-stub",
+            "claude-code",
+            "sonnet",
+        )
+        .id()
+        .to_string();
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
