@@ -154,16 +154,16 @@ impl WorkflowRuntimeStore {
         Self { app }
     }
 
-    async fn execute_request(
+    async fn execute_operation(
         &self,
-        request: LocalDaemonRequest,
         session_id: &str,
+        operation: impl FnOnce(&mut DaemonApp) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
         let mut app = self.app.lock().await;
-        let result = execute_workflow_runtime_request(&mut app, request);
+        let result = operation(&mut app);
         let projected_session = if let Ok(response) = result.as_ref() {
             workflow_response_session(response)
                 .or_else(|| app.local_api_session_snapshot(session_id).ok())
@@ -229,8 +229,12 @@ impl WorkflowRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (result, projected_session) =
-            self.store.execute_request(request, &self.session_id).await;
+        let (result, projected_session) = self
+            .store
+            .execute_operation(&self.session_id, move |app| {
+                execute_workflow_command_mutation(app, request)
+            })
+            .await;
         if let Some(session) = projected_session {
             self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
@@ -239,7 +243,7 @@ impl WorkflowRuntimeCommandExecutor {
     }
 }
 
-pub(crate) fn execute_workflow_runtime_request(
+fn execute_workflow_command_mutation(
     app: &mut DaemonApp,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
