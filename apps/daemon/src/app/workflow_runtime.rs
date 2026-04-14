@@ -1,4 +1,4 @@
-use crate::app::DaemonApp;
+use crate::app::{provider_runtime::ProviderProcessTracker, DaemonApp};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::session::{
@@ -998,7 +998,7 @@ impl DaemonApp {
                 let run = self
                     .providers
                     .terminate_run(&mut self.sessions, session_id, run.id())?;
-                let _ = self.remove_tracked_provider_process_for_run(run.id());
+                let _ = ProviderProcessTracker::new(self).remove_run(run.id());
             }
         }
         Ok(())

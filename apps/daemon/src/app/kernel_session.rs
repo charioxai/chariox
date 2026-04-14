@@ -292,7 +292,7 @@ impl<'a> KernelSessionService<'a> {
             .map(|run| run.id().to_string())
             .collect::<Vec<_>>();
         for run in terminated_runs {
-            self.app.remove_tracked_provider_process_for_run(run.id())?;
+            super::provider_runtime::ProviderProcessTracker::new(self.app).remove_run(run.id())?;
         }
 
         let removed_agents = self.app.agents.remove_session_agents(session_id);

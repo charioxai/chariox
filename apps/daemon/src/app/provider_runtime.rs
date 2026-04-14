@@ -20,6 +20,74 @@ pub(crate) struct StartedProviderLaunch {
     previous_active_run_id: Option<String>,
 }
 
+pub(crate) struct ProviderProcessTracker<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderProcessTracker<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn register_managed_run(
+        &mut self,
+        run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let process_key = self.app.pty.process_key(run.id())?;
+        let pid = self.app.pty.process_id(run.id())?;
+        let process_id = format!("managed:{}:{}", run.provider(), process_key);
+        let entry = self
+            .app
+            .tracked_provider_processes
+            .entry(process_key.clone())
+            .or_insert_with(|| TrackedProviderProcess {
+                process_id: process_id.clone(),
+                pid,
+                endpoint_mode: run.endpoint_mode(),
+                process_label: run.process_label().to_string(),
+                started_at_ms: run.started_at_ms(),
+                owner_provider_run_ids: Vec::new(),
+            });
+        entry.pid = pid.or(entry.pid);
+        if !entry.owner_provider_run_ids.iter().any(|id| id == run.id()) {
+            entry.owner_provider_run_ids.push(run.id().to_string());
+        }
+        self.app
+            .tracked_provider_run_processes
+            .insert(run.id().to_string(), process_key);
+        Ok(())
+    }
+
+    pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        let process_key = self
+            .app
+            .tracked_provider_run_processes
+            .get(provider_run_id)
+            .cloned()
+            .or_else(|| self.app.pty.process_key(provider_run_id).ok());
+        let removed = self.app.pty.remove_process(provider_run_id)?;
+        let Some(process_key) = process_key else {
+            return Ok(removed);
+        };
+        self.app
+            .tracked_provider_run_processes
+            .remove(provider_run_id);
+        let should_remove_entry =
+            if let Some(entry) = self.app.tracked_provider_processes.get_mut(&process_key) {
+                entry
+                    .owner_provider_run_ids
+                    .retain(|id| id != provider_run_id);
+                entry.owner_provider_run_ids.is_empty()
+            } else {
+                false
+            };
+        if should_remove_entry {
+            self.app.tracked_provider_processes.remove(&process_key);
+        }
+        Ok(removed)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ProviderRunExitPromptSettlement {
     FinalizeCancellation,
@@ -60,7 +128,7 @@ impl ProviderRunLivenessProcesses {
         app: &mut DaemonApp,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        app.remove_tracked_provider_process_for_run(provider_run_id)
+        ProviderProcessTracker::new(app).remove_run(provider_run_id)
     }
 }
 
@@ -228,62 +296,6 @@ impl DaemonApp {
         Ok(())
     }
 
-    fn register_managed_provider_process(
-        &mut self,
-        run: &RuntimeProviderRun,
-    ) -> Result<(), DaemonError> {
-        let process_key = self.pty.process_key(run.id())?;
-        let pid = self.pty.process_id(run.id())?;
-        let process_id = format!("managed:{}:{}", run.provider(), process_key);
-        let entry = self
-            .tracked_provider_processes
-            .entry(process_key.clone())
-            .or_insert_with(|| TrackedProviderProcess {
-                process_id: process_id.clone(),
-                pid,
-                endpoint_mode: run.endpoint_mode(),
-                process_label: run.process_label().to_string(),
-                started_at_ms: run.started_at_ms(),
-                owner_provider_run_ids: Vec::new(),
-            });
-        entry.pid = pid.or(entry.pid);
-        if !entry.owner_provider_run_ids.iter().any(|id| id == run.id()) {
-            entry.owner_provider_run_ids.push(run.id().to_string());
-        }
-        self.tracked_provider_run_processes
-            .insert(run.id().to_string(), process_key);
-        Ok(())
-    }
-
-    pub(crate) fn remove_tracked_provider_process_for_run(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let process_key = self
-            .tracked_provider_run_processes
-            .get(provider_run_id)
-            .cloned()
-            .or_else(|| self.pty.process_key(provider_run_id).ok());
-        let removed = self.pty.remove_process(provider_run_id)?;
-        let Some(process_key) = process_key else {
-            return Ok(removed);
-        };
-        self.tracked_provider_run_processes.remove(provider_run_id);
-        let should_remove_entry =
-            if let Some(entry) = self.tracked_provider_processes.get_mut(&process_key) {
-                entry
-                    .owner_provider_run_ids
-                    .retain(|id| id != provider_run_id);
-                entry.owner_provider_run_ids.is_empty()
-            } else {
-                false
-            };
-        if should_remove_entry {
-            self.tracked_provider_processes.remove(&process_key);
-        }
-        Ok(removed)
-    }
-
     pub(crate) fn start_provider_launch(
         &mut self,
         mut request: LaunchProviderRequest,
@@ -419,7 +431,7 @@ impl DaemonApp {
                 }
                 return Err(error);
             }
-            self.register_managed_provider_process(&run)?;
+            ProviderProcessTracker::new(self).register_managed_run(&run)?;
         }
         self.update_provider_run_projection(run.clone());
         Ok(StartedProviderLaunch {
@@ -473,7 +485,7 @@ impl DaemonApp {
                 error
             ),
         );
-        let _ = self.remove_tracked_provider_process_for_run(started.run.id());
+        let _ = ProviderProcessTracker::new(self).remove_run(started.run.id());
         self.providers.clear_runtime(started.run.id());
         if let Ok(terminated_run) = self.providers.terminate_run(
             &mut self.sessions,
@@ -613,7 +625,7 @@ impl DaemonApp {
                 }
                 return Err(error);
             }
-            self.register_managed_provider_process(&run)?;
+            ProviderProcessTracker::new(self).register_managed_run(&run)?;
         }
         self.providers.initialize_runtime(&run)?;
         let run = self.providers.get_run(run.id())?;
@@ -768,7 +780,7 @@ impl DaemonApp {
                 {
                     self.update_provider_run_projection(terminated_run);
                 }
-                let _ = self.remove_tracked_provider_process_for_run(run.id());
+                let _ = ProviderProcessTracker::new(self).remove_run(run.id());
             }
         }
         self.update_provider_process_projection(self.provider_process_snapshot());
