@@ -297,7 +297,7 @@ async fn handle_incoming_envelope(
             encrypted_request,
         } => {
             let relay_response =
-                handle_daemon_peer_request(app, outgoing_tx, encrypted_request).await;
+                handle_daemon_peer_request(app, router, outgoing_tx, encrypted_request).await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonIncomingPeerResponse {
@@ -536,6 +536,7 @@ struct RelayPeerResponseEnvelope {
 
 async fn handle_daemon_peer_request(
     app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
@@ -746,12 +747,9 @@ async fn handle_daemon_peer_request(
             tool_name,
             arguments,
         } => {
-            let handled = {
-                let mut app = app.lock().await;
-                crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
-                    &mut app, context, tool_name, arguments,
-                )
-            };
+            let handled = router
+                .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+                .await;
             match handled {
                 Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
                 Err(error) => {

@@ -266,6 +266,18 @@ impl CommandRouter {
         )
     }
 
+    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
+        &self,
+        context: crate::execution_lease::RemoteWorkflowTurnContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
+            &mut app, context, tool_name, arguments,
+        )
+    }
+
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,
