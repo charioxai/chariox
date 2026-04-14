@@ -351,7 +351,8 @@ pub fn dispatch_runtime_tool_call(
         &call.context.workflow_node_run_id,
         WorkflowRuntimeToolCallEvent::new(canonical_tool_name, arguments_json, result_json, ok),
     );
-    let _ = app.publish_session_projection(&call.context.session_id);
+    let _ =
+        crate::app::KernelSessionReadService::new(app).session_snapshot(&call.context.session_id);
 
     result
 }

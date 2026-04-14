@@ -862,7 +862,8 @@ impl DaemonApp {
                 previous_active_run_id,
             );
         }
-        let _ = self.publish_session_projection(started.run.session_id());
+        let _ = crate::app::KernelSessionReadService::new(self)
+            .session_snapshot(started.run.session_id());
     }
 
     fn finish_provider_launch_success(
@@ -872,7 +873,7 @@ impl DaemonApp {
         let run = self.providers.mark_run_running(run.id())?;
         self.sessions
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
-        self.publish_session_projection(run.session_id())?;
+        crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
         crate::logging::info_with_fields(
             "daemon.app",
             "initializing provider runtime",
@@ -899,7 +900,7 @@ impl DaemonApp {
                 run.resume_state().clone(),
             )?;
             let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
-            self.publish_session_projection(run.session_id())?;
+            crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());
         Ok(run)

@@ -121,7 +121,7 @@ impl DaemonApp {
                 &agent_id,
                 &provider_run_id,
             );
-            let _ = self.publish_session_projection(&session_id);
+            let _ = crate::app::KernelSessionReadService::new(self).session_snapshot(&session_id);
             self.record_notice(
                 &session_id,
                 Some(&provider_run_id),
@@ -175,7 +175,8 @@ impl DaemonApp {
         let _ =
             self.prompt_owner_cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
         flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
-        let _ = self.publish_session_projection(&dispatch.session_id);
+        let _ =
+            crate::app::KernelSessionReadService::new(self).session_snapshot(&dispatch.session_id);
         self.record_notice(
             &dispatch.session_id,
             Some(&dispatch.provider_run_id),
@@ -207,7 +208,8 @@ impl DaemonApp {
                     &dispatch.session_id,
                     &dispatch.agent_id,
                 );
-                let _ = self.publish_session_projection(&dispatch.session_id);
+                let _ = crate::app::KernelSessionReadService::new(self)
+                    .session_snapshot(&dispatch.session_id);
                 self.record_notice(
                     &dispatch.session_id,
                     None,

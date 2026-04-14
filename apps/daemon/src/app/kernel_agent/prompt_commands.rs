@@ -127,7 +127,7 @@ impl<'a> KernelAgentService<'a> {
         let outcome = submitted.outcome;
         self.finish_compat_prompt_dispatch(submitted.dispatch)?;
         self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch)?;
-        self.app.publish_session_projection(session_id)?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(outcome)
     }
 
@@ -548,8 +548,8 @@ impl<'a> KernelAgentService<'a> {
             self.app
                 .sync_focused_provider_run_if_idle(&completion.session_id)?;
         }
-        self.app
-            .publish_session_projection(&completion.session_id)?;
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&completion.session_id)?;
 
         Ok(PromptCompletion {
             completed: completion.completed,
@@ -647,8 +647,8 @@ impl<'a> KernelAgentService<'a> {
             self.app
                 .sync_focused_provider_run_if_idle(&completion.session_id)?;
         }
-        self.app
-            .publish_session_projection(&completion.session_id)?;
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&completion.session_id)?;
 
         Ok(PromptCompletion {
             completed: completion.completed,
@@ -833,7 +833,8 @@ impl<'a> KernelAgentService<'a> {
                 cancelled.provider_run_id
             ),
         );
-        let session = self.app.publish_session_projection(&cancelled.session_id)?;
+        let session = crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&cancelled.session_id)?;
 
         Ok(KernelPromptCancellation {
             cancellation: PromptCancellation {
@@ -991,7 +992,8 @@ impl<'a> KernelAgentService<'a> {
                     self.app
                         .start_workflow_prompt_from_runtime(session_id, &active)?;
                     flow_control::note_prompt_started(self.app, &provider_run_id);
-                    self.app.publish_session_projection(session_id)?;
+                    crate::app::KernelSessionReadService::new(self.app)
+                        .session_snapshot(session_id)?;
                     return Ok(Some(active));
                 }
                 self.app.record_notice(
@@ -1045,7 +1047,7 @@ impl<'a> KernelAgentService<'a> {
             self.app
                 .start_workflow_prompt_from_runtime(session_id, &active)?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
-            self.app.publish_session_projection(session_id)?;
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
     }
@@ -1148,7 +1150,7 @@ impl<'a> KernelAgentService<'a> {
             }
             self.app
                 .start_workflow_prompt_from_runtime(session_id, &active)?;
-            self.app.publish_session_projection(session_id)?;
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
     }
@@ -1302,7 +1304,7 @@ impl<'a> KernelAgentService<'a> {
             };
             self.app
                 .record_notice(session_id, None, recipients, message);
-            self.app.publish_session_projection(session_id)?;
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(PromptCancellation {
                 prompt,
                 started_next: None,
@@ -1360,7 +1362,7 @@ impl<'a> KernelAgentService<'a> {
         };
         self.app
             .record_notice(session_id, Some(&provider_run_id), recipients, message);
-        self.app.publish_session_projection(session_id)?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
 
         Ok(PromptCancellation {
             prompt,
@@ -1400,7 +1402,7 @@ impl<'a> KernelAgentService<'a> {
         if started_next.is_none() {
             self.app.sync_focused_provider_run_if_idle(session_id)?;
         }
-        self.app.publish_session_projection(session_id)?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
 
         Ok(PromptCancellation {
             prompt,

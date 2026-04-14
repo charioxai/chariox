@@ -167,7 +167,7 @@ impl DaemonApp {
 
     pub(crate) fn retry_blocked_workflow_claims_from_runtime(&mut self) {
         for session_id in WorkflowProgression::retry_blocked_claims(self) {
-            let _ = self.publish_session_projection(&session_id);
+            let _ = crate::app::KernelSessionReadService::new(self).session_snapshot(&session_id);
         }
     }
 

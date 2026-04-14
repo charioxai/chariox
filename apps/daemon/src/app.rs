@@ -295,16 +295,6 @@ impl DaemonApp {
         self.agent_runtime_projection.remove_session(session_id);
     }
 
-    pub(crate) fn publish_session_projection(
-        &self,
-        session_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
-        let session =
-            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
-        self.update_session_projection(session.clone());
-        Ok(session)
-    }
-
     pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
         self.history_projection.clone()
     }

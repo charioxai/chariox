@@ -244,7 +244,7 @@ fn dispatch_prepared_workflow_node_prompt(
                     "Workflow run `{workflow_run_id}` blocked node `{node_id}` on a workspace claim: {error}"
                 ),
             );
-            let _ = app.publish_session_projection(session_id);
+            let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
             return Ok(());
         }
         Err(error) => return Err(error),
