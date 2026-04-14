@@ -1,20 +1,15 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::Mutex;
 
 use crate::app::{
-    serialize_remote_prompt_attachments, DaemonApp, KernelPreparedPromptSubmission,
-    KernelPromptAbortDispatch, KernelPromptCancellation, KernelPromptDispatch,
-    KernelPromptSubmission, KernelRemotePromptDispatch,
+    DaemonApp, KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
+    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
 use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::provider::ProviderRunOperationLanes;
 use crate::session::{PromptCompletion, PromptQueueItem};
-use crate::transport::relay_client::send_peer_request_via_temporary_connection;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
-use arroba_relay::protocol::ClientTarget;
 
 #[derive(Clone)]
 pub(crate) struct AgentPromptCommandService {
@@ -40,95 +35,17 @@ impl AgentPromptDispatchContext {
     }
 
     fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
-        let app = self.state.app();
-        let provider_runtime_lanes = self.provider_runtime_lanes.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            let mut app = app.lock().await;
-            if let Err(error) = app.enqueue_kernel_prompt_dispatch(&dispatch) {
-                let _ = app.fail_kernel_prompt_dispatch(dispatch, error);
-            }
-        });
+        self.state
+            .spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
     }
 
     fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {
-        let app = self.state.app();
-        tokio::spawn(async move {
-            let config = {
-                let app = app.lock().await;
-                app.config().clone()
-            };
-            let attachments = dispatch.attachments.clone();
-            let serialized_attachments = match tokio::task::spawn_blocking(move || {
-                serialize_remote_prompt_attachments(&attachments)
-            })
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => Err(DaemonError::LocalTransport {
-                    operation: "serialize remote prompt attachments",
-                    message: error.to_string(),
-                }),
-            };
-            let result = match serialized_attachments {
-                Ok(attachments) => {
-                    match send_peer_request_via_temporary_connection(
-                        &config,
-                        ClientTarget {
-                            daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::SubmitLeasedPrompt {
-                            leased_agent_id: dispatch.leased_agent_id.clone(),
-                            prompt: dispatch.prompt.clone(),
-                            attachments,
-                            workflow_context: dispatch.workflow_context.clone(),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                            provider_run_id, ..
-                        }) => Ok(provider_run_id),
-                        Ok(other) => Err(DaemonError::LocalTransport {
-                            operation: "submit remote prepared prompt",
-                            message: format!("unexpected remote prompt response: {other:?}"),
-                        }),
-                        Err(error) => Err(error),
-                    }
-                }
-                Err(error) => Err(error),
-            };
-            let mut app = app.lock().await;
-            let _ = app.finish_kernel_remote_prompt_dispatch(dispatch, result);
-        });
+        self.state.spawn_remote_prompt_dispatch(dispatch);
     }
 
     fn spawn_prompt_abort(&self, dispatch: KernelPromptAbortDispatch) {
-        let app = self.state.app();
-        let provider_runtime_lanes = self.provider_runtime_lanes.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            loop {
-                let mut app = app.lock().await;
-                match app.enqueue_kernel_prompt_abort(&dispatch) {
-                    Ok(()) => break,
-                    Err(_) if app.structured_prompt_io_in_flight(&dispatch.provider_run_id) => {
-                        drop(app);
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                        continue;
-                    }
-                    Err(error) => {
-                        let _ = app.fail_kernel_prompt_abort(dispatch, error);
-                        return;
-                    }
-                }
-            }
-        });
+        self.state
+            .spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
     }
 }
 

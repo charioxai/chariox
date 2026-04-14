@@ -5,6 +5,9 @@ use tokio::sync::Mutex;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
+use crate::provider::ProviderRunOperationLanes;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use arroba_relay::protocol::ClientTarget;
 
 #[derive(Clone)]
 pub(crate) struct CompatibilityRuntimeState {
@@ -18,6 +21,10 @@ impl CompatibilityRuntimeState {
 
     pub(crate) fn app(&self) -> Arc<Mutex<DaemonApp>> {
         Arc::clone(&self.app)
+    }
+
+    pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
+        self.with_app_mut(|app| app.config().clone()).await
     }
 
     pub(crate) async fn with_app_mut<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
@@ -58,6 +65,117 @@ impl CompatibilityRuntimeState {
         .await
     }
 
+    pub(crate) fn spawn_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            state
+                .with_agent_prompt_mut(|prompt| {
+                    if let Err(error) = prompt.enqueue_prompt_dispatch(&dispatch) {
+                        let _ = prompt.fail_prompt_dispatch(dispatch, error);
+                    }
+                })
+                .await;
+        });
+    }
+
+    pub(crate) fn spawn_remote_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let config = state.config_snapshot().await;
+            let attachments = dispatch.attachments.clone();
+            let serialized_attachments = match tokio::task::spawn_blocking(move || {
+                crate::app::serialize_remote_prompt_attachments(&attachments)
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(DaemonError::LocalTransport {
+                    operation: "serialize remote prompt attachments",
+                    message: error.to_string(),
+                }),
+            };
+            let result = match serialized_attachments {
+                Ok(attachments) => {
+                    match crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        &config,
+                        ClientTarget {
+                            daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::SubmitLeasedPrompt {
+                            leased_agent_id: dispatch.leased_agent_id.clone(),
+                            prompt: dispatch.prompt.clone(),
+                            attachments,
+                            workflow_context: dispatch.workflow_context.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                            provider_run_id, ..
+                        }) => Ok(provider_run_id),
+                        Ok(other) => Err(DaemonError::LocalTransport {
+                            operation: "submit remote prepared prompt",
+                            message: format!("unexpected remote prompt response: {other:?}"),
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            state
+                .with_agent_prompt_mut(|prompt| {
+                    let _ = prompt.finish_remote_prompt_dispatch(dispatch, result);
+                })
+                .await;
+        });
+    }
+
+    pub(crate) fn spawn_prompt_abort(
+        &self,
+        dispatch: crate::app::KernelPromptAbortDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            loop {
+                let outcome = state
+                    .with_agent_prompt_mut(|prompt| match prompt.enqueue_prompt_abort(&dispatch) {
+                        Ok(()) => PromptAbortDispatchOutcome::Done,
+                        Err(_)
+                            if prompt.structured_prompt_io_in_flight(&dispatch.provider_run_id) =>
+                        {
+                            PromptAbortDispatchOutcome::Retry
+                        }
+                        Err(error) => {
+                            let _ = prompt.fail_prompt_abort(dispatch.clone(), error);
+                            PromptAbortDispatchOutcome::Done
+                        }
+                    })
+                    .await;
+                match outcome {
+                    PromptAbortDispatchOutcome::Done => break,
+                    PromptAbortDispatchOutcome::Retry => {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }
+            }
+        });
+    }
+
     pub(crate) async fn with_workflow_mut<R>(
         &self,
         operation: impl FnOnce(&mut WorkflowRuntimeCompatibilityContext<'_>) -> R,
@@ -68,6 +186,11 @@ impl CompatibilityRuntimeState {
         })
         .await
     }
+}
+
+enum PromptAbortDispatchOutcome {
+    Done,
+    Retry,
 }
 
 pub(crate) struct SessionRuntimeCompatibilityContext<'a> {
@@ -146,6 +269,49 @@ impl<'a> AgentPromptCompatibilityContext<'a> {
             provider_run_id.as_deref(),
             next_queued_prompt,
         )
+    }
+
+    pub(crate) fn enqueue_prompt_dispatch(
+        &mut self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<(), DaemonError> {
+        self.app.enqueue_kernel_prompt_dispatch(dispatch)
+    }
+
+    pub(crate) fn fail_prompt_dispatch(
+        &mut self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.app.fail_kernel_prompt_dispatch(dispatch, error)
+    }
+
+    pub(crate) fn finish_remote_prompt_dispatch(
+        &mut self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        result: Result<String, DaemonError>,
+    ) -> Result<(), DaemonError> {
+        self.app
+            .finish_kernel_remote_prompt_dispatch(dispatch, result)
+    }
+
+    pub(crate) fn enqueue_prompt_abort(
+        &mut self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) -> Result<(), DaemonError> {
+        self.app.enqueue_kernel_prompt_abort(dispatch)
+    }
+
+    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        self.app.structured_prompt_io_in_flight(provider_run_id)
+    }
+
+    pub(crate) fn fail_prompt_abort(
+        &mut self,
+        dispatch: crate::app::KernelPromptAbortDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.app.fail_kernel_prompt_abort(dispatch, error)
     }
 }
 

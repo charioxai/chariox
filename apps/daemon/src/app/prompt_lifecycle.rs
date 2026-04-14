@@ -183,6 +183,7 @@ pub(crate) struct KernelPromptCancellation {
     pub(crate) dispatch: Option<KernelPromptAbortDispatch>,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
