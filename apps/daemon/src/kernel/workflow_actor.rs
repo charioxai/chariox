@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app::{DaemonApp, KernelWorkflowService};
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
@@ -169,39 +169,6 @@ type WorkflowStoreExecutionResult = (
     Option<crate::session::RuntimeSession>,
 );
 
-struct WorkflowRuntimeContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> WorkflowRuntimeContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn execute_service_operation(
-        &mut self,
-        session_id: &str,
-        operation: impl FnOnce(
-            &mut KernelWorkflowService<'_>,
-        ) -> Result<LocalDaemonResponse, DaemonError>,
-    ) -> WorkflowStoreExecutionResult {
-        let result = {
-            let mut workflows = KernelWorkflowService::new(self.app);
-            operation(&mut workflows)
-        };
-        let projected_session = if let Ok(response) = result.as_ref() {
-            workflow_response_session(response).or_else(|| {
-                crate::app::KernelSessionReadService::new(self.app)
-                    .session_snapshot(session_id)
-                    .ok()
-            })
-        } else {
-            None
-        };
-        (result, projected_session)
-    }
-}
-
 impl WorkflowRuntimeStore {
     pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
         Self { state }
@@ -211,13 +178,11 @@ impl WorkflowRuntimeStore {
         &self,
         session_id: &str,
         operation: impl FnOnce(
-            &mut KernelWorkflowService<'_>,
+            &mut crate::app::KernelWorkflowService<'_>,
         ) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> WorkflowStoreExecutionResult {
         self.state
-            .with_app_mut(|app| {
-                WorkflowRuntimeContext::new(app).execute_service_operation(session_id, operation)
-            })
+            .with_workflow_mut(|workflow| workflow.execute_service_operation(session_id, operation))
             .await
     }
 
@@ -807,42 +772,6 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::ListWorkflowWatchdogs(request) => request.session_id.clone(),
         _ => return None,
     })
-}
-
-fn workflow_response_session(
-    response: &LocalDaemonResponse,
-) -> Option<crate::session::RuntimeSession> {
-    match response {
-        LocalDaemonResponse::WorkflowCreated { session, .. }
-        | LocalDaemonResponse::WorkflowAliased { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointAliased { session, .. }
-        | LocalDaemonResponse::WorkflowEndpointBound { session, .. }
-        | LocalDaemonResponse::WorkflowNodeAdded { session, .. }
-        | LocalDaemonResponse::WorkflowNodeRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }
-        | LocalDaemonResponse::WorkflowEdgeRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
-        | LocalDaemonResponse::WorkflowRunQueued { session, .. }
-        | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
-        | LocalDaemonResponse::WorkflowRunResumed { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowWatchdogRemoved { session, .. }
-        | LocalDaemonResponse::WorkflowFlushContextUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { session, .. }
-        | LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchRemoved { session, .. }
-        | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
-        | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

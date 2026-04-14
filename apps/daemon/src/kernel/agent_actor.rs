@@ -526,29 +526,6 @@ pub(crate) struct AgentRuntimeStore {
     state: CompatibilityRuntimeState,
 }
 
-struct AgentRuntimeContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> AgentRuntimeContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn active_prompt_agent_id(&mut self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        self.app.prompt_owner_active_prompt_agent_id(session_id)
-    }
-
-    fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        Ok(self
-            .app
-            .sessions()
-            .get_session(session_id)?
-            .focused_agent_id()
-            .map(str::to_string))
-    }
-}
-
 impl AgentRuntimeStore {
     pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
         Self { state }
@@ -559,13 +536,13 @@ impl AgentRuntimeStore {
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
         self.state
-            .with_app_mut(|app| AgentRuntimeContext::new(app).active_prompt_agent_id(session_id))
+            .with_agent_mut(|agent| agent.active_prompt_agent_id(session_id))
             .await
     }
 
     async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
         self.state
-            .with_app_mut(|app| AgentRuntimeContext::new(app).focused_agent_id(session_id))
+            .with_agent_mut(|agent| agent.focused_agent_id(session_id))
             .await
     }
 

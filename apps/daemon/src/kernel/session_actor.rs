@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::{CompatibilityRuntimeState, SessionRuntimeCompatibilityContext};
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
@@ -343,154 +343,6 @@ pub(crate) struct SessionRuntimeStore {
     state: CompatibilityRuntimeState,
 }
 
-struct SessionRuntimeContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> SessionRuntimeContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn resolve_session_ref_id(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<String, DaemonError> {
-        crate::app::KernelSessionService::new(self.app)
-            .resolve_session_ref_id(session_ref, workspace_id)
-    }
-
-    fn attachment_session_id(&mut self, attachment_id: &str) -> Result<String, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).attachment_session_id(attachment_id)
-    }
-
-    fn session_snapshot(
-        &mut self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).session_snapshot(session_id)
-    }
-
-    fn create_session_response(
-        &mut self,
-        request: CreateSessionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).create_session_response(request)
-    }
-
-    fn attach(
-        &mut self,
-        request: crate::attachment::AttachRequest,
-    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).attach(request)
-    }
-
-    fn detach(
-        &mut self,
-        attachment_id: &str,
-    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).detach(attachment_id)
-    }
-
-    fn focus_agent(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).focus_agent(session_id, agent_id)
-    }
-
-    fn cycle_agent_focus(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).cycle_agent_focus(session_id)
-    }
-
-    fn resize_terminal(
-        &mut self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), DaemonError> {
-        crate::app::KernelSessionService::new(self.app).resize_terminal(session_id, cols, rows)
-    }
-
-    fn ensure_attachment_in_session(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<(), DaemonError> {
-        let _ = crate::app::KernelSessionService::new(self.app)
-            .ensure_attachment_in_session(session_id, attachment_id)?;
-        Ok(())
-    }
-
-    fn drain_notice_records(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
-        self.app
-            .terminal()
-            .drain_notice_records(session_id, attachment_id)
-    }
-
-    fn update_session_config(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        values: std::collections::BTreeMap<String, String>,
-        requires_idle: bool,
-    ) -> Result<crate::session::SessionConfigState, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).update_session_config(
-            session_id,
-            attachment_id,
-            values,
-            requires_idle,
-        )
-    }
-
-    fn alias_session(
-        &mut self,
-        session_id: &str,
-        alias: String,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).alias_session(session_id, alias)
-    }
-
-    fn spawn_agent(
-        &mut self,
-        request: CreateAgentRequest,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).spawn_agent(request)
-    }
-
-    fn destroy_agent(
-        &mut self,
-        agent_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).destroy_agent(agent_id)
-    }
-
-    fn end_session(
-        &mut self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).end_session(session_id)
-    }
-
-    fn delete_session_ref(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app)
-            .delete_session_ref(session_ref, workspace_id)
-    }
-}
-
 impl SessionRuntimeStore {
     pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
         Self { state }
@@ -502,33 +354,28 @@ impl SessionRuntimeStore {
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
         self.state
-            .with_app_mut(|app| {
-                SessionRuntimeContext::new(app).resolve_session_ref_id(session_ref, workspace_id)
-            })
+            .with_session_mut(|session| session.resolve_session_ref_id(session_ref, workspace_id))
             .await
     }
 
     async fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
         self.state
-            .with_app_mut(|app| {
-                SessionRuntimeContext::new(app).attachment_session_id(attachment_id)
-            })
+            .with_session_mut(|session| session.attachment_session_id(attachment_id))
             .await
     }
 
     async fn with_session_projection_action(
         &self,
         operation: impl FnOnce(
-            &mut SessionRuntimeContext<'_>,
+            &mut SessionRuntimeCompatibilityContext<'_>,
         ) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         self.state
-            .with_app_mut(|app| {
-                let mut context = SessionRuntimeContext::new(app);
-                let result = operation(&mut context);
+            .with_session_mut(|context| {
+                let result = operation(context);
                 let projection_action = if let Ok(response) = result.as_ref() {
                     session_response_projection_action(response).or_else(|| {
                         session_id_for_projection_refresh(&result)
