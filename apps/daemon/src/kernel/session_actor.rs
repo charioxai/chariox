@@ -1198,8 +1198,8 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let session_snapshot = app
-            .local_api_session_snapshot(session.id())
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
             .expect("session snapshot should be available");
 
         match session_response_projection_action(&LocalDaemonResponse::SessionAliased {
@@ -1480,8 +1480,8 @@ mod tests {
             outcome: crate::app::KernelAgentService::new(&mut app)
                 .submit_prompt(session.id(), attachment.id(), None, "hello", Vec::new())
                 .expect("prompt should start"),
-            session: app
-                .local_api_session_snapshot(session.id())
+            session: crate::app::KernelSessionReadService::new(&app)
+                .session_snapshot(session.id())
                 .expect("session snapshot should load"),
         };
 

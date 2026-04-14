@@ -3982,8 +3982,8 @@ mod tests {
             "sonnet",
         );
         focus_test_agent(&mut app, &session_id, &default_agent_id);
-        let idle_session_snapshot = app
-            .local_api_session_snapshot(&session_id)
+        let idle_session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("idle session snapshot should be available");
 
         let app = Arc::new(Mutex::new(app));
@@ -4194,8 +4194,8 @@ mod tests {
             "sonnet",
         );
         focus_test_agent(&mut app, &session_id, &default_agent_id);
-        let idle_session_snapshot = app
-            .local_api_session_snapshot(&session_id)
+        let idle_session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("idle session snapshot should be available");
 
         let app = Arc::new(Mutex::new(app));
@@ -5740,8 +5740,8 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let mut projected_session = app
-            .local_api_session_snapshot(&session_id)
+        let mut projected_session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("session snapshot should be available");
         let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
             "provider-run-parked",

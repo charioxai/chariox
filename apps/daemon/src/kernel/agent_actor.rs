@@ -682,8 +682,8 @@ mod tests {
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let session_snapshot = app
-            .local_api_session_snapshot(session.id())
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
             .expect("session projection fixture should be available");
         let agent_runtime_projection = AgentRuntimeProjectionStore::default();
         agent_runtime_projection.update_session(&session_snapshot);
@@ -716,8 +716,8 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let session_snapshot = app
-            .local_api_session_snapshot(session.id())
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
             .expect("session projection fixture should be available");
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update(session_snapshot);
@@ -776,8 +776,8 @@ mod tests {
         app.sessions_mut()
             .complete_active_prompt_only(session.id(), agent.id())
             .expect("test should clear only the compatibility mirror");
-        let session_snapshot = app
-            .local_api_session_snapshot(session.id())
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
             .expect("session snapshot should still be available");
         assert!(
             session_snapshot
@@ -852,8 +852,8 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let session_snapshot = app
-            .local_api_session_snapshot(session.id())
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
             .expect("session projection fixture should be available");
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update(session_snapshot);
@@ -949,8 +949,8 @@ mod tests {
             .expect("prompt submit should succeed");
         let response = LocalDaemonResponse::PromptSubmitted {
             outcome,
-            session: app
-                .local_api_session_snapshot(session.id())
+            session: crate::app::KernelSessionReadService::new(&app)
+                .session_snapshot(session.id())
                 .expect("session snapshot should load"),
         };
 

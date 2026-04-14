@@ -1440,8 +1440,8 @@ mod tests {
             "queued prompt",
         );
 
-        let session = app
-            .local_api_session_snapshot(&session_id)
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("session snapshot should load");
         let store = AgentRuntimeProjectionStore::default();
         store.update_session(&session);
@@ -1506,8 +1506,8 @@ mod tests {
             &first_agent_id,
             "first active",
         );
-        let first_only_snapshot = app
-            .local_api_session_snapshot(&session_id)
+        let first_only_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("first snapshot should load");
         submit_prompt(
             &mut app,
@@ -1516,8 +1516,8 @@ mod tests {
             &second_agent_id,
             "second active",
         );
-        let both_snapshot = app
-            .local_api_session_snapshot(&session_id)
+        let both_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("second snapshot should load");
 
         let store = AgentRuntimeProjectionStore::default();
@@ -1568,8 +1568,8 @@ mod tests {
             "queued prompt",
         );
 
-        let session = app
-            .local_api_session_snapshot(&session_id)
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("session snapshot should load");
         let session_store = SessionStateProjectionStore::default();
         let agent_store = AgentRuntimeProjectionStore::default();

@@ -299,7 +299,8 @@ impl DaemonApp {
         &self,
         session_id: &str,
     ) -> Result<RuntimeSession, DaemonError> {
-        let session = self.local_api_session_snapshot(session_id)?;
+        let session =
+            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
         self.update_session_projection(session.clone());
         Ok(session)
     }
@@ -532,13 +533,6 @@ impl DaemonApp {
         workspace_id: Option<&str>,
     ) -> Result<RuntimeSession, DaemonError> {
         self.sessions.resolve_session_ref(session_ref, workspace_id)
-    }
-
-    pub(crate) fn local_api_session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
-        crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)
     }
 
     pub fn run_shell_command(

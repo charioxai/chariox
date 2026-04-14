@@ -200,8 +200,8 @@ mod tests {
                 Vec::new(),
             )
             .expect("prompt should submit");
-        let session = app
-            .local_api_session_snapshot(&session_id)
+        let session = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(&session_id)
             .expect("session snapshot should load");
         app.update_session_projection(session);
         app.sessions_mut()

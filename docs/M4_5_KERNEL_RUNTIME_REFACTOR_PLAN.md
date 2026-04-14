@@ -236,7 +236,7 @@ Status as of 2026-04-13:
 - Landed: runtime integration tests now use public `TransportService` prompt/output pump helpers instead of direct `DaemonApp` output-pump methods, keeping external drills off private app facade methods while preserving direct pump coverage.
 - Landed: terminal output pumping now enters through a dedicated `TerminalOutputExecutor` boundary instead of embedding provider-output pumping inside `CommandRouter`. The executor still uses compatibility-backed provider/session stores, but it isolates the active `PumpTerminalOutput` ownership split target.
 - Landed: non-local-api actor/projection/scheduler/router/transport setup tests no longer use `DaemonApp::handle_local_request` as a convenience facade for agent/session/projection/flow-control/relay-client/MCP/workflow-runtime/router setup. They now use explicit app/service APIs or router-facing request surfaces, and the catch-all dispatcher no longer exists.
-- Landed: Phase 8 production session snapshot consumers in prompt lifecycle, workflow-runtime fallback, terminal-output refresh, terminal history fanout, session service ports, and provider-process teardown now enter through `KernelSessionReadService`. `DaemonApp::local_api_session_snapshot` remains only as a compatibility shim for tests and remaining migration boundaries.
+- Landed: Phase 8 production session snapshot consumers in prompt lifecycle, workflow-runtime fallback, terminal-output refresh, terminal history fanout, session service ports, and provider-process teardown now enter through `KernelSessionReadService`; the remaining test fixtures were migrated too, and the `DaemonApp::local_api_session_snapshot` compatibility shim was removed.
 
 Still open:
 
