@@ -1,8 +1,10 @@
+mod owner;
 mod prompt_runtime;
 mod service;
 mod store;
 mod types;
 
+pub(crate) use owner::{SessionStateOwner, SessionStateReader};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowLaunchAdmission, WorkflowOutputValidationWarning, WorkflowWatchdogTickPlan,

@@ -10,7 +10,10 @@ use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::provider::{AgentEndpointMode, ProviderRunState};
-use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, SessionStatus};
+use crate::session::{
+    CreateSessionRequest, RuntimeSession, SessionConfigState, SessionStateOwner,
+    SessionStateReader, SessionStatus,
+};
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
@@ -32,7 +35,7 @@ impl<'a> KernelSessionReadService<'a> {
     }
 
     pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        let mut session = self.app.sessions().get_session(session_id)?;
+        let mut session = SessionStateReader::new(self.app.sessions()).get_session(session_id)?;
         let agents = self.app.agents().get_session_agents(session_id);
         session.set_agents(agents);
         self.app.project_session_runtime_view(&mut session);
@@ -61,7 +64,7 @@ impl<'a> KernelSessionReadService<'a> {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityAuthorizationContext, DaemonError> {
-        let session = self.app.sessions().get_session(session_id)?;
+        let session = SessionStateReader::new(self.app.sessions()).get_session(session_id)?;
         let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
         if !matches!(
             attachment.capability_level(),
@@ -80,7 +83,7 @@ impl<'a> KernelSessionReadService<'a> {
     }
 
     pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        let sessions = self.app.sessions().list_sessions();
+        let sessions = SessionStateReader::new(self.app.sessions()).list_sessions();
         let sessions_with_agents: Vec<_> = sessions
             .into_iter()
             .map(|mut session| {
@@ -98,9 +101,7 @@ impl<'a> KernelSessionReadService<'a> {
         &self,
         request: ResolveSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut session = self
-            .app
-            .sessions()
+        let mut session = SessionStateReader::new(self.app.sessions())
             .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
         let agents = self.app.agents().get_session_agents(session.id());
         session.set_agents(agents);
@@ -127,7 +128,7 @@ impl<'a> KernelSessionReadService<'a> {
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
-        let session = self.app.sessions().get_session(session_id)?;
+        let session = SessionStateReader::new(self.app.sessions()).get_session(session_id)?;
         let entries = self.app.history_store().load(&session)?;
         self.app
             .session_history_projection_store()
@@ -145,7 +146,7 @@ impl<'a> KernelSessionService<'a> {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
-        let session = self.app.sessions.create_session(request)?;
+        let session = SessionStateOwner::new(&mut self.app.sessions).create_session(request)?;
         let agent_request =
             CreateAgentRequest::new(session.id(), "default").with_worktree(session.worktree_id());
         let agent = self
@@ -194,9 +195,7 @@ impl<'a> KernelSessionService<'a> {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        Ok(self
-            .app
-            .sessions
+        Ok(SessionStateReader::new(self.app.sessions())
             .resolve_session_ref(session_ref, workspace_id)?
             .id()
             .to_string())
@@ -235,7 +234,8 @@ impl<'a> KernelSessionService<'a> {
         session_id: &str,
         alias: String,
     ) -> Result<RuntimeSession, DaemonError> {
-        let _session = self.app.sessions.assign_session_alias(session_id, alias)?;
+        let _session = SessionStateOwner::new(&mut self.app.sessions)
+            .assign_session_alias(session_id, alias)?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 
@@ -248,16 +248,18 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<SessionConfigState, DaemonError> {
         KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
-        let (_session, config) =
-            self.app
-                .sessions
-                .update_config(session_id, attachment_id, values, requires_idle)?;
+        let (_session, config) = SessionStateOwner::new(&mut self.app.sessions).update_config(
+            session_id,
+            attachment_id,
+            values,
+            requires_idle,
+        )?;
 
         let recipient_attachment_ids = self.app.other_attachment_ids(session_id, attachment_id);
         if !recipient_attachment_ids.is_empty() {
             let active_provider_run_id = self
                 .app
-                .sessions
+                .sessions()
                 .get_session(session_id)?
                 .active_provider_run_id()
                 .map(str::to_string);
@@ -302,7 +304,7 @@ impl<'a> KernelSessionService<'a> {
         if session_agents.is_empty() {
             let worktree_id = self
                 .app
-                .sessions
+                .sessions()
                 .get_session(&session_id)?
                 .worktree_id()
                 .to_string();
@@ -394,7 +396,8 @@ impl<'a> KernelSessionService<'a> {
         let removed_queued_prompt_count = effect
             .removed_queued_prompt_count
             .max(owner_removed_queued_prompt_count);
-        let session_after_detach = self.app.sessions.get_session(attachment.session_id())?;
+        let session_after_detach =
+            SessionStateReader::new(self.app.sessions()).get_session(attachment.session_id())?;
 
         if removed_queued_prompt_count > 0 {
             self.app.record_notice(
@@ -444,15 +447,12 @@ impl<'a> KernelSessionService<'a> {
                         .app
                         .providers
                         .park_run_provider_only(attachment.session_id(), &active_provider_run_id)?;
-                    if self
-                        .app
-                        .sessions
+                    if SessionStateReader::new(self.app.sessions())
                         .get_session(attachment.session_id())?
                         .active_provider_run_id()
                         == Some(outcome.run().id())
                     {
-                        self.app
-                            .sessions
+                        SessionStateOwner::new(&mut self.app.sessions)
                             .set_active_provider_run(attachment.session_id(), None)?;
                     }
                     self.app.update_provider_run_projection(outcome.into_run());
@@ -483,11 +483,11 @@ impl<'a> KernelSessionService<'a> {
     }
 
     pub(crate) fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        let session = self.app.sessions.get_session(session_id)?;
+        let session = SessionStateReader::new(self.app.sessions()).get_session(session_id)?;
 
         if session.status() == SessionStatus::Ended {
             self.app.prompt_owner_remove_session(session_id);
-            return self.app.sessions.end_session(session_id);
+            return SessionStateOwner::new(&mut self.app.sessions).end_session(session_id);
         }
 
         let removed_attachments = self.app.attachments.remove_session_attachments(session_id);
@@ -501,15 +501,12 @@ impl<'a> KernelSessionService<'a> {
             .map(|outcome| outcome.run().id().to_string())
             .collect::<Vec<_>>();
         for outcome in terminated_runs.into_runs() {
-            if self
-                .app
-                .sessions
+            if SessionStateReader::new(self.app.sessions())
                 .get_session(session_id)?
                 .active_provider_run_id()
                 == Some(outcome.run().id())
             {
-                self.app
-                    .sessions
+                SessionStateOwner::new(&mut self.app.sessions)
                     .set_active_provider_run(session_id, None)?;
             }
             let run = outcome.into_run();
@@ -528,7 +525,7 @@ impl<'a> KernelSessionService<'a> {
             }
         }
         self.app.prompt_owner_remove_session(session_id);
-        let mut ended = self.app.sessions.end_session(session_id)?;
+        let mut ended = SessionStateOwner::new(&mut self.app.sessions).end_session(session_id)?;
         ended.set_agents(removed_agents);
         crate::logging::info_with_fields(
             "daemon.session",
@@ -551,13 +548,12 @@ impl<'a> KernelSessionService<'a> {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<RuntimeSession, DaemonError> {
-        let session = self
-            .app
-            .sessions
+        let session = SessionStateReader::new(self.app.sessions())
             .resolve_session_ref(session_ref, workspace_id)?;
         let session_id = session.id().to_string();
         let ended = self.end_session(&session_id)?;
-        let mut deleted = self.app.sessions.delete_session(ended.id())?;
+        let mut deleted =
+            SessionStateOwner::new(&mut self.app.sessions).delete_session(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
         self.app.history_projection.remove(deleted.id());
         self.app.remove_session_projection(deleted.id());
@@ -619,7 +615,7 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(), DaemonError> {
         let provider_run_id = self
             .app
-            .sessions
+            .sessions()
             .get_session(session_id)?
             .active_provider_run_id()
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
