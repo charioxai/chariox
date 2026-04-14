@@ -1313,23 +1313,31 @@ async fn run_interactive_command_lane(
                 "agent_id": envelope.command.agent_id,
             }),
         );
-        let result = execute_interactive_request(&app, envelope.request).await;
+        let result = execute_interactive_request(&app, &envelope.command, envelope.request).await;
         let _ = envelope.result_tx.send(result);
     }
 }
 
 async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
+    command: &KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let mut app = app.lock().await;
-    if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
-        return result;
+    if SessionActor::is_session_interactive_command(&request) {
+        let mut app = app.lock().await;
+        return app.handle_session_request(request);
     }
-    if let Some(result) = AgentActor::handle_interactive_command(&mut app, request.clone()) {
-        return result;
+    if AgentActor::is_agent_interactive_command(&request) {
+        let mut app = app.lock().await;
+        return app.handle_agent_request(request);
     }
-    app.handle_local_request(request)
+    Err(DaemonError::LocalTransport {
+        operation: "execute interactive kernel command",
+        message: format!(
+            "unsupported interactive command `{}` reached the legacy interactive lane",
+            command.command_type
+        ),
+    })
 }
 
 pub(crate) async fn execute_local_request_with_async_boundaries(
@@ -1906,6 +1914,39 @@ mod tests {
             router.session_projection.get(&session_id).is_some(),
             "session runtime should publish the created session projection"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_interactive_lane_rejects_unsupported_requests_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let app_guard = app.lock().await;
+
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let command =
+            KernelCommand::from_local_request("cmd-unsupported-interactive", None, None, &request);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        router
+            .interactive_tx
+            .try_send(super::InteractiveCommandEnvelope {
+                command,
+                request,
+                result_tx,
+            })
+            .expect("unsupported command should enter the legacy lane for rejection");
+
+        let result = timeout(Duration::from_millis(100), result_rx)
+            .await
+            .expect("unsupported command should not wait for the app lock")
+            .expect("unsupported command result should resolve");
+        drop(app_guard);
+
+        let error = result.expect_err("unsupported command should be rejected");
+        assert!(error
+            .to_string()
+            .contains("unsupported interactive command `daemon.health.get`"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

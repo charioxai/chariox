@@ -557,16 +557,6 @@ impl AgentActor {
                 | LocalDaemonRequest::CancelActivePrompt(_)
         )
     }
-
-    pub(crate) fn handle_interactive_command(
-        app: &mut DaemonApp,
-        request: LocalDaemonRequest,
-    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        if Self::is_agent_interactive_command(&request) {
-            return Some(app.handle_agent_request(request));
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -577,7 +567,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
-    use crate::kernel::agent_actor::{AgentActor, AgentRuntime};
+    use crate::kernel::agent_actor::AgentRuntime;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::prompt_state::PromptStateOwner;
     use crate::kernel::session_actor::FocusedAgentProjection;
@@ -834,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_prompt_submit_through_agent_actor_surface() {
+    fn handles_prompt_submit_through_agent_request_surface() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -870,18 +860,15 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
 
-        let response = AgentActor::handle_interactive_command(
-            &mut app,
-            LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        let response = app
+            .handle_agent_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: Some(agent.id().to_string()),
                 prompt: "hello".to_string(),
                 attachments: Vec::new(),
-            }),
-        )
-        .expect("actor should handle prompt submit")
-        .expect("prompt submit should succeed");
+            }))
+            .expect("prompt submit should succeed");
 
         match response {
             LocalDaemonResponse::PromptSubmitted {
@@ -901,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn handles_prompt_cancel_through_agent_actor_surface() {
+    fn handles_prompt_cancel_through_agent_request_surface() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -936,28 +923,23 @@ mod tests {
             LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
             _ => panic!("unexpected local response"),
         };
-        AgentActor::handle_interactive_command(
-            &mut app,
-            LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                target_agent_id: Some(agent.id().to_string()),
-                prompt: "hello".to_string(),
-                attachments: Vec::new(),
-            }),
-        )
-        .expect("actor should handle prompt submit")
+        app.handle_agent_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "hello".to_string(),
+            attachments: Vec::new(),
+        }))
         .expect("prompt submit should succeed");
 
-        let response = AgentActor::handle_interactive_command(
-            &mut app,
-            LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-            }),
-        )
-        .expect("actor should handle prompt cancel")
-        .expect("prompt cancel should succeed");
+        let response = app
+            .handle_agent_request(LocalDaemonRequest::CancelActivePrompt(
+                CancelActivePromptRequest {
+                    session_id: session.id().to_string(),
+                    attachment_id: attachment.id().to_string(),
+                },
+            ))
+            .expect("prompt cancel should succeed");
 
         match response {
             LocalDaemonResponse::PromptCancelled { cancellation } => {
