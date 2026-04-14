@@ -778,25 +778,6 @@ impl ProviderProcessService {
         Ok(())
     }
 
-    pub fn mark_run_ended(
-        &mut self,
-        sessions: &mut SessionService,
-        session_id: &str,
-        run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let active_run_id = sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_owned);
-        let outcome = self.mark_run_ended_provider_only(session_id, run_id)?;
-
-        if active_run_id.as_deref() == Some(run_id) {
-            sessions.set_active_provider_run(session_id, None)?;
-        }
-
-        Ok(outcome.into_run())
-    }
-
     pub(crate) fn mark_run_ended_provider_only(
         &mut self,
         session_id: &str,
