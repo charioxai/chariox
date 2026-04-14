@@ -199,11 +199,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let workflow = app
-                .sessions_mut()
-                .create_workflow(&request.session_id, request.alias)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
+            app.kernel_workflows().create_workflow(request)
         })
         .await
     }
@@ -211,13 +207,7 @@ impl WorkflowRuntimeStore {
     async fn alias_workflow(&self, request: AliasWorkflowRequest) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let workflow = app.sessions_mut().assign_workflow_alias(
-                &request.session_id,
-                &request.workflow_ref,
-                request.alias,
-            )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
+            app.kernel_workflows().alias_workflow(request)
         })
         .await
     }
@@ -225,9 +215,7 @@ impl WorkflowRuntimeStore {
     async fn list_workflows(&self, request: ListWorkflowsRequest) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::WorkflowsListed {
-                workflows: app.sessions().list_workflows(&request.session_id)?,
-            })
+            app.kernel_workflows().list_workflows(request)
         })
         .await
     }
@@ -238,11 +226,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::WorkflowResolved {
-                workflow: app
-                    .sessions()
-                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
-            })
+            app.kernel_workflows().resolve_workflow(request)
         })
         .await
     }
@@ -253,21 +237,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let endpoint = app.sessions_mut().create_workflow_endpoint(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.entry_node_id,
-                request.alias,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowEndpointCreated {
-                endpoint,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().create_workflow_endpoint(request)
         })
         .await
     }
@@ -278,21 +248,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let endpoint = app.sessions_mut().assign_workflow_endpoint_alias(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-                request.alias,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowEndpointAliased {
-                endpoint,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().alias_workflow_endpoint(request)
         })
         .await
     }
@@ -303,21 +259,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let endpoint = app.sessions_mut().bind_workflow_endpoint(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-                &request.entry_node_id,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowEndpointBound {
-                endpoint,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().bind_workflow_endpoint(request)
         })
         .await
     }
@@ -328,30 +270,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let agent_exists = app
-                .agents()
-                .get_session_agents(&request.session_id)
-                .into_iter()
-                .any(|agent| agent.id() == request.agent_id);
-            if !agent_exists {
-                return Err(DaemonError::AgentNotFound {
-                    agent_id: request.agent_id,
-                });
-            }
-            let node = app.sessions_mut().add_workflow_node(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.agent_id,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowNodeAdded {
-                node,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().add_workflow_node(request)
         })
         .await
     }
@@ -362,20 +281,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app.sessions_mut().remove_workflow_node(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.node_id,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowNodeRemoved {
-                node,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().remove_workflow_node(request)
         })
         .await
     }
@@ -386,21 +292,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app.sessions_mut().update_workflow_node_instructions(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.node_id,
-                request.instructions.clone(),
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
-                node,
-                workflow,
-                session,
-            })
+            app.kernel_workflows()
+                .update_workflow_node_instructions(request)
         })
         .await
     }
@@ -411,21 +304,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app.sessions_mut().set_workflow_node_can_complete_run(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.node_id,
-                request.can_complete_workflow_run,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
-                node,
-                workflow,
-                session,
-            })
+            app.kernel_workflows()
+                .set_workflow_node_can_complete_run(request)
         })
         .await
     }
@@ -436,25 +316,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app
-                .sessions_mut()
-                .set_workflow_node_can_emit_intermediate_output(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.node_id,
-                    request.can_emit_intermediate_workflow_run_output,
-                )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(
-                LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
-                    node,
-                    workflow,
-                    session,
-                },
-            )
+            app.kernel_workflows()
+                .set_workflow_node_can_emit_intermediate_output(request)
         })
         .await
     }
@@ -465,25 +328,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app
-                .sessions_mut()
-                .set_workflow_node_intermediate_output_schema_ref(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.node_id,
-                    request.intermediate_output_schema_ref.clone(),
-                )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(
-                LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
-                    node,
-                    workflow,
-                    session,
-                },
-            )
+            app.kernel_workflows()
+                .set_workflow_node_intermediate_output_schema(request)
         })
         .await
     }
@@ -494,21 +340,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let node = app.sessions_mut().set_workflow_node_max_turns(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.node_id,
-                request.max_turns,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
-                node,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().set_workflow_node_max_turns(request)
         })
         .await
     }
@@ -519,23 +351,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let edge = app.sessions_mut().add_workflow_edge(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.from_node_id,
-                &request.to_node_id,
-                request.output_schema_ref.clone(),
-                request.validation_policy,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowEdgeAdded {
-                edge,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().add_workflow_edge(request)
         })
         .await
     }
@@ -546,20 +362,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let edge = app.sessions_mut().remove_workflow_edge(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.edge_id,
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowEdgeRemoved {
-                edge,
-                workflow,
-                session,
-            })
+            app.kernel_workflows().remove_workflow_edge(request)
         })
         .await
     }
@@ -786,15 +589,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let workflow = app
-                .sessions_mut()
-                .set_workflow_flush_agent_context_before_run(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    request.flush_agent_context_before_run,
-                )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
+            app.kernel_workflows().set_workflow_flush_context(request)
         })
         .await
     }
@@ -805,13 +600,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let workflow = app.sessions_mut().set_workflow_run_output_schema_ref(
-                &request.session_id,
-                &request.workflow_ref,
-                request.run_output_schema_ref.clone(),
-            )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
+            app.kernel_workflows()
+                .set_workflow_run_output_schema(request)
         })
         .await
     }
@@ -822,15 +612,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let workflow = app
-                .sessions_mut()
-                .set_workflow_intermediate_output_schema_ref(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    request.intermediate_output_schema_ref.clone(),
-                )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
+            app.kernel_workflows()
+                .set_workflow_intermediate_output_schema(request)
         })
         .await
     }
@@ -841,12 +624,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let session = app
-                .sessions_mut()
-                .set_workflow_launch_policy(&request.session_id, request.policy)?;
-            let mut session = session;
-            session.set_agents(app.agents().get_session_agents(&request.session_id));
-            Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
+            app.kernel_workflows().set_workflow_launch_policy(request)
         })
         .await
     }
@@ -988,11 +766,8 @@ async fn run_workflow_command_lane(
     session_id: String,
     mut rx: mpsc::Receiver<WorkflowCommandEnvelope>,
 ) {
-    let executor = WorkflowRuntimeCommandExecutor::new(
-        store,
-        session_projection,
-        agent_runtime_projection,
-    );
+    let executor =
+        WorkflowRuntimeCommandExecutor::new(store, session_projection, agent_runtime_projection);
     while let Some(envelope) = rx.recv().await {
         crate::logging::info_with_fields(
             "daemon.kernel_workflow_actor",

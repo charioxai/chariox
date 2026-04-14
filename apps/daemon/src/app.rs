@@ -9,6 +9,7 @@ use tokio::runtime::{Handle, Runtime};
 
 mod kernel_agent;
 mod kernel_session;
+mod kernel_workflow;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 pub(crate) mod provider_output;
@@ -71,6 +72,7 @@ use crate::transport::relay_peer::{
 };
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::KernelSessionService;
+pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use provider_runtime::StartedProviderLaunch;
 
 pub struct DaemonApp {
@@ -144,6 +146,10 @@ impl DaemonApp {
 
     pub(crate) fn kernel_sessions(&mut self) -> KernelSessionService<'_> {
         KernelSessionService::new(self)
+    }
+
+    pub(crate) fn kernel_workflows(&mut self) -> KernelWorkflowService<'_> {
+        KernelWorkflowService::new(self)
     }
 
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
