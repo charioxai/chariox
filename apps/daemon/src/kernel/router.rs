@@ -31,9 +31,11 @@ use crate::local::provider_requests::{
 };
 use crate::local::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
-    LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatus,
-    RenameRemoteMachineRequest, TeardownProviderProcessesRequest,
+    GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
+    GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
+    ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
+    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
@@ -424,12 +426,7 @@ impl CommandRouter {
                     self.dispatch_interactive(command, request).await
                 }
                 KernelCommandPriority::Normal | KernelCommandPriority::Background => {
-                    execute_local_request_with_async_boundaries(
-                        &self.app,
-                        self.capability_health.clone(),
-                        request,
-                    )
-                    .await
+                    self.dispatch_normal_or_background(command, request).await
                 }
             },
         };
@@ -633,6 +630,96 @@ impl CommandRouter {
         if let Ok(mut app) = self.app.try_lock() {
             app.invalidate_provider_catalog_cache();
         }
+    }
+
+    async fn execute_cold_list_sessions_request(
+        &self,
+        request: ListSessionsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.handle_local_request(LocalDaemonRequest::ListSessions(request))
+    }
+
+    async fn execute_cold_resolve_session_request(
+        &self,
+        request: ResolveSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.handle_local_request(LocalDaemonRequest::ResolveSession(request))
+    }
+
+    async fn execute_cold_get_session_state_request(
+        &self,
+        request: GetSessionStateRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.handle_local_request(LocalDaemonRequest::GetSessionState(request))
+    }
+
+    async fn execute_cold_list_agents_request(
+        &self,
+        request: ListAgentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.handle_local_request(LocalDaemonRequest::ListAgents(request))
+    }
+
+    async fn execute_get_provider_run_request(
+        &self,
+        request: GetProviderRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.handle_local_request(LocalDaemonRequest::GetProviderRun(request))
+    }
+
+    async fn execute_get_provider_auth_status_request(
+        request: GetProviderAuthStatusRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        tokio::task::spawn_blocking(move || provider_auth_status_response(request))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "get provider auth status",
+                message: error.to_string(),
+            })?
+    }
+
+    async fn execute_start_provider_login_request(
+        request: StartProviderLoginRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        tokio::task::spawn_blocking(move || start_provider_login_response(request))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "start provider login",
+                message: error.to_string(),
+            })?
+    }
+
+    async fn execute_logout_provider_request(
+        &self,
+        request: LogoutProviderRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let response = tokio::task::spawn_blocking(move || logout_provider_response(request))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "logout provider",
+                message: error.to_string(),
+            })??;
+        self.invalidate_provider_catalog_caches().await;
+        Ok(response)
+    }
+
+    async fn execute_capability_request(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        execute_capability_request(&self.app, self.capability_health.clone(), request)
+            .await
+            .unwrap_or_else(|| {
+                Err(DaemonError::LocalTransport {
+                    operation: "route capability request",
+                    message: "capability request was not handled by executor".to_string(),
+                })
+            })
     }
 
     async fn execute_configure_relay_request(
@@ -961,6 +1048,161 @@ impl CommandRouter {
                         operation: "await interactive kernel command",
                         message: error.to_string(),
                     })?;
+            }
+        }
+    }
+
+    async fn dispatch_normal_or_background(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request {
+            LocalDaemonRequest::LaunchProviderRun(request) => {
+                execute_launch_provider_run_request(&self.app, request).await
+            }
+            LocalDaemonRequest::ListSessions(request) => {
+                self.execute_cold_list_sessions_request(request).await
+            }
+            LocalDaemonRequest::ResolveSession(request) => {
+                self.execute_cold_resolve_session_request(request).await
+            }
+            LocalDaemonRequest::GetSessionState(request) => {
+                self.execute_cold_get_session_state_request(request).await
+            }
+            LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
+                projection: self.daemon_health_projection(0).await,
+            }),
+            LocalDaemonRequest::GetProviderRun(request) => {
+                self.execute_get_provider_run_request(request).await
+            }
+            LocalDaemonRequest::GetProviderCatalog(_) => {
+                self.projected_provider_catalog_response().await
+            }
+            LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
+                provider_command_catalogs_response()
+            }
+            LocalDaemonRequest::RelayStatus(_) => self.projected_relay_status_response().await,
+            LocalDaemonRequest::ConfigureRelay(request) => {
+                self.execute_configure_relay_request(request).await
+            }
+            LocalDaemonRequest::ListRemoteMachines(_) => {
+                self.projected_remote_machines_response().await
+            }
+            LocalDaemonRequest::ListRemoteMachineKernels(request) => {
+                self.projected_remote_machine_kernels_response(request.machine_ref)
+                    .await
+            }
+            LocalDaemonRequest::ApproveRemoteMachine(request) => {
+                self.execute_approve_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::ForgetRemoteMachine(request) => {
+                self.execute_forget_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::RenameRemoteMachine(request) => {
+                self.execute_rename_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::GetProviderAuthStatus(request) => {
+                Self::execute_get_provider_auth_status_request(request).await
+            }
+            LocalDaemonRequest::StartProviderLogin(request) => {
+                Self::execute_start_provider_login_request(request).await
+            }
+            LocalDaemonRequest::LogoutProvider(request) => {
+                self.execute_logout_provider_request(request).await
+            }
+            LocalDaemonRequest::ListProviderProcesses(request) => {
+                execute_list_provider_processes_request(&self.app, request).await
+            }
+            LocalDaemonRequest::TeardownProviderProcesses(request) => {
+                self.execute_teardown_provider_processes_request(request)
+                    .await
+            }
+            LocalDaemonRequest::GetSessionHistory(request) => {
+                self.execute_session_history_request(request).await
+            }
+            LocalDaemonRequest::PumpTerminalOutput(request) => {
+                self.execute_terminal_output_request(request).await
+            }
+            request @ (LocalDaemonRequest::RunShellCommand(_)
+            | LocalDaemonRequest::ReadDirectoryTree(_)
+            | LocalDaemonRequest::ReadFile(_)
+            | LocalDaemonRequest::EditFile(_)
+            | LocalDaemonRequest::InspectGit(_)
+            | LocalDaemonRequest::CaptureScreenshot(_)
+            | LocalDaemonRequest::StoreTransferredFile(_)) => {
+                self.execute_capability_request(request).await
+            }
+            LocalDaemonRequest::SubmitPrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_submit(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::CompletePrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_complete(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::CancelActivePrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_cancel(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::ListAgents(request) => {
+                self.execute_cold_list_agents_request(request).await
+            }
+            request @ (LocalDaemonRequest::CreateWorkflow(_)
+            | LocalDaemonRequest::AliasWorkflow(_)
+            | LocalDaemonRequest::ListWorkflows(_)
+            | LocalDaemonRequest::ResolveWorkflow(_)
+            | LocalDaemonRequest::CreateWorkflowEndpoint(_)
+            | LocalDaemonRequest::AliasWorkflowEndpoint(_)
+            | LocalDaemonRequest::BindWorkflowEndpoint(_)
+            | LocalDaemonRequest::AddWorkflowNode(_)
+            | LocalDaemonRequest::RemoveWorkflowNode(_)
+            | LocalDaemonRequest::UpdateWorkflowNodeInstructions(_)
+            | LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(_)
+            | LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(_)
+            | LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(_)
+            | LocalDaemonRequest::SetWorkflowNodeMaxTurns(_)
+            | LocalDaemonRequest::AddWorkflowEdge(_)
+            | LocalDaemonRequest::RemoveWorkflowEdge(_)
+            | LocalDaemonRequest::InvokeWorkflowEndpoint(_)
+            | LocalDaemonRequest::ListWorkflowRuns(_)
+            | LocalDaemonRequest::GetWorkflowRun(_)
+            | LocalDaemonRequest::CancelWorkflowRun(_)
+            | LocalDaemonRequest::ResumeWorkflowRun(_)
+            | LocalDaemonRequest::CreateWorkflowWatchdog(_)
+            | LocalDaemonRequest::ListWorkflowWatchdogs(_)
+            | LocalDaemonRequest::SetWorkflowWatchdogEnabled(_)
+            | LocalDaemonRequest::RemoveWorkflowWatchdog(_)
+            | LocalDaemonRequest::SetWorkflowFlushContext(_)
+            | LocalDaemonRequest::SetWorkflowRunOutputSchema(_)
+            | LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(_)
+            | LocalDaemonRequest::SetWorkflowLaunchPolicy(_)
+            | LocalDaemonRequest::ListQueuedWorkflowLaunches(_)
+            | LocalDaemonRequest::RemoveQueuedWorkflowLaunch(_)
+            | LocalDaemonRequest::ClearQueuedWorkflowLaunches(_)
+            | LocalDaemonRequest::ValidateWorkflowOutput(_)
+            | LocalDaemonRequest::AckWorkflowTurn(_)) => {
+                self.workflow_runtime
+                    .dispatch_workflow_command(command, request)
+                    .await
+            }
+            request @ (LocalDaemonRequest::CreateSession(_)
+            | LocalDaemonRequest::AttachToSession(_)
+            | LocalDaemonRequest::DetachFromSession(_)
+            | LocalDaemonRequest::UpdateSessionConfig(_)
+            | LocalDaemonRequest::ResizeTerminal(_)
+            | LocalDaemonRequest::EndSession(_)
+            | LocalDaemonRequest::DeleteSession(_)
+            | LocalDaemonRequest::AliasSession(_)
+            | LocalDaemonRequest::SpawnAgent(_)
+            | LocalDaemonRequest::DestroyAgent(_)
+            | LocalDaemonRequest::FocusAgent(_)
+            | LocalDaemonRequest::CycleAgentFocus(_)
+            | LocalDaemonRequest::PollRuntimeNotices(_)) => {
+                self.dispatch_interactive(command, request).await
             }
         }
     }
@@ -1462,169 +1704,6 @@ async fn execute_interactive_request(
     })
 }
 
-pub(crate) async fn execute_local_request_with_async_boundaries(
-    app: &Arc<Mutex<DaemonApp>>,
-    capability_health: CapabilityExecutorHealthStore,
-    request: LocalDaemonRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    match request {
-        LocalDaemonRequest::RelayStatus(_) => {
-            let (config, relay_state) = {
-                let app = app.lock().await;
-                (app.config().clone(), app.relay_client_state())
-            };
-            let connected = relay_state.read().await.connected();
-            Ok(LocalDaemonResponse::RelayStatus {
-                status: RelayStatus {
-                    configured: config.relay_url.is_some() && config.relay_token.is_some(),
-                    connected,
-                    relay_url: config.relay_url,
-                    relay_token_configured: config.relay_token.is_some(),
-                    daemon_id: config.daemon_id,
-                    machine_id: config.host_machine_id,
-                    machine_alias: config.host_machine_alias,
-                },
-            })
-        }
-        LocalDaemonRequest::ListRemoteMachines(_) => {
-            let config = {
-                let app = app.lock().await;
-                app.config().clone()
-            };
-            let machines = crate::transport::relay_discovery::list_live_machines(&config).await?;
-            let machines = crate::local::provider_requests::remote_machine_records(
-                machines,
-                &config.host_machine_id,
-            );
-            Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
-        }
-        LocalDaemonRequest::ListRemoteMachineKernels(request) => {
-            let config = {
-                let app = app.lock().await;
-                app.config().clone()
-            };
-            let machine_ref =
-                crate::local::provider_requests::resolve_registered_or_raw_machine_ref(
-                    &request.machine_ref,
-                );
-            let kernels = crate::transport::relay_discovery::list_live_kernels_for_machine(
-                &config,
-                &machine_ref,
-            )
-            .await?;
-            Ok(LocalDaemonResponse::RemoteMachineKernelsListed {
-                machine_ref,
-                kernels,
-            })
-        }
-        LocalDaemonRequest::GetSessionHistory(request) => {
-            execute_session_history_request(app, request).await
-        }
-        LocalDaemonRequest::LaunchProviderRun(request) => {
-            execute_launch_provider_run_request(app, request).await
-        }
-        LocalDaemonRequest::GetProviderCatalog(_) => execute_provider_catalog_request(app).await,
-        LocalDaemonRequest::GetProviderCommandCatalogs(_) => provider_command_catalogs_response(),
-        LocalDaemonRequest::GetProviderAuthStatus(request) => {
-            tokio::task::spawn_blocking(move || provider_auth_status_response(request))
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "get provider auth status",
-                    message: error.to_string(),
-                })?
-        }
-        LocalDaemonRequest::StartProviderLogin(request) => {
-            tokio::task::spawn_blocking(move || start_provider_login_response(request))
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "start provider login",
-                    message: error.to_string(),
-                })?
-        }
-        LocalDaemonRequest::LogoutProvider(request) => {
-            let response = tokio::task::spawn_blocking(move || logout_provider_response(request))
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "logout provider",
-                    message: error.to_string(),
-                })??;
-            let mut app = app.lock().await;
-            app.invalidate_provider_catalog_cache();
-            Ok(response)
-        }
-        LocalDaemonRequest::ListProviderProcesses(request) => {
-            execute_list_provider_processes_request(app, request).await
-        }
-        LocalDaemonRequest::TeardownProviderProcesses(request) => {
-            execute_teardown_provider_processes_request(app, request).await
-        }
-        request if is_capability_request(&request) => {
-            execute_capability_request(app, capability_health, request)
-                .await
-                .unwrap_or_else(|| {
-                    Err(DaemonError::LocalTransport {
-                        operation: "route capability request",
-                        message: "capability request was not handled by executor".to_string(),
-                    })
-                })
-        }
-        request => {
-            if is_blocking_local_request(&request) {
-                let app = Arc::clone(app);
-                let handle = tokio::runtime::Handle::current();
-                return tokio::task::spawn_blocking(move || {
-                    handle.block_on(async move {
-                        let mut app = app.lock().await;
-                        app.handle_local_request(request)
-                    })
-                })
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "run blocking kernel request",
-                    message: error.to_string(),
-                })?;
-            }
-            let mut app = app.lock().await;
-            app.handle_local_request(request)
-        }
-    }
-}
-
-fn is_capability_request(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
-            | LocalDaemonRequest::ReadFile(_)
-            | LocalDaemonRequest::EditFile(_)
-            | LocalDaemonRequest::InspectGit(_)
-            | LocalDaemonRequest::CaptureScreenshot(_)
-            | LocalDaemonRequest::StoreTransferredFile(_)
-    )
-}
-
-async fn execute_provider_catalog_request(
-    app: &Arc<Mutex<DaemonApp>>,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let config = {
-        let app = app.lock().await;
-        if let Some(catalog) = app.cached_provider_catalog() {
-            return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
-        }
-        app.config().clone()
-    };
-
-    let catalog = tokio::task::spawn_blocking(move || load_provider_catalog(config))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "load provider catalog",
-            message: error.to_string(),
-        })??;
-    let mut app = app.lock().await;
-    app.cache_provider_catalog(catalog.clone());
-    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
-}
-
 async fn execute_launch_provider_run_request(
     app: &Arc<Mutex<DaemonApp>>,
     request: LaunchProviderRunRequest,
@@ -1688,66 +1767,6 @@ async fn execute_list_provider_processes_request(
     Ok(LocalDaemonResponse::ProviderProcessesListed { processes })
 }
 
-async fn execute_teardown_provider_processes_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: TeardownProviderProcessesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let mut app = app.lock().await;
-    let processes = app.teardown_provider_processes(request.provider.as_deref())?;
-    Ok(LocalDaemonResponse::ProviderProcessesTornDown { processes })
-}
-
-async fn execute_session_history_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: GetSessionHistoryRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let (history, session) = {
-        let app = app.lock().await;
-        let session = app.sessions().get_session(&request.session_id)?;
-        (app.history_store(), session)
-    };
-
-    tokio::task::spawn_blocking(move || {
-        let entries = history.load(&session)?;
-        let page = page_history_entries(
-            entries,
-            request.agent_id.as_deref(),
-            request.round_count,
-            request.max_chars,
-            request.before_entry_index,
-            request.before_entry_char_offset,
-        );
-        Ok(LocalDaemonResponse::SessionHistory {
-            entries: page.entries,
-            next_cursor: page.next_cursor,
-        })
-    })
-    .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "load session history",
-        message: error.to_string(),
-    })?
-}
-
-fn is_blocking_local_request(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)
-            | LocalDaemonRequest::GetProviderAuthStatus(_)
-            | LocalDaemonRequest::StartProviderLogin(_)
-            | LocalDaemonRequest::LogoutProvider(_)
-            | LocalDaemonRequest::GetSessionHistory(_)
-            | LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
-            | LocalDaemonRequest::ReadFile(_)
-            | LocalDaemonRequest::EditFile(_)
-            | LocalDaemonRequest::InspectGit(_)
-            | LocalDaemonRequest::CaptureScreenshot(_)
-            | LocalDaemonRequest::StoreTransferredFile(_)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1764,11 +1783,11 @@ mod tests {
         CompletePromptRequest, ConfigureRelayRequest, CreateWorkflowRequest,
         CycleAgentFocusRequest, DeleteSessionRequest, DestroyAgentRequest,
         DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
-        GetSessionHistoryRequest, GetSessionStateRequest, LaunchProviderRunRequest,
-        ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
-        ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+        GetProviderRunRequest, GetSessionHistoryRequest, GetSessionStateRequest,
+        LaunchProviderRunRequest, ListAgentsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
         PumpTerminalOutputRequest, RelayStatusRequest, ResizeTerminalRequest,
         ResolveSessionRequest, ResolveWorkflowRequest, RunShellCapabilityRequest,
         SpawnAgentRequest, SubmitPromptRequest, TeardownProviderProcessesRequest,
@@ -3135,6 +3154,44 @@ mod tests {
                 assert!(!catalogs.is_empty());
             }
             _ => panic!("unexpected provider command catalog response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_auth_status_does_not_use_generic_app_fallback() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+        let app_guard = app.lock().await;
+        let auth_request =
+            LocalDaemonRequest::GetProviderAuthStatus(GetProviderAuthStatusRequest {
+                provider: "unsupported-provider".to_string(),
+            });
+        let auth_command = KernelCommand::from_local_request(
+            "cmd-provider-auth-no-fallback",
+            None,
+            None,
+            &auth_request,
+        );
+        let auth_router = router.clone();
+        let auth_task =
+            tokio::spawn(async move { auth_router.dispatch(auth_command, auth_request).await });
+
+        let error = timeout(Duration::from_millis(100), auth_task)
+            .await
+            .expect("provider auth status should not wait for the app lock")
+            .expect("auth task should join")
+            .expect_err("unsupported provider should be rejected");
+        drop(app_guard);
+
+        match error {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "get_provider_auth_status");
+                assert!(message.contains("unsupported-provider"));
+            }
+            error => panic!("unexpected error: {error}"),
         }
     }
 
