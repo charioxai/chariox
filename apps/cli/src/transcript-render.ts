@@ -13,7 +13,7 @@ import {
 } from "@opentui/core"
 
 import type { TranscriptEntry } from "./cli-types.js"
-import { SplitBorder, theme } from "./theme.js"
+import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
   guessPathFenceLanguage,
   normalizeMarkdownFenceInfoStrings,
@@ -42,13 +42,14 @@ export function buildTranscriptEntryRenderable(
   surfaceTone: TranscriptSurfaceTone = "default",
 ) {
   const wrapper = new BoxRenderable(renderer, {
-    marginBottom: 1,
+    marginBottom: 0,
+    width: "100%",
     flexDirection: "column",
   })
   let currentEntry = entry
   let currentMode = transcriptRenderMode(entry)
   let body: BoxRenderable | null = null
-  let border: BoxRenderable | null = null
+  let separator: BoxRenderable | null = null
   let textRenderable: TextRenderable | null = null
   let markdownRenderable: MarkdownRenderable | null = null
   let update: (nextEntry: TranscriptEntry) => void
@@ -59,16 +60,17 @@ export function buildTranscriptEntryRenderable(
       child.destroyRecursively()
     }
     body = null
-    border = null
+    separator = null
     textRenderable = null
     markdownRenderable = null
 
     const bodyColor = transcriptBodyColor(nextEntry, surfaceTone)
     body = new BoxRenderable(renderer, {
-      paddingLeft: 1,
+      width: "100%",
+      paddingLeft: 0,
       paddingRight: 0,
-      paddingTop: 1,
-      paddingBottom: 1,
+      paddingTop: 0,
+      paddingBottom: 0,
       flexDirection: "column",
       ...(bodyColor ? { backgroundColor: bodyColor } : {}),
     })
@@ -92,14 +94,15 @@ export function buildTranscriptEntryRenderable(
       }
     }
 
-    if (transcriptUsesAccentBorder(nextEntry)) {
-      border = new BoxRenderable(renderer, {
-        border: ["left"],
-        customBorderChars: SplitBorder.customBorderChars,
+    if (transcriptUsesSeparator(nextEntry)) {
+      separator = new BoxRenderable(renderer, {
+        width: "100%",
+        border: ["bottom"],
+        customBorderChars: TranscriptSeparatorBorder.customBorderChars,
         borderColor: transcriptAccent(nextEntry),
       })
-      border.add(body)
-      wrapper.add(border)
+      separator.add(body)
+      wrapper.add(separator)
       return
     }
 
@@ -309,7 +312,7 @@ function buildApplyPatchTranscriptContent(
 ) {
   const palette = transcriptSurfacePalette(surfaceTone)
   body.flexDirection = "column"
-  body.gap = 1
+  body.gap = 0
   body.add(
     new TextRenderable(renderer, {
       content: `patch · ${files.length} ${files.length === 1 ? "file" : "files"}`,
@@ -321,11 +324,12 @@ function buildApplyPatchTranscriptContent(
 
   for (const file of files) {
     const block = new BoxRenderable(renderer, {
+      width: "100%",
       flexDirection: "column",
-      border: ["left"],
-      customBorderChars: SplitBorder.customBorderChars,
+      border: ["bottom"],
+      customBorderChars: TranscriptSeparatorBorder.customBorderChars,
       borderColor: theme.borderSubtle,
-      paddingLeft: 1,
+      paddingLeft: 0,
     })
     block.add(
       new TextRenderable(renderer, {
@@ -515,7 +519,7 @@ function transcriptAccent(entry: TranscriptEntry) {
   return theme.borderSubtle
 }
 
-function transcriptUsesAccentBorder(entry: TranscriptEntry) {
+function transcriptUsesSeparator(entry: TranscriptEntry) {
   return entry.role !== "status"
 }
 

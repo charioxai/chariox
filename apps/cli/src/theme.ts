@@ -57,6 +57,13 @@ export const SplitBorder = {
   },
 }
 
+export const TranscriptSeparatorBorder = {
+  customBorderChars: {
+    ...EmptyBorder,
+    horizontal: "─",
+  },
+}
+
 export const PromptBorderChars = {
   ...EmptyBorder,
   vertical: "┃",
