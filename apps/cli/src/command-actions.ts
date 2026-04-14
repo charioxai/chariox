@@ -236,6 +236,7 @@ type CommandActionDeps = {
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
   workflowScreenActive: () => boolean
   showWorkflowScreen: () => void
+  selectedWorkflowId?: () => string | null
   selectWorkflowCanvas: (workflowId: string | null) => void
   replaceWorkflowDefinitions: (workflows: WorkflowDefinition[]) => void
   upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
@@ -406,6 +407,16 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ) => {
     return (workflow.edges ?? []).some((edge) => (
       edge.from_node_id === fromNodeId && edge.to_node_id === toNodeId
+    ))
+  }
+  const workflowEdgeAddUsage = "usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>"
+  const selectedWorkflowRef = () => deps.selectedWorkflowId?.() ?? null
+  const isKnownWorkflowReference = (reference: string | undefined) => {
+    if (!reference) {
+      return false
+    }
+    return (deps.sessionState().workflows ?? []).some((workflow) => (
+      workflow.id === reference || workflow.alias === reference
     ))
   }
 
@@ -1701,15 +1712,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
     if (subcommand === "edge") {
       const action = args[1]
-      const workflowRef = args[2]
       if (action === "add") {
-        const fromRef = args[3]
-        const toRef = args[4]
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = explicitWorkflowRef ?? selectedWorkflowRef()
+        const fromRef = explicitWorkflowRef ? args[3] : args[2]
+        const toRef = explicitWorkflowRef ? args[4] : args[3]
         if (!workflowRef || !fromRef || !toRef) {
-          deps.flashFooter(
-            "usage: /workflow edge add <workflow-ref> <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>",
-            "error",
-          )
+          deps.flashFooter(workflowEdgeAddUsage, "error")
+          return
+        }
+        if (!explicitWorkflowRef && isKnownWorkflowReference(fromRef)) {
+          deps.flashFooter(workflowEdgeAddUsage, "error")
           return
         }
         const resolvedWorkflow = await deps.resolveWorkflow(workflowRef)
@@ -1739,6 +1752,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "remove") {
+        const workflowRef = args[2]
         const edgeId = args[3]
         if (!workflowRef || !edgeId) {
           deps.flashFooter("usage: /workflow edge remove <workflow-ref> <edge-id>", "error")
@@ -1751,7 +1765,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow edge add <workflow-ref> <from-node-id|from-agent-ref> <to-node-id|to-agent-ref> | remove <workflow-ref> <edge-id>",
+        `${workflowEdgeAddUsage} | remove <workflow-ref> <edge-id>`,
         "error",
       )
       return

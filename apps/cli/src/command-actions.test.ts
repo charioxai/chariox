@@ -898,6 +898,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let shownWorkflowScreen = 0
   let addedWorkflowNodeAgentId: string | null = null
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
+  let addedWorkflowEdgeWorkflowRef: string | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let workflowLaunchPolicy: "reject" | "queue" = "reject"
   let workflowFlushContext = true
@@ -999,6 +1000,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
     },
     workflowScreenActive: () => false,
     showWorkflowScreen: () => { shownWorkflowScreen += 1 },
+    selectedWorkflowId: () => selectedWorkflowIds.at(-1) ?? null,
     selectWorkflowCanvas: (workflowId) => { selectedWorkflowIds.push(workflowId ?? "null") },
     replaceWorkflowDefinitions: (nextWorkflows) => {
       workflows.clear()
@@ -1137,6 +1139,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
       }
     },
     addWorkflowEdge: async (_workflowRef, fromNodeId, toNodeId) => {
+      addedWorkflowEdgeWorkflowRef = _workflowRef
       addedWorkflowEdgeRefs = { fromNodeId, toNodeId }
       const edge = { id: "edge-1", from_node_id: fromNodeId, to_node_id: toNodeId }
       const currentWorkflow = workflows.get(_workflowRef) ?? { id: _workflowRef, alias: null }
@@ -1664,6 +1667,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
   assert.equal(flashedMessage, "added workflow edge edge-1")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+  assert.equal(addedWorkflowEdgeWorkflowRef, "workflow-1")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
@@ -1671,6 +1675,22 @@ test("workflow command opens the workflow screen and manages local workflows", a
     args: ["edge", "add", "workflow-1", plannerRef, reviewerRef],
   })
   assert.equal(flashedMessage, "workflow edge already exists between those nodes")
+  assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge remove workflow-1 edge-1",
+    args: ["edge", "remove", "workflow-1", "edge-1"],
+  })
+  assert.equal(flashedMessage, "removed workflow edge edge-1")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow edge add node-1 node-2",
+    args: ["edge", "add", "node-1", "node-2"],
+  })
+  assert.equal(flashedMessage, "added workflow edge edge-1")
+  assert.equal(addedWorkflowEdgeWorkflowRef, "workflow-1")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
   await handlers.handleWorkflowCommand({
