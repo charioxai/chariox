@@ -1692,7 +1692,7 @@ mod tests {
     }
 
     fn focus_test_agent(app: &mut DaemonApp, session_id: &str, agent_id: &str) {
-        app.kernel_sessions()
+        crate::app::KernelSessionService::new(app)
             .focus_agent(session_id, agent_id)
             .expect("focus should succeed");
     }

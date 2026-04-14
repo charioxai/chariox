@@ -919,8 +919,7 @@ mod tests {
             .expect("attach should succeed");
         launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
 
-        let outcome = app
-            .kernel_agents()
+        let outcome = crate::app::KernelAgentService::new(&mut app)
             .submit_prompt(
                 session.id(),
                 attachment.id(),
@@ -967,7 +966,7 @@ mod tests {
             ))
             .expect("attach should succeed");
         launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
-        app.kernel_agents()
+        crate::app::KernelAgentService::new(&mut app)
             .submit_prompt(
                 session.id(),
                 attachment.id(),
@@ -978,8 +977,7 @@ mod tests {
             .expect("prompt submit should succeed");
 
         let response = LocalDaemonResponse::PromptCancelled {
-            cancellation: app
-                .kernel_agents()
+            cancellation: crate::app::KernelAgentService::new(&mut app)
                 .cancel_active_prompt(session.id(), attachment.id())
                 .expect("prompt cancel should succeed"),
         };

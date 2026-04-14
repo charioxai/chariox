@@ -397,7 +397,7 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            app.kernel_sessions().create_session_response(request)
+            crate::app::KernelSessionService::new(app).create_session_response(request)
         })
         .await
     }
@@ -411,13 +411,13 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionAttached {
-                attachment: app
-                    .kernel_sessions()
-                    .attach(crate::attachment::AttachRequest::new(
+                attachment: crate::app::KernelSessionService::new(app).attach(
+                    crate::attachment::AttachRequest::new(
                         request.session_id,
                         request.client_id,
                         request.capability_level,
-                    ))?,
+                    ),
+                )?,
             })
         })
         .await
@@ -432,7 +432,8 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionDetached {
-                attachment: app.kernel_sessions().detach(&request.attachment_id)?,
+                attachment: crate::app::KernelSessionService::new(app)
+                    .detach(&request.attachment_id)?,
             })
         })
         .await
@@ -447,8 +448,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::AgentFocused {
-                agent: app
-                    .kernel_sessions()
+                agent: crate::app::KernelSessionService::new(app)
                     .focus_agent(&request.session_id, &request.agent_id)?,
             })
         })
@@ -464,8 +464,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::AgentFocusCycled {
-                agent: app
-                    .kernel_sessions()
+                agent: crate::app::KernelSessionService::new(app)
                     .cycle_agent_focus(&request.session_id)?,
             })
         })
@@ -480,7 +479,7 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            app.kernel_sessions().resize_terminal(
+            crate::app::KernelSessionService::new(app).resize_terminal(
                 &request.session_id,
                 request.cols,
                 request.rows,
@@ -522,7 +521,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             let session_id = request.session_id.clone();
-            let config = app.kernel_sessions().update_session_config(
+            let config = crate::app::KernelSessionService::new(app).update_session_config(
                 &request.session_id,
                 &request.attachment_id,
                 request.values,
@@ -543,8 +542,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionAliased {
-                session: app
-                    .kernel_sessions()
+                session: crate::app::KernelSessionService::new(app)
                     .alias_session(&request.session_id, request.alias)?,
             })
         })
@@ -616,7 +614,8 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionEnded {
-                session: app.kernel_sessions().end_session(&request.session_id)?,
+                session: crate::app::KernelSessionService::new(app)
+                    .end_session(&request.session_id)?,
             })
         })
         .await
@@ -631,8 +630,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionDeleted {
-                session: app
-                    .kernel_sessions()
+                session: crate::app::KernelSessionService::new(app)
                     .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
             })
         })
@@ -1306,8 +1304,7 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = app
-            .kernel_sessions()
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "cli-1",
@@ -1346,13 +1343,12 @@ mod tests {
         let _second_run =
             launch_dev_stub_provider(&mut app, session.id(), second_agent.id(), "opus");
 
-        app.kernel_sessions()
+        crate::app::KernelSessionService::new(&mut app)
             .focus_agent(session.id(), default_agent.id())
             .expect("focus should succeed");
 
         let started = LocalDaemonResponse::PromptSubmitted {
-            outcome: app
-                .kernel_agents()
+            outcome: crate::app::KernelAgentService::new(&mut app)
                 .submit_prompt(session.id(), attachment.id(), None, "hello", Vec::new())
                 .expect("prompt should start"),
             session: app
@@ -1370,8 +1366,7 @@ mod tests {
             _ => panic!("unexpected local response"),
         }
 
-        let agent = app
-            .kernel_sessions()
+        let agent = crate::app::KernelSessionService::new(&mut app)
             .focus_agent(session.id(), second_agent.id())
             .expect("focus should succeed");
         let response = LocalDaemonResponse::AgentFocused { agent };

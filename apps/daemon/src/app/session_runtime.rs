@@ -5,15 +5,15 @@ use crate::session::RuntimeSession;
 
 impl DaemonApp {
     pub fn attach(&mut self, request: AttachRequest) -> Result<RuntimeAttachment, DaemonError> {
-        self.kernel_sessions().attach(request)
+        crate::app::KernelSessionService::new(self).attach(request)
     }
 
     pub fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
-        self.kernel_sessions().detach(attachment_id)
+        crate::app::KernelSessionService::new(self).detach(attachment_id)
     }
 
     pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.kernel_sessions().end_session(session_id)
+        crate::app::KernelSessionService::new(self).end_session(session_id)
     }
 
     pub fn delete_session_ref(
@@ -21,8 +21,7 @@ impl DaemonApp {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<RuntimeSession, DaemonError> {
-        self.kernel_sessions()
-            .delete_session_ref(session_ref, workspace_id)
+        crate::app::KernelSessionService::new(self).delete_session_ref(session_ref, workspace_id)
     }
 
     pub(crate) fn other_attachment_ids(

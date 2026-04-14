@@ -87,7 +87,7 @@ mod tests {
                 PromptStatus::Queued,
             );
 
-            app.kernel_agents()
+            crate::app::KernelAgentService::new(app)
                 .submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
                     session_id: session.id().to_string(),
                     prompt,

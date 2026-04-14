@@ -191,7 +191,7 @@ mod tests {
             .expect("provider run should be registered")
             .id()
             .to_string();
-        app.kernel_agents()
+        crate::app::KernelAgentService::new(&mut app)
             .submit_prompt(
                 &session_id,
                 attachment.id(),

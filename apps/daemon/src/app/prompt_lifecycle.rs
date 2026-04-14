@@ -85,7 +85,7 @@ impl DaemonApp {
         prompt: &str,
         attachments: Vec<crate::session::PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
-        self.kernel_agents().submit_prompt(
+        crate::app::KernelAgentService::new(self).submit_prompt(
             session_id,
             attachment_id,
             target_agent_id,
@@ -120,8 +120,11 @@ impl DaemonApp {
         result: Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
         if let Err(error) = result {
-            self.kernel_agents()
-                .cancel_active_after_prompt_start_failure(&session_id, &agent_id, &provider_run_id);
+            crate::app::KernelAgentService::new(self).cancel_active_after_prompt_start_failure(
+                &session_id,
+                &agent_id,
+                &provider_run_id,
+            );
             let _ = self.publish_session_projection(&session_id);
             self.record_notice(
                 &session_id,
@@ -325,8 +328,11 @@ impl DaemonApp {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCompletion, DaemonError> {
-        self.kernel_agents()
-            .complete_active_prompt(session_id, agent_id, provider_run_id)
+        crate::app::KernelAgentService::new(self).complete_active_prompt(
+            session_id,
+            agent_id,
+            provider_run_id,
+        )
     }
 
     pub(crate) fn cancel_active_prompt(
@@ -334,8 +340,7 @@ impl DaemonApp {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.kernel_agents()
-            .cancel_active_prompt(session_id, attachment_id)
+        crate::app::KernelAgentService::new(self).cancel_active_prompt(session_id, attachment_id)
     }
 
     pub(crate) fn finish_kernel_prompt_abort(
@@ -416,8 +421,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.kernel_agents()
-            .cancel_active_prompt_for_runtime(session_id)
+        crate::app::KernelAgentService::new(self).cancel_active_prompt_for_runtime(session_id)
     }
 
     pub(crate) fn cancel_active_prompt_internal(
@@ -426,8 +430,11 @@ impl DaemonApp {
         agent_id: &str,
         attachment_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.kernel_agents()
-            .cancel_active_prompt_internal(session_id, agent_id, attachment_id)
+        crate::app::KernelAgentService::new(self).cancel_active_prompt_internal(
+            session_id,
+            agent_id,
+            attachment_id,
+        )
     }
 
     pub(crate) fn advance_next_queued_prompt(
@@ -438,7 +445,7 @@ impl DaemonApp {
         let expected_next = self
             .agent_runtime_projection_store()
             .next_queued_prompt(session_id, agent_id);
-        self.kernel_agents().advance_next_queued_prompt(
+        crate::app::KernelAgentService::new(self).advance_next_queued_prompt(
             session_id,
             agent_id,
             expected_next.as_ref(),
@@ -452,7 +459,7 @@ impl DaemonApp {
         worker_kernel_id: &str,
         leased_agent_id: &str,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        self.kernel_agents().advance_next_queued_prompt_remote(
+        crate::app::KernelAgentService::new(self).advance_next_queued_prompt_remote(
             session_id,
             agent_id,
             worker_kernel_id,
@@ -474,7 +481,7 @@ impl DaemonApp {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.kernel_agents().finalize_active_prompt_cancellation(
+        crate::app::KernelAgentService::new(self).finalize_active_prompt_cancellation(
             session_id,
             agent_id,
             provider_run_id,

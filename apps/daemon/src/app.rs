@@ -140,14 +140,6 @@ pub(crate) struct TrackedProviderProcess {
 }
 
 impl DaemonApp {
-    pub(crate) fn kernel_agents(&mut self) -> KernelAgentService<'_> {
-        KernelAgentService::new(self)
-    }
-
-    pub(crate) fn kernel_sessions(&mut self) -> KernelSessionService<'_> {
-        KernelSessionService::new(self)
-    }
-
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
         attachment_id
             .chars()
@@ -236,7 +228,7 @@ impl DaemonApp {
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
-        self.kernel_sessions().create_session(request)
+        crate::app::KernelSessionService::new(self).create_session(request)
     }
 
     pub fn config(&self) -> &DaemonConfig {
@@ -502,7 +494,7 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<AgentInstance, DaemonError> {
-        self.kernel_sessions().focus_agent(session_id, agent_id)
+        crate::app::KernelSessionService::new(self).focus_agent(session_id, agent_id)
     }
 
     /// Cycle focus to next agent in session
@@ -510,7 +502,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
     ) -> Result<Option<AgentInstance>, DaemonError> {
-        self.kernel_sessions().cycle_agent_focus(session_id)
+        crate::app::KernelSessionService::new(self).cycle_agent_focus(session_id)
     }
 
     /// Get all agents in a session
@@ -698,7 +690,7 @@ impl DaemonApp {
         values: BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<SessionConfigState, DaemonError> {
-        self.kernel_sessions().update_session_config(
+        crate::app::KernelSessionService::new(self).update_session_config(
             session_id,
             attachment_id,
             values,
@@ -735,8 +727,12 @@ impl DaemonApp {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        self.kernel_sessions()
-            .resize_provider_terminal(session_id, provider_run_id, cols, rows)
+        crate::app::KernelSessionService::new(self).resize_provider_terminal(
+            session_id,
+            provider_run_id,
+            cols,
+            rows,
+        )
     }
 
     pub fn resize_terminal(
@@ -745,8 +741,7 @@ impl DaemonApp {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        self.kernel_sessions()
-            .resize_terminal(session_id, cols, rows)
+        crate::app::KernelSessionService::new(self).resize_terminal(session_id, cols, rows)
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {

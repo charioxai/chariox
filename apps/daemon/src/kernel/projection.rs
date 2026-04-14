@@ -1264,7 +1264,7 @@ mod tests {
         agent_id: &str,
         prompt: &str,
     ) {
-        app.kernel_agents()
+        crate::app::KernelAgentService::new(app)
             .submit_prompt(
                 session_id,
                 attachment_id,

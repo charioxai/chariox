@@ -32,8 +32,7 @@ impl AgentPromptCommandService {
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
         let mut app = self.app.lock().await;
-        app.kernel_agents()
-            .submit_prepared_prompt_for_kernel(prepared)
+        crate::app::KernelAgentService::new(&mut app).submit_prepared_prompt_for_kernel(prepared)
     }
 
     pub(crate) async fn cancel_agent_prompt(
@@ -43,7 +42,7 @@ impl AgentPromptCommandService {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         let mut app = self.app.lock().await;
-        app.kernel_agents().cancel_agent_prompt_for_kernel(
+        crate::app::KernelAgentService::new(&mut app).cancel_agent_prompt_for_kernel(
             session_id,
             target_agent_id,
             attachment_id,
@@ -61,7 +60,7 @@ impl AgentPromptCommandService {
             .providers()
             .get_run_for_agent(session_id, target_agent_id)
             .map(|run| run.id().to_string());
-        app.kernel_agents().complete_active_prompt_for_kernel(
+        crate::app::KernelAgentService::new(&mut app).complete_active_prompt_for_kernel(
             session_id,
             target_agent_id,
             provider_run_id.as_deref(),
