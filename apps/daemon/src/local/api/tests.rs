@@ -563,10 +563,9 @@ fn local_request_api_spawns_and_focuses_agents() {
 
 #[test]
 fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -575,8 +574,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let agent = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
             provider: "dev-stub".to_string(),
@@ -591,8 +590,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let workflow = match app
-        .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: session.id().to_string(),
             alias: Some("review".to_string()),
         }))
@@ -602,8 +601,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let listed = match app
-        .handle_local_request(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
         }))
         .expect("workflow list should succeed")
@@ -613,8 +612,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     };
     assert_eq!(listed.len(), 1);
 
-    let resolved = match app
-        .handle_local_request(LocalDaemonRequest::ResolveWorkflow(
+    let resolved = match harness
+        .dispatch(LocalDaemonRequest::ResolveWorkflow(
             ResolveWorkflowRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: "review".to_string(),
@@ -627,8 +626,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     };
     assert_eq!(resolved.id(), workflow.id());
 
-    let node_a = match app
-        .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+    let node_a = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
             AddWorkflowNodeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -641,8 +640,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let duplicate_node = app
-        .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+    let duplicate_node = harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
             AddWorkflowNodeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -655,8 +654,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         DaemonError::WorkflowNodeConflict { .. }
     ));
 
-    match app
-        .handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+    match harness
+        .dispatch(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
             UpdateWorkflowNodeInstructionsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -672,8 +671,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let spawned = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer-2".to_string()),
             provider: "opencode".to_string(),
@@ -688,8 +687,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let node_b = match app
-        .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
+    let node_b = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowNode(
             AddWorkflowNodeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -702,8 +701,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    let endpoint = match app
-        .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
             CreateWorkflowEndpointRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -718,8 +717,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     };
     assert_eq!(endpoint.entry_node_id(), node_a.id());
 
-    let aliased_workflow = match app
-        .handle_local_request(LocalDaemonRequest::AliasWorkflow(AliasWorkflowRequest {
+    let aliased_workflow = match harness
+        .dispatch(LocalDaemonRequest::AliasWorkflow(AliasWorkflowRequest {
             session_id: session.id().to_string(),
             workflow_ref: workflow.id().to_string(),
             alias: "qa".to_string(),
@@ -731,8 +730,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     };
     assert_eq!(aliased_workflow.alias(), Some("qa"));
 
-    let aliased_endpoint = match app
-        .handle_local_request(LocalDaemonRequest::AliasWorkflowEndpoint(
+    let aliased_endpoint = match harness
+        .dispatch(LocalDaemonRequest::AliasWorkflowEndpoint(
             AliasWorkflowEndpointRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -747,8 +746,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
     };
     assert_eq!(aliased_endpoint.alias(), Some("start"));
 
-    let edge = match app
-        .handle_local_request(LocalDaemonRequest::AddWorkflowEdge(
+    let edge = match harness
+        .dispatch(LocalDaemonRequest::AddWorkflowEdge(
             AddWorkflowEdgeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -764,8 +763,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     };
 
-    match app
-        .handle_local_request(LocalDaemonRequest::RemoveWorkflowEdge(
+    match harness
+        .dispatch(LocalDaemonRequest::RemoveWorkflowEdge(
             RemoveWorkflowEdgeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
@@ -778,8 +777,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         _ => panic!("unexpected local response"),
     }
 
-    match app
-        .handle_local_request(LocalDaemonRequest::RemoveWorkflowNode(
+    match harness
+        .dispatch(LocalDaemonRequest::RemoveWorkflowNode(
             RemoveWorkflowNodeRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
