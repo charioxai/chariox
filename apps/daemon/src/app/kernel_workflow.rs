@@ -40,7 +40,7 @@ impl<'a> KernelWorkflowContext<'a> {
     }
 
     fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.app.local_api_session_snapshot(session_id)
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 
     fn session_agents(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {

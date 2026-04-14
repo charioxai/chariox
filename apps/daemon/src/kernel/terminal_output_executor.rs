@@ -66,7 +66,7 @@ impl<'a> TerminalOutputContext<'a> {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.app.local_api_session_snapshot(session_id)
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 }
 

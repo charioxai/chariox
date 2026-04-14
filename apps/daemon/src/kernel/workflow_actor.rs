@@ -189,8 +189,11 @@ impl<'a> WorkflowRuntimeContext<'a> {
             operation(&mut workflows)
         };
         let projected_session = if let Ok(response) = result.as_ref() {
-            workflow_response_session(response)
-                .or_else(|| self.app.local_api_session_snapshot(session_id).ok())
+            workflow_response_session(response).or_else(|| {
+                crate::app::KernelSessionReadService::new(self.app)
+                    .session_snapshot(session_id)
+                    .ok()
+            })
         } else {
             None
         };

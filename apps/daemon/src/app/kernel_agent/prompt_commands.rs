@@ -79,9 +79,8 @@ impl<'a> KernelAgentService<'a> {
         self.spawn_prompt_history_append(&admission)?;
         let submitted = self.submit_admitted_prompt_to_owner(admission)?;
         let (dispatch, remote_dispatch) = self.prepare_prompt_submission_effects(&submitted)?;
-        let session = self
-            .app
-            .local_api_session_snapshot(&submitted.admission.session_id)?;
+        let session = crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&submitted.admission.session_id)?;
         Ok(KernelPromptSubmission {
             outcome: submitted.outcome,
             session,
@@ -746,7 +745,8 @@ impl<'a> KernelAgentService<'a> {
     ) -> Result<KernelPromptCancellation, DaemonError> {
         let cancellation =
             self.cancel_active_prompt_internal(session_id, target_agent_id, Some(attachment_id))?;
-        let session = self.app.local_api_session_snapshot(session_id)?;
+        let session =
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(KernelPromptCancellation {
             cancellation,
             session,
@@ -759,7 +759,8 @@ impl<'a> KernelAgentService<'a> {
         session_id: &str,
         active_prompt: PromptQueueItem,
     ) -> Result<KernelPromptCancellation, DaemonError> {
-        let session = self.app.local_api_session_snapshot(session_id)?;
+        let session =
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(KernelPromptCancellation {
             cancellation: PromptCancellation {
                 prompt: active_prompt,
@@ -1204,7 +1205,8 @@ impl<'a> KernelAgentService<'a> {
             agent_id,
             expected_prompt_id,
         )?;
-        let session = self.app.local_api_session_snapshot(session_id)?;
+        let session =
+            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok((session, next))
     }
 

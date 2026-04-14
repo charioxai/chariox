@@ -33,7 +33,8 @@ impl DaemonApp {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), crate::error::DaemonError> {
-        let session = self.local_api_session_snapshot(session_id)?;
+        let session =
+            crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
         let entry = SessionHistoryEntry::user_prompt(
             session_id,
             source_attachment_id,

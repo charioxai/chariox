@@ -899,7 +899,11 @@ impl CommandRouter {
                 .collect::<HashSet<_>>();
             let sessions = session_ids
                 .into_iter()
-                .filter_map(|session_id| app.local_api_session_snapshot(&session_id).ok())
+                .filter_map(|session_id| {
+                    crate::app::KernelSessionReadService::new(&app)
+                        .session_snapshot(&session_id)
+                        .ok()
+                })
                 .collect::<Vec<_>>();
             (processes, sessions)
         };

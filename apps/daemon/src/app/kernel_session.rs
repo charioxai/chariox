@@ -153,7 +153,7 @@ impl<'a> KernelSessionService<'a> {
     }
 
     pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.app.local_api_session_snapshot(session_id)
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 
     pub(crate) fn ensure_attachment_in_session(
@@ -177,7 +177,7 @@ impl<'a> KernelSessionService<'a> {
         alias: String,
     ) -> Result<RuntimeSession, DaemonError> {
         let _session = self.app.sessions.assign_session_alias(session_id, alias)?;
-        self.app.local_api_session_snapshot(session_id)
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 
     pub(crate) fn update_session_config(
