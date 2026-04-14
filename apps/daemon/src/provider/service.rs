@@ -650,6 +650,16 @@ impl ProviderProcessService {
             .spawn_output_poll(provider_run_id.to_string(), run)
     }
 
+    #[doc(hidden)]
+    pub fn set_output_poll_delay_for_tests(
+        &self,
+        provider_run_id: &str,
+        delay: std::time::Duration,
+    ) {
+        self.run_actor_mailbox
+            .set_output_poll_delay_for_tests(provider_run_id, delay);
+    }
+
     pub(crate) fn drain_finished_structured_output_poll_jobs(
         &mut self,
     ) -> Vec<super::FinishedProviderOutputPollJob> {

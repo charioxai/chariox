@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -38,6 +39,7 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
 }
 
 #[derive(Clone, Default)]
@@ -99,6 +101,7 @@ enum ProviderRunActorCommand {
     PollOutput {
         provider_run_id: String,
         run: RuntimeProviderRun,
+        output_poll_delay: Duration,
     },
     Stop,
 }
@@ -243,9 +246,26 @@ impl ProviderRunActorMailbox {
             .lock()
             .expect("cleared provider run set poisoned")
             .insert(run_id.to_string());
+        self.output_poll_delays
+            .lock()
+            .expect("provider output poll delay map poisoned")
+            .remove(run_id);
         self.clear_structured_prompt_io_in_flight(run_id);
         self.clear_structured_output_poll_in_flight(run_id);
         clear_runtime_state(&self.codex_runs, &self.opencode_runs, run_id, true);
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn set_output_poll_delay_for_tests(&self, run_id: &str, delay: Duration) {
+        let mut delays = self
+            .output_poll_delays
+            .lock()
+            .expect("provider output poll delay map poisoned");
+        if delay.is_zero() {
+            delays.remove(run_id);
+        } else {
+            delays.insert(run_id.to_string(), delay);
+        }
     }
 
     fn mark_structured_output_poll_in_flight(&self, run_id: String) -> bool {
@@ -363,6 +383,7 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.finished_aborts),
                     Arc::clone(&self.finished_selection_syncs),
                     Arc::clone(&self.finished_output_polls),
+                    Arc::clone(&self.output_poll_delays),
                 )
             })
         };
@@ -428,6 +449,7 @@ impl ProviderRunActorMailbox {
         match sender.try_send(ProviderRunActorCommand::PollOutput {
             provider_run_id: provider_run_id.clone(),
             run,
+            output_poll_delay: self.output_poll_delay_for_run(&provider_run_id),
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
@@ -454,8 +476,21 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    fn output_poll_delay_for_run(&self, run_id: &str) -> Duration {
+        self.output_poll_delays
+            .lock()
+            .expect("provider output poll delay map poisoned")
+            .get(run_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn stop_run(&self, provider_run_id: &str) {
         self.operation_lanes.forget(provider_run_id);
+        self.output_poll_delays
+            .lock()
+            .expect("provider output poll delay map poisoned")
+            .remove(provider_run_id);
         let sender = {
             let mut workers = self
                 .workers
@@ -564,6 +599,7 @@ impl ProviderRunActorMailbox {
                     Arc::clone(&self.finished_aborts),
                     Arc::clone(&self.finished_selection_syncs),
                     Arc::clone(&self.finished_output_polls),
+                    Arc::clone(&self.output_poll_delays),
                 )
             })
             .clone()
@@ -580,6 +616,7 @@ impl ProviderRunActorMailbox {
         finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
         finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
         finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+        output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
     ) -> mpsc::SyncSender<ProviderRunActorCommand> {
         let (tx, rx) = mpsc::sync_channel(PROVIDER_RUN_COMMAND_QUEUE_LIMIT);
         thread::spawn(move || {
@@ -654,6 +691,10 @@ impl ProviderRunActorMailbox {
                             &structured_prompt_submissions,
                             &provider_run_id,
                         );
+                        output_poll_delays
+                            .lock()
+                            .expect("provider output poll delay map poisoned")
+                            .remove(&provider_run_id);
                         clear_runtime_state(&codex_runs, &opencode_runs, &provider_run_id, true);
                         break;
                     }
@@ -669,12 +710,14 @@ impl ProviderRunActorMailbox {
                     ProviderRunActorCommand::PollOutput {
                         provider_run_id,
                         run,
+                        output_poll_delay,
                     } => {
                         let result = execute_output_poll_command(
                             &codex_runs,
                             &opencode_runs,
                             &cleared_runs,
                             &run,
+                            output_poll_delay,
                         );
                         clear_structured_output_poll_in_flight(
                             &structured_output_polls,
@@ -1116,10 +1159,11 @@ fn execute_output_poll_command(
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     run: &RuntimeProviderRun,
+    output_poll_delay: Duration,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
     let run_id = run.id();
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
-        thread::sleep(std::time::Duration::from_millis(750));
+        thread::sleep(Duration::from_millis(750));
         return Ok(None);
     }
     if run.adapter_key() == "codex" {
@@ -1127,6 +1171,9 @@ fn execute_output_poll_command(
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),
         };
+        if !output_poll_delay.is_zero() {
+            thread::sleep(output_poll_delay);
+        }
         let poll = drain_codex_events(run_id, &mut state);
         restore_codex_runtime_if_live(codex_runs, cleared_runs, run_id, &slot, state);
         let poll = poll?;
@@ -1163,6 +1210,9 @@ fn execute_output_poll_command(
         Ok((slot, state)) => (slot, state),
         Err(_) => return Ok(None),
     };
+    if !output_poll_delay.is_zero() {
+        thread::sleep(output_poll_delay);
+    }
     let drain = drain_opencode_events(&mut state, run_id);
     restore_opencode_runtime_if_live(opencode_runs, cleared_runs, run_id, &slot, state);
     let drain = drain?;

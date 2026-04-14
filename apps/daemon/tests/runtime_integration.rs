@@ -637,6 +637,7 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
             "default",
         ))
         .expect("provider run should launch");
+    wait_for_mock_opencode_event_subscription(&mock_server);
 
     let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
         &mut app,
@@ -1015,7 +1016,6 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
 fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
-    mock_server.set_message_response_delay(Duration::from_millis(500));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
     let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
     env::remove_var("ARROBA_OPENCODE_BIN");
@@ -1043,6 +1043,8 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
             "default",
         ))
         .expect("provider run should launch");
+    app.providers()
+        .set_output_poll_delay_for_tests(run.id(), Duration::from_millis(500));
 
     let _ = arroba_daemon::transport::TransportService::schedule_direct_prompt(
         &mut app,
@@ -2944,11 +2946,12 @@ impl MockOpenCodeServer {
             .abort_response_delay = delay;
     }
 
-    fn set_message_response_delay(&self, delay: Duration) {
+    fn event_subscriber_count(&self) -> usize {
         self.state
             .lock()
             .expect("mock state should not be poisoned")
-            .message_response_delay = delay;
+            .event_subscribers
+            .len()
     }
 
     fn fail_next_event_stream_attempts(&self, count: u64) {
@@ -2971,6 +2974,17 @@ impl MockOpenCodeServer {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+fn wait_for_mock_opencode_event_subscription(mock_server: &MockOpenCodeServer) {
+    let deadline = Instant::now() + Duration::from_millis(output_timeout_ms().max(4_000));
+    while mock_server.event_subscriber_count() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for mock OpenCode event subscription"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
