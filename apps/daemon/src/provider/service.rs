@@ -1,5 +1,5 @@
 use crate::error::DaemonError;
-use crate::session::{PromptAttachment, SessionService};
+use crate::session::PromptAttachment;
 use std::collections::BTreeMap;
 
 use super::{
@@ -105,34 +105,6 @@ impl ProviderRunResumedOutcome {
     }
 }
 
-fn sync_ended_run_session_pointer(
-    sessions: &mut SessionService,
-    session_id: &str,
-    run_id: &str,
-) -> Result<(), DaemonError> {
-    if sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id) {
-        sessions.set_active_provider_run(session_id, None)?;
-    }
-    Ok(())
-}
-
-fn clear_active_run_session_pointer(
-    sessions: &mut SessionService,
-    session_id: &str,
-    run_id: &str,
-) -> Result<(), DaemonError> {
-    let session = sessions.get_session(session_id)?;
-    if session.active_provider_run_id() != Some(run_id) {
-        return Err(DaemonError::InconsistentActiveProviderRun {
-            session_id: session_id.to_string(),
-            active_provider_run_id: session.active_provider_run_id().map(str::to_owned),
-            requested_provider_run_id: run_id.to_string(),
-        });
-    }
-    sessions.set_active_provider_run(session_id, None)?;
-    Ok(())
-}
-
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
@@ -145,17 +117,6 @@ impl ProviderProcessService {
 
     pub fn registry(&self) -> &ProviderRegistry {
         &self.registry
-    }
-
-    pub fn launch_run(
-        &mut self,
-        sessions: &mut SessionService,
-        request: LaunchProviderRequest,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let run = self.start_run(sessions, request)?;
-        let run = self.mark_run_running(run.id())?;
-        sessions.set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
-        Ok(run)
     }
 
     pub(crate) fn start_run_provider_only(
@@ -175,55 +136,6 @@ impl ProviderProcessService {
         self.runs.insert(run_id, run.clone());
 
         Ok(ProviderRunStartedOutcome { run })
-    }
-
-    pub(crate) fn start_run(
-        &mut self,
-        sessions: &mut SessionService,
-        request: LaunchProviderRequest,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let active_run_id = sessions
-            .get_session(&request.session_id)?
-            .active_provider_run_id()
-            .map(str::to_owned);
-
-        if let Some(active_run_id) = active_run_id.as_deref() {
-            let active_run = self.get_run(active_run_id)?;
-            match active_run.state() {
-                ProviderRunState::Ended => {
-                    sessions.set_active_provider_run(&request.session_id, None)?;
-                    self.clear_runtime(active_run_id);
-                }
-                ProviderRunState::Starting => {
-                    let outcome =
-                        self.terminate_run_provider_only(&request.session_id, active_run_id)?;
-                    sync_ended_run_session_pointer(
-                        sessions,
-                        &request.session_id,
-                        outcome.run().id(),
-                    )?;
-                }
-                ProviderRunState::Running => {
-                    let outcome =
-                        self.park_run_provider_only(&request.session_id, active_run_id)?;
-                    clear_active_run_session_pointer(
-                        sessions,
-                        &request.session_id,
-                        outcome.run().id(),
-                    )?;
-                }
-                ProviderRunState::Parked => {
-                    sessions.set_active_provider_run(&request.session_id, None)?;
-                }
-            }
-        }
-
-        let session_id = request.session_id.clone();
-        let outcome = self.start_run_provider_only(request)?;
-        sessions.set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
-        let run = outcome.into_run();
-
-        Ok(run)
     }
 
     pub fn launch_run_detached(
@@ -954,6 +866,23 @@ mod tests {
         LaunchProviderRequest::new(session_id, "dev-stub", "claude-code", "default", model)
     }
 
+    fn launch_running_provider_run(
+        providers: &mut ProviderProcessService,
+        sessions: &mut SessionService,
+        request: LaunchProviderRequest,
+    ) -> RuntimeProviderRun {
+        let outcome = providers
+            .start_run_provider_only(request)
+            .expect("provider-only start should succeed");
+        let run = providers
+            .mark_run_running(outcome.run().id())
+            .expect("provider run should mark running");
+        sessions
+            .set_active_provider_run(run.session_id(), Some(run.id().to_string()))
+            .expect("session active run should be set");
+        run
+    }
+
     #[test]
     fn launches_the_first_provider_run() {
         let mut sessions = sessions();
@@ -962,9 +891,11 @@ mod tests {
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
 
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
         let session = sessions
             .get_session(session.id())
             .expect("session should exist");
@@ -1006,9 +937,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         let reconciliation = providers
             .reconcile_run_liveness_provider_only(session.id(), run.id(), None)
@@ -1041,9 +974,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         let reconciliation = providers
             .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
@@ -1076,9 +1011,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         providers
             .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
@@ -1115,9 +1052,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         let outcome = providers
             .mark_run_ended_provider_only(session.id(), run.id())
@@ -1148,9 +1087,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         let outcome = providers
             .terminate_run_provider_only(session.id(), run.id())
@@ -1175,12 +1116,16 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let first = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("first provider run should launch");
-        let second = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "opus"))
-            .expect("second provider run should launch");
+        let first = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
+        let second = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "opus"),
+        );
 
         let outcome = providers
             .terminate_session_runs_provider_only(session.id())
@@ -1222,9 +1167,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
 
         let outcome = providers
             .park_run_provider_only(session.id(), run.id())
@@ -1248,9 +1195,11 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
         providers
             .park_run_provider_only(session.id(), run.id())
             .expect("provider run should park");
@@ -1278,12 +1227,24 @@ mod tests {
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
 
-        let first = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("first run should launch");
-        let second = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "opus"))
-            .expect("second run should launch");
+        let first = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
+        let outcome = providers
+            .park_run_provider_only(session.id(), first.id())
+            .expect("first run should park");
+        sessions
+            .set_active_provider_run(session.id(), None)
+            .expect("session active run should clear");
+        assert_eq!(outcome.run().state(), ProviderRunState::Parked);
+
+        let second = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "opus"),
+        );
 
         let first = providers
             .get_run(first.id())
@@ -1298,48 +1259,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inconsistent_active_run_state() {
+    fn provider_only_start_allows_new_run_after_ended_run() {
         let mut sessions = sessions();
         let session = sessions
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
 
-        sessions
-            .set_active_provider_run(session.id(), Some("missing-run".to_string()))
-            .expect("session active run can be set for this invariant test");
-
-        let error = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect_err("launch should reject inconsistent active run state");
-
-        match error {
-            crate::DaemonError::ProviderRunNotFound { provider_run_id } => {
-                assert_eq!(provider_run_id, "missing-run");
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[test]
-    fn launches_new_run_when_session_points_at_ended_active_run() {
-        let mut sessions = sessions();
-        let session = sessions
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-            .expect("session should be created");
-        let mut providers = ProviderProcessService::new();
-
-        let first = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("first run should launch");
+        let first = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet"),
+        );
         providers
             .get_run_mut(first.id())
             .expect("first run should exist")
             .mark_ended();
 
-        let second = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "opus"))
-            .expect("second run should launch even if active run is stale and ended");
+        let second = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "opus"),
+        );
         let session = sessions
             .get_session(session.id())
             .expect("session should exist");
@@ -1360,13 +1301,12 @@ mod tests {
             .expect("session should be created");
         let mut providers = ProviderProcessService::new();
 
-        let run = providers
-            .launch_run(
-                &mut sessions,
-                launch_request(session.id(), "sonnet")
-                    .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1")),
-            )
-            .expect("provider run should launch");
+        let run = launch_running_provider_run(
+            &mut providers,
+            &mut sessions,
+            launch_request(session.id(), "sonnet")
+                .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1")),
+        );
 
         assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
     }
