@@ -146,17 +146,17 @@ export function computeSplitPaneGeometry(
 ): SplitPaneGeometry {
   const showSecondaryPane = split && secondaryAgentPresent
   const showTertiaryPane = split && tertiaryAgentPresent
-  const fullPaneWidth = Math.max(40, width - 8)
-  const splitPaneWidth = Math.max(24, Math.floor(Math.max(40, width - 8) / 2))
+  const fullPaneWidth = Math.max(40, width)
+  const splitPaneWidth = Math.max(24, Math.floor(fullPaneWidth / 2))
 
   return {
     showSecondaryPane,
     showTertiaryPane,
     splitPaneWidth,
     layoutDirection: showTertiaryPane ? "column" : "row",
-    layoutGap: split && (showSecondaryPane || showTertiaryPane) ? 1 : 0,
+    layoutGap: 0,
     topRowVisible: true,
-    topRowGap: showSecondaryPane ? 1 : 0,
+    topRowGap: 0,
     topRowFlexBasis: showTertiaryPane ? 0 : "auto",
     topRowMinHeight: showTertiaryPane ? 0 : null,
     primaryFlexGrow: split && showSecondaryPane ? 0 : 1,

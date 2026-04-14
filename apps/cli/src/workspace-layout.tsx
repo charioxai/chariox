@@ -1,7 +1,7 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
 import { For } from "solid-js"
 
-import { PromptBorderChars, SplitBorder, theme } from "./theme.js"
+import { PromptBorderChars, theme } from "./theme.js"
 
 type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
@@ -54,18 +54,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       width={props.width}
       height={props.height}
       flexDirection="column"
-      paddingBottom={1}
-      paddingLeft={2}
-      paddingRight={2}
       backgroundColor={theme.background}
       onMouseUp={props.onRootMouseUp}
     >
       <box
         flexGrow={1}
         backgroundColor={theme.backgroundPanel}
-        border={["left", "right"]}
-        customBorderChars={SplitBorder.customBorderChars}
-        borderColor={theme.borderSubtle}
         onMouseUp={props.onResponseSurfaceMouseUp}
       >
         <box
@@ -73,10 +67,6 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           flexGrow={1}
           flexDirection="column"
           gap={0}
-          paddingLeft={1}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
         >
           <For each={props.responsePaneRows()}>
             {(rowSlots, rowIndex) => (
@@ -103,24 +93,18 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                             <box
                               ref={props.onHistoryLoadingBoxRef}
                               flexShrink={0}
-                              paddingLeft={1}
-                              paddingRight={1}
                             />
                             <scrollbox
                               ref={props.onTranscriptScrollboxRef}
                               flexGrow={1}
                               stickyScroll={true}
                               stickyStart="bottom"
-                              paddingLeft={2}
-                              paddingRight={1}
-                              paddingTop={1}
-                              paddingBottom={1}
                               viewportOptions={{
-                                paddingRight: 1,
+                                paddingRight: 0,
                               }}
                               verticalScrollbarOptions={{
                                 visible: true,
-                                paddingLeft: 1,
+                                paddingLeft: 0,
                                 trackOptions: {
                                   backgroundColor: theme.backgroundElement,
                                   foregroundColor: theme.border,
@@ -131,11 +115,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                               ref={props.onResponsePrimaryFooterBoxRef}
                               flexShrink={0}
                               flexDirection="row"
-                              gap={1}
+                              gap={0}
                               overflow="hidden"
-                              paddingLeft={1}
-                              paddingRight={1}
-                              paddingBottom={1}
                             />
                           </box>
                         )
@@ -163,16 +144,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                               flexGrow={1}
                               stickyScroll={true}
                               stickyStart="bottom"
-                              paddingLeft={2}
-                              paddingRight={1}
-                              paddingTop={1}
-                              paddingBottom={1}
                               viewportOptions={{
-                                paddingRight: 1,
+                                paddingRight: 0,
                               }}
                               verticalScrollbarOptions={{
                                 visible: true,
-                                paddingLeft: 1,
+                                paddingLeft: 0,
                                 trackOptions: {
                                   backgroundColor: theme.backgroundElement,
                                   foregroundColor: theme.border,
@@ -185,11 +162,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                               }}
                               flexShrink={0}
                               flexDirection="row"
-                              gap={1}
+                              gap={0}
                               overflow="hidden"
-                              paddingLeft={1}
-                              paddingRight={1}
-                              paddingBottom={1}
                             />
                           </box>
                         )
