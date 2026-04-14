@@ -752,8 +752,13 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
     loop {
         let recipients = app.attachments().list_session_attachment_ids(session.id());
         output.extend(
-            app.pump_provider_output(session.id(), run.id(), recipients)
-                .expect("pump after OpenCode idle should succeed"),
+            arroba_daemon::transport::TransportService::pump_provider_output(
+                &mut app,
+                session.id(),
+                run.id(),
+                recipients,
+            )
+            .expect("pump after OpenCode idle should succeed"),
         );
         let session_after_pump = app
             .sessions()
@@ -1051,9 +1056,13 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let _ = app
-        .pump_provider_output(session.id(), run.id(), recipients)
-        .expect("poll should enqueue");
+    let _ = arroba_daemon::transport::TransportService::pump_provider_output(
+        &mut app,
+        session.id(),
+        run.id(),
+        recipients,
+    )
+    .expect("poll should enqueue");
     wait_for_provider_runtime_state(&app, run.id(), false, "output poll I/O is in flight");
 
     app.providers_mut().clear_runtime(run.id());
@@ -2312,15 +2321,23 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let mut saw_reviewer_run_become_active = false;
 
     loop {
-        for record in app
-            .pump_provider_output(session.id(), default_run.id(), recipients.clone())
-            .expect("default provider output should pump")
+        for record in arroba_daemon::transport::TransportService::pump_provider_output(
+            &mut app,
+            session.id(),
+            default_run.id(),
+            recipients.clone(),
+        )
+        .expect("default provider output should pump")
         {
             default_output.extend(record.bytes);
         }
-        for record in app
-            .pump_provider_output(session.id(), reviewer_run.id(), recipients.clone())
-            .expect("reviewer provider output should pump")
+        for record in arroba_daemon::transport::TransportService::pump_provider_output(
+            &mut app,
+            session.id(),
+            reviewer_run.id(),
+            recipients.clone(),
+        )
+        .expect("reviewer provider output should pump")
         {
             reviewer_output.extend(record.bytes);
         }
@@ -2557,9 +2574,12 @@ fn wait_for_terminal_output(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
-        let records = app
-            .pump_terminal_output(session_id, attachment_id)
-            .expect("terminal output should fan out");
+        let records = arroba_daemon::transport::TransportService::pump_terminal_output(
+            app,
+            session_id,
+            attachment_id,
+        )
+        .expect("terminal output should fan out");
         if !records.is_empty() {
             return records;
         }
@@ -2656,9 +2676,12 @@ where
     let mut output = Vec::new();
 
     loop {
-        let records = app
-            .pump_terminal_output(session_id, attachment_id)
-            .expect("terminal output should fan out");
+        let records = arroba_daemon::transport::TransportService::pump_terminal_output(
+            app,
+            session_id,
+            attachment_id,
+        )
+        .expect("terminal output should fan out");
         for record in records {
             output.extend(record.bytes);
         }
@@ -2695,13 +2718,13 @@ where
     let mut output = Vec::new();
 
     loop {
-        let records = app
-            .pump_provider_output(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-            )
-            .expect("provider output should fan out");
+        let records = arroba_daemon::transport::TransportService::pump_provider_output(
+            app,
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids.clone(),
+        )
+        .expect("provider output should fan out");
         for record in records {
             output.extend(record.bytes);
         }
@@ -2734,13 +2757,13 @@ where
     let mut records = Vec::new();
 
     loop {
-        let next = app
-            .pump_provider_output(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-            )
-            .expect("provider output should fan out");
+        let next = arroba_daemon::transport::TransportService::pump_provider_output(
+            app,
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids.clone(),
+        )
+        .expect("provider output should fan out");
         records.extend(next);
 
         if done(&records, app) {
@@ -3482,8 +3505,13 @@ fn shared_opencode_tool_activity_keeps_prompt_alive_until_explicit_idle_after_fo
     );
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let records_after_tool_only_completion = app
-        .pump_provider_output(session.id(), run.id(), recipients)
+    let records_after_tool_only_completion =
+        arroba_daemon::transport::TransportService::pump_provider_output(
+            &mut app,
+            session.id(),
+            run.id(),
+            recipients,
+        )
         .expect("pump before followup output should succeed");
     let output_after_tool_only_completion =
         render_terminal_output(&records_after_tool_only_completion);
@@ -3738,13 +3766,14 @@ fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
     );
 
     // Pump output from the parked run - this should NOT produce unexpected exit notices
-    let records = app
-        .pump_provider_output(
-            session.id(),
-            first_run.id(),
-            app.attachments().list_session_attachment_ids(session.id()),
-        )
-        .expect("pumping from parked run should succeed");
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let records = arroba_daemon::transport::TransportService::pump_provider_output(
+        &mut app,
+        session.id(),
+        first_run.id(),
+        recipients,
+    )
+    .expect("pumping from parked run should succeed");
     assert!(
         records.is_empty(),
         "parked runs should not emit transcript output while inactive"

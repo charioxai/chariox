@@ -197,6 +197,7 @@ Status as of 2026-04-13:
 - Landed: remaining prompt lifecycle helpers for provider-prompt claim admission, dispatch-failure cleanup, local/remote queue advancement, active-cancel routing, and cancellation finalization now live with the prompt command phases in `app/kernel_agent/prompt_commands.rs`.
 - Landed: the legacy direct-submit compatibility path now builds a prepared prompt and runs through the same prompt command phases as the agent mailbox path. `kernel_agent.rs` is reduced to the shared agent request orchestration boundary and queue-candidate test helper.
 - Landed: public `DaemonApp` prompt facade methods for submit/complete/cancel are now crate-private compatibility shims. External integration tests continue to enter prompt lifecycle through the transport/router-facing surfaces instead of the app facade.
+- Landed: runtime integration tests now use public `TransportService` prompt/output pump helpers instead of direct `DaemonApp` output-pump methods, keeping external drills off private app facade methods while preserving direct pump coverage.
 - Landed: terminal output pumping now enters through a dedicated `TerminalOutputExecutor` boundary instead of embedding provider-output pumping inside `CommandRouter`. The executor still uses compatibility-backed provider/session stores, but it isolates the active `PumpTerminalOutput` ownership split target.
 
 Still open:

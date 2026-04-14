@@ -1,6 +1,10 @@
+use crate::app::provider_output::{
+    pump_terminal_output_for_attachment, ProviderOutputPump, ProviderOutputPumpRequest,
+};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem};
+use crate::terminal::TerminalOutputRecord;
 use arroba_relay::protocol::ClientTarget;
 
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -80,6 +84,27 @@ impl TransportService {
     pub fn pump_active_prompts(app: &mut DaemonApp) {
         app.pump_active_prompt_outputs();
         app.pump_workflow_watchdogs();
+    }
+
+    pub fn pump_terminal_output(
+        app: &mut DaemonApp,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        pump_terminal_output_for_attachment(app, session_id, attachment_id)
+    }
+
+    pub fn pump_provider_output(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+        })
     }
 
     pub fn dispatch_workflow_prompt(
