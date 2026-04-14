@@ -14,6 +14,7 @@ impl DaemonApp {
             .active_prompt_for_agent(&session, agent_id))
     }
 
+    #[cfg(test)]
     pub(crate) fn prompt_owner_active_prompt_for_agent_snapshot(
         &self,
         session_id: &str,
