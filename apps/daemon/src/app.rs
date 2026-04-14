@@ -28,17 +28,7 @@ pub(crate) use prompt_lifecycle::{
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest, RemoteAgentBinding};
-use crate::attachment::{
-    AttachRequest, AttachmentService, ClientCapabilityLevel, RuntimeAttachment,
-};
-use crate::capability::{
-    CaptureScreenshotRequest, CaptureScreenshotResult, DirectoryTreeService, EditFileRequest,
-    EditFileResult, FileCapabilityService, FileTransferService, GitCapabilityService,
-    InspectGitRequest, InspectGitResult, ReadDirectoryTreeRequest, ReadDirectoryTreeResult,
-    ReadFileRequest, ReadFileResult, RunShellCommandRequest, RunShellCommandResult,
-    ScreenshotCapabilityService, ShellCommandService, StoreTransferredFileRequest,
-    StoredTransferArtifact,
-};
+use crate::attachment::{AttachRequest, AttachmentService, ClientCapabilityLevel};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::execution_lease::{
@@ -81,12 +71,6 @@ pub struct DaemonApp {
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
     pub(crate) agents: AgentService,
     pub(crate) attachments: AttachmentService,
-    capabilities: ShellCommandService,
-    directory_tree: DirectoryTreeService,
-    file_capabilities: FileCapabilityService,
-    git_capabilities: GitCapabilityService,
-    screenshot_capabilities: ScreenshotCapabilityService,
-    transfer_capabilities: FileTransferService,
     pty: PtyManager,
     pub(crate) providers: ProviderProcessService,
     pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
@@ -121,12 +105,6 @@ pub(crate) struct ActivePromptState {
     pub(crate) last_output_at: Option<Instant>,
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CapabilityRuntimeContext {
-    pub(crate) workspace_id: String,
-    pub(crate) worktree_root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -176,12 +154,6 @@ impl DaemonApp {
         Ok(Self {
             agents: AgentService::new(),
             attachments: AttachmentService::new(),
-            capabilities: ShellCommandService::new(),
-            directory_tree: DirectoryTreeService::new(),
-            file_capabilities: FileCapabilityService::new(),
-            git_capabilities: GitCapabilityService::new(),
-            screenshot_capabilities: ScreenshotCapabilityService::new(),
-            transfer_capabilities: FileTransferService::new(),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             provider_catalog_cache: None,
@@ -418,10 +390,6 @@ impl DaemonApp {
         &mut self.attachments
     }
 
-    pub fn capabilities(&self) -> &ShellCommandService {
-        &self.capabilities
-    }
-
     pub fn providers(&self) -> &ProviderProcessService {
         &self.providers
     }
@@ -522,132 +490,6 @@ impl DaemonApp {
         workspace_id: Option<&str>,
     ) -> Result<RuntimeSession, DaemonError> {
         self.sessions.resolve_session_ref(session_ref, workspace_id)
-    }
-
-    pub fn run_shell_command(
-        &self,
-        request: RunShellCommandRequest,
-    ) -> Result<RunShellCommandResult, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(&request.session_id, &request.attachment_id, "shell")?;
-
-        let mut request = request;
-        request.worktree_root = worktree_root;
-        self.capabilities.run(request)
-    }
-
-    pub fn read_directory_tree(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        path: Option<PathBuf>,
-        max_depth: usize,
-    ) -> Result<ReadDirectoryTreeResult, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(session_id, attachment_id, "directory_tree")?;
-        self.directory_tree.read_tree(ReadDirectoryTreeRequest::new(
-            session_id,
-            attachment_id,
-            worktree_root,
-            path,
-            max_depth,
-        ))
-    }
-
-    pub fn read_file(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        path: PathBuf,
-    ) -> Result<ReadFileResult, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(session_id, attachment_id, "file_read")?;
-        self.file_capabilities.read_file(ReadFileRequest::new(
-            session_id,
-            attachment_id,
-            worktree_root,
-            path,
-        ))
-    }
-
-    pub fn edit_file(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        path: PathBuf,
-        contents: String,
-    ) -> Result<EditFileResult, DaemonError> {
-        let context = self.capability_context(session_id, attachment_id, "file_edit")?;
-        let _claim = self.workspace_coordinator.acquire_worktree_write_claim(
-            context.workspace_id,
-            context.worktree_root.display().to_string(),
-            session_id.to_string(),
-            Some(attachment_id.to_string()),
-            "file_edit",
-        )?;
-        self.file_capabilities.edit_file(EditFileRequest::new(
-            session_id,
-            attachment_id,
-            context.worktree_root,
-            path,
-            contents,
-        ))
-    }
-
-    pub fn inspect_git(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        working_directory: Option<PathBuf>,
-    ) -> Result<InspectGitResult, DaemonError> {
-        let worktree_root =
-            self.capability_worktree_root(session_id, attachment_id, "git_inspect")?;
-        self.git_capabilities.inspect(InspectGitRequest::new(
-            session_id,
-            attachment_id,
-            worktree_root,
-            working_directory,
-        ))
-    }
-
-    pub fn capture_screenshot(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<CaptureScreenshotResult, DaemonError> {
-        let _ = self.capability_worktree_root(session_id, attachment_id, "screenshot")?;
-        self.screenshot_capabilities
-            .capture(CaptureScreenshotRequest::new(
-                session_id,
-                attachment_id,
-                Self::attachment_artifact_root(session_id, attachment_id, "screenshots"),
-            ))
-    }
-
-    pub fn store_transferred_file(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        source_path: PathBuf,
-        display_name: Option<String>,
-    ) -> Result<StoredTransferArtifact, DaemonError> {
-        let context = self.capability_context(session_id, attachment_id, "transfer_store")?;
-        let _claim = self.workspace_coordinator.acquire_worktree_write_claim(
-            context.workspace_id,
-            context.worktree_root.display().to_string(),
-            session_id.to_string(),
-            Some(attachment_id.to_string()),
-            "transfer_store",
-        )?;
-        self.transfer_capabilities
-            .store_file(StoreTransferredFileRequest::new(
-                session_id,
-                attachment_id,
-                context.worktree_root,
-                Self::attachment_artifact_root(session_id, attachment_id, "transfers"),
-                source_path,
-                display_name,
-            ))
     }
 
     pub fn update_session_config(
@@ -1319,54 +1161,6 @@ impl DaemonApp {
 
     pub fn leased_agent_count(&self) -> usize {
         self.leased_agents.len()
-    }
-
-    fn ensure_attachment_can_run_capability(
-        &self,
-        session_id: &str,
-        attachment: &RuntimeAttachment,
-        capability: &'static str,
-    ) -> Result<(), DaemonError> {
-        if matches!(
-            attachment.capability_level(),
-            crate::attachment::ClientCapabilityLevel::FullTerminal
-                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
-        ) {
-            Ok(())
-        } else {
-            Err(DaemonError::AttachmentCapabilityDenied {
-                session_id: session_id.to_string(),
-                attachment_id: attachment.id().to_string(),
-                capability,
-            })
-        }
-    }
-
-    pub(crate) fn capability_worktree_root(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        capability: &'static str,
-    ) -> Result<PathBuf, DaemonError> {
-        Ok(self
-            .capability_context(session_id, attachment_id, capability)?
-            .worktree_root)
-    }
-
-    pub(crate) fn capability_context(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        capability: &'static str,
-    ) -> Result<CapabilityRuntimeContext, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let attachment = crate::app::KernelSessionReadService::new(self)
-            .ensure_attachment_in_session(session_id, attachment_id)?;
-        self.ensure_attachment_can_run_capability(session_id, &attachment, capability)?;
-        Ok(CapabilityRuntimeContext {
-            workspace_id: session.workspace_id().to_string(),
-            worktree_root: PathBuf::from(session.worktree_id()),
-        })
     }
 
     pub fn relay_registration(&mut self) -> DaemonRegistration {

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
-use crate::attachment::{AttachRequest, RuntimeAttachment};
+use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
@@ -12,6 +13,12 @@ use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, S
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CapabilityAuthorizationContext {
+    pub(crate) workspace_id: String,
+    pub(crate) worktree_root: PathBuf,
 }
 
 pub(crate) struct KernelSessionReadService<'a> {
@@ -45,6 +52,30 @@ impl<'a> KernelSessionReadService<'a> {
             });
         }
         Ok(attachment)
+    }
+
+    pub(crate) fn capability_context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityAuthorizationContext, DaemonError> {
+        let session = self.app.sessions().get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !matches!(
+            attachment.capability_level(),
+            ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
+        ) {
+            return Err(DaemonError::AttachmentCapabilityDenied {
+                session_id: session_id.to_string(),
+                attachment_id: attachment.id().to_string(),
+                capability,
+            });
+        }
+        Ok(CapabilityAuthorizationContext {
+            workspace_id: session.workspace_id().to_string(),
+            worktree_root: PathBuf::from(session.worktree_id()),
+        })
     }
 
     pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {

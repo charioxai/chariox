@@ -298,9 +298,11 @@ impl<'a> CapabilityRuntimeContext<'a> {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityContext, DaemonError> {
-        let context = self
-            .app
-            .capability_context(session_id, attachment_id, capability)?;
+        let context = crate::app::KernelSessionReadService::new(self.app).capability_context(
+            session_id,
+            attachment_id,
+            capability,
+        )?;
         let workspace_coordinator = self.app.workspace_coordinator();
         Ok(CapabilityContext {
             session_id: session_id.to_string(),

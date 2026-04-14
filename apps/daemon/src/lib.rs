@@ -823,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_command_capability_runs_through_daemon_app() {
+    fn shell_command_capability_runs_through_capability_boundary() {
         let worktree_root = std::env::temp_dir().join("arroba-shell-app-test");
         std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
@@ -843,13 +843,16 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let result = app
-            .run_shell_command(crate::capability::RunShellCommandRequest::new(
+        let context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "shell")
+            .expect("capability context should resolve");
+        let result = crate::capability::ShellCommandService::new()
+            .run(crate::capability::RunShellCommandRequest::new(
                 session.id(),
                 attachment.id(),
                 "/bin/sh",
                 vec!["-lc".to_string(), "printf shell-app".to_string()],
-                worktree_root,
+                context.worktree_root,
                 None,
             ))
             .expect("shell capability should succeed");
@@ -859,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_tree_file_and_git_capabilities_run_through_daemon_app() {
+    fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
         let worktree_root = std::env::temp_dir().join("arroba-daemon-app-capability-test");
         let _ = std::fs::remove_dir_all(&worktree_root);
         std::fs::create_dir_all(worktree_root.join("src")).expect("worktree dir should exist");
@@ -888,26 +891,61 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let tree = app
-            .read_directory_tree(session.id(), attachment.id(), None, 2)
+        let read_context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "directory_tree")
+            .expect("tree context should resolve");
+        let tree = crate::capability::DirectoryTreeService::new()
+            .read_tree(crate::capability::ReadDirectoryTreeRequest::new(
+                session.id(),
+                attachment.id(),
+                read_context.worktree_root.clone(),
+                None,
+                2,
+            ))
             .expect("tree read should succeed");
-        let file = app
-            .read_file(
+        let file_context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "file_read")
+            .expect("file context should resolve");
+        let file = crate::capability::FileCapabilityService::new()
+            .read_file(crate::capability::ReadFileRequest::new(
                 session.id(),
                 attachment.id(),
+                file_context.worktree_root,
                 worktree_root.join("src/lib.rs"),
-            )
+            ))
             .expect("file read should succeed");
-        let edit = app
-            .edit_file(
+        let edit_context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "file_edit")
+            .expect("edit context should resolve");
+        let _claim = app
+            .workspace_coordinator()
+            .acquire_worktree_write_claim(
+                edit_context.workspace_id.clone(),
+                edit_context.worktree_root.display().to_string(),
+                session.id().to_string(),
+                Some(attachment.id().to_string()),
+                "file_edit",
+            )
+            .expect("edit claim should be acquired");
+        let edit = crate::capability::FileCapabilityService::new()
+            .edit_file(crate::capability::EditFileRequest::new(
                 session.id(),
                 attachment.id(),
+                edit_context.worktree_root,
                 worktree_root.join("src/lib.rs"),
                 "after".to_string(),
-            )
+            ))
             .expect("file edit should succeed");
-        let git = app
-            .inspect_git(session.id(), attachment.id(), None)
+        let git_context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "git_inspect")
+            .expect("git context should resolve");
+        let git = crate::capability::GitCapabilityService::new()
+            .inspect(crate::capability::InspectGitRequest::new(
+                session.id(),
+                attachment.id(),
+                git_context.worktree_root,
+                None,
+            ))
             .expect("git inspect should succeed");
 
         assert!(tree
@@ -947,8 +985,15 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let result = app
-            .capture_screenshot(session.id(), attachment.id())
+        let _context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "screenshot")
+            .expect("screenshot context should resolve");
+        let result = crate::capability::ScreenshotCapabilityService::new()
+            .capture(crate::capability::CaptureScreenshotRequest::new(
+                session.id(),
+                attachment.id(),
+                DaemonApp::attachment_artifact_root(session.id(), attachment.id(), "screenshots"),
+            ))
             .expect("screenshot request should return structured result");
         std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
 
@@ -983,8 +1028,28 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let result = app
-            .store_transferred_file(session.id(), attachment.id(), source, None)
+        let context = crate::app::KernelSessionReadService::new(&app)
+            .capability_context(session.id(), attachment.id(), "transfer_store")
+            .expect("transfer context should resolve");
+        let _claim = app
+            .workspace_coordinator()
+            .acquire_worktree_write_claim(
+                context.workspace_id.clone(),
+                context.worktree_root.display().to_string(),
+                session.id().to_string(),
+                Some(attachment.id().to_string()),
+                "transfer_store",
+            )
+            .expect("transfer claim should be acquired");
+        let result = crate::capability::FileTransferService::new()
+            .store_file(crate::capability::StoreTransferredFileRequest::new(
+                session.id(),
+                attachment.id(),
+                context.worktree_root,
+                DaemonApp::attachment_artifact_root(session.id(), attachment.id(), "transfers"),
+                source,
+                None,
+            ))
             .expect("transfer should succeed");
 
         assert!(result
