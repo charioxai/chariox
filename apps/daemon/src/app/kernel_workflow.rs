@@ -16,14 +16,113 @@ use crate::local::{
     SetWorkflowRunOutputSchemaRequest, SetWorkflowWatchdogEnabledRequest,
     UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
 };
+use crate::session::{RuntimeSession, SessionService};
 
 pub(crate) struct KernelWorkflowService<'a> {
+    context: KernelWorkflowContext<'a>,
+}
+
+struct KernelWorkflowContext<'a> {
     app: &'a mut DaemonApp,
+}
+
+impl<'a> KernelWorkflowContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn sessions(&self) -> &SessionService {
+        self.app.sessions()
+    }
+
+    fn sessions_mut(&mut self) -> &mut SessionService {
+        self.app.sessions_mut()
+    }
+
+    fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.app.local_api_session_snapshot(session_id)
+    }
+
+    fn session_agents(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {
+        self.app.agents().get_session_agents(session_id)
+    }
+
+    fn session_has_agent(&self, session_id: &str, agent_id: &str) -> bool {
+        self.session_agents(session_id)
+            .into_iter()
+            .any(|agent| agent.id() == agent_id)
+    }
+
+    fn invoke_workflow_endpoint_with_admission(
+        &mut self,
+        request: InvokeWorkflowEndpointRequest,
+    ) -> Result<WorkflowLaunchOutcome, DaemonError> {
+        self.app.invoke_workflow_endpoint_with_admission(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.prompt,
+        )
+    }
+
+    fn cancel_active_prompt_for_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
+            self.app, session_id,
+        )?;
+        Ok(())
+    }
+
+    fn active_prompt_workflow_run_id(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let Some(agent_id) = self.app.prompt_owner_active_prompt_agent_id(session_id)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)))
+    }
+
+    fn remove_queued_prompts_by_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _ = self
+            .app
+            .prompt_owner_remove_queued_prompts_by_workflow_run(session_id, workflow_run_id)?;
+        Ok(())
+    }
+
+    fn drain_session_workflow_launch_queue(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        let _ = self.app.drain_session_workflow_launch_queue(session_id)?;
+        Ok(())
+    }
+
+    fn resume_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<crate::session::WorkflowRun, DaemonError> {
+        self.app
+            .resume_workflow_run_from_runtime(session_id, workflow_run_ref)
+    }
+
+    fn dispatch_runtime_tool_call(
+        &mut self,
+        call: crate::transport::runtime_tools::RuntimeToolCall,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        crate::transport::runtime_tools::dispatch_runtime_tool_call(self.app, call)
+    }
 }
 
 impl<'a> KernelWorkflowService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+        Self {
+            context: KernelWorkflowContext::new(app),
+        }
     }
 
     pub(crate) fn create_workflow(
@@ -31,10 +130,10 @@ impl<'a> KernelWorkflowService<'a> {
         request: CreateWorkflowRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow = self
-            .app
+            .context
             .sessions_mut()
             .create_workflow(&request.session_id, request.alias)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
     }
 
@@ -42,12 +141,12 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: AliasWorkflowRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workflow = self.app.sessions_mut().assign_workflow_alias(
+        let workflow = self.context.sessions_mut().assign_workflow_alias(
             &request.session_id,
             &request.workflow_ref,
             request.alias,
         )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
     }
 
@@ -56,7 +155,10 @@ impl<'a> KernelWorkflowService<'a> {
         request: ListWorkflowsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowsListed {
-            workflows: self.app.sessions().list_workflows(&request.session_id)?,
+            workflows: self
+                .context
+                .sessions()
+                .list_workflows(&request.session_id)?,
         })
     }
 
@@ -66,7 +168,7 @@ impl<'a> KernelWorkflowService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowResolved {
             workflow: self
-                .app
+                .context
                 .sessions()
                 .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
         })
@@ -76,17 +178,17 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: CreateWorkflowEndpointRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let endpoint = self.app.sessions_mut().create_workflow_endpoint(
+        let endpoint = self.context.sessions_mut().create_workflow_endpoint(
             &request.session_id,
             &request.workflow_ref,
             &request.entry_node_id,
             request.alias,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowEndpointCreated {
             endpoint,
             workflow,
@@ -98,17 +200,17 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: AliasWorkflowEndpointRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let endpoint = self.app.sessions_mut().assign_workflow_endpoint_alias(
+        let endpoint = self.context.sessions_mut().assign_workflow_endpoint_alias(
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
             request.alias,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowEndpointAliased {
             endpoint,
             workflow,
@@ -120,17 +222,17 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: BindWorkflowEndpointRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let endpoint = self.app.sessions_mut().bind_workflow_endpoint(
+        let endpoint = self.context.sessions_mut().bind_workflow_endpoint(
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
             &request.entry_node_id,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowEndpointBound {
             endpoint,
             workflow,
@@ -143,26 +245,23 @@ impl<'a> KernelWorkflowService<'a> {
         request: AddWorkflowNodeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let agent_exists = self
-            .app
-            .agents()
-            .get_session_agents(&request.session_id)
-            .into_iter()
-            .any(|agent| agent.id() == request.agent_id);
+            .context
+            .session_has_agent(&request.session_id, &request.agent_id);
         if !agent_exists {
             return Err(DaemonError::AgentNotFound {
                 agent_id: request.agent_id,
             });
         }
-        let node = self.app.sessions_mut().add_workflow_node(
+        let node = self.context.sessions_mut().add_workflow_node(
             &request.session_id,
             &request.workflow_ref,
             &request.agent_id,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowNodeAdded {
             node,
             workflow,
@@ -174,16 +273,16 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: RemoveWorkflowNodeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let node = self.app.sessions_mut().remove_workflow_node(
+        let node = self.context.sessions_mut().remove_workflow_node(
             &request.session_id,
             &request.workflow_ref,
             &request.node_id,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowNodeRemoved {
             node,
             workflow,
@@ -195,17 +294,20 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: UpdateWorkflowNodeInstructionsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let node = self.app.sessions_mut().update_workflow_node_instructions(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.node_id,
-            request.instructions.clone(),
-        )?;
+        let node = self
+            .context
+            .sessions_mut()
+            .update_workflow_node_instructions(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.instructions.clone(),
+            )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
             node,
             workflow,
@@ -217,17 +319,20 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: SetWorkflowNodeCanCompleteRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let node = self.app.sessions_mut().set_workflow_node_can_complete_run(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.node_id,
-            request.can_complete_workflow_run,
-        )?;
+        let node = self
+            .context
+            .sessions_mut()
+            .set_workflow_node_can_complete_run(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.can_complete_workflow_run,
+            )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
             node,
             workflow,
@@ -240,7 +345,7 @@ impl<'a> KernelWorkflowService<'a> {
         request: SetWorkflowNodeCanEmitIntermediateOutputRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let node = self
-            .app
+            .context
             .sessions_mut()
             .set_workflow_node_can_emit_intermediate_output(
                 &request.session_id,
@@ -249,10 +354,10 @@ impl<'a> KernelWorkflowService<'a> {
                 request.can_emit_intermediate_workflow_run_output,
             )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(
             LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
                 node,
@@ -267,7 +372,7 @@ impl<'a> KernelWorkflowService<'a> {
         request: SetWorkflowNodeIntermediateOutputSchemaRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let node = self
-            .app
+            .context
             .sessions_mut()
             .set_workflow_node_intermediate_output_schema_ref(
                 &request.session_id,
@@ -276,10 +381,10 @@ impl<'a> KernelWorkflowService<'a> {
                 request.intermediate_output_schema_ref.clone(),
             )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(
             LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
                 node,
@@ -293,17 +398,17 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: SetWorkflowNodeMaxTurnsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let node = self.app.sessions_mut().set_workflow_node_max_turns(
+        let node = self.context.sessions_mut().set_workflow_node_max_turns(
             &request.session_id,
             &request.workflow_ref,
             &request.node_id,
             request.max_turns,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
             node,
             workflow,
@@ -315,7 +420,7 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: AddWorkflowEdgeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let edge = self.app.sessions_mut().add_workflow_edge(
+        let edge = self.context.sessions_mut().add_workflow_edge(
             &request.session_id,
             &request.workflow_ref,
             &request.from_node_id,
@@ -324,10 +429,10 @@ impl<'a> KernelWorkflowService<'a> {
             request.validation_policy,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowEdgeAdded {
             edge,
             workflow,
@@ -339,16 +444,16 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: RemoveWorkflowEdgeRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let edge = self.app.sessions_mut().remove_workflow_edge(
+        let edge = self.context.sessions_mut().remove_workflow_edge(
             &request.session_id,
             &request.workflow_ref,
             &request.edge_id,
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowEdgeRemoved {
             edge,
             workflow,
@@ -361,14 +466,14 @@ impl<'a> KernelWorkflowService<'a> {
         request: SetWorkflowFlushContextRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow = self
-            .app
+            .context
             .sessions_mut()
             .set_workflow_flush_agent_context_before_run(
                 &request.session_id,
                 &request.workflow_ref,
                 request.flush_agent_context_before_run,
             )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
     }
 
@@ -376,12 +481,15 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: SetWorkflowRunOutputSchemaRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workflow = self.app.sessions_mut().set_workflow_run_output_schema_ref(
-            &request.session_id,
-            &request.workflow_ref,
-            request.run_output_schema_ref.clone(),
-        )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let workflow = self
+            .context
+            .sessions_mut()
+            .set_workflow_run_output_schema_ref(
+                &request.session_id,
+                &request.workflow_ref,
+                request.run_output_schema_ref.clone(),
+            )?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
     }
 
@@ -390,14 +498,14 @@ impl<'a> KernelWorkflowService<'a> {
         request: SetWorkflowIntermediateOutputSchemaRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow = self
-            .app
+            .context
             .sessions_mut()
             .set_workflow_intermediate_output_schema_ref(
                 &request.session_id,
                 &request.workflow_ref,
                 request.intermediate_output_schema_ref.clone(),
             )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
     }
 
@@ -406,11 +514,11 @@ impl<'a> KernelWorkflowService<'a> {
         request: SetWorkflowLaunchPolicyRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session = self
-            .app
+            .context
             .sessions_mut()
             .set_workflow_launch_policy(&request.session_id, request.policy)?;
         let mut session = session;
-        session.set_agents(self.app.agents().get_session_agents(&request.session_id));
+        session.set_agents(self.context.session_agents(&request.session_id));
         Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
     }
 
@@ -418,13 +526,11 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: InvokeWorkflowEndpointRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let outcome = self.app.invoke_workflow_endpoint_with_admission(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.endpoint_ref,
-            request.prompt,
-        )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session_id = request.session_id.clone();
+        let outcome = self
+            .context
+            .invoke_workflow_endpoint_with_admission(request)?;
+        let session = self.context.session_snapshot(&session_id)?;
         match outcome {
             WorkflowLaunchOutcome::Started {
                 workflow_run,
@@ -455,7 +561,7 @@ impl<'a> KernelWorkflowService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowRunsListed {
             workflow_runs: self
-                .app
+                .context
                 .sessions()
                 .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?,
         })
@@ -467,7 +573,7 @@ impl<'a> KernelWorkflowService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowRun {
             workflow_run: self
-                .app
+                .context
                 .sessions()
                 .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
         })
@@ -478,43 +584,29 @@ impl<'a> KernelWorkflowService<'a> {
         request: CancelWorkflowRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow_run_id = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
             .id()
             .to_string();
-        let active_prompt_workflow_run_id = if let Some(agent_id) = self
-            .app
-            .prompt_owner_active_prompt_agent_id(&request.session_id)?
-        {
-            self.app
-                .prompt_owner_active_prompt_for_agent(&request.session_id, &agent_id)?
-                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
-        } else {
-            None
-        };
+        let active_prompt_workflow_run_id = self
+            .context
+            .active_prompt_workflow_run_id(&request.session_id)?;
         let should_cancel_active_prompt =
             active_prompt_workflow_run_id.as_deref() == Some(workflow_run_id.as_str());
         if should_cancel_active_prompt {
-            let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
-                self.app,
-                &request.session_id,
-            )?;
+            self.context
+                .cancel_active_prompt_for_runtime(&request.session_id)?;
         }
         let workflow_run = self
-            .app
+            .context
             .sessions_mut()
             .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
-        let _ = self
-            .app
-            .prompt_owner_remove_queued_prompts_by_workflow_run(
-                &request.session_id,
-                &workflow_run_id,
-            )?;
-        let _ = self
-            .app
+        self.context
+            .remove_queued_prompts_by_workflow_run(&request.session_id, &workflow_run_id)?;
+        self.context
             .drain_session_workflow_launch_queue(&request.session_id)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowRunCancelled {
             workflow_run,
             session,
@@ -526,9 +618,9 @@ impl<'a> KernelWorkflowService<'a> {
         request: ResumeWorkflowRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow_run = self
-            .app
-            .resume_workflow_run_from_runtime(&request.session_id, &request.workflow_run_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+            .context
+            .resume_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowRunResumed {
             workflow_run,
             session,
@@ -539,7 +631,7 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: CreateWorkflowWatchdogRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let watchdog = self.app.sessions_mut().create_workflow_watchdog(
+        let watchdog = self.context.sessions_mut().create_workflow_watchdog(
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
@@ -553,15 +645,15 @@ impl<'a> KernelWorkflowService<'a> {
             },
         )?;
         let workflow = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-        let endpoint = self.app.sessions().resolve_workflow_endpoint_ref(
+        let endpoint = self.context.sessions().resolve_workflow_endpoint_ref(
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
         )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowWatchdogCreated {
             watchdog,
             workflow,
@@ -576,7 +668,7 @@ impl<'a> KernelWorkflowService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
             watchdogs: self
-                .app
+                .context
                 .sessions()
                 .list_workflow_watchdogs(&request.session_id, request.workflow_ref.as_deref())?,
         })
@@ -586,12 +678,12 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: SetWorkflowWatchdogEnabledRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let watchdog = self.app.sessions_mut().set_workflow_watchdog_enabled(
+        let watchdog = self.context.sessions_mut().set_workflow_watchdog_enabled(
             &request.session_id,
             &request.watchdog_ref,
             request.enabled,
         )?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
     }
 
@@ -600,10 +692,10 @@ impl<'a> KernelWorkflowService<'a> {
         request: RemoveWorkflowWatchdogRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let watchdog = self
-            .app
+            .context
             .sessions_mut()
             .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
     }
 
@@ -613,7 +705,7 @@ impl<'a> KernelWorkflowService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
             queued_launches: self
-                .app
+                .context
                 .sessions()
                 .list_queued_workflow_launches(&request.session_id)?,
         })
@@ -624,10 +716,10 @@ impl<'a> KernelWorkflowService<'a> {
         request: RemoveQueuedWorkflowLaunchRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let queued_launch = self
-            .app
+            .context
             .sessions_mut()
             .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
             queued_launch,
             session,
@@ -639,10 +731,10 @@ impl<'a> KernelWorkflowService<'a> {
         request: ClearQueuedWorkflowLaunchesRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let queued_launches = self
-            .app
+            .context
             .sessions_mut()
             .clear_queued_workflow_launches(&request.session_id)?;
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
             queued_launches,
             session,
@@ -653,8 +745,8 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: ValidateWorkflowOutputRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
-            self.app,
+        let output_schema_ref = request.output_schema_ref.clone();
+        let result = self.context.dispatch_runtime_tool_call(
             crate::transport::runtime_tools::RuntimeToolCall {
                 tool_name: crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL
                     .to_string(),
@@ -667,7 +759,7 @@ impl<'a> KernelWorkflowService<'a> {
                     workflow_run_ref: String::new(),
                     workflow_node_run_id: String::new(),
                     delivery_token: None,
-                    allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
+                    allowed_output_schema_refs: vec![output_schema_ref],
                     workflow_run_output_schema_ref: None,
                     workflow_intermediate_output_schema_ref: None,
                     can_complete_workflow_run: false,
@@ -688,8 +780,7 @@ impl<'a> KernelWorkflowService<'a> {
         &mut self,
         request: AckWorkflowTurnRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        crate::transport::runtime_tools::dispatch_runtime_tool_call(
-            self.app,
+        self.context.dispatch_runtime_tool_call(
             crate::transport::runtime_tools::RuntimeToolCall {
                 tool_name: crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL.to_string(),
                 arguments: serde_json::json!({
@@ -709,11 +800,11 @@ impl<'a> KernelWorkflowService<'a> {
             },
         )?;
         let workflow_run = self
-            .app
+            .context
             .sessions()
             .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
             .clone();
-        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        let session = self.context.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
             workflow_run,
             session,
