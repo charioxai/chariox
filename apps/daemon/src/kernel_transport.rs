@@ -323,9 +323,9 @@ where
         }
     });
 
-    let mcp_app = Arc::clone(&app);
+    let mcp_router = Arc::clone(&router);
     let mcp_task = tokio::spawn(async move {
-        let _ = crate::transport::mcp_server::run_mcp_http_server(mcp_app).await;
+        let _ = crate::transport::mcp_server::run_mcp_http_server(mcp_router).await;
     });
 
     loop {

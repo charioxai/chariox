@@ -11,24 +11,17 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::kernel::router::CommandRouter;
 
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 const JSON_RPC_VERSION: &str = "2.0";
 
 type HttpBody = Full<Bytes>;
 
-pub async fn run_mcp_http_server(app: Arc<Mutex<DaemonApp>>) -> Result<(), DaemonError> {
-    let (bind_host, bind_port) = {
-        let app = app.lock().await;
-        (
-            app.config().runtime_mcp_host.clone(),
-            app.config().runtime_mcp_port,
-        )
-    };
+pub(crate) async fn run_mcp_http_server(router: Arc<CommandRouter>) -> Result<(), DaemonError> {
+    let (bind_host, bind_port) = router.runtime_mcp_bind_address();
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
         .await
         .map_err(|error| DaemonError::LocalTransport {
@@ -44,12 +37,12 @@ pub async fn run_mcp_http_server(app: Arc<Mutex<DaemonApp>>) -> Result<(), Daemo
                 operation: "accept runtime mcp",
                 message: error.to_string(),
             })?;
-        let app = Arc::clone(&app);
+        let router = Arc::clone(&router);
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(move |request| {
-                let app = Arc::clone(&app);
-                async move { handle_http_request(app, request).await }
+                let router = Arc::clone(&router);
+                async move { handle_http_request(router, request).await }
             });
             let _ = http1::Builder::new().serve_connection(io, service).await;
         });
@@ -57,10 +50,10 @@ pub async fn run_mcp_http_server(app: Arc<Mutex<DaemonApp>>) -> Result<(), Daemo
 }
 
 async fn handle_http_request(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     request: Request<Incoming>,
 ) -> Result<Response<HttpBody>, Infallible> {
-    let response = match handle_http_request_inner(app, request).await {
+    let response = match handle_http_request_inner(router, request).await {
         Ok(response) => response,
         Err(error) => text_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -71,7 +64,7 @@ async fn handle_http_request(
 }
 
 async fn handle_http_request_inner(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     request: Request<Incoming>,
 ) -> Result<Response<HttpBody>, DaemonError> {
     if let Some(origin) = request
@@ -100,14 +93,14 @@ async fn handle_http_request_inner(
 
     match *request.method() {
         Method::GET => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
-        Method::POST => handle_json_rpc_request(app, request).await,
+        Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
     }
 }
 
 async fn handle_json_rpc_request(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     request: Request<Incoming>,
 ) -> Result<Response<HttpBody>, DaemonError> {
     let auth_token =
@@ -138,11 +131,11 @@ async fn handle_json_rpc_request(
             operation: "runtime_mcp_parse_json",
             message: error.to_string(),
         })?;
-    handle_json_rpc_value(app, &auth_token, payload).await
+    handle_json_rpc_value(router, &auth_token, payload).await
 }
 
 async fn handle_json_rpc_value(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     auth_token: &str,
     payload: Value,
 ) -> Result<Response<HttpBody>, DaemonError> {
@@ -211,12 +204,9 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let result = {
-                let mut app = app.lock().await;
-                crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
-                    &mut app, auth_token, tool_name, arguments,
-                )
-            };
+            let result = router
+                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+                .await;
             match result {
                 Ok(result) => Ok(json_response(
                     StatusCode::OK,
@@ -297,6 +287,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::kernel::router::CommandRouter;
     use crate::local::{
         AddWorkflowNodeRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
         InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
@@ -311,9 +302,10 @@ mod tests {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
 
         let initialize = handle_json_rpc_value(
-            app.clone(),
+            router.clone(),
             "unused-token",
             serde_json::json!({
                 "jsonrpc": "2.0",
@@ -341,7 +333,7 @@ mod tests {
         );
 
         let tools_list = handle_json_rpc_value(
-            app.clone(),
+            router.clone(),
             "unused-token",
             serde_json::json!({
                 "jsonrpc": "2.0",
@@ -485,8 +477,9 @@ mod tests {
             .to_string();
 
         let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
         let response = handle_json_rpc_value(
-            app.clone(),
+            router.clone(),
             &auth_token,
             serde_json::json!({
                 "jsonrpc": "2.0",
@@ -521,8 +514,9 @@ mod tests {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
         let response = handle_json_rpc_value(
-            app,
+            router,
             "invalid-token",
             serde_json::json!({
                 "jsonrpc": "2.0",

@@ -249,6 +249,23 @@ impl CommandRouter {
         }
     }
 
+    pub(crate) fn runtime_mcp_bind_address(&self) -> (String, u16) {
+        let config = self.config_projection.snapshot();
+        (config.runtime_mcp_host, config.runtime_mcp_port)
+    }
+
+    pub(crate) async fn dispatch_authenticated_runtime_tool_call(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let mut app = self.app.lock().await;
+        crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
+            &mut app, auth_token, tool_name, arguments,
+        )
+    }
+
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,
