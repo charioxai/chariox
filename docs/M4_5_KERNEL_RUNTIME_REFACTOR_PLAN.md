@@ -248,6 +248,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved remote execution lease, leased-agent, leased-prompt, runtime-tool binding, and leased projection handling behind `RemoteLeaseRuntime`. Relay peer handling and runtime-tool lookup now enter this explicit remote-lease boundary instead of `DaemonApp` facade methods.
 - Landed: Phase 8 introduced `CompatibilityRuntimeState` as the explicit quarantine boundary for the remaining app-backed session, agent, workflow, and prompt-command runtime workers. `SessionRuntimeStore`, `AgentRuntimeStore`, and `WorkflowRuntimeStore` no longer own `Arc<Mutex<DaemonApp>>` directly; the remaining compatibility lock is centralized behind the runtime-state port so the next extraction can move owned stores behind that port without changing worker APIs again.
 - Landed: Phase 8 moved the session, agent-resolution, and workflow compatibility contexts into `CompatibilityRuntimeState`. Runtime stores now call named session/agent/workflow ports on the runtime state boundary instead of owning local app-context wrappers, reducing the next owned-state extraction to replacing that boundary internals.
+- Landed: Phase 8 moved the agent prompt-command compatibility context into `CompatibilityRuntimeState` too. `AgentPromptCommandService` now calls named prompt ports on the runtime-state boundary instead of carrying its own local app-context wrapper.
 
 Still open:
 

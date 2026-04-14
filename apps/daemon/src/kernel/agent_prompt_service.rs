@@ -22,59 +22,10 @@ pub(crate) struct AgentPromptCommandService {
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
-struct AgentPromptCommandContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
 #[derive(Clone)]
 struct AgentPromptDispatchContext {
     state: CompatibilityRuntimeState,
     provider_runtime_lanes: ProviderRunOperationLanes,
-}
-
-impl<'a> AgentPromptCommandContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn submit_prepared_prompt(
-        &mut self,
-        prepared: KernelPreparedPromptSubmission,
-    ) -> Result<KernelPromptSubmission, DaemonError> {
-        crate::app::KernelAgentService::new(self.app).submit_prepared_prompt_for_kernel(prepared)
-    }
-
-    fn cancel_agent_prompt(
-        &mut self,
-        session_id: &str,
-        target_agent_id: &str,
-        attachment_id: &str,
-    ) -> Result<KernelPromptCancellation, DaemonError> {
-        crate::app::KernelAgentService::new(self.app).cancel_agent_prompt_for_kernel(
-            session_id,
-            target_agent_id,
-            attachment_id,
-        )
-    }
-
-    fn complete_agent_prompt(
-        &mut self,
-        session_id: &str,
-        target_agent_id: &str,
-        next_queued_prompt: Option<&PromptQueueItem>,
-    ) -> Result<PromptCompletion, DaemonError> {
-        let provider_run_id = self
-            .app
-            .providers()
-            .get_run_for_agent(session_id, target_agent_id)
-            .map(|run| run.id().to_string());
-        crate::app::KernelAgentService::new(self.app).complete_active_prompt_for_kernel(
-            session_id,
-            target_agent_id,
-            provider_run_id.as_deref(),
-            next_queued_prompt,
-        )
-    }
 }
 
 impl AgentPromptDispatchContext {
@@ -197,9 +148,7 @@ impl AgentPromptCommandService {
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
         self.state
-            .with_app_mut(|app| {
-                AgentPromptCommandContext::new(app).submit_prepared_prompt(prepared)
-            })
+            .with_agent_prompt_mut(|prompt| prompt.submit_prepared_prompt(prepared))
             .await
     }
 
@@ -210,12 +159,8 @@ impl AgentPromptCommandService {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .with_app_mut(|app| {
-                AgentPromptCommandContext::new(app).cancel_agent_prompt(
-                    session_id,
-                    target_agent_id,
-                    attachment_id,
-                )
+            .with_agent_prompt_mut(|prompt| {
+                prompt.cancel_agent_prompt(session_id, target_agent_id, attachment_id)
             })
             .await
     }
@@ -227,8 +172,8 @@ impl AgentPromptCommandService {
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.state
-            .with_app_mut(|app| {
-                AgentPromptCommandContext::new(app).complete_agent_prompt(
+            .with_agent_prompt_mut(|prompt| {
+                prompt.complete_agent_prompt(
                     session_id,
                     target_agent_id,
                     next_queued_prompt.as_ref(),
