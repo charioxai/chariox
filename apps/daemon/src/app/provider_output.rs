@@ -179,7 +179,7 @@ impl<'a> ProviderOutputLiveness<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        self.app
+        super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
             .reconcile_provider_run_exit(session_id, provider_run_id)
     }
 }
