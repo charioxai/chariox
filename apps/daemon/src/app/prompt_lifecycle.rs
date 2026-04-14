@@ -97,7 +97,8 @@ impl DaemonApp {
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = crate::app::ProviderRunReadService::new(self)
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: provider_run_id.to_string(),

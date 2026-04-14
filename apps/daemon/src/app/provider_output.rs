@@ -49,7 +49,8 @@ pub(crate) fn pump_terminal_output_for_attachment(
     attachment_id: &str,
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
     app.reap_structured_prompt_jobs();
-    app.ensure_attachment_in_session(session_id, attachment_id)?;
+    crate::app::KernelSessionReadService::new(app)
+        .ensure_attachment_in_session(session_id, attachment_id)?;
     let provider_run_id = app
         .sessions
         .get_session(session_id)?
@@ -260,7 +261,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.app
+        crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, provider_run_id)
     }
 
@@ -276,7 +277,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
         // Parked runs should not be polled for output.
         if provider_run.state() == ProviderRunState::Parked {
             return Ok(Vec::new());
@@ -404,7 +406,8 @@ impl<'a> ProviderOutputPumpContext<'a> {
         self.app
             .providers
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
         self.app
             .update_provider_run_projection(provider_run.clone());
         for notice in &poll_result.notices {

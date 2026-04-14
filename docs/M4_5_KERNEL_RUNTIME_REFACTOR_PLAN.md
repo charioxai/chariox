@@ -238,6 +238,7 @@ Status as of 2026-04-13:
 - Landed: non-local-api actor/projection/scheduler/router/transport setup tests no longer use `DaemonApp::handle_local_request` as a convenience facade for agent/session/projection/flow-control/relay-client/MCP/workflow-runtime/router setup. They now use explicit app/service APIs or router-facing request surfaces, and the catch-all dispatcher no longer exists.
 - Landed: Phase 8 production session snapshot consumers in prompt lifecycle, workflow-runtime fallback, terminal-output refresh, terminal history fanout, session service ports, and provider-process teardown now enter through `KernelSessionReadService`; the remaining test fixtures were migrated too, and the `DaemonApp::local_api_session_snapshot` compatibility shim was removed.
 - Landed: Phase 8 removed the `DaemonApp::publish_session_projection` shim. Projection publication callers now use `KernelSessionReadService::session_snapshot` directly, keeping session read/projection refresh semantics behind one explicit read-service boundary instead of a generic app helper.
+- Landed: Phase 8 removed the app-level attachment/session and provider-run/session authorization shims. Attachment authorization now enters `KernelSessionReadService`, and provider-run ownership checks enter `ProviderRunReadService`, leaving callers tied to explicit read-service boundaries instead of broad `DaemonApp` helpers.
 
 Still open:
 

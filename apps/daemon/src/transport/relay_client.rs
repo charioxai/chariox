@@ -340,7 +340,8 @@ async fn handle_incoming_envelope(
         } => {
             {
                 let app = app.lock().await;
-                app.ensure_attachment_in_session(&session_id, &attachment_id)?;
+                crate::app::KernelSessionReadService::new(&app)
+                    .ensure_attachment_in_session(&session_id, &attachment_id)?;
             }
             if let Some(existing) = subscription_tasks
                 .lock()

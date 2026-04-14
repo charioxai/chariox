@@ -32,6 +32,21 @@ impl<'a> KernelSessionReadService<'a> {
         Ok(session)
     }
 
+    pub(crate) fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<RuntimeAttachment, DaemonError> {
+        let attachment = self.app.attachments.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        Ok(attachment)
+    }
+
     pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
         let sessions = self.app.sessions().list_sessions();
         let sessions_with_agents: Vec<_> = sessions
@@ -187,7 +202,7 @@ impl<'a> KernelSessionService<'a> {
         values: BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<SessionConfigState, DaemonError> {
-        self.app
+        KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let (_session, config) =
             self.app
@@ -580,8 +595,7 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(), DaemonError> {
         let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        let provider_run = self
-            .app
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
 
         if provider_run.state() == ProviderRunState::Ended {

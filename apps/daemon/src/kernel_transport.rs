@@ -1069,7 +1069,7 @@ pub(crate) fn watch_subscription_state(
     tick: u64,
     previous_snapshot: Option<(RuntimeSession, Option<RuntimeProviderRun>)>,
 ) -> WatchResult {
-    if app
+    if crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)
         .is_err()
     {

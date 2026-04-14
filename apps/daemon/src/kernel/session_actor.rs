@@ -634,8 +634,7 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            let _ =
-                app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+            app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
             Ok(LocalDaemonResponse::RuntimeNotices {
                 notices: app.drain_notice_records(&request.session_id, &request.attachment_id),
             })

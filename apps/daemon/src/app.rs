@@ -74,7 +74,7 @@ use crate::transport::relay_peer::{
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use kernel_workflow::KernelWorkflowService;
-pub(crate) use provider_runtime::StartedProviderLaunch;
+pub(crate) use provider_runtime::{ProviderRunReadService, StartedProviderLaunch};
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -763,38 +763,6 @@ impl DaemonApp {
         }
     }
 
-    pub(crate) fn ensure_attachment_in_session(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<RuntimeAttachment, DaemonError> {
-        let attachment = self.attachments.get_attachment(attachment_id)?;
-        if attachment.session_id() != session_id {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-        Ok(attachment)
-    }
-
-    pub(crate) fn ensure_provider_run_in_session(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let provider_run = self.providers.get_run(provider_run_id)?;
-
-        if provider_run.session_id() != session_id {
-            return Err(DaemonError::ProviderRunNotInSession {
-                session_id: session_id.to_string(),
-                provider_run_id: provider_run_id.to_string(),
-            });
-        }
-
-        Ok(provider_run)
-    }
-
     pub(crate) fn dispatch_prompt_to_provider(
         &mut self,
         session_id: &str,
@@ -805,7 +773,8 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         let _ = provider_runtime::ProviderRunLivenessRuntime::new(self)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = crate::app::ProviderRunReadService::new(self)
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: provider_run_id.to_string(),
@@ -1483,7 +1452,8 @@ impl DaemonApp {
         capability: &'static str,
     ) -> Result<CapabilityRuntimeContext, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let attachment = crate::app::KernelSessionReadService::new(self)
+            .ensure_attachment_in_session(session_id, attachment_id)?;
         self.ensure_attachment_can_run_capability(session_id, &attachment, capability)?;
         Ok(CapabilityRuntimeContext {
             workspace_id: session.workspace_id().to_string(),

@@ -97,7 +97,7 @@ impl<'a> KernelAgentService<'a> {
         prompt: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
-        self.app
+        crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = match target_agent_id {
             Some(target_agent_id) => target_agent_id.to_string(),
@@ -190,7 +190,7 @@ impl<'a> KernelAgentService<'a> {
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
-        self.app
+        crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
@@ -687,7 +687,7 @@ impl<'a> KernelAgentService<'a> {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<KernelPromptCancellationAdmission, DaemonError> {
-        self.app
+        crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.app.agents.get_agent(target_agent_id)?;
         if target_agent.remote_execution().is_some() {
@@ -719,8 +719,7 @@ impl<'a> KernelAgentService<'a> {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
             })?;
-        let provider_run = self
-            .app
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, &provider_run_id)?;
         let uses_structured_prompt_io = self
             .app
@@ -959,8 +958,7 @@ impl<'a> KernelAgentService<'a> {
                 continue;
             };
 
-            if let Err(error) = self
-                .app
+            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, next.source_attachment_id())
             {
                 if is_workflow_prompt {
@@ -1069,8 +1067,7 @@ impl<'a> KernelAgentService<'a> {
             let is_workflow_prompt = self
                 .app
                 .is_workflow_prompt_source(peeked.source_attachment_id());
-            if let Err(error) = self
-                .app
+            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
             {
                 if !is_workflow_prompt {
@@ -1217,7 +1214,7 @@ impl<'a> KernelAgentService<'a> {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<PromptCancellation, DaemonError> {
-        self.app
+        crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = self
             .app
@@ -1318,8 +1315,7 @@ impl<'a> KernelAgentService<'a> {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: session_id.to_string(),
             })?;
-        let provider_run = self
-            .app
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, &provider_run_id)?;
 
         let uses_structured_prompt_io = self

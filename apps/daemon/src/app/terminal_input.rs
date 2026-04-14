@@ -22,11 +22,10 @@ impl<'a> ProviderTerminalInput<'a> {
         let _ = ProviderRunLivenessRuntime::new(self.app)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
-            self.app
+            crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, attachment_id)?;
         }
-        let provider_run = self
-            .app
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
 
         if provider_run.state() != ProviderRunState::Running {
