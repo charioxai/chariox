@@ -8,14 +8,155 @@ use crate::app::{DaemonApp, TrackedProviderProcess};
 use crate::error::DaemonError;
 use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderProcessInfo, ProviderProcessService,
-    ProviderResumeState, ProviderRunState, ProviderRuntimeBinding, RuntimeMcpBinding,
-    RuntimeProviderRun,
+    ProviderResumeState, ProviderRunLivenessReconciliation, ProviderRunState,
+    ProviderRuntimeBinding, RuntimeMcpBinding, RuntimeProviderRun,
 };
+use crate::pty::PtyProcessState;
+use crate::session::{PromptQueueItem, PromptStatus};
 
 #[derive(Debug, Clone)]
 pub(crate) struct StartedProviderLaunch {
     pub(crate) run: RuntimeProviderRun,
     previous_active_run_id: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ProviderRunExitPromptSettlement {
+    FinalizeCancellation,
+    CompleteActivePrompt,
+    SyncIdleProvider,
+}
+
+impl ProviderRunExitPromptSettlement {
+    fn from_active_prompt_status(active_prompt_status: Option<PromptStatus>) -> Self {
+        match active_prompt_status {
+            Some(PromptStatus::Cancelling) => Self::FinalizeCancellation,
+            Some(_) => Self::CompleteActivePrompt,
+            None => Self::SyncIdleProvider,
+        }
+    }
+}
+
+pub(crate) struct ProviderRunLivenessRuntime<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderRunLivenessRuntime<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn reconcile_provider_run_exit(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider_run = self
+            .app
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
+        match self.app.providers.reconcile_run_liveness(
+            &mut self.app.sessions,
+            session_id,
+            provider_run_id,
+            None,
+        )? {
+            ProviderRunLivenessReconciliation::AlreadyEnded(run) => {
+                self.app.update_provider_run_projection(run);
+                let _ = self
+                    .app
+                    .remove_tracked_provider_process_for_run(provider_run_id)?;
+                return Ok(true);
+            }
+            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
+            | ProviderRunLivenessReconciliation::NewlyEnded(_) => return Ok(false),
+            ProviderRunLivenessReconciliation::StillRunning(_) => {}
+        }
+
+        let active_prompt_status = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .map(|prompt| prompt.status());
+        let had_active_prompt = active_prompt_status.is_some();
+        let process_running = match self.app.pty.poll_process_state(provider_run_id) {
+            Ok(PtyProcessState::Running) => true,
+            Ok(PtyProcessState::Exited) => false,
+            Err(DaemonError::PtyProcessNotFound { .. }) => false,
+            Err(error) => return Err(error),
+        };
+        let ended_run = match self.app.providers.reconcile_run_liveness(
+            &mut self.app.sessions,
+            session_id,
+            provider_run_id,
+            Some(process_running),
+        )? {
+            ProviderRunLivenessReconciliation::AlreadyEnded(run)
+            | ProviderRunLivenessReconciliation::NewlyEnded(run) => run,
+            ProviderRunLivenessReconciliation::ExternalEndpoint(_)
+            | ProviderRunLivenessReconciliation::StillRunning(_) => return Ok(false),
+        };
+        self.app.update_provider_run_projection(ended_run.clone());
+        let _ = self
+            .app
+            .remove_tracked_provider_process_for_run(provider_run_id)?;
+
+        let started_next = self.settle_provider_exit_prompt_state(
+            session_id,
+            &agent_id,
+            provider_run_id,
+            active_prompt_status,
+        )?;
+
+        self.app.record_notice(
+            session_id,
+            Some(provider_run_id),
+            self.app.attachments.list_session_attachment_ids(session_id),
+            format!(
+                "Provider run `{}` for `{}` ended unexpectedly. {}",
+                provider_run_id,
+                ended_run.provider(),
+                if had_active_prompt {
+                    if started_next.is_some() {
+                        "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
+                    } else {
+                        "The active prompt was closed without starting the queued backlog."
+                    }
+                } else {
+                    "No active prompt was running."
+                }
+            ),
+        );
+
+        Ok(true)
+    }
+
+    fn settle_provider_exit_prompt_state(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        active_prompt_status: Option<PromptStatus>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        match ProviderRunExitPromptSettlement::from_active_prompt_status(active_prompt_status) {
+            ProviderRunExitPromptSettlement::FinalizeCancellation => Ok(self
+                .app
+                .finalize_active_prompt_cancellation(session_id, agent_id, Some(provider_run_id))?
+                .started_next),
+            ProviderRunExitPromptSettlement::CompleteActivePrompt => Ok(self
+                .app
+                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?
+                .started_next),
+            ProviderRunExitPromptSettlement::SyncIdleProvider => {
+                self.app.sync_focused_provider_run_if_idle(session_id)?;
+                Ok(None)
+            }
+        }
+    }
 }
 
 impl DaemonApp {
