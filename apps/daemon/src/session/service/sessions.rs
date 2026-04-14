@@ -539,6 +539,7 @@ impl SessionService {
         self.prompt_id_allocator.clone()
     }
 
+    #[cfg(test)]
     pub(super) fn next_prompt_id(&self) -> String {
         self.reserve_prompt_id()
     }

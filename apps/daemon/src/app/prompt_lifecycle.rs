@@ -77,7 +77,7 @@ pub(crate) struct KernelPromptAbortDispatch {
 }
 
 impl DaemonApp {
-    pub fn submit_prompt(
+    pub(crate) fn submit_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,
@@ -319,7 +319,7 @@ impl DaemonApp {
         });
     }
 
-    pub fn complete_active_prompt(
+    pub(crate) fn complete_active_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -329,7 +329,7 @@ impl DaemonApp {
             .complete_active_prompt(session_id, agent_id, provider_run_id)
     }
 
-    pub fn cancel_active_prompt(
+    pub(crate) fn cancel_active_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,

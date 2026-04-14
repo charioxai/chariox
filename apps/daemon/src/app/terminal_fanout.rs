@@ -5,6 +5,7 @@ use crate::session::PromptAttachment;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 
 impl DaemonApp {
+    #[cfg(test)]
     pub(crate) fn append_user_prompt_history(
         &self,
         session_id: &str,
