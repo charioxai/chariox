@@ -187,7 +187,7 @@ impl AgentRuntimeCommandExecutor {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AgentRuntime {
-    app: Arc<Mutex<DaemonApp>>,
+    store: AgentRuntimeStore,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
@@ -208,8 +208,28 @@ impl AgentRuntime {
         prompt_state_owner: PromptStateOwner,
         prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
+        Self::with_store(
+            AgentRuntimeStore::new(app),
+            provider_runtime_lanes,
+            focus_projection,
+            session_projection,
+            agent_runtime_projection,
+            prompt_state_owner,
+            prompt_id_allocator,
+        )
+    }
+
+    pub(crate) fn with_store(
+        store: AgentRuntimeStore,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+        focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        prompt_state_owner: PromptStateOwner,
+        prompt_id_allocator: PromptIdAllocator,
+    ) -> Self {
         Self {
-            app,
+            store,
             provider_runtime_lanes,
             focus_projection,
             session_projection,
@@ -323,8 +343,9 @@ impl AgentRuntime {
                 session_id: session_id.to_string(),
             });
         }
-        let mut app = self.app.lock().await;
-        app.prompt_owner_active_prompt_agent_id(session_id)?
+        self.store
+            .active_prompt_agent_id(session_id)
+            .await?
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })
@@ -406,11 +427,9 @@ impl AgentRuntime {
         {
             return Ok(agent_id);
         }
-        let app = self.app.lock().await;
-        app.sessions()
-            .get_session(session_id)?
-            .focused_agent_id()
-            .map(str::to_string)
+        self.store
+            .focused_agent_id(session_id)
+            .await?
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "no focused agent".to_string(),
             })
@@ -451,10 +470,9 @@ impl AgentRuntime {
         }
         let (tx, rx) = mpsc::channel(AGENT_COMMAND_QUEUE_LIMIT);
         lanes.insert(agent_id.to_string(), tx.clone());
-        let prompt_commands = AgentPromptCommandService::new(
-            Arc::clone(&self.app),
-            self.provider_runtime_lanes.clone(),
-        );
+        let prompt_commands = self
+            .store
+            .prompt_command_service(self.provider_runtime_lanes.clone());
         let executor = AgentRuntimeCommandExecutor::new(
             prompt_commands,
             self.session_projection.clone(),
@@ -499,6 +517,41 @@ impl AgentRuntime {
     pub(crate) fn remove_session_state(&self, session_id: &str) {
         self.prompt_state_owner.remove_session(session_id);
         self.agent_runtime_projection.remove_session(session_id);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentRuntimeStore {
+    app: Arc<Mutex<DaemonApp>>,
+}
+
+impl AgentRuntimeStore {
+    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
+        Self { app }
+    }
+
+    async fn active_prompt_agent_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let mut app = self.app.lock().await;
+        app.prompt_owner_active_prompt_agent_id(session_id)
+    }
+
+    async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
+        let app = self.app.lock().await;
+        Ok(app
+            .sessions()
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string))
+    }
+
+    fn prompt_command_service(
+        &self,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> AgentPromptCommandService {
+        AgentPromptCommandService::new(Arc::clone(&self.app), provider_runtime_lanes)
     }
 }
 
