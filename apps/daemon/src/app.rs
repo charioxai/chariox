@@ -15,6 +15,7 @@ pub(crate) mod provider_output;
 mod provider_runtime;
 mod session_runtime;
 mod terminal_fanout;
+pub(crate) mod terminal_input;
 pub(crate) mod workflow_runtime;
 
 pub(crate) use prompt_lifecycle::{
@@ -709,24 +710,12 @@ impl DaemonApp {
         attachment_id: &str,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
-        let _ = provider_runtime::ProviderRunLivenessRuntime::new(self)
-            .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
-            self.ensure_attachment_in_session(session_id, attachment_id)?;
-        }
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-
-        if provider_run.state() != crate::provider::ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: provider_run_id.to_string(),
-                state: provider_run.state(),
-                operation: "send terminal input",
-            });
-        }
-
-        self.terminal
-            .record_input(session_id, provider_run_id, attachment_id, bytes);
-        self.pty.write_input(provider_run_id, bytes)
+        terminal_input::ProviderTerminalInput::new(self).send_provider_input(
+            session_id,
+            provider_run_id,
+            attachment_id,
+            bytes,
+        )
     }
 
     pub fn send_terminal_input(
