@@ -682,7 +682,7 @@ impl CommandRouter {
         request: GetProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut app = self.app.lock().await;
-        app.handle_get_provider_run_request(request)
+        crate::local::provider_requests::get_provider_run_response(&mut app, request)
     }
 
     async fn execute_get_provider_auth_status_request(

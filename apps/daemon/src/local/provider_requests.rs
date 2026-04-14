@@ -22,9 +22,22 @@ use super::api::{
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
+pub(crate) fn get_provider_run_response(
+    app: &mut DaemonApp,
+    request: GetProviderRunRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    app.providers_mut()
+        .apply_finished_provider_run_selection_sync_jobs();
+    app.providers_mut()
+        .enqueue_run_selection_sync(&request.provider_run_id)?;
+    let provider_run = app.providers().get_run(&request.provider_run_id)?;
+    app.update_provider_run_projection(provider_run.clone());
+    Ok(LocalDaemonResponse::ProviderRun { provider_run })
+}
+
 #[allow(dead_code)]
 impl DaemonApp {
-    pub(super) fn handle_launch_provider_run_request(
+    pub(super) fn launch_provider_run_response(
         &mut self,
         request: LaunchProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -46,22 +59,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
     }
 
-    pub(crate) fn handle_get_provider_run_request(
-        &mut self,
-        request: GetProviderRunRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.providers_mut()
-            .apply_finished_provider_run_selection_sync_jobs();
-        self.providers_mut()
-            .enqueue_run_selection_sync(&request.provider_run_id)?;
-        let provider_run = self.providers().get_run(&request.provider_run_id)?;
-        self.update_provider_run_projection(provider_run.clone());
-        Ok(LocalDaemonResponse::ProviderRun { provider_run })
-    }
-
-    pub(crate) fn handle_get_provider_catalog_request(
-        &mut self,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    pub(crate) fn provider_catalog_response(&mut self) -> Result<LocalDaemonResponse, DaemonError> {
         if let Some(catalog) = self.cached_provider_catalog() {
             return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
         }
@@ -92,13 +90,13 @@ impl DaemonApp {
         self.invalidate_provider_catalog_projection();
     }
 
-    pub(super) fn handle_get_provider_command_catalogs_request(
+    pub(super) fn provider_command_catalogs_response_for_app(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         provider_command_catalogs_response()
     }
 
-    pub(super) fn handle_relay_status_request(
+    pub(super) fn relay_status_response_for_app(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         Ok(LocalDaemonResponse::RelayStatus {
@@ -106,7 +104,7 @@ impl DaemonApp {
         })
     }
 
-    pub(super) fn handle_configure_relay_request(
+    pub(super) fn configure_relay_response(
         &mut self,
         request: ConfigureRelayRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -133,7 +131,7 @@ impl DaemonApp {
         })
     }
 
-    pub(super) fn handle_list_remote_machines_request(
+    pub(super) fn list_remote_machines_response(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let config = self.config().clone();
@@ -144,7 +142,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
     }
 
-    pub(super) fn handle_list_remote_machine_kernels_request(
+    pub(super) fn list_remote_machine_kernels_response(
         &mut self,
         request: ListRemoteMachineKernelsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -159,7 +157,7 @@ impl DaemonApp {
         })
     }
 
-    pub(super) fn handle_approve_remote_machine_request(
+    pub(super) fn approve_remote_machine_response(
         &mut self,
         request: ApproveRemoteMachineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -178,7 +176,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
     }
 
-    pub(super) fn handle_forget_remote_machine_request(
+    pub(super) fn forget_remote_machine_response(
         &mut self,
         request: ForgetRemoteMachineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -194,7 +192,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
     }
 
-    pub(super) fn handle_rename_remote_machine_request(
+    pub(super) fn rename_remote_machine_response(
         &mut self,
         request: RenameRemoteMachineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -210,7 +208,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 
-    pub(super) fn handle_get_provider_auth_status_request(
+    pub(super) fn provider_auth_status_response_for_app(
         &mut self,
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -223,7 +221,7 @@ impl DaemonApp {
         }
     }
 
-    pub(super) fn handle_start_provider_login_request(
+    pub(super) fn start_provider_login_response_for_app(
         &mut self,
         request: StartProviderLoginRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -236,7 +234,7 @@ impl DaemonApp {
         }
     }
 
-    pub(super) fn handle_logout_provider_request(
+    pub(super) fn logout_provider_response_for_app(
         &mut self,
         request: LogoutProviderRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
