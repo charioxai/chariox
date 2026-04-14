@@ -1325,7 +1325,12 @@ async fn execute_interactive_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if SessionActor::is_session_interactive_command(&request) {
         let mut app = app.lock().await;
-        return app.handle_session_request(request);
+        return SessionActor::handle_interactive_command(&mut app, request).unwrap_or_else(|| {
+            Err(DaemonError::LocalTransport {
+                operation: "execute interactive kernel command",
+                message: "request is not handled by the session runtime".to_string(),
+            })
+        });
     }
     if AgentActor::is_agent_interactive_command(&request) {
         let mut app = app.lock().await;
@@ -2310,6 +2315,10 @@ mod tests {
             LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
             _ => panic!("unexpected spawn response"),
         };
+        assert!(
+            router.session_runtime.has_lane(&session_id).await,
+            "agent lifecycle should run through the session runtime lane"
+        );
 
         let app_guard = app.lock().await;
         let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
@@ -2354,6 +2363,10 @@ mod tests {
             .dispatch(destroy_command, destroy_request)
             .await
             .expect("destroy should succeed");
+        assert!(
+            router.session_runtime.has_lane(&session_id).await,
+            "destroying an agent should not bypass the session runtime lane"
+        );
 
         let app_guard = app.lock().await;
         let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {

@@ -197,6 +197,14 @@ fn local_request_metadata(request: &LocalDaemonRequest) -> LocalRequestMetadata 
         LocalDaemonRequest::DeleteSession(request) => {
             LocalRequestMetadata::new("session.delete", Interactive).session(&request.session_ref)
         }
+        LocalDaemonRequest::SpawnAgent(request) => {
+            LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::DestroyAgent(request) => {
+            LocalRequestMetadata::new("agent.destroy", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::GetSessionHistory(request) => {
             let mut metadata = LocalRequestMetadata::new("session.history.get", Background)
                 .session(&request.session_id);
@@ -328,9 +336,9 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::kernel::command::{KernelCommand, KernelCommandPriority, KernelCommandSource};
     use crate::local::{
-        AliasSessionRequest, AttachToSessionRequest, EndSessionRequest, FocusAgentRequest,
-        GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        AliasSessionRequest, AttachToSessionRequest, DestroyAgentRequest, EndSessionRequest,
+        FocusAgentRequest, GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest,
+        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::session::CreateSessionRequest;
 
@@ -444,6 +452,29 @@ mod tests {
                 alias: "review".to_string(),
             }),
         );
+        let spawn = KernelCommand::from_local_request(
+            "spawn-1",
+            None,
+            None,
+            &LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                session_id: "session-1".to_string(),
+                alias: Some("reviewer".to_string()),
+                provider: "claude-code".to_string(),
+                model: None,
+                effort: None,
+                worktree_id: None,
+                machine_ref: None,
+            }),
+        );
+        let destroy = KernelCommand::from_local_request(
+            "destroy-1",
+            None,
+            None,
+            &LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: "session-1".to_string(),
+                agent_id: "agent-2".to_string(),
+            }),
+        );
 
         assert_eq!(notice.command_type, "runtime_notice.poll");
         assert_eq!(notice.priority, KernelCommandPriority::Interactive);
@@ -456,6 +487,13 @@ mod tests {
         assert_eq!(alias.command_type, "session.alias");
         assert_eq!(alias.priority, KernelCommandPriority::Interactive);
         assert_eq!(alias.session_id.as_deref(), Some("session-1"));
+        assert_eq!(spawn.command_type, "agent.spawn");
+        assert_eq!(spawn.priority, KernelCommandPriority::Interactive);
+        assert_eq!(spawn.session_id.as_deref(), Some("session-1"));
+        assert_eq!(destroy.command_type, "agent.destroy");
+        assert_eq!(destroy.priority, KernelCommandPriority::Interactive);
+        assert_eq!(destroy.session_id.as_deref(), Some("session-1"));
+        assert_eq!(destroy.agent_id.as_deref(), Some("agent-2"));
     }
 
     #[test]

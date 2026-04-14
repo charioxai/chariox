@@ -144,6 +144,12 @@ impl SessionRuntime {
             LocalDaemonRequest::AliasSession(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
+            LocalDaemonRequest::SpawnAgent(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
+            LocalDaemonRequest::DestroyAgent(request) => {
+                self.resolve_direct_session_lane_key(&request.session_id)
+            }
             LocalDaemonRequest::EndSession(request) => {
                 self.resolve_direct_session_lane_key(&request.session_id)
             }
@@ -619,6 +625,8 @@ impl SessionActor {
                 | LocalDaemonRequest::PollRuntimeNotices(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
                 | LocalDaemonRequest::AliasSession(_)
+                | LocalDaemonRequest::SpawnAgent(_)
+                | LocalDaemonRequest::DestroyAgent(_)
                 | LocalDaemonRequest::EndSession(_)
                 | LocalDaemonRequest::DeleteSession(_)
         )
@@ -628,6 +636,12 @@ impl SessionActor {
         app: &mut DaemonApp,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if matches!(
+            request,
+            LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+        ) {
+            return Some(app.handle_agent_request(request));
+        }
         if Self::is_session_interactive_command(&request) {
             return Some(app.handle_session_request(request));
         }

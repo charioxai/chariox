@@ -3,6 +3,7 @@ use super::prompt_lifecycle::{
     KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use super::DaemonApp;
+use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunState;
@@ -55,6 +56,43 @@ impl DaemonApp {
                 let cancellation =
                     self.cancel_active_prompt(&request.session_id, &request.attachment_id)?;
                 Ok(LocalDaemonResponse::PromptCancelled { cancellation })
+            }
+            LocalDaemonRequest::SpawnAgent(request) => {
+                let create_request =
+                    CreateAgentRequest::new(&request.session_id, &request.provider);
+                let create_request = if let Some(alias) = request.alias {
+                    create_request.with_alias(alias)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(model) = request.model {
+                    create_request.with_model(model)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(effort) = request.effort {
+                    create_request.with_effort(effort)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(worktree_id) = request.worktree_id {
+                    create_request.with_worktree(worktree_id)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(machine_ref) = request.machine_ref {
+                    create_request.with_machine(machine_ref)
+                } else {
+                    create_request
+                };
+                let agent = self.spawn_agent(create_request)?;
+                let _ = self.local_api_session_snapshot(agent.session_id())?;
+                Ok(LocalDaemonResponse::AgentSpawned { agent })
+            }
+            LocalDaemonRequest::DestroyAgent(request) => {
+                let agent = self.destroy_agent(&request.agent_id)?;
+                let _ = self.local_api_session_snapshot(agent.session_id())?;
+                Ok(LocalDaemonResponse::AgentDestroyed { agent })
             }
             _ => Err(DaemonError::LocalTransport {
                 operation: "execute agent request",

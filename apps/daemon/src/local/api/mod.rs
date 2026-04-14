@@ -198,7 +198,9 @@ impl DaemonApp {
             }
             request @ (LocalDaemonRequest::SubmitPrompt(_)
             | LocalDaemonRequest::CompletePrompt(_)
-            | LocalDaemonRequest::CancelActivePrompt(_)) => self.handle_agent_request(request),
+            | LocalDaemonRequest::CancelActivePrompt(_)
+            | LocalDaemonRequest::SpawnAgent(_)
+            | LocalDaemonRequest::DestroyAgent(_)) => self.handle_agent_request(request),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Ok(LocalDaemonResponse::TerminalOutput {
                     records: self
@@ -266,43 +268,6 @@ impl DaemonApp {
                         request.display_name,
                     )?,
                 })
-            }
-            LocalDaemonRequest::SpawnAgent(request) => {
-                let create_request =
-                    crate::agent::CreateAgentRequest::new(&request.session_id, &request.provider);
-                let create_request = if let Some(alias) = request.alias {
-                    create_request.with_alias(alias)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(model) = request.model {
-                    create_request.with_model(model)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(effort) = request.effort {
-                    create_request.with_effort(effort)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(worktree_id) = request.worktree_id {
-                    create_request.with_worktree(worktree_id)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(machine_ref) = request.machine_ref {
-                    create_request.with_machine(machine_ref)
-                } else {
-                    create_request
-                };
-                let agent = self.spawn_agent(create_request)?;
-                let _ = self.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentSpawned { agent })
-            }
-            LocalDaemonRequest::DestroyAgent(request) => {
-                let agent = self.destroy_agent(&request.agent_id)?;
-                let _ = self.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentDestroyed { agent })
             }
             LocalDaemonRequest::ListAgents(request) => {
                 let agents = self.list_session_agents(&request.session_id);
