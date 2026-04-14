@@ -115,6 +115,10 @@ impl CommandRouter {
         ) = router_projection_stores(&app);
         let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
             Arc::clone(&app),
+            config_projection.clone(),
+            session_projection.clone(),
+            provider_run_projection.clone(),
+            prompt_state_owner.clone(),
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );
@@ -217,6 +221,10 @@ impl CommandRouter {
         ) = router_projection_stores(&app);
         let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
             Arc::clone(&app),
+            config_projection.clone(),
+            session_projection.clone(),
+            provider_run_projection.clone(),
+            prompt_state_owner.clone(),
             terminal_stream.clone(),
             workspace_coordinator.clone(),
         );

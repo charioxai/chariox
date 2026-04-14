@@ -68,9 +68,7 @@ impl ProviderLaunchStore {
         &self,
         request: LaunchProviderRunRequest,
     ) -> Result<(StartedProviderLaunch, u64), DaemonError> {
-        self.state
-            .with_provider_launch_mut(|provider_launch| provider_launch.start_launch(request))
-            .await
+        self.state.start_provider_launch(request).await
     }
 
     async fn finish_launch(

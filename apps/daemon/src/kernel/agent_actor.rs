@@ -535,15 +535,11 @@ impl AgentRuntimeStore {
         &self,
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        self.state
-            .with_agent_mut(|agent| agent.active_prompt_agent_id(session_id))
-            .await
+        self.state.active_prompt_agent_id(session_id).await
     }
 
     async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        self.state
-            .with_agent_mut(|agent| agent.focused_agent_id(session_id))
-            .await
+        self.state.focused_agent_id(session_id).await
     }
 
     fn prompt_command_service(

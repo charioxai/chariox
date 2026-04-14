@@ -760,6 +760,19 @@ impl ProviderRunProjectionStore {
             .cloned()
     }
 
+    pub(crate) fn get_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs
+            .lock()
+            .expect("provider run projection lock should not be poisoned")
+            .values()
+            .find(|run| run.session_id() == session_id && run.agent_instance_id() == Some(agent_id))
+            .cloned()
+    }
+
     pub(crate) fn update(&self, run: RuntimeProviderRun) {
         self.runs
             .lock()

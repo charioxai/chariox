@@ -17,6 +17,10 @@ pub(crate) struct CompatibilityRuntimeState {
 
 #[derive(Clone)]
 pub(crate) struct CompatibilityRuntimeOwnedState {
+    config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
+    session_projection: crate::kernel::projection::SessionStateProjectionStore,
+    provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
+    prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
@@ -29,12 +33,20 @@ impl CompatibilityRuntimeState {
 
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
+        config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
+        session_projection: crate::kernel::projection::SessionStateProjectionStore,
+        provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
+        prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         Self {
             app,
             owned: Some(CompatibilityRuntimeOwnedState {
+                config_projection,
+                session_projection,
+                provider_run_projection,
+                prompt_state_owner,
                 terminal_stream,
                 workspace_coordinator,
             }),
@@ -42,12 +54,47 @@ impl CompatibilityRuntimeState {
     }
 
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
+        if let Some(owned) = &self.owned {
+            return owned.config_projection.snapshot();
+        }
         self.with_app_mut(|app| app.config().clone()).await
     }
 
     async fn with_app_mut<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
         let mut app = self.app.lock().await;
         operation(&mut app)
+    }
+
+    pub(crate) async fn active_prompt_agent_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if let Some(owned) = &self.owned {
+            if let Some(session) = owned.session_projection.get(session_id) {
+                return Ok(owned.prompt_state_owner.active_prompt_agent_id(&session));
+            }
+        }
+        self.with_app_mut(|app| app.prompt_owner_active_prompt_agent_id(session_id))
+            .await
+    }
+
+    pub(crate) async fn focused_agent_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if let Some(owned) = &self.owned {
+            if let Some(session) = owned.session_projection.get(session_id) {
+                return Ok(session.focused_agent_id().map(str::to_string));
+            }
+        }
+        self.with_app_mut(|app| {
+            Ok(app
+                .sessions()
+                .get_session(session_id)?
+                .focused_agent_id()
+                .map(str::to_string))
+        })
+        .await
     }
 
     pub(crate) async fn with_session_mut<R>(
@@ -66,23 +113,17 @@ impl CompatibilityRuntimeState {
         .await
     }
 
-    pub(crate) async fn with_agent_mut<R>(
-        &self,
-        operation: impl FnOnce(&mut AgentRuntimeCompatibilityContext<'_>) -> R,
-    ) -> R {
-        self.with_app_mut(|app| {
-            let mut context = AgentRuntimeCompatibilityContext::new(app);
-            operation(&mut context)
-        })
-        .await
-    }
-
     pub(crate) async fn with_agent_prompt_mut<R>(
         &self,
         operation: impl FnOnce(&mut AgentPromptCompatibilityContext<'_>) -> R,
     ) -> R {
         self.with_app_mut(|app| {
-            let mut context = AgentPromptCompatibilityContext::new(app);
+            let mut context = AgentPromptCompatibilityContext::new(
+                app,
+                self.owned
+                    .as_ref()
+                    .map(|owned| owned.provider_run_projection.clone()),
+            );
             operation(&mut context)
         })
         .await
@@ -210,6 +251,43 @@ impl CompatibilityRuntimeState {
         .await
     }
 
+    pub(crate) async fn start_provider_launch(
+        &self,
+        request: crate::local::LaunchProviderRunRequest,
+    ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
+        let launch_request = self.launch_provider_request_from_owned_state(request);
+        self.with_app_mut(|app| {
+            Ok((
+                app.start_provider_launch(launch_request)?,
+                app.config().provider_runtime_init_delay_ms,
+            ))
+        })
+        .await
+    }
+
+    fn launch_provider_request_from_owned_state(
+        &self,
+        request: crate::local::LaunchProviderRunRequest,
+    ) -> crate::provider::LaunchProviderRequest {
+        let mut launch_request = crate::provider::LaunchProviderRequest::new(
+            request.session_id.clone(),
+            request.adapter_key,
+            request.provider,
+            request.account_profile,
+            request.model,
+        )
+        .with_variant(request.variant);
+        if let Some(agent_id) = request.agent_id.clone().or_else(|| {
+            self.owned
+                .as_ref()
+                .and_then(|owned| owned.session_projection.get(&request.session_id))
+                .and_then(|session| session.focused_agent_id().map(str::to_string))
+        }) {
+            launch_request = launch_request.with_agent_id(agent_id);
+        }
+        launch_request
+    }
+
     pub(crate) async fn with_provider_launch_mut<R>(
         &self,
         operation: impl FnOnce(&mut ProviderLaunchCompatibilityContext<'_>) -> R,
@@ -285,39 +363,20 @@ pub(crate) struct SessionRuntimeCompatibilityContext<'a> {
     terminal_stream: Option<crate::terminal::TerminalStreamStore>,
 }
 
-pub(crate) struct AgentRuntimeCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> AgentRuntimeCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn active_prompt_agent_id(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        self.app.prompt_owner_active_prompt_agent_id(session_id)
-    }
-
-    pub(crate) fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        Ok(self
-            .app
-            .sessions()
-            .get_session(session_id)?
-            .focused_agent_id()
-            .map(str::to_string))
-    }
-}
-
 pub(crate) struct AgentPromptCompatibilityContext<'a> {
     app: &'a mut DaemonApp,
+    provider_run_projection: Option<crate::kernel::projection::ProviderRunProjectionStore>,
 }
 
 impl<'a> AgentPromptCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+    fn new(
+        app: &'a mut DaemonApp,
+        provider_run_projection: Option<crate::kernel::projection::ProviderRunProjectionStore>,
+    ) -> Self {
+        Self {
+            app,
+            provider_run_projection,
+        }
     }
 
     pub(crate) fn submit_prepared_prompt(
@@ -347,10 +406,16 @@ impl<'a> AgentPromptCompatibilityContext<'a> {
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let provider_run_id = self
-            .app
-            .providers()
-            .get_run_for_agent(session_id, target_agent_id)
-            .map(|run| run.id().to_string());
+            .provider_run_projection
+            .as_ref()
+            .and_then(|projection| projection.get_for_agent(session_id, target_agent_id))
+            .map(|run| run.id().to_string())
+            .or_else(|| {
+                self.app
+                    .providers()
+                    .get_run_for_agent(session_id, target_agent_id)
+                    .map(|run| run.id().to_string())
+            });
         crate::app::KernelAgentService::new(self.app).complete_active_prompt_for_kernel(
             session_id,
             target_agent_id,
@@ -429,18 +494,6 @@ pub(crate) struct CapabilityRuntimeSnapshot {
 impl<'a> ProviderLaunchCompatibilityContext<'a> {
     fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
-    }
-
-    pub(crate) fn start_launch(
-        &mut self,
-        request: crate::local::LaunchProviderRunRequest,
-    ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
-        let launch_request =
-            crate::local::provider_requests::launch_provider_request_from_local(self.app, request);
-        Ok((
-            self.app.start_provider_launch(launch_request)?,
-            self.app.config().provider_runtime_init_delay_ms,
-        ))
     }
 
     pub(crate) fn finish_launch(
