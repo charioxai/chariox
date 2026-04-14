@@ -566,7 +566,7 @@ mod tests {
             assert_eq!(agent.session_id(), session.id());
         }
 
-        assert_eq!(app.list_session_agents(session.id()).len(), 7);
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 7);
     }
 
     #[test]
@@ -615,7 +615,7 @@ mod tests {
             .sessions()
             .get_session(session.id())
             .expect("session should exist after reopen");
-        let history = app
+        let history = crate::app::KernelSessionReadService::new(&app)
             .session_history(session.id())
             .expect("history should still load");
 
@@ -690,9 +690,11 @@ mod tests {
             ))
             .expect("provider run should launch");
 
-        app.resize_terminal(session.id(), 90, 24)
+        crate::app::KernelSessionService::new(&mut app)
+            .resize_terminal(session.id(), 90, 24)
             .expect("terminal resize should succeed");
-        app.send_terminal_input(session.id(), source.id(), b"fanout test\n")
+        crate::app::terminal_input::ProviderTerminalInput::new(&mut app)
+            .send_provider_input(session.id(), run.id(), source.id(), b"fanout test\n")
             .expect("attachment input should reach provider PTY");
 
         let records = wait_for_terminal_output(&mut app, session.id(), source.id());

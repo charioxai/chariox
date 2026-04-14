@@ -242,6 +242,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed the app-level provider prompt dispatch shim. Local and workflow prompt dispatch now enter `ProviderPromptDispatcher`, concentrating provider liveness checks, structured prompt enqueue, and terminal-input fallback behind a named prompt-dispatch boundary.
 - Landed: Phase 8 removed the app-level remote workflow-turn context shim. Remote workflow prompt dispatch now resolves delivery context through `RemoteWorkflowTurnContextResolver` instead of a broad `DaemonApp` helper.
 - Landed: Phase 8 removed app-level direct capability execution helpers. Capability authorization now resolves through `KernelSessionReadService::capability_context`, and shell/tree/file/git/screenshot/transfer execution enters through the capability runtime boundary or concrete capability services instead of `DaemonApp` facade methods.
+- Landed: Phase 8 removed app-level session-history, agent-list, terminal-input, and terminal-resize convenience helpers. History reads now enter through `KernelSessionReadService`, terminal input enters through `ProviderTerminalInput`, terminal resize stays on `KernelSessionService`, and tests use explicit service boundaries instead of `DaemonApp` facade methods.
 
 Still open:
 

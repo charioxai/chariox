@@ -5,6 +5,7 @@ use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 use crate::error::DaemonError;
+use crate::history::SessionHistoryEntry;
 use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
@@ -120,6 +121,18 @@ impl<'a> KernelSessionReadService<'a> {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let agents = self.app.agents().get_session_agents(&request.session_id);
         Ok(LocalDaemonResponse::AgentsListed { agents })
+    }
+
+    pub(crate) fn session_history(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        let session = self.app.sessions().get_session(session_id)?;
+        let entries = self.app.history_store().load(&session)?;
+        self.app
+            .session_history_projection_store()
+            .update_entries(session.id(), entries.clone());
+        Ok(entries)
     }
 }
 

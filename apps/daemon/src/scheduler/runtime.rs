@@ -1559,7 +1559,7 @@ fn build_workflow_completion_snapshot(
         );
         return None;
     };
-    let history = match app.session_history(session_id) {
+    let history = match crate::app::KernelSessionReadService::new(app).session_history(session_id) {
         Ok(history) => history,
         Err(error) => {
             crate::logging::warn_with_fields(

@@ -36,9 +36,9 @@ use crate::execution_lease::{
 };
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::{
-    page_history_entries, AgentRuntimeProjectionStore, DaemonConfigProjectionStore,
-    ProviderCatalogProjectionStore, ProviderProcessProjectionStore, ProviderRunProjectionStore,
-    SessionHistoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
+    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
+    SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
@@ -48,9 +48,6 @@ use crate::provider::{
 };
 use crate::pty::PtyManager;
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, SessionService};
-pub use crate::session_history_page::{
-    SessionHistoryCursor, SessionHistoryPage, SessionHistoryPageEntry,
-};
 use crate::terminal::{TerminalOutputKind, TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
@@ -440,42 +437,6 @@ impl DaemonApp {
         crate::app::KernelSessionService::new(self).cycle_agent_focus(session_id)
     }
 
-    /// Get all agents in a session
-    pub fn list_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
-        self.agents.get_session_agents(session_id)
-    }
-
-    pub fn session_history(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let entries = self.history.load(&session)?;
-        self.history_projection
-            .update_entries(session.id(), entries.clone());
-        Ok(entries)
-    }
-
-    pub fn session_history_page(
-        &self,
-        session_id: &str,
-        agent_id: Option<&str>,
-        round_count: Option<usize>,
-        max_chars: Option<usize>,
-        before_entry_index: Option<usize>,
-        before_entry_char_offset: Option<usize>,
-    ) -> Result<SessionHistoryPage, DaemonError> {
-        let entries = self.session_history(session_id)?;
-        Ok(page_history_entries(
-            entries,
-            agent_id,
-            round_count,
-            max_chars,
-            before_entry_index,
-            before_entry_char_offset,
-        ))
-    }
-
     pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {
         &self.terminal
     }
@@ -505,52 +466,6 @@ impl DaemonApp {
             values,
             requires_idle,
         )
-    }
-
-    pub fn send_terminal_input(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        bytes: &[u8],
-    ) -> Result<(), DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let provider_run_id = session
-            .active_provider_run_id()
-            .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                session_id: session_id.to_string(),
-            })?
-            .to_string();
-
-        terminal_input::ProviderTerminalInput::new(self).send_provider_input(
-            session_id,
-            &provider_run_id,
-            attachment_id,
-            bytes,
-        )
-    }
-
-    pub fn resize_provider_terminal(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), DaemonError> {
-        crate::app::KernelSessionService::new(self).resize_provider_terminal(
-            session_id,
-            provider_run_id,
-            cols,
-            rows,
-        )
-    }
-
-    pub fn resize_terminal(
-        &mut self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), DaemonError> {
-        crate::app::KernelSessionService::new(self).resize_terminal(session_id, cols, rows)
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {

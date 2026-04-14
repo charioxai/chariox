@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
-use crate::app::{SessionHistoryCursor, SessionHistoryPageEntry};
 use crate::attachment::{ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
@@ -21,6 +20,7 @@ use crate::session::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowLaunchPolicy,
     WorkflowNodeDefinition, WorkflowRun, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
 };
+use crate::session_history_page::{SessionHistoryCursor, SessionHistoryPageEntry};
 #[cfg(test)]
 mod tests;
 mod types;
