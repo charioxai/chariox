@@ -193,6 +193,17 @@ impl CompatibilityRuntimeState {
         })
         .await
     }
+
+    pub(crate) async fn with_terminal_output_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut TerminalOutputCompatibilityContext<'_>) -> R,
+    ) -> R {
+        self.with_app_mut(|app| {
+            let mut context = TerminalOutputCompatibilityContext::new(app);
+            operation(&mut context)
+        })
+        .await
+    }
 }
 
 enum PromptAbortDispatchOutcome {
@@ -330,6 +341,10 @@ pub(crate) struct ProviderLaunchCompatibilityContext<'a> {
     app: &'a mut DaemonApp,
 }
 
+pub(crate) struct TerminalOutputCompatibilityContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
 impl<'a> ProviderLaunchCompatibilityContext<'a> {
     fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -363,6 +378,46 @@ impl<'a> ProviderLaunchCompatibilityContext<'a> {
         error: &DaemonError,
     ) {
         self.app.fail_provider_launch(started, error);
+    }
+}
+
+impl<'a> TerminalOutputCompatibilityContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn pump_terminal_output(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        crate::app::provider_output::pump_terminal_output_for_attachment(
+            self.app,
+            session_id,
+            attachment_id,
+        )
+    }
+
+    pub(crate) fn pump_active_provider_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<(), DaemonError> {
+        let _ = crate::app::provider_output::ProviderOutputPump::new(self.app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
     }
 }
 

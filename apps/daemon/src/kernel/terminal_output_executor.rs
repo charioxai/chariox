@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::app::provider_output::{
-    pump_terminal_output_for_attachment, ProviderOutputPump, ProviderOutputPumpRequest,
-};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{LocalDaemonResponse, PumpTerminalOutputRequest};
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::TerminalStreamStore;
@@ -25,49 +23,9 @@ pub(crate) struct TerminalOutputExecutor {
 
 #[derive(Clone)]
 struct TerminalOutputStore {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-}
-
-struct TerminalOutputContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> TerminalOutputContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn pump_terminal_output(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        pump_terminal_output_for_attachment(self.app, session_id, attachment_id)
-    }
-
-    fn pump_active_provider_output(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<(), DaemonError> {
-        let _ =
-            ProviderOutputPump::new(self.app).pump_provider_output(ProviderOutputPumpRequest {
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            })?;
-        Ok(())
-    }
-
-    fn session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
-    }
 }
 
 impl TerminalOutputExecutor {
@@ -79,8 +37,11 @@ impl TerminalOutputExecutor {
         provider_run_projection: ProviderRunProjectionStore,
         terminal_stream: TerminalStreamStore,
     ) -> Self {
-        let terminal_output_store =
-            TerminalOutputStore::new(app, session_projection.clone(), agent_runtime_projection);
+        let terminal_output_store = TerminalOutputStore::new(
+            CompatibilityRuntimeState::new(app),
+            session_projection.clone(),
+            agent_runtime_projection,
+        );
         Self {
             terminal_output_store,
             provider_runtime_lanes,
@@ -148,12 +109,12 @@ impl TerminalOutputExecutor {
 
 impl TerminalOutputStore {
     fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
         Self {
-            app,
+            state,
             session_projection,
             agent_runtime_projection,
         }
@@ -164,10 +125,15 @@ impl TerminalOutputStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        let mut app = self.app.lock().await;
-        let mut context = TerminalOutputContext::new(&mut app);
-        let records = context.pump_terminal_output(session_id, attachment_id)?;
-        self.refresh_session_projection(&context, session_id);
+        let (records, session) = self
+            .state
+            .with_terminal_output_mut(|terminal_output| {
+                let records = terminal_output.pump_terminal_output(session_id, attachment_id)?;
+                let session = terminal_output.session_snapshot(session_id).ok();
+                Ok((records, session))
+            })
+            .await?;
+        self.refresh_session_projection(session);
         Ok(records)
     }
 
@@ -177,19 +143,23 @@ impl TerminalOutputStore {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<(), DaemonError> {
-        let mut app = self.app.lock().await;
-        let mut context = TerminalOutputContext::new(&mut app);
-        context.pump_active_provider_output(
-            session_id,
-            provider_run_id,
-            recipient_attachment_ids,
-        )?;
-        self.refresh_session_projection(&context, session_id);
+        let session = self
+            .state
+            .with_terminal_output_mut(|terminal_output| {
+                terminal_output.pump_active_provider_output(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                )?;
+                Ok(terminal_output.session_snapshot(session_id).ok())
+            })
+            .await?;
+        self.refresh_session_projection(session);
         Ok(())
     }
 
-    fn refresh_session_projection(&self, context: &TerminalOutputContext<'_>, session_id: &str) {
-        if let Ok(session) = context.session_snapshot(session_id) {
+    fn refresh_session_projection(&self, session: Option<crate::session::RuntimeSession>) {
+        if let Some(session) = session {
             self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
         }
