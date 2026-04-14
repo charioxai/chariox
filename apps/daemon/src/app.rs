@@ -72,7 +72,7 @@ use crate::transport::relay_peer::{
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use kernel_workflow::KernelWorkflowService;
-pub(crate) use prompt_lifecycle::ProviderPromptDispatcher;
+pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{ProviderRunReadService, StartedProviderLaunch};
 
 pub struct DaemonApp {
@@ -962,51 +962,6 @@ impl DaemonApp {
         provider_run_id: &str,
     ) -> Option<LeasedWorkflowTurnBinding> {
         self.leased_workflow_turns.get(provider_run_id).cloned()
-    }
-
-    pub(crate) fn remote_workflow_turn_context_for_prompt(
-        &self,
-        session_id: &str,
-        target_agent_id: &str,
-        prompt: &crate::session::PromptQueueItem,
-    ) -> Result<RemoteWorkflowTurnContext, DaemonError> {
-        let workflow_run_id =
-            prompt
-                .workflow_run_id()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "dispatch remote workflow prompt",
-                    message: "remote workflow prompt is missing workflow run id".to_string(),
-                })?;
-        let workflow_node_run_id =
-            prompt
-                .workflow_node_run_id()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "dispatch remote workflow prompt",
-                    message: "remote workflow prompt is missing workflow node run id".to_string(),
-                })?;
-        let workflow_run = self
-            .sessions()
-            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
-        let delivery_token = workflow_run
-            .node_runs()
-            .iter()
-            .find(|node_run| node_run.id() == workflow_node_run_id)
-            .and_then(|node_run| node_run.turn_envelope())
-            .map(|envelope| envelope.delivery_token().to_string())
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "dispatch remote workflow prompt",
-                message: format!(
-                    "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
-                ),
-            })?;
-        Ok(RemoteWorkflowTurnContext {
-            home_kernel_id: self.config().daemon_id.clone(),
-            home_session_id: session_id.to_string(),
-            home_agent_id: target_agent_id.to_string(),
-            workflow_run_id: workflow_run.id().to_string(),
-            workflow_node_run_id: workflow_node_run_id.to_string(),
-            delivery_token,
-        })
     }
 
     pub fn complete_leased_prompt(

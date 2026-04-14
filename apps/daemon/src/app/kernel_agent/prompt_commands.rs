@@ -1108,9 +1108,12 @@ impl<'a> KernelAgentService<'a> {
                                 .app
                                 .serialize_remote_prompt_attachments(peeked.attachments())?,
                             workflow_context: if is_workflow_prompt {
-                                Some(self.app.remote_workflow_turn_context_for_prompt(
-                                    session_id, agent_id, &peeked,
-                                )?)
+                                Some(
+                                    crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
+                                        .remote_workflow_turn_context_for_prompt(
+                                            session_id, agent_id, &peeked,
+                                        )?,
+                                )
                             } else {
                                 None
                             },

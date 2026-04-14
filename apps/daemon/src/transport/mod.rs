@@ -115,8 +115,8 @@ impl TransportService {
     ) -> Result<(), DaemonError> {
         let target_agent = app.agents().get_agent(target_agent_id)?;
         if let Some(remote_execution) = target_agent.remote_execution().cloned() {
-            let workflow_context =
-                app.remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
+            let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(app)
+                .remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
             let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
                 app.config(),
                 ClientTarget {

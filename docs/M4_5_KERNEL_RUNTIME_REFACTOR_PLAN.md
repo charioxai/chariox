@@ -240,6 +240,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed the `DaemonApp::publish_session_projection` shim. Projection publication callers now use `KernelSessionReadService::session_snapshot` directly, keeping session read/projection refresh semantics behind one explicit read-service boundary instead of a generic app helper.
 - Landed: Phase 8 removed the app-level attachment/session and provider-run/session authorization shims. Attachment authorization now enters `KernelSessionReadService`, and provider-run ownership checks enter `ProviderRunReadService`, leaving callers tied to explicit read-service boundaries instead of broad `DaemonApp` helpers.
 - Landed: Phase 8 removed the app-level provider prompt dispatch shim. Local and workflow prompt dispatch now enter `ProviderPromptDispatcher`, concentrating provider liveness checks, structured prompt enqueue, and terminal-input fallback behind a named prompt-dispatch boundary.
+- Landed: Phase 8 removed the app-level remote workflow-turn context shim. Remote workflow prompt dispatch now resolves delivery context through `RemoteWorkflowTurnContextResolver` instead of a broad `DaemonApp` helper.
 
 Still open:
 

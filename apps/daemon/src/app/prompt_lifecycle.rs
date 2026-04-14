@@ -12,6 +12,62 @@ use crate::transport::relay_peer::RelayPromptAttachment;
 use base64::Engine;
 use std::fs;
 
+pub(crate) struct RemoteWorkflowTurnContextResolver<'a> {
+    app: &'a DaemonApp,
+}
+
+impl<'a> RemoteWorkflowTurnContextResolver<'a> {
+    pub(crate) fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn remote_workflow_turn_context_for_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<RemoteWorkflowTurnContext, DaemonError> {
+        let workflow_run_id =
+            prompt
+                .workflow_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow run id".to_string(),
+                })?;
+        let workflow_node_run_id =
+            prompt
+                .workflow_node_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow node run id".to_string(),
+                })?;
+        let workflow_run = self
+            .app
+            .sessions()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let delivery_token = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .and_then(|node_run| node_run.turn_envelope())
+            .map(|envelope| envelope.delivery_token().to_string())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "dispatch remote workflow prompt",
+                message: format!(
+                    "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
+                ),
+            })?;
+        Ok(RemoteWorkflowTurnContext {
+            home_kernel_id: self.app.config().daemon_id.clone(),
+            home_session_id: session_id.to_string(),
+            home_agent_id: target_agent_id.to_string(),
+            workflow_run_id: workflow_run.id().to_string(),
+            workflow_node_run_id: workflow_node_run_id.to_string(),
+            delivery_token,
+        })
+    }
+}
+
 pub(crate) struct ProviderPromptDispatcher<'a> {
     app: &'a mut DaemonApp,
 }
