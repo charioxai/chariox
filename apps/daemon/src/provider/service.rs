@@ -304,26 +304,6 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
-    pub(crate) fn reconcile_run_liveness(
-        &mut self,
-        sessions: &mut SessionService,
-        session_id: &str,
-        run_id: &str,
-        process_running: Option<bool>,
-    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
-        let reconciliation =
-            self.reconcile_run_liveness_provider_only(session_id, run_id, process_running)?;
-        if matches!(
-            reconciliation,
-            ProviderRunLivenessReconciliation::AlreadyEnded(_)
-                | ProviderRunLivenessReconciliation::NewlyEnded(_)
-        ) && sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id)
-        {
-            sessions.set_active_provider_run(session_id, None)?;
-        }
-        Ok(reconciliation)
-    }
-
     pub(crate) fn reconcile_run_liveness_provider_only(
         &mut self,
         session_id: &str,
@@ -920,7 +900,7 @@ mod tests {
             .expect("provider run should launch");
 
         let reconciliation = providers
-            .reconcile_run_liveness(&mut sessions, session.id(), run.id(), None)
+            .reconcile_run_liveness_provider_only(session.id(), run.id(), None)
             .expect("liveness reconciliation should succeed");
 
         assert!(matches!(
@@ -944,42 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn liveness_reconciliation_with_exited_process_marks_run_ended() {
-        let mut sessions = sessions();
-        let session = sessions
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-            .expect("session should be created");
-        let mut providers = ProviderProcessService::new();
-        let run = providers
-            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
-            .expect("provider run should launch");
-
-        let reconciliation = providers
-            .reconcile_run_liveness(&mut sessions, session.id(), run.id(), Some(false))
-            .expect("liveness reconciliation should succeed");
-
-        assert!(matches!(
-            reconciliation,
-            ProviderRunLivenessReconciliation::NewlyEnded(_)
-        ));
-        assert_eq!(
-            sessions
-                .get_session(session.id())
-                .expect("session should exist")
-                .active_provider_run_id(),
-            None
-        );
-        assert_eq!(
-            providers
-                .get_run(run.id())
-                .expect("run should still exist")
-                .state(),
-            ProviderRunState::Ended
-        );
-    }
-
-    #[test]
-    fn provider_only_liveness_reconciliation_does_not_mutate_session_active_run() {
+    fn provider_only_liveness_reconciliation_with_exited_process_marks_run_ended() {
         let mut sessions = sessions();
         let session = sessions
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -991,11 +936,50 @@ mod tests {
 
         let reconciliation = providers
             .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
-            .expect("provider-only reconciliation should succeed");
+            .expect("liveness reconciliation should succeed");
 
         assert!(matches!(
             reconciliation,
             ProviderRunLivenessReconciliation::NewlyEnded(_)
+        ));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
+        );
+        assert_eq!(
+            providers
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Ended
+        );
+    }
+
+    #[test]
+    fn provider_only_liveness_reconciliation_handles_already_ended_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        providers
+            .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
+            .expect("initial provider-only reconciliation should succeed");
+
+        let reconciliation = providers
+            .reconcile_run_liveness_provider_only(session.id(), run.id(), None)
+            .expect("provider-only reconciliation should succeed");
+
+        assert!(matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::AlreadyEnded(_)
         ));
         assert_eq!(
             sessions
