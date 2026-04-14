@@ -1,7 +1,7 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::ProviderRunState;
 use crate::provider::RuntimeProviderRun;
+use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::pty::PtyOutputChunk;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 
@@ -133,8 +133,127 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        // Parked runs should not be polled for output.
+        if provider_run.state() == ProviderRunState::Parked {
+            return Ok(Vec::new());
+        }
+        if provider_run.endpoint_mode() != AgentEndpointMode::External {
+            if let Err(error) = self.drain_pty_output(provider_run_id) {
+                if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
+                    return Ok(Vec::new());
+                }
+                if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
+                    return Err(error);
+                }
+            }
+        }
+        let mut records = self
+            .app
+            .pending_structured_output_records
+            .remove(provider_run_id)
+            .unwrap_or_default();
+        records.extend(self.drain_finished_structured_output_jobs_for_run(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids.clone(),
+        )?);
         self.app
-            .pump_structured_output(session_id, provider_run_id, recipient_attachment_ids)
+            .providers
+            .enqueue_structured_output_poll(provider_run_id)?;
+        Ok(records)
+    }
+
+    fn drain_finished_structured_output_jobs_for_run(
+        &mut self,
+        requested_session_id: &str,
+        requested_provider_run_id: &str,
+        requested_recipient_attachment_ids: Vec<String>,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        let mut requested_records = Vec::new();
+        for finished in self
+            .app
+            .providers
+            .drain_finished_structured_output_poll_jobs()
+        {
+            let provider_run_id = finished.provider_run_id.clone();
+            let is_requested_run = provider_run_id == requested_provider_run_id;
+            let poll_result = match finished.result {
+                Ok(Some(poll_result)) => poll_result,
+                Ok(None) => continue,
+                Err(error) => {
+                    let reconcile_result = if is_requested_run {
+                        self.reconcile_provider_run_exit(
+                            requested_session_id,
+                            requested_provider_run_id,
+                        )
+                    } else {
+                        self.app
+                            .providers
+                            .get_run(&provider_run_id)
+                            .and_then(|run| {
+                                let session_id = run.session_id().to_string();
+                                self.reconcile_provider_run_exit(&session_id, &provider_run_id)
+                            })
+                    };
+                    match reconcile_result {
+                        Ok(true) => continue,
+                        Ok(false) if is_requested_run => return Err(error),
+                        Ok(false) => {
+                            crate::logging::error_with_fields(
+                                "daemon.app",
+                                "background structured output poll failed",
+                                serde_json::json!({
+                                    "provider_run_id": provider_run_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
+                        Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
+                        Err(reconcile_error) => {
+                            crate::logging::error_with_fields(
+                                "daemon.app",
+                                "background structured output poll reconciliation failed",
+                                serde_json::json!({
+                                    "provider_run_id": provider_run_id,
+                                    "error": reconcile_error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+            let provider_run = match self.app.providers.get_run(&provider_run_id) {
+                Ok(run) => run,
+                Err(_) => continue,
+            };
+            let session_id = provider_run.session_id().to_string();
+            let recipient_attachment_ids = if is_requested_run {
+                requested_recipient_attachment_ids.clone()
+            } else {
+                self.app
+                    .attachments
+                    .list_session_attachment_ids(&session_id)
+            };
+            let records = self.app.apply_structured_output_batch(
+                &session_id,
+                &provider_run_id,
+                recipient_attachment_ids,
+                poll_result,
+            )?;
+            if is_requested_run {
+                requested_records.extend(records);
+            } else if !records.is_empty() {
+                self.app
+                    .pending_structured_output_records
+                    .entry(provider_run_id)
+                    .or_default()
+                    .extend(records);
+            }
+        }
+        Ok(requested_records)
     }
 
     fn drain_pty_output(
