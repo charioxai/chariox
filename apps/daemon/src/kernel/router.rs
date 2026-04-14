@@ -634,34 +634,34 @@ impl CommandRouter {
 
     async fn execute_cold_list_sessions_request(
         &self,
-        request: ListSessionsRequest,
+        _request: ListSessionsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        app.handle_local_request(LocalDaemonRequest::ListSessions(request))
+        let app = self.app.lock().await;
+        app.list_sessions_response()
     }
 
     async fn execute_cold_resolve_session_request(
         &self,
         request: ResolveSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        app.handle_local_request(LocalDaemonRequest::ResolveSession(request))
+        let app = self.app.lock().await;
+        app.resolve_session_response(request)
     }
 
     async fn execute_cold_get_session_state_request(
         &self,
         request: GetSessionStateRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        app.handle_local_request(LocalDaemonRequest::GetSessionState(request))
+        let app = self.app.lock().await;
+        app.get_session_state_response(request)
     }
 
     async fn execute_cold_list_agents_request(
         &self,
         request: ListAgentsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let mut app = self.app.lock().await;
-        app.handle_local_request(LocalDaemonRequest::ListAgents(request))
+        let app = self.app.lock().await;
+        app.list_agents_response(request)
     }
 
     async fn execute_get_provider_run_request(
@@ -669,7 +669,7 @@ impl CommandRouter {
         request: GetProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let mut app = self.app.lock().await;
-        app.handle_local_request(LocalDaemonRequest::GetProviderRun(request))
+        app.handle_get_provider_run_request(request)
     }
 
     async fn execute_get_provider_auth_status_request(

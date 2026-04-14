@@ -65,6 +65,48 @@ impl DaemonApp {
         Ok(session)
     }
 
+    pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        let sessions = self.sessions().list_sessions();
+        let sessions_with_agents: Vec<_> = sessions
+            .into_iter()
+            .map(|mut session| {
+                let agents = self.agents().get_session_agents(session.id());
+                session.set_agents(agents);
+                session
+            })
+            .collect();
+        Ok(LocalDaemonResponse::SessionsListed {
+            sessions: sessions_with_agents,
+        })
+    }
+
+    pub(crate) fn resolve_session_response(
+        &self,
+        request: ResolveSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut session =
+            self.resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
+        let agents = self.agents().get_session_agents(session.id());
+        session.set_agents(agents);
+        Ok(LocalDaemonResponse::SessionResolved { session })
+    }
+
+    pub(crate) fn get_session_state_response(
+        &self,
+        request: GetSessionStateRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let session = self.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::SessionState { session })
+    }
+
+    pub(crate) fn list_agents_response(
+        &self,
+        request: ListAgentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agents = self.list_session_agents(&request.session_id);
+        Ok(LocalDaemonResponse::AgentsListed { agents })
+    }
+
     pub fn handle_local_request(
         &mut self,
         request: LocalDaemonRequest,
@@ -84,32 +126,10 @@ impl DaemonApp {
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 self.handle_launch_provider_run_request(request)
             }
-            LocalDaemonRequest::ListSessions(_) => {
-                let sessions = self.sessions().list_sessions();
-                // Populate agents for each session
-                let sessions_with_agents: Vec<_> = sessions
-                    .into_iter()
-                    .map(|mut session| {
-                        let agents = self.agents().get_session_agents(session.id());
-                        session.set_agents(agents);
-                        session
-                    })
-                    .collect();
-                Ok(LocalDaemonResponse::SessionsListed {
-                    sessions: sessions_with_agents,
-                })
-            }
-            LocalDaemonRequest::ResolveSession(request) => {
-                let mut session = self
-                    .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
-                // Populate agents list
-                let agents = self.agents().get_session_agents(session.id());
-                session.set_agents(agents);
-                Ok(LocalDaemonResponse::SessionResolved { session })
-            }
+            LocalDaemonRequest::ListSessions(_) => self.list_sessions_response(),
+            LocalDaemonRequest::ResolveSession(request) => self.resolve_session_response(request),
             LocalDaemonRequest::GetSessionState(request) => {
-                let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::SessionState { session })
+                self.get_session_state_response(request)
             }
             LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
                 projection: DaemonHealthProjection::new(
@@ -269,10 +289,7 @@ impl DaemonApp {
                     )?,
                 })
             }
-            LocalDaemonRequest::ListAgents(request) => {
-                let agents = self.list_session_agents(&request.session_id);
-                Ok(LocalDaemonResponse::AgentsListed { agents })
-            }
+            LocalDaemonRequest::ListAgents(request) => self.list_agents_response(request),
             request @ (LocalDaemonRequest::CreateWorkflow(_)
             | LocalDaemonRequest::AliasWorkflow(_)
             | LocalDaemonRequest::ListWorkflows(_)

@@ -45,7 +45,7 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
     }
 
-    pub(super) fn handle_get_provider_run_request(
+    pub(crate) fn handle_get_provider_run_request(
         &mut self,
         request: GetProviderRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
