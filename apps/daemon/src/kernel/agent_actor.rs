@@ -894,7 +894,8 @@ mod tests {
         };
 
         let response = app
-            .handle_agent_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            .kernel_agents()
+            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: Some(agent.id().to_string()),
@@ -956,17 +957,19 @@ mod tests {
             LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
             _ => panic!("unexpected local response"),
         };
-        app.handle_agent_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session.id().to_string(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(agent.id().to_string()),
-            prompt: "hello".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("prompt submit should succeed");
+        app.kernel_agents()
+            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                target_agent_id: Some(agent.id().to_string()),
+                prompt: "hello".to_string(),
+                attachments: Vec::new(),
+            }))
+            .expect("prompt submit should succeed");
 
         let response = app
-            .handle_agent_request(LocalDaemonRequest::CancelActivePrompt(
+            .kernel_agents()
+            .execute_request(LocalDaemonRequest::CancelActivePrompt(
                 CancelActivePromptRequest {
                     session_id: session.id().to_string(),
                     attachment_id: attachment.id().to_string(),

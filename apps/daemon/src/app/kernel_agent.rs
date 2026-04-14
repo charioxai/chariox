@@ -16,15 +16,6 @@ use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
-impl DaemonApp {
-    pub(crate) fn handle_agent_request(
-        &mut self,
-        request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.kernel_agents().execute_request(request)
-    }
-}
-
 pub(crate) struct KernelAgentService<'a> {
     app: &'a mut DaemonApp,
 }

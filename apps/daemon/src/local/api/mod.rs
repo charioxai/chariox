@@ -198,7 +198,7 @@ impl DaemonApp {
             | LocalDaemonRequest::CompletePrompt(_)
             | LocalDaemonRequest::CancelActivePrompt(_)
             | LocalDaemonRequest::SpawnAgent(_)
-            | LocalDaemonRequest::DestroyAgent(_)) => self.handle_agent_request(request),
+            | LocalDaemonRequest::DestroyAgent(_)) => self.kernel_agents().execute_request(request),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Ok(LocalDaemonResponse::TerminalOutput {
                     records: crate::app::provider_output::pump_terminal_output_for_attachment(
