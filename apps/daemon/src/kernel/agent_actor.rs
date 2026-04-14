@@ -525,6 +525,29 @@ pub(crate) struct AgentRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
 }
 
+struct AgentRuntimeContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> AgentRuntimeContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn active_prompt_agent_id(&mut self, session_id: &str) -> Result<Option<String>, DaemonError> {
+        self.app.prompt_owner_active_prompt_agent_id(session_id)
+    }
+
+    fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .app
+            .sessions()
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string))
+    }
+}
+
 impl AgentRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self { app }
@@ -535,16 +558,12 @@ impl AgentRuntimeStore {
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
         let mut app = self.app.lock().await;
-        app.prompt_owner_active_prompt_agent_id(session_id)
+        AgentRuntimeContext::new(&mut app).active_prompt_agent_id(session_id)
     }
 
     async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        let app = self.app.lock().await;
-        Ok(app
-            .sessions()
-            .get_session(session_id)?
-            .focused_agent_id()
-            .map(str::to_string))
+        let mut app = self.app.lock().await;
+        AgentRuntimeContext::new(&mut app).focused_agent_id(session_id)
     }
 
     fn prompt_command_service(
