@@ -2102,11 +2102,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
         LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
         _ => panic!("unexpected local response"),
     };
-    let node = harness.add_workflow_test_node(
-        session.id(),
-        workflow.id(),
-        unsupported_agent.id(),
-    );
+    let node = harness.add_workflow_test_node(session.id(), workflow.id(), unsupported_agent.id());
     let endpoint = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
             CreateWorkflowEndpointRequest {
@@ -2167,8 +2163,7 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         _ => panic!("unexpected local response"),
     };
 
-    let entry_node =
-        harness.add_workflow_test_node(session.id(), workflow.id(), entry_agent.id());
+    let entry_node = harness.add_workflow_test_node(session.id(), workflow.id(), entry_agent.id());
     let branch_one_node =
         harness.add_workflow_test_node(session.id(), workflow.id(), branch_one_agent.id());
     let branch_two_node =
@@ -2275,7 +2270,9 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 
     harness.with_app_mut(|app| {
         app.complete_active_prompt(session.id(), active_branch_agents[0], None)
-            .unwrap_or_else(|error| panic!("first branch workflow prompt should complete: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("first branch workflow prompt should complete: {error}")
+            });
     });
     let after_first_branch = harness.get_workflow_test_run(session.id(), workflow_run.id());
     assert_eq!(after_first_branch.node_runs().len(), 3);
@@ -2311,7 +2308,9 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 
     harness.with_app_mut(|app| {
         app.complete_active_prompt(session.id(), remaining_active_branch_agents[0], None)
-            .unwrap_or_else(|error| panic!("second branch workflow prompt should complete: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("second branch workflow prompt should complete: {error}")
+            });
     });
     let after_second_branch = harness.get_workflow_test_run(session.id(), workflow_run.id());
     let join_runs = after_second_branch
@@ -3262,10 +3261,9 @@ fn local_request_api_can_cancel_an_active_prompt() {
 fn local_request_api_runs_shell_command_capability() {
     let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3273,8 +3271,8 @@ fn local_request_api_runs_shell_command_capability() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-shell".to_string(),
@@ -3287,8 +3285,8 @@ fn local_request_api_runs_shell_command_capability() {
         _ => panic!("unexpected local response"),
     };
 
-    let response = app
-        .handle_local_request(LocalDaemonRequest::RunShellCommand(
+    let response = harness
+        .dispatch(LocalDaemonRequest::RunShellCommand(
             RunShellCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -3313,10 +3311,9 @@ fn local_request_api_runs_shell_command_capability() {
 fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
     let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-denied-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3324,8 +3321,8 @@ fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-automation".to_string(),
@@ -3338,8 +3335,8 @@ fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    let error = app
-        .handle_local_request(LocalDaemonRequest::RunShellCommand(
+    let error = harness
+        .dispatch(LocalDaemonRequest::RunShellCommand(
             RunShellCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -3365,10 +3362,9 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("notes.txt"), "hello").expect("file should exist");
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3376,8 +3372,8 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-automation".to_string(),
@@ -3390,8 +3386,8 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
         _ => panic!("unexpected local response"),
     };
 
-    let error = app
-        .handle_local_request(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
+    let error = harness
+        .dispatch(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             path: worktree_root.join("notes.txt"),
@@ -3419,10 +3415,9 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
         .output()
         .expect("git init should work");
 
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3430,8 +3425,8 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-capability".to_string(),
@@ -3444,8 +3439,8 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
         _ => panic!("unexpected local response"),
     };
 
-    let tree = app
-        .handle_local_request(LocalDaemonRequest::ReadDirectoryTree(
+    let tree = harness
+        .dispatch(LocalDaemonRequest::ReadDirectoryTree(
             ReadDirectoryTreeCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -3454,23 +3449,23 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
             },
         ))
         .expect("tree read should succeed");
-    let file = app
-        .handle_local_request(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
+    let file = harness
+        .dispatch(LocalDaemonRequest::ReadFile(ReadFileCapabilityRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             path: worktree_root.join("src/lib.rs"),
         }))
         .expect("file read should succeed");
-    let edit = app
-        .handle_local_request(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
+    let edit = harness
+        .dispatch(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             path: worktree_root.join("src/lib.rs"),
             contents: "after".to_string(),
         }))
         .expect("file edit should succeed");
-    let git = app
-        .handle_local_request(LocalDaemonRequest::InspectGit(
+    let git = harness
+        .dispatch(LocalDaemonRequest::InspectGit(
             InspectGitCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
@@ -3514,10 +3509,9 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
 
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3525,8 +3519,8 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-workspace-claim".to_string(),
@@ -3539,19 +3533,20 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
         _ => panic!("unexpected local response"),
     };
 
-    let _claim = app
-        .workspace_coordinator()
-        .acquire_worktree_write_claim(
-            session.workspace_id().to_string(),
-            worktree_root.display().to_string(),
-            "other-session",
-            Some("other-attachment".to_string()),
-            "file_edit",
-        )
-        .expect("existing claim should acquire");
+    let _claim = harness.with_app_mut(|app| {
+        app.workspace_coordinator()
+            .acquire_worktree_write_claim(
+                session.workspace_id().to_string(),
+                worktree_root.display().to_string(),
+                "other-session",
+                Some("other-attachment".to_string()),
+                "file_edit",
+            )
+            .expect("existing claim should acquire")
+    });
 
-    let health = app
-        .handle_local_request(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
+    let health = harness
+        .dispatch(LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest))
         .expect("health should be available while claim is active");
     match health {
         LocalDaemonResponse::DaemonHealth { projection } => {
@@ -3566,8 +3561,8 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
         _ => panic!("unexpected health response"),
     }
 
-    let error = app
-        .handle_local_request(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
+    let error = harness
+        .dispatch(LocalDaemonRequest::EditFile(EditFileCapabilityRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             path: worktree_root.join("src/lib.rs"),
@@ -3673,7 +3668,6 @@ fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
         LocalDaemonResponse::SessionAttached { attachment } => attachment,
         _ => panic!("unexpected local response"),
     };
-
 
     let error = harness
         .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -3950,10 +3944,9 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
     let source = worktree_root.join("artifact.txt");
     std::fs::write(&source, "artifact").expect("file should exist");
 
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
         ))
         .expect("session create should succeed")
@@ -3961,8 +3954,8 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
         LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
         _ => panic!("unexpected local response"),
     };
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-transfer".to_string(),
@@ -3975,8 +3968,8 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
         _ => panic!("unexpected local response"),
     };
 
-    let response = app
-        .handle_local_request(LocalDaemonRequest::StoreTransferredFile(
+    let response = harness
+        .dispatch(LocalDaemonRequest::StoreTransferredFile(
             StoreTransferredFileCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
