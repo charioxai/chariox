@@ -8,7 +8,8 @@ use crate::agent::RemoteAgentBinding;
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
 use crate::session::{
-    PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
+    PromptSubmissionOutcome,
 };
 use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -87,6 +88,100 @@ impl<'a> KernelAgentService<'a> {
             dispatch,
             remote_dispatch,
         })
+    }
+
+    pub(crate) fn submit_prompt(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: Option<&str>,
+        prompt: &str,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.app
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent_id = match target_agent_id {
+            Some(target_agent_id) => target_agent_id.to_string(),
+            None => self
+                .app
+                .sessions()
+                .get_session(session_id)?
+                .focused_agent_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "no focused agent".to_string(),
+                })?
+                .to_string(),
+        };
+        let prepared_prompt = PromptQueueItem::new(
+            self.app.sessions_mut().reserve_prompt_id(),
+            attachment_id,
+            &target_agent_id,
+            prompt,
+            PromptStatus::Queued,
+        )
+        .with_attachments(attachments);
+        let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
+            session_id: session_id.to_string(),
+            prompt: prepared_prompt,
+            force_queue: false,
+        })?;
+        let outcome = submitted.outcome;
+        self.finish_compat_prompt_dispatch(submitted.dispatch)?;
+        self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch)?;
+        self.app.publish_session_projection(session_id)?;
+        Ok(outcome)
+    }
+
+    fn finish_compat_prompt_dispatch(
+        &mut self,
+        dispatch: Option<KernelPromptDispatch>,
+    ) -> Result<(), DaemonError> {
+        let Some(dispatch) = dispatch else {
+            return Ok(());
+        };
+        if let Err(error) = self.app.enqueue_kernel_prompt_dispatch(&dispatch) {
+            self.app.fail_kernel_prompt_dispatch(dispatch, error)?;
+        }
+        Ok(())
+    }
+
+    fn finish_compat_remote_prompt_dispatch(
+        &mut self,
+        dispatch: Option<KernelRemotePromptDispatch>,
+    ) -> Result<(), DaemonError> {
+        let Some(dispatch) = dispatch else {
+            return Ok(());
+        };
+        let attachments = self
+            .app
+            .serialize_remote_prompt_attachments(&dispatch.attachments)?;
+        let result =
+            match self
+                .app
+                .block_on_relay_future(send_peer_request_via_temporary_connection(
+                    self.app.config(),
+                    ClientTarget {
+                        daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::SubmitLeasedPrompt {
+                        leased_agent_id: dispatch.leased_agent_id.clone(),
+                        prompt: dispatch.prompt.clone(),
+                        attachments,
+                        workflow_context: dispatch.workflow_context.clone(),
+                    },
+                )) {
+                Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                    provider_run_id, ..
+                }) => Ok(provider_run_id),
+                Ok(other) => Err(DaemonError::LocalTransport {
+                    operation: "submit remote prepared prompt",
+                    message: format!("unexpected remote prompt response: {other:?}"),
+                }),
+                Err(error) => Err(error),
+            };
+        self.app
+            .finish_kernel_remote_prompt_dispatch(dispatch, result)
     }
 
     fn prepare_prompt_admission(
