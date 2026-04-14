@@ -2034,7 +2034,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   }
   const promptInputMaxHeight = () => (
     isAttached()
-      ? Math.max(6, dimensions().height - 14)
+      ? Math.max(6, dimensions().height - 10)
       : 6
   )
   const retainPromptFocus = () => {
@@ -3349,7 +3349,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }
 
     if (parts.length === 0) {
-      setTextRenderable(promptMetaProviderText, " ", theme.textMuted)
+      setTextRenderable(promptMetaProviderText, "", theme.textMuted)
       setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
       setTextRenderable(promptMetaModelText, "", theme.textMuted)
       setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)
@@ -3358,7 +3358,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       return
     }
 
-    setTextRenderable(promptMetaProviderText, usage ? "" : " ", theme.textMuted)
+    setTextRenderable(promptMetaProviderText, "", theme.textMuted)
     setTextRenderable(promptMetaProviderDividerText, "", theme.textMuted)
     setTextRenderable(promptMetaModelText, "", theme.textMuted)
     setTextRenderable(promptMetaModelDividerText, "", theme.textMuted)

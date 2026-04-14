@@ -67,6 +67,7 @@ export const TranscriptSeparatorBorder = {
 export const PromptBorderChars = {
   ...EmptyBorder,
   vertical: "┃",
+  horizontal: "━",
   bottomLeft: "╹",
 }
 

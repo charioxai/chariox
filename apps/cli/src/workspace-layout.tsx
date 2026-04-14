@@ -177,9 +177,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
 
       <box
         flexShrink={0}
-        marginTop={1}
         overflow="visible"
-        border={["left"]}
+        border={["top"]}
         borderColor={props.fatalError ? theme.error : theme.primary}
         customBorderChars={PromptBorderChars}
       >
@@ -193,13 +192,9 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         />
         <box
           overflow="hidden"
-          paddingLeft={2}
-          paddingRight={2}
-          paddingTop={1}
-          paddingBottom={1}
           backgroundColor={props.promptAreaBackground}
           flexDirection="column"
-          gap={1}
+          gap={0}
         >
           <box overflow="hidden">
             <textarea
@@ -216,7 +211,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             />
           </box>
           <box flexDirection="row" overflow="hidden">
-            <text ref={props.onPromptMetaProviderTextRef} fg={theme.textMuted}>{" "}</text>
+            <text ref={props.onPromptMetaProviderTextRef} fg={theme.textMuted}>{""}</text>
             <text ref={props.onPromptMetaProviderDividerTextRef} fg={theme.textMuted}>{""}</text>
             <text ref={props.onPromptMetaModelTextRef} fg={theme.textMuted}>{""}</text>
             <text ref={props.onPromptMetaModelDividerTextRef} fg={theme.textMuted}>{""}</text>
@@ -232,7 +227,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
-      <box flexShrink={0} marginTop={1} paddingLeft={2} paddingRight={2}>
+      <box flexShrink={0}>
         <box flexDirection="row" gap={1}>
           <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" />
           <box ref={props.onFooterSummaryBoxRef} flexDirection="row" />
