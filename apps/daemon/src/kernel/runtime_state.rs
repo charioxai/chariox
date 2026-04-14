@@ -213,6 +213,34 @@ impl CompatibilityRuntimeState {
         let context = CapabilityRuntimeCompatibilityContext::new(&app);
         operation(&context)
     }
+
+    pub(crate) async fn dispatch_authenticated_runtime_tool_call(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
+                app, auth_token, tool_name, arguments,
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
+        &self,
+        context: crate::execution_lease::RemoteWorkflowTurnContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
+                app, context, tool_name, arguments,
+            )
+        })
+        .await
+    }
 }
 
 enum PromptAbortDispatchOutcome {

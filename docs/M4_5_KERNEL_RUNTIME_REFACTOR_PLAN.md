@@ -255,6 +255,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved terminal-output compatibility pumping and provider-output pumping behind `CompatibilityRuntimeState` terminal-output ports. `TerminalOutputStore` now receives refreshed session snapshots from that boundary instead of owning a separate raw app mutex.
 - Landed: Phase 8 moved capability authorization lookup behind `CompatibilityRuntimeState` capability-runtime ports. `CapabilityRuntimeStore` no longer owns a separate raw app mutex; it consumes an explicit capability context snapshot before spawning bounded capability work.
 - Landed: Phase 8 made the remaining raw app-lock helper inside `CompatibilityRuntimeState` private. Runtime callers must enter through named compatibility ports instead of using a generic app mutation escape hatch.
+- Landed: Phase 8 gave `CommandRouter` an explicit `CompatibilityRuntimeState` boundary for remaining app-backed runtime-tool and provider-launch side effects. Authenticated/forwarded runtime-tool calls and provider-launch dispatch no longer lock `DaemonApp` directly from router code.
 
 Still open:
 

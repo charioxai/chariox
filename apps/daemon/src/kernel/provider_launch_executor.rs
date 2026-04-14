@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
-use crate::app::{DaemonApp, StartedProviderLaunch};
+use crate::app::StartedProviderLaunch;
 use crate::error::DaemonError;
 use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
@@ -20,9 +17,9 @@ pub(crate) struct ProviderLaunchStore {
 }
 
 impl ProviderLaunchCommandExecutor {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
         Self {
-            store: ProviderLaunchStore::new(CompatibilityRuntimeState::new(app)),
+            store: ProviderLaunchStore::new(state),
         }
     }
 

@@ -21,6 +21,7 @@ use crate::kernel::projection::{
 };
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::provider_launch_executor::ProviderLaunchCommandExecutor;
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::terminal_output_executor::TerminalOutputExecutor;
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
@@ -49,6 +50,7 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
     app: Arc<Mutex<DaemonApp>>,
+    runtime_state: CompatibilityRuntimeState,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
     workflow_runtime: WorkflowRuntime,
@@ -111,6 +113,7 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
+        let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
         let agent_runtime = AgentRuntime::new(
@@ -145,6 +148,7 @@ impl CommandRouter {
         );
         Self {
             app,
+            runtime_state,
             agent_runtime,
             session_runtime,
             workflow_runtime,
@@ -207,6 +211,7 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
+        let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
         let agent_runtime = AgentRuntime::new(
@@ -241,6 +246,7 @@ impl CommandRouter {
         );
         Self {
             app,
+            runtime_state,
             agent_runtime,
             session_runtime,
             workflow_runtime,
@@ -277,10 +283,9 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let mut app = self.app.lock().await;
-        crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
-            &mut app, auth_token, tool_name, arguments,
-        )
+        self.runtime_state
+            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+            .await
     }
 
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
@@ -289,10 +294,9 @@ impl CommandRouter {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let mut app = self.app.lock().await;
-        crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
-            &mut app, context, tool_name, arguments,
-        )
+        self.runtime_state
+            .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+            .await
     }
 
     pub(crate) async fn dispatch(
@@ -1018,7 +1022,7 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                ProviderLaunchCommandExecutor::new(Arc::clone(&self.app))
+                ProviderLaunchCommandExecutor::new(self.runtime_state.clone())
                     .execute(request)
                     .await
             }
