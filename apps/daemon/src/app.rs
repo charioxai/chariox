@@ -20,8 +20,9 @@ pub(crate) mod terminal_input;
 pub(crate) mod workflow_runtime;
 
 pub(crate) use prompt_lifecycle::{
-    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
+    serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
+    KernelRemotePromptDispatch,
 };
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
