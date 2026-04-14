@@ -165,6 +165,25 @@ impl<'a> ProviderOutputRecipientResolver<'a> {
     }
 }
 
+struct ProviderOutputLiveness<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderOutputLiveness<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn reconcile_exit(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.app
+            .reconcile_provider_run_exit(session_id, provider_run_id)
+    }
+}
+
 struct ProviderOutputFanout<'a> {
     app: &'a DaemonApp,
     terminal: TerminalStreamStore,
@@ -233,8 +252,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        self.app
-            .reconcile_provider_run_exit(session_id, provider_run_id)
+        ProviderOutputLiveness::new(self.app).reconcile_exit(session_id, provider_run_id)
     }
 
     fn ensure_provider_run_in_session(
