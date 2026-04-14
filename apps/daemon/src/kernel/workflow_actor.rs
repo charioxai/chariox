@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app::workflow_runtime::WorkflowLaunchOutcome;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
@@ -367,222 +366,6 @@ impl WorkflowRuntimeStore {
         .await
     }
 
-    async fn invoke_workflow_endpoint(
-        &self,
-        request: InvokeWorkflowEndpointRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let outcome = app.invoke_workflow_endpoint_with_admission(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-                request.prompt,
-            )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            match outcome {
-                WorkflowLaunchOutcome::Started {
-                    workflow_run,
-                    workflow,
-                    endpoint,
-                } => Ok(LocalDaemonResponse::WorkflowRunInvoked {
-                    workflow_run,
-                    workflow,
-                    endpoint,
-                    session,
-                }),
-                WorkflowLaunchOutcome::Queued {
-                    queued_launch,
-                    workflow,
-                    endpoint,
-                } => Ok(LocalDaemonResponse::WorkflowRunQueued {
-                    queued_launch,
-                    workflow,
-                    endpoint,
-                    session,
-                }),
-            }
-        })
-        .await
-    }
-
-    async fn list_workflow_runs(
-        &self,
-        request: ListWorkflowRunsRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::WorkflowRunsListed {
-                workflow_runs: app
-                    .sessions()
-                    .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?,
-            })
-        })
-        .await
-    }
-
-    async fn get_workflow_run(
-        &self,
-        request: GetWorkflowRunRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::WorkflowRun {
-                workflow_run: app
-                    .sessions()
-                    .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
-            })
-        })
-        .await
-    }
-
-    async fn cancel_workflow_run(
-        &self,
-        request: CancelWorkflowRunRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let workflow_run_id = app
-                .sessions()
-                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
-                .id()
-                .to_string();
-            let active_prompt_workflow_run_id = if let Some(agent_id) =
-                app.prompt_owner_active_prompt_agent_id(&request.session_id)?
-            {
-                app.prompt_owner_active_prompt_for_agent(&request.session_id, &agent_id)?
-                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
-            } else {
-                None
-            };
-            let should_cancel_active_prompt =
-                active_prompt_workflow_run_id.as_deref() == Some(workflow_run_id.as_str());
-            if should_cancel_active_prompt {
-                let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
-                    app,
-                    &request.session_id,
-                )?;
-            }
-            let workflow_run = app
-                .sessions_mut()
-                .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
-            let _ = app.prompt_owner_remove_queued_prompts_by_workflow_run(
-                &request.session_id,
-                &workflow_run_id,
-            )?;
-            let _ = app.drain_session_workflow_launch_queue(&request.session_id)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowRunCancelled {
-                workflow_run,
-                session,
-            })
-        })
-        .await
-    }
-
-    async fn resume_workflow_run(
-        &self,
-        request: ResumeWorkflowRunRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let workflow_run = app
-                .resume_workflow_run_from_runtime(&request.session_id, &request.workflow_run_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowRunResumed {
-                workflow_run,
-                session,
-            })
-        })
-        .await
-    }
-
-    async fn create_workflow_watchdog(
-        &self,
-        request: CreateWorkflowWatchdogRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let watchdog = app.sessions_mut().create_workflow_watchdog(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-                request.interval_seconds,
-                request.invocation_prompt,
-                request.policy,
-                if request.max_wakeups_configured {
-                    Some(request.max_wakeups)
-                } else {
-                    None
-                },
-            )?;
-            let workflow = app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
-            let endpoint = app.sessions().resolve_workflow_endpoint_ref(
-                &request.session_id,
-                &request.workflow_ref,
-                &request.endpoint_ref,
-            )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowWatchdogCreated {
-                watchdog,
-                workflow,
-                endpoint,
-                session,
-            })
-        })
-        .await
-    }
-
-    async fn list_workflow_watchdogs(
-        &self,
-        request: ListWorkflowWatchdogsRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
-                watchdogs: app.sessions().list_workflow_watchdogs(
-                    &request.session_id,
-                    request.workflow_ref.as_deref(),
-                )?,
-            })
-        })
-        .await
-    }
-
-    async fn set_workflow_watchdog_enabled(
-        &self,
-        request: SetWorkflowWatchdogEnabledRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let watchdog = app.sessions_mut().set_workflow_watchdog_enabled(
-                &request.session_id,
-                &request.watchdog_ref,
-                request.enabled,
-            )?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
-        })
-        .await
-    }
-
-    async fn remove_workflow_watchdog(
-        &self,
-        request: RemoveWorkflowWatchdogRequest,
-    ) -> WorkflowStoreExecutionResult {
-        let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            let watchdog = app
-                .sessions_mut()
-                .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
-        })
-        .await
-    }
-
     async fn set_workflow_flush_context(
         &self,
         request: SetWorkflowFlushContextRequest,
@@ -629,17 +412,114 @@ impl WorkflowRuntimeStore {
         .await
     }
 
+    async fn invoke_workflow_endpoint(
+        &self,
+        request: InvokeWorkflowEndpointRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().invoke_workflow_endpoint(request)
+        })
+        .await
+    }
+
+    async fn list_workflow_runs(
+        &self,
+        request: ListWorkflowRunsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().list_workflow_runs(request)
+        })
+        .await
+    }
+
+    async fn get_workflow_run(
+        &self,
+        request: GetWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().get_workflow_run(request)
+        })
+        .await
+    }
+
+    async fn cancel_workflow_run(
+        &self,
+        request: CancelWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().cancel_workflow_run(request)
+        })
+        .await
+    }
+
+    async fn resume_workflow_run(
+        &self,
+        request: ResumeWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().resume_workflow_run(request)
+        })
+        .await
+    }
+
+    async fn create_workflow_watchdog(
+        &self,
+        request: CreateWorkflowWatchdogRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().create_workflow_watchdog(request)
+        })
+        .await
+    }
+
+    async fn list_workflow_watchdogs(
+        &self,
+        request: ListWorkflowWatchdogsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().list_workflow_watchdogs(request)
+        })
+        .await
+    }
+
+    async fn set_workflow_watchdog_enabled(
+        &self,
+        request: SetWorkflowWatchdogEnabledRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows()
+                .set_workflow_watchdog_enabled(request)
+        })
+        .await
+    }
+
+    async fn remove_workflow_watchdog(
+        &self,
+        request: RemoveWorkflowWatchdogRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            app.kernel_workflows().remove_workflow_watchdog(request)
+        })
+        .await
+    }
+
     async fn list_queued_workflow_launches(
         &self,
         request: ListQueuedWorkflowLaunchesRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
-                queued_launches: app
-                    .sessions()
-                    .list_queued_workflow_launches(&request.session_id)?,
-            })
+            app.kernel_workflows()
+                .list_queued_workflow_launches(request)
         })
         .await
     }
@@ -650,14 +530,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let queued_launch = app
-                .sessions_mut()
-                .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
-                queued_launch,
-                session,
-            })
+            app.kernel_workflows()
+                .remove_queued_workflow_launch(request)
         })
         .await
     }
@@ -668,14 +542,8 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let queued_launches = app
-                .sessions_mut()
-                .clear_queued_workflow_launches(&request.session_id)?;
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
-                queued_launches,
-                session,
-            })
+            app.kernel_workflows()
+                .clear_queued_workflow_launches(request)
         })
         .await
     }
@@ -686,35 +554,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
-                app,
-                crate::transport::runtime_tools::RuntimeToolCall {
-                    tool_name: crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL
-                        .to_string(),
-                    arguments: serde_json::json!({
-                        "output_schema_ref": request.output_schema_ref,
-                        "output_json": request.output_json,
-                    }),
-                    context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
-                        session_id: request.session_id.clone(),
-                        workflow_run_ref: String::new(),
-                        workflow_node_run_id: String::new(),
-                        delivery_token: None,
-                        allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
-                        workflow_run_output_schema_ref: None,
-                        workflow_intermediate_output_schema_ref: None,
-                        can_complete_workflow_run: false,
-                        can_emit_intermediate_workflow_run_output: false,
-                    },
-                },
-            )?;
-            Ok(LocalDaemonResponse::WorkflowOutputValidated {
-                valid: result.payload["valid"].as_bool().unwrap_or(false),
-                warning: result.payload["warning"]
-                    .as_str()
-                    .map(str::to_string)
-                    .filter(|value| !value.is_empty()),
-            })
+            app.kernel_workflows().validate_workflow_output(request)
         })
         .await
     }
@@ -725,35 +565,7 @@ impl WorkflowRuntimeStore {
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
         self.execute_operation(&session_id, move |app| {
-            crate::transport::runtime_tools::dispatch_runtime_tool_call(
-                app,
-                crate::transport::runtime_tools::RuntimeToolCall {
-                    tool_name: crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL.to_string(),
-                    arguments: serde_json::json!({
-                        "delivery_token": request.delivery_token,
-                    }),
-                    context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
-                        session_id: request.session_id.clone(),
-                        workflow_run_ref: request.workflow_run_ref.clone(),
-                        workflow_node_run_id: request.workflow_node_run_id.clone(),
-                        delivery_token: Some(request.delivery_token.clone()),
-                        allowed_output_schema_refs: Vec::new(),
-                        workflow_run_output_schema_ref: None,
-                        workflow_intermediate_output_schema_ref: None,
-                        can_complete_workflow_run: false,
-                        can_emit_intermediate_workflow_run_output: false,
-                    },
-                },
-            )?;
-            let workflow_run = app
-                .sessions()
-                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
-                .clone();
-            let session = app.local_api_session_snapshot(&request.session_id)?;
-            Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
-                workflow_run,
-                session,
-            })
+            app.kernel_workflows().ack_workflow_turn(request)
         })
         .await
     }

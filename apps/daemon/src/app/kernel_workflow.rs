@@ -1,14 +1,20 @@
-use crate::app::DaemonApp;
+use crate::app::{workflow_runtime::WorkflowLaunchOutcome, DaemonApp};
 use crate::error::DaemonError;
 use crate::local::{
-    AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasWorkflowEndpointRequest,
-    AliasWorkflowRequest, BindWorkflowEndpointRequest, CreateWorkflowEndpointRequest,
-    CreateWorkflowRequest, ListWorkflowsRequest, LocalDaemonResponse, RemoveWorkflowEdgeRequest,
-    RemoveWorkflowNodeRequest, ResolveWorkflowRequest, SetWorkflowFlushContextRequest,
-    SetWorkflowIntermediateOutputSchemaRequest, SetWorkflowLaunchPolicyRequest,
-    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
+    AliasWorkflowEndpointRequest, AliasWorkflowRequest, BindWorkflowEndpointRequest,
+    CancelWorkflowRunRequest, ClearQueuedWorkflowLaunchesRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, CreateWorkflowWatchdogRequest, GetWorkflowRunRequest,
+    InvokeWorkflowEndpointRequest, ListQueuedWorkflowLaunchesRequest, ListWorkflowRunsRequest,
+    ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonResponse,
+    RemoveQueuedWorkflowLaunchRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    RemoveWorkflowWatchdogRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    SetWorkflowFlushContextRequest, SetWorkflowIntermediateOutputSchemaRequest,
+    SetWorkflowLaunchPolicyRequest, SetWorkflowNodeCanCompleteRunRequest,
+    SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
-    SetWorkflowRunOutputSchemaRequest, UpdateWorkflowNodeInstructionsRequest,
+    SetWorkflowRunOutputSchemaRequest, SetWorkflowWatchdogEnabledRequest,
+    UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
 };
 
 pub(crate) struct KernelWorkflowService<'a> {
@@ -406,5 +412,311 @@ impl<'a> KernelWorkflowService<'a> {
         let mut session = session;
         session.set_agents(self.app.agents().get_session_agents(&request.session_id));
         Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
+    }
+
+    pub(crate) fn invoke_workflow_endpoint(
+        &mut self,
+        request: InvokeWorkflowEndpointRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let outcome = self.app.invoke_workflow_endpoint_with_admission(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.prompt,
+        )?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        match outcome {
+            WorkflowLaunchOutcome::Started {
+                workflow_run,
+                workflow,
+                endpoint,
+            } => Ok(LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                workflow,
+                endpoint,
+                session,
+            }),
+            WorkflowLaunchOutcome::Queued {
+                queued_launch,
+                workflow,
+                endpoint,
+            } => Ok(LocalDaemonResponse::WorkflowRunQueued {
+                queued_launch,
+                workflow,
+                endpoint,
+                session,
+            }),
+        }
+    }
+
+    pub(crate) fn list_workflow_runs(
+        &mut self,
+        request: ListWorkflowRunsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: self
+                .app
+                .sessions()
+                .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?,
+        })
+    }
+
+    pub(crate) fn get_workflow_run(
+        &mut self,
+        request: GetWorkflowRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowRun {
+            workflow_run: self
+                .app
+                .sessions()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
+        })
+    }
+
+    pub(crate) fn cancel_workflow_run(
+        &mut self,
+        request: CancelWorkflowRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow_run_id = self
+            .app
+            .sessions()
+            .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
+            .id()
+            .to_string();
+        let active_prompt_workflow_run_id = if let Some(agent_id) = self
+            .app
+            .prompt_owner_active_prompt_agent_id(&request.session_id)?
+        {
+            self.app
+                .prompt_owner_active_prompt_for_agent(&request.session_id, &agent_id)?
+                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+        } else {
+            None
+        };
+        let should_cancel_active_prompt =
+            active_prompt_workflow_run_id.as_deref() == Some(workflow_run_id.as_str());
+        if should_cancel_active_prompt {
+            let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
+                self.app,
+                &request.session_id,
+            )?;
+        }
+        let workflow_run = self
+            .app
+            .sessions_mut()
+            .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+        let _ = self
+            .app
+            .prompt_owner_remove_queued_prompts_by_workflow_run(
+                &request.session_id,
+                &workflow_run_id,
+            )?;
+        let _ = self
+            .app
+            .drain_session_workflow_launch_queue(&request.session_id)?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowRunCancelled {
+            workflow_run,
+            session,
+        })
+    }
+
+    pub(crate) fn resume_workflow_run(
+        &mut self,
+        request: ResumeWorkflowRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow_run = self
+            .app
+            .resume_workflow_run_from_runtime(&request.session_id, &request.workflow_run_ref)?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowRunResumed {
+            workflow_run,
+            session,
+        })
+    }
+
+    pub(crate) fn create_workflow_watchdog(
+        &mut self,
+        request: CreateWorkflowWatchdogRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self.app.sessions_mut().create_workflow_watchdog(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.interval_seconds,
+            request.invocation_prompt,
+            request.policy,
+            if request.max_wakeups_configured {
+                Some(request.max_wakeups)
+            } else {
+                None
+            },
+        )?;
+        let workflow = self
+            .app
+            .sessions()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let endpoint = self.app.sessions().resolve_workflow_endpoint_ref(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+        )?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogCreated {
+            watchdog,
+            workflow,
+            endpoint,
+            session,
+        })
+    }
+
+    pub(crate) fn list_workflow_watchdogs(
+        &mut self,
+        request: ListWorkflowWatchdogsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
+            watchdogs: self
+                .app
+                .sessions()
+                .list_workflow_watchdogs(&request.session_id, request.workflow_ref.as_deref())?,
+        })
+    }
+
+    pub(crate) fn set_workflow_watchdog_enabled(
+        &mut self,
+        request: SetWorkflowWatchdogEnabledRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self.app.sessions_mut().set_workflow_watchdog_enabled(
+            &request.session_id,
+            &request.watchdog_ref,
+            request.enabled,
+        )?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
+    }
+
+    pub(crate) fn remove_workflow_watchdog(
+        &mut self,
+        request: RemoveWorkflowWatchdogRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self
+            .app
+            .sessions_mut()
+            .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
+    }
+
+    pub(crate) fn list_queued_workflow_launches(
+        &mut self,
+        request: ListQueuedWorkflowLaunchesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
+            queued_launches: self
+                .app
+                .sessions()
+                .list_queued_workflow_launches(&request.session_id)?,
+        })
+    }
+
+    pub(crate) fn remove_queued_workflow_launch(
+        &mut self,
+        request: RemoveQueuedWorkflowLaunchRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_launch = self
+            .app
+            .sessions_mut()
+            .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
+            queued_launch,
+            session,
+        })
+    }
+
+    pub(crate) fn clear_queued_workflow_launches(
+        &mut self,
+        request: ClearQueuedWorkflowLaunchesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_launches = self
+            .app
+            .sessions_mut()
+            .clear_queued_workflow_launches(&request.session_id)?;
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
+            queued_launches,
+            session,
+        })
+    }
+
+    pub(crate) fn validate_workflow_output(
+        &mut self,
+        request: ValidateWorkflowOutputRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
+            self.app,
+            crate::transport::runtime_tools::RuntimeToolCall {
+                tool_name: crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL
+                    .to_string(),
+                arguments: serde_json::json!({
+                    "output_schema_ref": request.output_schema_ref,
+                    "output_json": request.output_json,
+                }),
+                context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
+                    session_id: request.session_id.clone(),
+                    workflow_run_ref: String::new(),
+                    workflow_node_run_id: String::new(),
+                    delivery_token: None,
+                    allowed_output_schema_refs: vec![request.output_schema_ref.clone()],
+                    workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: None,
+                    can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: false,
+                },
+            },
+        )?;
+        Ok(LocalDaemonResponse::WorkflowOutputValidated {
+            valid: result.payload["valid"].as_bool().unwrap_or(false),
+            warning: result.payload["warning"]
+                .as_str()
+                .map(str::to_string)
+                .filter(|value| !value.is_empty()),
+        })
+    }
+
+    pub(crate) fn ack_workflow_turn(
+        &mut self,
+        request: AckWorkflowTurnRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        crate::transport::runtime_tools::dispatch_runtime_tool_call(
+            self.app,
+            crate::transport::runtime_tools::RuntimeToolCall {
+                tool_name: crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL.to_string(),
+                arguments: serde_json::json!({
+                    "delivery_token": request.delivery_token,
+                }),
+                context: crate::transport::runtime_tools::WorkflowRuntimeToolContext {
+                    session_id: request.session_id.clone(),
+                    workflow_run_ref: request.workflow_run_ref.clone(),
+                    workflow_node_run_id: request.workflow_node_run_id.clone(),
+                    delivery_token: Some(request.delivery_token.clone()),
+                    allowed_output_schema_refs: Vec::new(),
+                    workflow_run_output_schema_ref: None,
+                    workflow_intermediate_output_schema_ref: None,
+                    can_complete_workflow_run: false,
+                    can_emit_intermediate_workflow_run_output: false,
+                },
+            },
+        )?;
+        let workflow_run = self
+            .app
+            .sessions()
+            .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
+            .clone();
+        let session = self.app.local_api_session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
+            workflow_run,
+            session,
+        })
     }
 }
