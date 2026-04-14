@@ -251,6 +251,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved the agent prompt-command compatibility context into `CompatibilityRuntimeState` too. `AgentPromptCommandService` now calls named prompt ports on the runtime-state boundary instead of carrying its own local app-context wrapper.
 - Landed: Phase 8 moved prompt dispatch, remote prompt dispatch, and prompt abort background operations behind `CompatibilityRuntimeState` prompt-dispatch ports. `AgentPromptCommandService` no longer pulls out the compatibility app handle directly for those spawned side effects.
 - Landed: Phase 8 removed the raw app-handle getter from `CompatibilityRuntimeState`. Agent prompt command service creation now passes the runtime-state boundary itself, so prompt code cannot bypass the quarantine by re-cloning `Arc<Mutex<DaemonApp>>`.
+- Landed: Phase 8 moved provider-launch admission, completion, and failure mutation behind `CompatibilityRuntimeState` provider-launch ports. `ProviderLaunchStore` no longer carries its own raw app mutex, keeping provider-launch compatibility access behind the same quarantine boundary as session/agent/workflow runtime workers.
 
 Still open:
 

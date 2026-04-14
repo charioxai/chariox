@@ -182,6 +182,17 @@ impl CompatibilityRuntimeState {
         })
         .await
     }
+
+    pub(crate) async fn with_provider_launch_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut ProviderLaunchCompatibilityContext<'_>) -> R,
+    ) -> R {
+        self.with_app_mut(|app| {
+            let mut context = ProviderLaunchCompatibilityContext::new(app);
+            operation(&mut context)
+        })
+        .await
+    }
 }
 
 enum PromptAbortDispatchOutcome {
@@ -313,6 +324,46 @@ impl<'a> AgentPromptCompatibilityContext<'a> {
 
 pub(crate) struct WorkflowRuntimeCompatibilityContext<'a> {
     app: &'a mut DaemonApp,
+}
+
+pub(crate) struct ProviderLaunchCompatibilityContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderLaunchCompatibilityContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn start_launch(
+        &mut self,
+        request: crate::local::LaunchProviderRunRequest,
+    ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
+        let launch_request =
+            crate::local::provider_requests::launch_provider_request_from_local(self.app, request);
+        Ok((
+            self.app.start_provider_launch(launch_request)?,
+            self.app.config().provider_runtime_init_delay_ms,
+        ))
+    }
+
+    pub(crate) fn finish_launch(
+        &mut self,
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) {
+        if let Err(error) = self.app.finish_provider_launch(started, binding) {
+            self.app.fail_provider_launch(started, &error);
+        }
+    }
+
+    pub(crate) fn fail_launch(
+        &mut self,
+        started: &crate::app::StartedProviderLaunch,
+        error: &DaemonError,
+    ) {
+        self.app.fail_provider_launch(started, error);
+    }
 }
 
 impl<'a> WorkflowRuntimeCompatibilityContext<'a> {

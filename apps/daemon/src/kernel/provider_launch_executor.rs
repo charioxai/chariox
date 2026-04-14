@@ -5,7 +5,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::{DaemonApp, StartedProviderLaunch};
 use crate::error::DaemonError;
-use crate::local::provider_requests::launch_provider_request_from_local;
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
 use crate::provider::ProviderProcessService;
 
@@ -16,13 +16,13 @@ pub(crate) struct ProviderLaunchCommandExecutor {
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchStore {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
 }
 
 impl ProviderLaunchCommandExecutor {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self {
-            store: ProviderLaunchStore::new(app),
+            store: ProviderLaunchStore::new(CompatibilityRuntimeState::new(app)),
         }
     }
 
@@ -63,20 +63,17 @@ impl ProviderLaunchCommandExecutor {
 }
 
 impl ProviderLaunchStore {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+        Self { state }
     }
 
     async fn start_launch(
         &self,
         request: LaunchProviderRunRequest,
     ) -> Result<(StartedProviderLaunch, u64), DaemonError> {
-        let mut app = self.app.lock().await;
-        let launch_request = launch_provider_request_from_local(&app, request);
-        Ok((
-            app.start_provider_launch(launch_request)?,
-            app.config().provider_runtime_init_delay_ms,
-        ))
+        self.state
+            .with_provider_launch_mut(|provider_launch| provider_launch.start_launch(request))
+            .await
     }
 
     async fn finish_launch(
@@ -84,14 +81,16 @@ impl ProviderLaunchStore {
         started: &StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
-        let mut app = self.app.lock().await;
-        if let Err(error) = app.finish_provider_launch(started, binding) {
-            app.fail_provider_launch(started, &error);
-        }
+        self.state
+            .with_provider_launch_mut(|provider_launch| {
+                provider_launch.finish_launch(started, binding)
+            })
+            .await;
     }
 
     async fn fail_launch(&self, started: &StartedProviderLaunch, error: &DaemonError) {
-        let mut app = self.app.lock().await;
-        app.fail_provider_launch(started, error);
+        self.state
+            .with_provider_launch_mut(|provider_launch| provider_launch.fail_launch(started, error))
+            .await;
     }
 }
