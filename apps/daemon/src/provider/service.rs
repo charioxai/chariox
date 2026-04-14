@@ -61,6 +61,21 @@ impl ProviderSessionRunsTerminatedOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderRunStartedOutcome {
+    run: RuntimeProviderRun,
+}
+
+impl ProviderRunStartedOutcome {
+    pub(crate) fn run(&self) -> &RuntimeProviderRun {
+        &self.run
+    }
+
+    pub(crate) fn into_run(self) -> RuntimeProviderRun {
+        self.run
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderRunParkedOutcome {
     run: RuntimeProviderRun,
 }
@@ -143,6 +158,25 @@ impl ProviderProcessService {
         Ok(run)
     }
 
+    pub(crate) fn start_run_provider_only(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
+            DaemonError::ProviderAdapterNotFound {
+                adapter_key: request.adapter_key.clone(),
+            }
+        })?;
+
+        let run_id = self.next_run_id();
+        let launch_result = adapter.connect(&request)?;
+        let run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
+
+        self.runs.insert(run_id, run.clone());
+
+        Ok(ProviderRunStartedOutcome { run })
+    }
+
     pub(crate) fn start_run(
         &mut self,
         sessions: &mut SessionService,
@@ -184,18 +218,10 @@ impl ProviderProcessService {
             }
         }
 
-        let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
-            DaemonError::ProviderAdapterNotFound {
-                adapter_key: request.adapter_key.clone(),
-            }
-        })?;
-
-        let run_id = self.next_run_id();
-        let launch_result = adapter.connect(&request)?;
-        let run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
-
-        self.runs.insert(run_id.clone(), run.clone());
-        sessions.set_active_provider_run(&request.session_id, Some(run_id))?;
+        let session_id = request.session_id.clone();
+        let outcome = self.start_run_provider_only(request)?;
+        sessions.set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
+        let run = outcome.into_run();
 
         Ok(run)
     }
@@ -948,6 +974,29 @@ mod tests {
         assert_eq!(run.adapter_key(), "dev-stub");
         assert_eq!(session.active_provider_run_id(), Some(run.id()));
         assert_eq!(session.status(), SessionStatus::Active);
+    }
+
+    #[test]
+    fn provider_only_start_run_returns_outcome_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+
+        let outcome = providers
+            .start_run_provider_only(launch_request(session.id(), "sonnet"))
+            .expect("provider-only start should succeed");
+
+        assert_eq!(outcome.run().session_id(), session.id());
+        assert_eq!(outcome.run().state(), ProviderRunState::Starting);
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            None
+        );
     }
 
     #[test]

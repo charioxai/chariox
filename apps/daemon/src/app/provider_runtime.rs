@@ -362,6 +362,61 @@ impl ProviderRunLivenessState {
 struct ProviderRunActivationState;
 
 impl ProviderRunActivationState {
+    fn start_provider_run_for_session(
+        app: &mut DaemonApp,
+        request: LaunchProviderRequest,
+    ) -> Result<StartedProviderLaunch, DaemonError> {
+        let session_id = request.session_id.clone();
+        let previous_active_run_id = app
+            .sessions
+            .get_session(&session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
+
+        if let Some(active_run_id) = previous_active_run_id.as_deref() {
+            let active_run = app.providers.get_run(active_run_id)?;
+            match active_run.state() {
+                ProviderRunState::Ended => {
+                    app.sessions.set_active_provider_run(&session_id, None)?;
+                    app.providers.clear_runtime(active_run_id);
+                }
+                ProviderRunState::Starting => {
+                    let outcome = app
+                        .providers
+                        .terminate_run_provider_only(&session_id, active_run_id)?;
+                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                        app,
+                        &session_id,
+                        outcome.run().id(),
+                    )?;
+                    app.update_provider_run_projection(outcome.into_run());
+                }
+                ProviderRunState::Running => {
+                    let outcome = app
+                        .providers
+                        .park_run_provider_only(&session_id, active_run_id)?;
+                    ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                        app,
+                        &session_id,
+                        outcome.run().id(),
+                    )?;
+                    app.update_provider_run_projection(outcome.into_run());
+                }
+                ProviderRunState::Parked => {
+                    app.sessions.set_active_provider_run(&session_id, None)?;
+                }
+            }
+        }
+
+        let outcome = app.providers.start_run_provider_only(request)?;
+        app.sessions
+            .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
+        Ok(StartedProviderLaunch {
+            run: outcome.into_run(),
+            previous_active_run_id,
+        })
+    }
+
     fn resume_provider_run_for_session(
         app: &mut DaemonApp,
         session_id: &str,
@@ -664,16 +719,13 @@ impl DaemonApp {
                 shared_auth_token.unwrap_or_else(generate_runtime_mcp_auth_token),
             ));
         }
-        let previous_active_run_id = self
-            .sessions
-            .get_session(&request.session_id)?
-            .active_provider_run_id()
-            .map(str::to_owned);
+        let request_session_id = request.session_id.clone();
         let recipients = self
             .attachments
-            .list_session_attachment_ids(&request.session_id);
-        let run = self.providers.start_run(&mut self.sessions, request)?;
-        if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
+            .list_session_attachment_ids(&request_session_id);
+        let started = ProviderRunActivationState::start_provider_run_for_session(self, request)?;
+        let run = started.run.clone();
+        if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
             if let Ok(previous_run) = self.providers.get_run(previous_active_run_id) {
                 self.update_provider_run_projection(previous_run);
             }
@@ -710,7 +762,7 @@ impl DaemonApp {
                     )?;
                     self.update_provider_run_projection(outcome.into_run());
                 }
-                if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
+                if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
                     match ProviderRunActivationState::resume_provider_run_for_session(
                         self,
                         run.session_id(),
@@ -747,10 +799,7 @@ impl DaemonApp {
             ProviderProcessTracker::new(self).register_managed_run(&run)?;
         }
         self.update_provider_run_projection(run.clone());
-        Ok(StartedProviderLaunch {
-            run,
-            previous_active_run_id,
-        })
+        Ok(started)
     }
 
     pub(crate) fn initialize_provider_runtime_binding(
