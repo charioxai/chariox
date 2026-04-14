@@ -46,6 +46,21 @@ impl ProviderRunEndedOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderSessionRunsTerminatedOutcome {
+    runs: Vec<ProviderRunEndedOutcome>,
+}
+
+impl ProviderSessionRunsTerminatedOutcome {
+    pub(crate) fn runs(&self) -> &[ProviderRunEndedOutcome] {
+        &self.runs
+    }
+
+    pub(crate) fn into_runs(self) -> Vec<ProviderRunEndedOutcome> {
+        self.runs
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderRunParkedOutcome {
     run: RuntimeProviderRun,
 }
@@ -482,11 +497,10 @@ impl ProviderProcessService {
             .collect()
     }
 
-    pub fn terminate_session_runs(
+    pub(crate) fn terminate_session_runs_provider_only(
         &mut self,
-        sessions: &mut SessionService,
         session_id: &str,
-    ) -> Result<Vec<RuntimeProviderRun>, DaemonError> {
+    ) -> Result<ProviderSessionRunsTerminatedOutcome, DaemonError> {
         let run_ids: Vec<String> = self
             .runs
             .values()
@@ -498,11 +512,12 @@ impl ProviderProcessService {
 
         for run_id in run_ids {
             let outcome = self.terminate_run_provider_only(session_id, &run_id)?;
-            sync_ended_run_session_pointer(sessions, session_id, outcome.run().id())?;
-            terminated_runs.push(outcome.into_run());
+            terminated_runs.push(outcome);
         }
 
-        Ok(terminated_runs)
+        Ok(ProviderSessionRunsTerminatedOutcome {
+            runs: terminated_runs,
+        })
     }
 
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
@@ -1101,6 +1116,53 @@ mod tests {
                 .expect("session should exist")
                 .active_provider_run_id(),
             Some(run.id())
+        );
+    }
+
+    #[test]
+    fn provider_only_terminate_session_runs_returns_outcomes_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let first = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("first provider run should launch");
+        let second = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "opus"))
+            .expect("second provider run should launch");
+
+        let outcome = providers
+            .terminate_session_runs_provider_only(session.id())
+            .expect("provider-only session termination should succeed");
+
+        let terminated_run_ids = outcome
+            .runs()
+            .iter()
+            .map(|outcome| outcome.run().id().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(terminated_run_ids, vec![first.id(), second.id()]);
+        assert_eq!(
+            providers
+                .get_run(first.id())
+                .expect("first run should remain recorded")
+                .state(),
+            ProviderRunState::Ended
+        );
+        assert_eq!(
+            providers
+                .get_run(second.id())
+                .expect("second run should remain recorded")
+                .state(),
+            ProviderRunState::Ended
+        );
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(second.id())
         );
     }
 

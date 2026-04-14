@@ -296,12 +296,25 @@ impl<'a> KernelSessionService<'a> {
         let terminated_runs = self
             .app
             .providers
-            .terminate_session_runs(&mut self.app.sessions, session_id)?;
+            .terminate_session_runs_provider_only(session_id)?;
         let terminated_run_ids = terminated_runs
+            .runs()
             .iter()
-            .map(|run| run.id().to_string())
+            .map(|outcome| outcome.run().id().to_string())
             .collect::<Vec<_>>();
-        for run in terminated_runs {
+        for outcome in terminated_runs.into_runs() {
+            if self
+                .app
+                .sessions
+                .get_session(session_id)?
+                .active_provider_run_id()
+                == Some(outcome.run().id())
+            {
+                self.app
+                    .sessions
+                    .set_active_provider_run(session_id, None)?;
+            }
+            let run = outcome.into_run();
             super::provider_runtime::ProviderProcessTracker::new(self.app).remove_run(run.id())?;
         }
 
