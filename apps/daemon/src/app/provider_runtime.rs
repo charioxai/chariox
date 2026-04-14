@@ -359,6 +359,43 @@ impl ProviderRunLivenessState {
     }
 }
 
+struct ProviderRunActivationState;
+
+impl ProviderRunActivationState {
+    fn resume_provider_run_for_session(
+        app: &mut DaemonApp,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let active_run_id = app
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
+
+        if let Some(active_run_id) = active_run_id.as_deref() {
+            if active_run_id != run_id {
+                let outcome = app
+                    .providers
+                    .park_run_provider_only(session_id, active_run_id)?;
+                ProviderRunLivenessState::clear_active_provider_run_session_pointer(
+                    app,
+                    session_id,
+                    outcome.run().id(),
+                )?;
+                app.update_provider_run_projection(outcome.into_run());
+            }
+        }
+
+        let outcome = app.providers.resume_run_provider_only(session_id, run_id)?;
+        app.sessions
+            .set_active_provider_run(session_id, Some(outcome.run().id().to_string()))?;
+        let run = outcome.into_run();
+        app.update_provider_run_projection(run.clone());
+        Ok(run)
+    }
+}
+
 struct ProviderRunLivenessNotices;
 
 impl ProviderRunLivenessNotices {
@@ -674,13 +711,12 @@ impl DaemonApp {
                     self.update_provider_run_projection(outcome.into_run());
                 }
                 if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
-                    match self.providers.resume_run(
-                        &mut self.sessions,
+                    match ProviderRunActivationState::resume_provider_run_for_session(
+                        self,
                         run.session_id(),
                         previous_active_run_id,
                     ) {
                         Ok(resumed_run) => {
-                            self.update_provider_run_projection(resumed_run.clone());
                             self.record_notice(
                                 run.session_id(),
                                 Some(resumed_run.id()),
@@ -777,13 +813,11 @@ impl DaemonApp {
             self.update_provider_run_projection(outcome.into_run());
         }
         if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
-            if let Ok(resumed_run) = self.providers.resume_run(
-                &mut self.sessions,
+            let _ = ProviderRunActivationState::resume_provider_run_for_session(
+                self,
                 started.run.session_id(),
                 previous_active_run_id,
-            ) {
-                self.update_provider_run_projection(resumed_run);
-            }
+            );
         }
         let _ = self.publish_session_projection(started.run.session_id());
     }
@@ -979,12 +1013,11 @@ impl DaemonApp {
                         .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
                 }
                 ProviderRunState::Parked => {
-                    let resumed_run = self.providers.resume_run(
-                        &mut self.sessions,
+                    ProviderRunActivationState::resume_provider_run_for_session(
+                        self,
                         session_id,
                         agent_run.id(),
                     )?;
-                    self.update_provider_run_projection(resumed_run);
                 }
                 ProviderRunState::Starting => {
                     self.sessions
