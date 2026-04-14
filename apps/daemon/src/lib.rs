@@ -31,6 +31,7 @@ mod tests {
     use std::time::Duration;
 
     use super::agent::CreateAgentRequest;
+    use super::app::RemoteLeaseRuntime;
     use super::attachment::{AttachRequest, ClientCapabilityLevel};
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
     use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -141,7 +142,7 @@ mod tests {
     fn execution_leases_require_opt_in_and_can_be_destroyed() {
         let mut disabled = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let error = disabled
+        let error = RemoteLeaseRuntime::new(&mut disabled)
             .create_execution_lease("home-kernel", "session-1", "agent-1")
             .expect_err("remote leases should require opt-in");
         match error {
@@ -153,18 +154,18 @@ mod tests {
         config.accept_remote_leases = true;
         let mut app =
             DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
-        let lease = app
+        let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease("home-kernel", "session-1", "agent-1")
             .expect("execution lease should be created");
         assert_eq!(lease.worker_kernel_id, config.daemon_id);
         assert_eq!(lease.machine_id, config.host_machine_id);
-        assert_eq!(app.execution_lease_count(), 1);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
 
-        let removed = app
+        let removed = RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease(&lease.id)
             .expect("execution lease should be removed");
         assert_eq!(removed.id, lease.id);
-        assert_eq!(app.execution_lease_count(), 0);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
     }
 
     #[test]
@@ -172,32 +173,32 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-        let lease = app
+        let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
-        let leased_agent = app
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
             .create_leased_agent(&lease.id, "opencode", Some("kimi2.5".to_string()), None)
             .expect("leased agent should be created");
         assert_eq!(leased_agent.lease_id, lease.id);
         assert_eq!(leased_agent.home_agent_id, "agent-home-1");
         assert_eq!(leased_agent.provider, "opencode");
-        assert_eq!(app.leased_agent_count(), 1);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
 
-        let removed = app
+        let removed = RemoteLeaseRuntime::new(&mut app)
             .destroy_leased_agent(&leased_agent.id)
             .expect("leased agent should be removed");
         assert_eq!(removed.id, leased_agent.id);
-        assert_eq!(app.leased_agent_count(), 0);
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
     }
     #[test]
     fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         let mut config = DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
-        let lease = app
+        let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
-        let leased_agent = app
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
             .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None)
             .expect("leased agent should be created");
 
@@ -212,7 +213,7 @@ mod tests {
             .into_iter()
             .all(|session| session.id() != leased_agent.backing_session_id));
 
-        let (provider_run_id, outcome) = app
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
             .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
             .expect("leased prompt should submit");
         match outcome {
@@ -230,7 +231,7 @@ mod tests {
             Some(leased_agent.backing_agent_id.as_str())
         );
 
-        let completion = app
+        let completion = RemoteLeaseRuntime::new(&mut app)
             .complete_leased_prompt(&leased_agent.id)
             .expect("leased prompt should complete");
         assert_eq!(
@@ -254,22 +255,23 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        app.project_remote_runtime_projection(
-            session.id(),
-            agent.id(),
-            "remote:worker:provider-run-1",
-            vec![RelayProjectedOutputChunk {
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assistant-1".to_string()),
-                bytes: b"remote output".to_vec(),
-            }],
-            vec!["remote notice".to_string()],
-            vec![RelayProjectedCompletion {
-                message_id: "assistant-msg-1".to_string(),
-                completed_at_ms: 1234,
-            }],
-        )
-        .expect("projection should succeed");
+        RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                session.id(),
+                agent.id(),
+                "remote:worker:provider-run-1",
+                vec![RelayProjectedOutputChunk {
+                    kind: TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-1".to_string()),
+                    bytes: b"remote output".to_vec(),
+                }],
+                vec!["remote notice".to_string()],
+                vec![RelayProjectedCompletion {
+                    message_id: "assistant-msg-1".to_string(),
+                    completed_at_ms: 1234,
+                }],
+            )
+            .expect("projection should succeed");
 
         let outputs = app
             .terminal_mut()

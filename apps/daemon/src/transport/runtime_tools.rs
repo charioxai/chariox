@@ -3,7 +3,7 @@ use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, RemoteLeaseRuntime};
 use crate::error::DaemonError;
 use crate::execution_lease::RemoteWorkflowTurnContext;
 use crate::session::{
@@ -508,13 +508,17 @@ pub fn dispatch_authenticated_runtime_tool_call(
         }
         _ => None,
     };
-    let leased_binding_candidates = provider_runs
-        .iter()
-        .filter_map(|run| {
-            app.leased_workflow_turn_binding_for_provider_run(run.id())
-                .map(|binding| (run, binding))
-        })
-        .collect::<Vec<_>>();
+    let leased_binding_candidates = {
+        let lease_runtime = RemoteLeaseRuntime::new(app);
+        provider_runs
+            .iter()
+            .filter_map(|run| {
+                lease_runtime
+                    .leased_workflow_turn_binding_for_provider_run(run.id())
+                    .map(|binding| (run, binding))
+            })
+            .collect::<Vec<_>>()
+    };
     let mut selected_leased_binding = requested_delivery_token
         .as_deref()
         .and_then(|delivery_token| {

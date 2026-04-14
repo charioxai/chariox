@@ -245,6 +245,8 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed app-level session-history, agent-list, terminal-input, and terminal-resize convenience helpers. History reads now enter through `KernelSessionReadService`, terminal input enters through `ProviderTerminalInput`, terminal resize stays on `KernelSessionService`, and tests use explicit service boundaries instead of `DaemonApp` facade methods.
 - Landed: Phase 8 removed app-level session/agent lifecycle convenience helpers for create/spawn/destroy/focus/cycle/config/resolve paths. Production code and tests now enter those mutations through `KernelSessionService`, `SessionRuntimeContext`, or concrete stores instead of `DaemonApp` facade methods.
 
+- Landed: Phase 8 moved remote execution lease, leased-agent, leased-prompt, runtime-tool binding, and leased projection handling behind `RemoteLeaseRuntime`. Relay peer handling and runtime-tool lookup now enter this explicit remote-lease boundary instead of `DaemonApp` facade methods.
+
 Still open:
 
 - move `KernelSessionService` state out from behind `SessionRuntimeStore` into the `SessionRuntime` mailbox owner

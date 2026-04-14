@@ -11,7 +11,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, RemoteLeaseRuntime};
 use crate::error::DaemonError;
 use crate::kernel::command::{KernelCommand, KernelCommandSource};
 use crate::kernel::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
@@ -433,7 +433,7 @@ async fn pump_leased_projection_events(
 ) {
     let events = {
         let mut app = app.lock().await;
-        match app.pump_leased_runtime_projections() {
+        match RemoteLeaseRuntime::new(&mut app).pump_leased_runtime_projections() {
             Ok(events) => events,
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -591,7 +591,11 @@ async fn handle_daemon_peer_request(
         } => {
             let lease = {
                 let mut app = app.lock().await;
-                app.create_execution_lease(&home_kernel_id, &home_session_id, &home_agent_id)
+                RemoteLeaseRuntime::new(&mut app).create_execution_lease(
+                    &home_kernel_id,
+                    &home_session_id,
+                    &home_agent_id,
+                )
             };
             match lease {
                 Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated { lease },
@@ -606,7 +610,7 @@ async fn handle_daemon_peer_request(
         RelayPeerRequest::DestroyExecutionLease { lease_id } => {
             let destroyed = {
                 let mut app = app.lock().await;
-                app.destroy_execution_lease(&lease_id)
+                RemoteLeaseRuntime::new(&mut app).destroy_execution_lease(&lease_id)
             };
             match destroyed {
                 Ok(_) => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
@@ -626,7 +630,8 @@ async fn handle_daemon_peer_request(
         } => {
             let leased_agent = {
                 let mut app = app.lock().await;
-                app.create_leased_agent(&lease_id, &provider, model, effort)
+                RemoteLeaseRuntime::new(&mut app)
+                    .create_leased_agent(&lease_id, &provider, model, effort)
             };
             match leased_agent {
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentSpawned { leased_agent },
@@ -641,7 +646,7 @@ async fn handle_daemon_peer_request(
         RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => {
             let destroyed = {
                 let mut app = app.lock().await;
-                app.destroy_leased_agent(&leased_agent_id)
+                RemoteLeaseRuntime::new(&mut app).destroy_leased_agent(&leased_agent_id)
             };
             match destroyed {
                 Ok(_) => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
@@ -661,7 +666,7 @@ async fn handle_daemon_peer_request(
         } => {
             let submitted = {
                 let mut app = app.lock().await;
-                app.submit_leased_prompt_with_workflow_context(
+                RemoteLeaseRuntime::new(&mut app).submit_leased_prompt_with_workflow_context(
                     &leased_agent_id,
                     &prompt,
                     attachments,
@@ -705,16 +710,17 @@ async fn handle_daemon_peer_request(
         RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
             let completion = {
                 let mut app = app.lock().await;
-                app.complete_leased_prompt(&leased_agent_id)
+                RemoteLeaseRuntime::new(&mut app).complete_leased_prompt(&leased_agent_id)
             };
             match completion {
                 Ok(completion) => {
-                    let provider_run_id = app
-                        .lock()
-                        .await
-                        .leased_agent_provider_run_id(&leased_agent_id)
-                        .ok()
-                        .flatten();
+                    let provider_run_id = {
+                        let mut app = app.lock().await;
+                        RemoteLeaseRuntime::new(&mut app)
+                            .leased_agent_provider_run_id(&leased_agent_id)
+                            .ok()
+                            .flatten()
+                    };
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         completion,
@@ -731,7 +737,7 @@ async fn handle_daemon_peer_request(
         RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
             let cancellation = {
                 let mut app = app.lock().await;
-                app.cancel_leased_prompt(&leased_agent_id)
+                RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased_agent_id)
             };
             match cancellation {
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
@@ -822,7 +828,7 @@ async fn handle_daemon_peer_event(
             completions,
         } => {
             let mut app = app.lock().await;
-            app.project_remote_runtime_projection(
+            RemoteLeaseRuntime::new(&mut app).project_remote_runtime_projection(
                 &home_session_id,
                 &home_agent_id,
                 &provider_run_id,
@@ -845,8 +851,8 @@ async fn emit_leased_projection_event(
     let (config, target_daemon_id, event) = {
         let mut app = app.lock().await;
         let config = app.config().clone();
-        let Some((target_daemon_id, event)) =
-            app.drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)?
+        let Some((target_daemon_id, event)) = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)?
         else {
             return Ok(());
         };
@@ -1935,7 +1941,10 @@ mod tests {
         assert_eq!(lease.home_kernel_id, config_a.daemon_id);
         assert_eq!(lease.worker_kernel_id, config_b.daemon_id);
         assert_eq!(lease.machine_id, config_b.host_machine_id);
-        assert_eq!(app_b.lock().await.execution_lease_count(), 1);
+        {
+            let mut app = app_b.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+        }
 
         let destroyed = send_peer_request_via_relay(
             &app_a,
@@ -1956,7 +1965,10 @@ mod tests {
                 lease_id: lease.id.clone(),
             }
         );
-        assert_eq!(app_b.lock().await.execution_lease_count(), 0);
+        {
+            let mut app = app_b.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+        }
 
         let _ = shutdown_a_tx.send(true);
         let _ = shutdown_b_tx.send(true);
@@ -2088,7 +2100,10 @@ mod tests {
         };
         assert_eq!(leased_agent.lease_id, lease.id);
         assert_eq!(leased_agent.provider, "opencode");
-        assert_eq!(app_b.lock().await.leased_agent_count(), 1);
+        {
+            let mut app = app_b.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+        }
 
         let destroyed = send_peer_request_via_relay(
             &app_a,
@@ -2109,7 +2124,10 @@ mod tests {
                 leased_agent_id: leased_agent.id.clone(),
             }
         );
-        assert_eq!(app_b.lock().await.leased_agent_count(), 0);
+        {
+            let mut app = app_b.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+        }
 
         let _ = shutdown_a_tx.send(true);
         let _ = shutdown_b_tx.send(true);
@@ -2238,9 +2256,9 @@ mod tests {
         );
 
         {
-            let app = app_worker.lock().await;
-            assert_eq!(app.execution_lease_count(), 1);
-            assert_eq!(app.leased_agent_count(), 1);
+            let mut app = app_worker.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
         }
 
         {
@@ -2252,9 +2270,9 @@ mod tests {
         }
 
         {
-            let app = app_worker.lock().await;
-            assert_eq!(app.execution_lease_count(), 0);
-            assert_eq!(app.leased_agent_count(), 0);
+            let mut app = app_worker.lock().await;
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+            assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
         }
 
         let _ = shutdown_home_tx.send(true);
@@ -2537,11 +2555,12 @@ mod tests {
             crate::session::PromptSubmissionOutcome::Started { .. }
         ));
 
-        let worker_attachments = app_worker
-            .lock()
-            .await
-            .leased_agent_active_prompt_attachments(&remote_leased_agent_id)
-            .expect("worker prompt attachments should be available");
+        let worker_attachments = {
+            let mut app = app_worker.lock().await;
+            RemoteLeaseRuntime::new(&mut app)
+                .leased_agent_active_prompt_attachments(&remote_leased_agent_id)
+                .expect("worker prompt attachments should be available")
+        };
         assert_eq!(worker_attachments.len(), 1);
         let materialized = &worker_attachments[0];
         assert_eq!(materialized.filename(), Some("note.txt"));

@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use tokio::runtime::{Handle, Runtime};
 
 mod kernel_agent;
@@ -14,6 +12,7 @@ mod prompt_lifecycle;
 mod prompt_state_owner;
 pub(crate) mod provider_output;
 mod provider_runtime;
+mod remote_lease;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
@@ -28,13 +27,11 @@ pub(crate) use prompt_lifecycle::{
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
 use crate::agent::{AgentInstance, AgentService, CreateAgentRequest, RemoteAgentBinding};
-use crate::attachment::{AttachRequest, AttachmentService, ClientCapabilityLevel};
+use crate::attachment::AttachmentService;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::execution_lease::{
-    ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext,
-};
-use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
+use crate::history::SessionHistoryStore;
 use crate::kernel::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore, SessionHistoryProjectionStore,
@@ -43,24 +40,22 @@ use crate::kernel::projection::{
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
-    LaunchProviderRequest, OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
+    OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
-use crate::session::{CreateSessionRequest, RuntimeSession, SessionService};
-use crate::terminal::{TerminalOutputKind, TerminalStreamHealthStore, TerminalStreamStore};
+use crate::session::{RuntimeSession, SessionService};
+use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
 use crate::transport::relay_discovery;
-use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RelayPromptAttachment,
-};
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{ProviderRunReadService, StartedProviderLaunch};
+pub(crate) use remote_lease::RemoteLeaseRuntime;
 
 pub struct DaemonApp {
     config: DaemonConfig,
@@ -458,565 +453,6 @@ impl DaemonApp {
         }
     }
 
-    pub fn create_execution_lease(
-        &mut self,
-        home_kernel_id: &str,
-        home_session_id: &str,
-        home_agent_id: &str,
-    ) -> Result<ExecutionLease, DaemonError> {
-        if !self.config.accept_remote_leases {
-            return Err(DaemonError::RemoteLeasesDisabled {
-                machine_id: self.config.host_machine_id.clone(),
-            });
-        }
-        self.next_execution_lease_number = self.next_execution_lease_number.wrapping_add(1);
-        let lease_id = format!(
-            "lease-{:016x}",
-            crate::session::unix_epoch_ms() ^ self.next_execution_lease_number.rotate_left(11)
-        );
-        let lease = ExecutionLease::new(
-            lease_id.clone(),
-            home_kernel_id.to_string(),
-            home_session_id.to_string(),
-            home_agent_id.to_string(),
-            self.config.daemon_id.clone(),
-            self.config.host_machine_id.clone(),
-        );
-        self.execution_leases.insert(lease_id, lease.clone());
-        Ok(lease)
-    }
-
-    pub fn destroy_execution_lease(
-        &mut self,
-        lease_id: &str,
-    ) -> Result<ExecutionLease, DaemonError> {
-        self.leased_agents
-            .retain(|_, agent| agent.lease_id != lease_id);
-        self.execution_leases
-            .remove(lease_id)
-            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
-                lease_id: lease_id.to_string(),
-            })
-    }
-
-    pub fn create_leased_agent(
-        &mut self,
-        lease_id: &str,
-        provider: &str,
-        model: Option<String>,
-        effort: Option<String>,
-    ) -> Result<LeasedAgent, DaemonError> {
-        let lease = self
-            .execution_leases
-            .get(lease_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
-                lease_id: lease_id.to_string(),
-            })?;
-        if self.providers.registry().resolve(provider).is_none() {
-            return Err(DaemonError::ProviderAdapterNotFound {
-                adapter_key: provider.to_string(),
-            });
-        }
-        let worktree = std::env::current_dir()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "resolve leased agent working directory",
-                message: error.to_string(),
-            })?
-            .display()
-            .to_string();
-        let session = self.sessions.create_session(
-            CreateSessionRequest::new(format!("remote-lease:{}", lease.home_session_id), worktree)
-                .with_hidden(true),
-        )?;
-        let attachment = self.attachments.attach(
-            &mut self.sessions,
-            AttachRequest::new(
-                session.id(),
-                format!("leased-agent:{}", lease.home_agent_id),
-                ClientCapabilityLevel::MessageTransport,
-            ),
-        )?;
-        let backing_agent = self.agents.create_agent(
-            CreateAgentRequest::new(session.id(), provider)
-                .with_worktree(session.worktree_id())
-                .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
-                .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string())),
-            &mut self.sessions,
-        )?;
-        self.next_leased_agent_number = self.next_leased_agent_number.wrapping_add(1);
-        let agent_id = format!(
-            "leased-agent-{:016x}",
-            crate::session::unix_epoch_ms() ^ self.next_leased_agent_number.rotate_left(13)
-        );
-        let agent = LeasedAgent::new(
-            agent_id.clone(),
-            lease_id.to_string(),
-            lease.home_agent_id.clone(),
-            provider.to_string(),
-            model,
-            effort,
-            session.id().to_string(),
-            backing_agent.id().to_string(),
-            attachment.id().to_string(),
-        );
-        self.leased_agents.insert(agent_id, agent.clone());
-        Ok(agent)
-    }
-
-    pub fn destroy_leased_agent(
-        &mut self,
-        leased_agent_id: &str,
-    ) -> Result<LeasedAgent, DaemonError> {
-        let agent = self.leased_agents.remove(leased_agent_id).ok_or_else(|| {
-            DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            }
-        })?;
-        self.leased_workflow_turns
-            .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
-        let _ = self
-            .attachments
-            .detach(&mut self.sessions, &agent.backing_attachment_id);
-        let _ = self
-            .agents
-            .destroy_agent(&agent.backing_agent_id, &mut self.sessions);
-        let _ = self.sessions.end_session(&agent.backing_session_id);
-        let _ = self.sessions.delete_session(&agent.backing_session_id);
-        self.history_projection.remove(&agent.backing_session_id);
-        Ok(agent)
-    }
-
-    pub fn submit_leased_prompt(
-        &mut self,
-        leased_agent_id: &str,
-        prompt: &str,
-        attachments: Vec<RelayPromptAttachment>,
-    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
-        self.submit_leased_prompt_with_workflow_context(leased_agent_id, prompt, attachments, None)
-    }
-
-    pub fn submit_leased_prompt_with_workflow_context(
-        &mut self,
-        leased_agent_id: &str,
-        prompt: &str,
-        attachments: Vec<RelayPromptAttachment>,
-        workflow_context: Option<RemoteWorkflowTurnContext>,
-    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        let materialized_attachments =
-            self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
-        let provider_run_id = if let Some(run) = self.providers.get_run_for_agent(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-        ) {
-            run.id().to_string()
-        } else {
-            let run = self.launch_provider(
-                LaunchProviderRequest::new(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.provider,
-                    &leased_agent.provider,
-                    "default",
-                    leased_agent
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string()),
-                )
-                .with_agent_id(&leased_agent.backing_agent_id),
-            )?;
-            run.id().to_string()
-        };
-        let outcome = self.submit_prompt(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_attachment_id,
-            Some(&leased_agent.backing_agent_id),
-            prompt,
-            materialized_attachments,
-        )?;
-        if let Some(context) = workflow_context {
-            self.leased_workflow_turns.insert(
-                provider_run_id.clone(),
-                LeasedWorkflowTurnBinding {
-                    leased_agent_id: leased_agent_id.to_string(),
-                    provider_run_id: provider_run_id.clone(),
-                    context,
-                },
-            );
-        }
-        Ok((provider_run_id, outcome))
-    }
-
-    pub fn leased_workflow_turn_binding_for_provider_run(
-        &self,
-        provider_run_id: &str,
-    ) -> Option<LeasedWorkflowTurnBinding> {
-        self.leased_workflow_turns.get(provider_run_id).cloned()
-    }
-
-    pub fn complete_leased_prompt(
-        &mut self,
-        leased_agent_id: &str,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        let provider_run_id = self
-            .providers
-            .get_run_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )
-            .map(|run| run.id().to_string());
-        let completion = self.complete_active_prompt(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-            provider_run_id.as_deref(),
-        )?;
-        if let Some(provider_run_id) = provider_run_id {
-            self.leased_workflow_turns.remove(&provider_run_id);
-        }
-        Ok(completion)
-    }
-
-    pub fn cancel_leased_prompt(
-        &mut self,
-        leased_agent_id: &str,
-    ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        let cancellation = self.cancel_active_prompt_internal(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-            None,
-        )?;
-        self.leased_workflow_turns
-            .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
-        Ok(cancellation)
-    }
-
-    pub fn leased_agent_provider_run_id(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        Ok(self
-            .providers
-            .get_run_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )
-            .map(|run| run.id().to_string()))
-    }
-
-    pub fn leased_agent_active_prompt_attachments(
-        &self,
-        leased_agent_id: &str,
-    ) -> Result<Vec<crate::session::PromptAttachment>, DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        Ok(self
-            .prompt_owner_active_prompt_for_agent_snapshot(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )?
-            .map(|prompt| prompt.attachments().to_vec())
-            .unwrap_or_default())
-    }
-
-    fn materialize_leased_prompt_attachments(
-        &self,
-        leased_agent: &LeasedAgent,
-        attachments: Vec<RelayPromptAttachment>,
-    ) -> Result<Vec<crate::session::PromptAttachment>, DaemonError> {
-        attachments
-            .into_iter()
-            .enumerate()
-            .map(|(index, attachment)| {
-                if let Some(contents_base64) = attachment.contents_base64 {
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(contents_base64)
-                        .map_err(|error| DaemonError::LocalTransport {
-                            operation: "decode remote prompt attachment",
-                            message: error.to_string(),
-                        })?;
-                    let filename = attachment
-                        .filename
-                        .clone()
-                        .unwrap_or_else(|| format!("attachment-{index}"));
-                    let root = std::env::temp_dir()
-                        .join("arroba-remote-prompt-attachments")
-                        .join(&leased_agent.backing_session_id)
-                        .join(&leased_agent.id);
-                    fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
-                        operation: "create remote prompt attachment directory",
-                        message: error.to_string(),
-                    })?;
-                    let path = root.join(format!(
-                        "{}-{}-{}",
-                        crate::session::unix_epoch_ms(),
-                        index,
-                        filename
-                    ));
-                    fs::write(&path, bytes).map_err(|error| DaemonError::LocalTransport {
-                        operation: "write remote prompt attachment",
-                        message: error.to_string(),
-                    })?;
-                    Ok(crate::session::PromptAttachment::new(
-                        format!("file://{}", path.display()),
-                        attachment.mime,
-                        Some(filename),
-                    ))
-                } else {
-                    Ok(crate::session::PromptAttachment::new(
-                        attachment.url,
-                        attachment.mime,
-                        attachment.filename,
-                    ))
-                }
-            })
-            .collect()
-    }
-
-    pub fn drain_leased_runtime_projection(
-        &mut self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-        pump_output: bool,
-    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
-        let leased_agent = self
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        let lease = self
-            .execution_leases
-            .get(&leased_agent.lease_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
-                lease_id: leased_agent.lease_id.clone(),
-            })?;
-        if pump_output {
-            let _ = provider_output::pump_terminal_output_for_attachment(
-                self,
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )?;
-        }
-        let output_chunks = self
-            .terminal
-            .drain_output_records(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )
-            .into_iter()
-            .map(|record| RelayProjectedOutputChunk {
-                kind: record.kind,
-                merge_key: record.merge_key,
-                bytes: record.bytes,
-            })
-            .collect::<Vec<_>>();
-        let notices = self
-            .terminal
-            .drain_notice_records(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )
-            .into_iter()
-            .map(|record| record.message)
-            .collect::<Vec<_>>();
-        let completions = self
-            .terminal
-            .drain_completion_records(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_attachment_id,
-            )
-            .into_iter()
-            .map(|record| RelayProjectedCompletion {
-                message_id: record.message_id,
-                completed_at_ms: record.completed_at_ms,
-            })
-            .collect::<Vec<_>>();
-        if output_chunks.is_empty() && notices.is_empty() && completions.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some((
-            lease.home_kernel_id,
-            RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: lease.home_session_id,
-                home_agent_id: lease.home_agent_id,
-                provider_run_id: provider_run_id.to_string(),
-                output_chunks,
-                notices,
-                completions,
-            },
-        )))
-    }
-
-    pub fn pump_leased_runtime_projections(
-        &mut self,
-    ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
-        let leased_agents = self.leased_agents.values().cloned().collect::<Vec<_>>();
-        let mut events = Vec::new();
-        for leased_agent in leased_agents {
-            let Some(provider_run_id) = self
-                .providers
-                .get_run_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )
-                .map(|run| run.id().to_string())
-            else {
-                continue;
-            };
-            let _ = provider_output::ProviderOutputPump::new(self).pump_provider_output(
-                provider_output::ProviderOutputPumpRequest {
-                    session_id: &leased_agent.backing_session_id,
-                    provider_run_id: &provider_run_id,
-                    recipient_attachment_ids: vec![leased_agent.backing_attachment_id.clone()],
-                },
-            )?;
-            if let Some(event) =
-                self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
-            {
-                events.push(event);
-            }
-        }
-        Ok(events)
-    }
-
-    pub fn project_remote_runtime_projection(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        output_chunks: Vec<RelayProjectedOutputChunk>,
-        notices: Vec<String>,
-        completions: Vec<RelayProjectedCompletion>,
-    ) -> Result<(), DaemonError> {
-        let _ = self.sessions.get_session(session_id)?;
-        let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
-        let saw_completion = !completions.is_empty();
-        for chunk in output_chunks {
-            self.terminal.fan_out_output(
-                session_id,
-                provider_run_id,
-                Some(agent_id),
-                chunk.kind.clone(),
-                chunk.merge_key.clone(),
-                recipient_attachment_ids.clone(),
-                &chunk.bytes,
-            );
-            if chunk.kind != TerminalOutputKind::PromptEcho {
-                self.append_history_entry(
-                    session_id,
-                    SessionHistoryEntry::provider_output(
-                        session_id,
-                        provider_run_id,
-                        Some(agent_id),
-                        chunk.kind,
-                        chunk.merge_key,
-                        String::from_utf8_lossy(&chunk.bytes).into_owned(),
-                    ),
-                );
-            }
-        }
-        for notice in notices {
-            self.terminal.record_notice(
-                session_id,
-                Some(provider_run_id),
-                Some(agent_id),
-                recipient_attachment_ids.clone(),
-                notice.clone(),
-            );
-            self.append_history_entry(
-                session_id,
-                SessionHistoryEntry::notice(
-                    session_id,
-                    Some(provider_run_id),
-                    Some(agent_id),
-                    notice,
-                ),
-            );
-        }
-        for completion in completions {
-            self.terminal.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                Some(agent_id),
-                recipient_attachment_ids.clone(),
-                &completion.message_id,
-                completion.completed_at_ms,
-            );
-        }
-        if saw_completion
-            && self
-                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-                .is_some()
-        {
-            let remote_execution = self.agents.get_agent(agent_id)?.remote_execution().cloned();
-            let completed = self.prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
-            self.complete_workflow_prompt_from_runtime(
-                session_id,
-                &completed,
-                Some(provider_run_id),
-            )?;
-            if let Some(remote_execution) = remote_execution {
-                if self
-                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-                    .is_none()
-                {
-                    let started_next = self.advance_next_queued_prompt_remote(
-                        session_id,
-                        agent_id,
-                        &remote_execution.worker_kernel_id,
-                        &remote_execution.leased_agent_id,
-                    )?;
-                    if started_next.is_none() {
-                        self.sync_focused_provider_run_if_idle(session_id)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn execution_lease_count(&self) -> usize {
-        self.execution_leases.len()
-    }
-
-    pub fn leased_agent_count(&self) -> usize {
-        self.leased_agents.len()
-    }
-
     pub fn relay_registration(&mut self) -> DaemonRegistration {
         let available_providers = self.providers.registry().registered_adapter_keys();
         DaemonRegistration {
@@ -1037,7 +473,7 @@ impl DaemonApp {
             ],
             available_providers,
             accepting_remote_leases: self.config.accept_remote_leases,
-            leased_agent_count: self.leased_agent_count() as u32,
+            leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
         }
     }
