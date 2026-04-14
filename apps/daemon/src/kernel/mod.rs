@@ -6,5 +6,6 @@ pub mod projection;
 pub mod prompt_state;
 pub mod router;
 pub mod session_actor;
+pub mod terminal_output_executor;
 pub mod workflow_actor;
 pub mod workspace_coordinator;

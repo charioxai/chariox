@@ -21,6 +21,7 @@ use crate::kernel::projection::{
 };
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
+use crate::kernel::terminal_output_executor::TerminalOutputExecutor;
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::local::provider_requests::{
@@ -65,6 +66,7 @@ pub(crate) struct CommandRouter {
     transport_health: TransportHealthStore,
     terminal_health: TerminalStreamHealthStore,
     terminal_stream: TerminalStreamStore,
+    terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     pending_provider_launch_sessions: Arc<Mutex<HashSet<String>>>,
 }
@@ -130,6 +132,14 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
+        let terminal_output_executor = TerminalOutputExecutor::new(
+            Arc::clone(&app),
+            provider_runtime_lanes.clone(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            provider_run_projection.clone(),
+            terminal_stream.clone(),
+        );
         Self {
             app,
             agent_runtime,
@@ -150,6 +160,7 @@ impl CommandRouter {
             transport_health: TransportHealthStore::default(),
             terminal_health,
             terminal_stream,
+            terminal_output_executor,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -215,6 +226,14 @@ impl CommandRouter {
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
+        let terminal_output_executor = TerminalOutputExecutor::new(
+            Arc::clone(&app),
+            provider_runtime_lanes.clone(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            provider_run_projection.clone(),
+            terminal_stream.clone(),
+        );
         Self {
             app,
             agent_runtime,
@@ -235,6 +254,7 @@ impl CommandRouter {
             transport_health,
             terminal_health,
             terminal_stream,
+            terminal_output_executor,
             workspace_coordinator,
             pending_provider_launch_sessions,
         }
@@ -852,59 +872,7 @@ impl CommandRouter {
         &self,
         request: PumpTerminalOutputRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let Some(session) = self.session_projection.get(&request.session_id) else {
-            let mut app = self.app.lock().await;
-            let records = app.pump_terminal_output(&request.session_id, &request.attachment_id)?;
-            if let Ok(session) = app.local_api_session_snapshot(&request.session_id) {
-                self.agent_runtime_projection.update_session(&session);
-                self.session_projection.update(session);
-            }
-            return Ok(LocalDaemonResponse::TerminalOutput { records });
-        };
-        let Some(provider_run_id) = session.active_provider_run_id().map(str::to_string) else {
-            return Ok(LocalDaemonResponse::TerminalOutput {
-                records: self
-                    .terminal_stream
-                    .drain_output_records(&request.session_id, &request.attachment_id),
-            });
-        };
-        if self
-            .provider_run_projection
-            .get(&provider_run_id)
-            .is_some_and(|run| {
-                run.session_id() == request.session_id
-                    && matches!(
-                        run.state(),
-                        ProviderRunState::Ended | ProviderRunState::Parked
-                    )
-            })
-        {
-            return Ok(LocalDaemonResponse::TerminalOutput {
-                records: self
-                    .terminal_stream
-                    .drain_output_records(&request.session_id, &request.attachment_id),
-            });
-        }
-
-        let recipient_attachment_ids = session.attachment_ids().iter().cloned().collect();
-        let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-        {
-            let mut app = self.app.lock().await;
-            let _ = app.pump_provider_output(
-                &request.session_id,
-                &provider_run_id,
-                recipient_attachment_ids,
-            )?;
-            if let Ok(session) = app.local_api_session_snapshot(&request.session_id) {
-                self.agent_runtime_projection.update_session(&session);
-                self.session_projection.update(session);
-            }
-        }
-        Ok(LocalDaemonResponse::TerminalOutput {
-            records: self
-                .terminal_stream
-                .drain_output_records(&request.session_id, &request.attachment_id),
-        })
+        self.terminal_output_executor.execute(request).await
     }
 
     async fn execute_teardown_provider_processes_request(
