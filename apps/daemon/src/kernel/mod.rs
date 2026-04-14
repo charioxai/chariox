@@ -4,6 +4,7 @@ pub mod command;
 pub mod event_log;
 pub mod projection;
 pub mod prompt_state;
+pub mod provider_launch_executor;
 pub mod router;
 pub mod session_actor;
 pub mod terminal_output_executor;

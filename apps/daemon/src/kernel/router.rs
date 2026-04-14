@@ -20,23 +20,24 @@ use crate::kernel::projection::{
     TransportHealthStore,
 };
 use crate::kernel::prompt_state::PromptStateOwner;
+use crate::kernel::provider_launch_executor::ProviderLaunchCommandExecutor;
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::terminal_output_executor::TerminalOutputExecutor;
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::local::provider_requests::{
-    forgotten_machine_record, launch_provider_request_from_local, load_provider_catalog,
-    logout_provider_response, provider_auth_status_response, provider_command_catalogs_response,
-    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
-    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
+    forgotten_machine_record, load_provider_catalog, logout_provider_response,
+    provider_auth_status_response, provider_command_catalogs_response, record_for_machine_id,
+    resolve_machine_for_registry, resolve_machine_id_for_registry, start_provider_login_response,
+    PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetProviderAuthStatusRequest, GetProviderRunRequest, GetSessionHistoryRequest,
-    GetSessionStateRequest, LaunchProviderRunRequest, ListAgentsRequest,
-    ListProviderProcessesRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LogoutProviderRequest, PumpTerminalOutputRequest, RelayStatus, RenameRemoteMachineRequest,
-    ResolveSessionRequest, StartProviderLoginRequest, TeardownProviderProcessesRequest,
+    GetSessionStateRequest, ListAgentsRequest, ListProviderProcessesRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, LogoutProviderRequest, PumpTerminalOutputRequest,
+    RelayStatus, RenameRemoteMachineRequest, ResolveSessionRequest, StartProviderLoginRequest,
+    TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::session::PromptIdAllocator;
@@ -1004,7 +1005,9 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::LaunchProviderRun(request) => {
-                execute_launch_provider_run_request(&self.app, request).await
+                ProviderLaunchCommandExecutor::new(Arc::clone(&self.app))
+                    .execute(request)
+                    .await
             }
             LocalDaemonRequest::ListSessions(request) => {
                 self.execute_cold_list_sessions_request(request).await
@@ -1600,52 +1603,6 @@ fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
         LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
         _ => Vec::new(),
     }
-}
-
-async fn execute_launch_provider_run_request(
-    app: &Arc<Mutex<DaemonApp>>,
-    request: LaunchProviderRunRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let (started, runtime_init_delay_ms) = {
-        let mut app = app.lock().await;
-        let launch_request = launch_provider_request_from_local(&app, request);
-        (
-            app.start_provider_launch(launch_request)?,
-            app.config().provider_runtime_init_delay_ms,
-        )
-    };
-    let accepted = started.run.clone();
-    let app = Arc::clone(app);
-    tokio::spawn(async move {
-        if runtime_init_delay_ms > 0 {
-            sleep(Duration::from_millis(runtime_init_delay_ms)).await;
-        }
-        let run = started.run.clone();
-        let binding = tokio::task::spawn_blocking(move || {
-            DaemonApp::initialize_provider_runtime_binding(&run)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "initialize provider runtime",
-            message: error.to_string(),
-        });
-
-        match binding {
-            Ok(Ok(binding)) => {
-                let mut app = app.lock().await;
-                if let Err(error) = app.finish_provider_launch(&started, binding) {
-                    app.fail_provider_launch(&started, &error);
-                }
-            }
-            Ok(Err(error)) | Err(error) => {
-                let mut app = app.lock().await;
-                app.fail_provider_launch(&started, &error);
-            }
-        }
-    });
-    Ok(LocalDaemonResponse::ProviderRunLaunchAccepted {
-        provider_run: accepted,
-    })
 }
 
 async fn execute_list_provider_processes_request(
