@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::DaemonApp;
-use crate::attachment::AttachRequest;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
@@ -365,17 +364,13 @@ async fn run_session_command_lane(
             (result, None)
         } else {
             let mut app = app.lock().await;
-            let result = SessionActor::handle_interactive_command(
-                &mut app,
-                &terminal_stream,
-                envelope.request,
-            )
-            .unwrap_or_else(|| {
-                Err(DaemonError::LocalTransport {
-                    operation: "execute session kernel command",
-                    message: "request is not handled by the session runtime".to_string(),
-                })
-            });
+            let result = SessionActor::handle_interactive_command(&mut app, envelope.request)
+                .unwrap_or_else(|| {
+                    Err(DaemonError::LocalTransport {
+                        operation: "execute session kernel command",
+                        message: "request is not handled by the session runtime".to_string(),
+                    })
+                });
             let projection_action = if let Ok(response) = result.as_ref() {
                 session_response_projection_action(response).or_else(|| {
                     session_id_for_projection_refresh(&result)
@@ -631,96 +626,12 @@ impl SessionActor {
 
     pub(crate) fn handle_interactive_command(
         app: &mut DaemonApp,
-        terminal_stream: &TerminalStreamStore,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        if let LocalDaemonRequest::CreateSession(request) = request {
-            return Some(app.create_session_response(request));
+        if Self::is_session_interactive_command(&request) {
+            return Some(app.handle_session_request(request));
         }
-        if let LocalDaemonRequest::UpdateSessionConfig(request) = request {
-            let session_id = request.session_id.clone();
-            return Some(
-                app.update_session_config(
-                    &request.session_id,
-                    &request.attachment_id,
-                    request.values,
-                    request.requires_idle,
-                )
-                .and_then(|config| {
-                    app.local_api_session_snapshot(&session_id).map(|session| {
-                        LocalDaemonResponse::SessionConfigUpdated { config, session }
-                    })
-                }),
-            );
-        }
-        if let LocalDaemonRequest::PollRuntimeNotices(request) = request {
-            return Some(
-                app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)
-                    .map(|_| LocalDaemonResponse::RuntimeNotices {
-                        notices: terminal_stream
-                            .drain_notice_records(&request.session_id, &request.attachment_id),
-                    }),
-            );
-        }
-        if let LocalDaemonRequest::AliasSession(request) = request {
-            return Some(
-                app.sessions_mut()
-                    .assign_session_alias(&request.session_id, request.alias)
-                    .and_then(|_| app.local_api_session_snapshot(&request.session_id))
-                    .map(|session| LocalDaemonResponse::SessionAliased { session }),
-            );
-        }
-
-        let mut sessions = app.kernel_sessions();
-        match request {
-            LocalDaemonRequest::AttachToSession(request) => Some(
-                sessions
-                    .attach(AttachRequest::new(
-                        request.session_id,
-                        request.client_id,
-                        request.capability_level,
-                    ))
-                    .map(|attachment| LocalDaemonResponse::SessionAttached { attachment }),
-            ),
-            LocalDaemonRequest::DetachFromSession(request) => Some(
-                sessions
-                    .detach(&request.attachment_id)
-                    .map(|attachment| LocalDaemonResponse::SessionDetached { attachment }),
-            ),
-            LocalDaemonRequest::FocusAgent(request) => Some(
-                sessions
-                    .focus_agent(&request.session_id, &request.agent_id)
-                    .map(|agent| LocalDaemonResponse::AgentFocused { agent }),
-            ),
-            LocalDaemonRequest::CycleAgentFocus(request) => Some(
-                sessions
-                    .cycle_agent_focus(&request.session_id)
-                    .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent }),
-            ),
-            LocalDaemonRequest::ResizeTerminal(request) => {
-                let session_id = request.session_id;
-                let cols = request.cols;
-                let rows = request.rows;
-                Some(sessions.resize_terminal(&session_id, cols, rows).map(|()| {
-                    LocalDaemonResponse::TerminalResized {
-                        session_id,
-                        cols,
-                        rows,
-                    }
-                }))
-            }
-            LocalDaemonRequest::EndSession(request) => Some(
-                sessions
-                    .end_session(&request.session_id)
-                    .map(|session| LocalDaemonResponse::SessionEnded { session }),
-            ),
-            LocalDaemonRequest::DeleteSession(request) => Some(
-                sessions
-                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())
-                    .map(|session| LocalDaemonResponse::SessionDeleted { session }),
-            ),
-            _ => None,
-        }
+        None
     }
 }
 
@@ -985,10 +896,8 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let terminal_stream = app.terminal_stream_store();
         let response = SessionActor::handle_interactive_command(
             &mut app,
-            &terminal_stream,
             LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "cli-1".to_string(),
@@ -1070,10 +979,8 @@ mod tests {
             _ => panic!("unexpected local response"),
         };
 
-        let terminal_stream = app.terminal_stream_store();
         SessionActor::handle_interactive_command(
             &mut app,
-            &terminal_stream,
             LocalDaemonRequest::FocusAgent(FocusAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: default_agent.id().to_string(),
@@ -1104,7 +1011,6 @@ mod tests {
 
         let response = SessionActor::handle_interactive_command(
             &mut app,
-            &terminal_stream,
             LocalDaemonRequest::FocusAgent(FocusAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: second_agent.id().to_string(),

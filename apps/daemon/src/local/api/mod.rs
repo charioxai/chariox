@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentInstance;
 use crate::app::{DaemonApp, SessionHistoryCursor, SessionHistoryPageEntry};
-use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
+use crate::attachment::{ClientCapabilityLevel, RuntimeAttachment};
 use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
     ReadFileResult, RunShellCommandRequest, RunShellCommandResult, StoredTransferArtifact,
@@ -70,21 +70,17 @@ impl DaemonApp {
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
-            LocalDaemonRequest::CreateSession(request) => self.create_session_response(request),
-            LocalDaemonRequest::AttachToSession(request) => {
-                Ok(LocalDaemonResponse::SessionAttached {
-                    attachment: self.attach(AttachRequest::new(
-                        request.session_id,
-                        request.client_id,
-                        request.capability_level,
-                    ))?,
-                })
-            }
-            LocalDaemonRequest::DetachFromSession(request) => {
-                Ok(LocalDaemonResponse::SessionDetached {
-                    attachment: self.detach(&request.attachment_id)?,
-                })
-            }
+            request @ (LocalDaemonRequest::CreateSession(_)
+            | LocalDaemonRequest::AttachToSession(_)
+            | LocalDaemonRequest::DetachFromSession(_)
+            | LocalDaemonRequest::FocusAgent(_)
+            | LocalDaemonRequest::CycleAgentFocus(_)
+            | LocalDaemonRequest::ResizeTerminal(_)
+            | LocalDaemonRequest::PollRuntimeNotices(_)
+            | LocalDaemonRequest::UpdateSessionConfig(_)
+            | LocalDaemonRequest::AliasSession(_)
+            | LocalDaemonRequest::EndSession(_)
+            | LocalDaemonRequest::DeleteSession(_)) => self.handle_session_request(request),
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 self.handle_launch_provider_run_request(request)
             }
@@ -200,15 +196,6 @@ impl DaemonApp {
                     next_cursor: page.next_cursor,
                 })
             }
-            LocalDaemonRequest::PollRuntimeNotices(request) => {
-                let _ =
-                    self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-                Ok(LocalDaemonResponse::RuntimeNotices {
-                    notices: self
-                        .terminal_mut()
-                        .drain_notice_records(&request.session_id, &request.attachment_id),
-                })
-            }
             LocalDaemonRequest::SubmitPrompt(request) => {
                 let outcome = if request.target_agent_id.is_some() {
                     crate::transport::TransportService::schedule_direct_prompt_to_agent(
@@ -246,25 +233,6 @@ impl DaemonApp {
                         &request.session_id,
                         &request.attachment_id,
                     )?,
-                })
-            }
-            LocalDaemonRequest::UpdateSessionConfig(request) => {
-                let session_id = request.session_id.clone();
-                let config = self.update_session_config(
-                    &request.session_id,
-                    &request.attachment_id,
-                    request.values,
-                    request.requires_idle,
-                )?;
-                let session = self.local_api_session_snapshot(&session_id)?;
-                Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
-            }
-            LocalDaemonRequest::ResizeTerminal(request) => {
-                self.resize_terminal(&request.session_id, request.cols, request.rows)?;
-                Ok(LocalDaemonResponse::TerminalResized {
-                    session_id: request.session_id,
-                    cols: request.cols,
-                    rows: request.rows,
                 })
             }
             LocalDaemonRequest::PumpTerminalOutput(request) => {
@@ -335,20 +303,6 @@ impl DaemonApp {
                     )?,
                 })
             }
-            LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
-                session: self.end_session(&request.session_id)?,
-            }),
-            LocalDaemonRequest::DeleteSession(request) => Ok(LocalDaemonResponse::SessionDeleted {
-                session: self
-                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
-            }),
-            LocalDaemonRequest::AliasSession(request) => {
-                let _session = self
-                    .sessions_mut()
-                    .assign_session_alias(&request.session_id, request.alias)?;
-                let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::SessionAliased { session })
-            }
             LocalDaemonRequest::SpawnAgent(request) => {
                 let create_request =
                     crate::agent::CreateAgentRequest::new(&request.session_id, &request.provider);
@@ -385,14 +339,6 @@ impl DaemonApp {
                 let agent = self.destroy_agent(&request.agent_id)?;
                 let _ = self.local_api_session_snapshot(agent.session_id())?;
                 Ok(LocalDaemonResponse::AgentDestroyed { agent })
-            }
-            LocalDaemonRequest::FocusAgent(request) => {
-                let agent = self.focus_agent(&request.session_id, &request.agent_id)?;
-                Ok(LocalDaemonResponse::AgentFocused { agent })
-            }
-            LocalDaemonRequest::CycleAgentFocus(request) => {
-                let agent = self.cycle_agent_focus(&request.session_id)?;
-                Ok(LocalDaemonResponse::AgentFocusCycled { agent })
             }
             LocalDaemonRequest::ListAgents(request) => {
                 let agents = self.list_session_agents(&request.session_id);
