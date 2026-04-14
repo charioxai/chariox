@@ -13,85 +13,7 @@ impl DaemonApp {
         &mut self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request {
-            LocalDaemonRequest::CreateSession(request) => self.create_session_response(request),
-            LocalDaemonRequest::AttachToSession(request) => {
-                Ok(LocalDaemonResponse::SessionAttached {
-                    attachment: self.kernel_sessions().attach(AttachRequest::new(
-                        request.session_id,
-                        request.client_id,
-                        request.capability_level,
-                    ))?,
-                })
-            }
-            LocalDaemonRequest::DetachFromSession(request) => {
-                Ok(LocalDaemonResponse::SessionDetached {
-                    attachment: self.kernel_sessions().detach(&request.attachment_id)?,
-                })
-            }
-            LocalDaemonRequest::FocusAgent(request) => {
-                let agent = self
-                    .kernel_sessions()
-                    .focus_agent(&request.session_id, &request.agent_id)?;
-                Ok(LocalDaemonResponse::AgentFocused { agent })
-            }
-            LocalDaemonRequest::CycleAgentFocus(request) => {
-                let agent = self
-                    .kernel_sessions()
-                    .cycle_agent_focus(&request.session_id)?;
-                Ok(LocalDaemonResponse::AgentFocusCycled { agent })
-            }
-            LocalDaemonRequest::ResizeTerminal(request) => {
-                self.kernel_sessions().resize_terminal(
-                    &request.session_id,
-                    request.cols,
-                    request.rows,
-                )?;
-                Ok(LocalDaemonResponse::TerminalResized {
-                    session_id: request.session_id,
-                    cols: request.cols,
-                    rows: request.rows,
-                })
-            }
-            LocalDaemonRequest::PollRuntimeNotices(request) => {
-                let _ =
-                    self.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-                Ok(LocalDaemonResponse::RuntimeNotices {
-                    notices: self
-                        .terminal()
-                        .drain_notice_records(&request.session_id, &request.attachment_id),
-                })
-            }
-            LocalDaemonRequest::UpdateSessionConfig(request) => {
-                let session_id = request.session_id.clone();
-                let config = self.kernel_sessions().update_session_config(
-                    &request.session_id,
-                    &request.attachment_id,
-                    request.values,
-                    request.requires_idle,
-                )?;
-                let session = self.local_api_session_snapshot(&session_id)?;
-                Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
-            }
-            LocalDaemonRequest::AliasSession(request) => {
-                let session = self
-                    .kernel_sessions()
-                    .alias_session(&request.session_id, request.alias)?;
-                Ok(LocalDaemonResponse::SessionAliased { session })
-            }
-            LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
-                session: self.kernel_sessions().end_session(&request.session_id)?,
-            }),
-            LocalDaemonRequest::DeleteSession(request) => Ok(LocalDaemonResponse::SessionDeleted {
-                session: self
-                    .kernel_sessions()
-                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
-            }),
-            _ => Err(DaemonError::LocalTransport {
-                operation: "execute session request",
-                message: "request is not handled by the session runtime".to_string(),
-            }),
-        }
+        self.kernel_sessions().execute_request(request)
     }
 }
 
@@ -102,6 +24,119 @@ pub(crate) struct KernelSessionService<'a> {
 impl<'a> KernelSessionService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
+    }
+
+    pub(crate) fn execute_request(
+        &mut self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request {
+            LocalDaemonRequest::CreateSession(request) => self.create_session_response(request),
+            LocalDaemonRequest::AttachToSession(request) => {
+                Ok(LocalDaemonResponse::SessionAttached {
+                    attachment: self.attach(AttachRequest::new(
+                        request.session_id,
+                        request.client_id,
+                        request.capability_level,
+                    ))?,
+                })
+            }
+            LocalDaemonRequest::DetachFromSession(request) => {
+                Ok(LocalDaemonResponse::SessionDetached {
+                    attachment: self.detach(&request.attachment_id)?,
+                })
+            }
+            LocalDaemonRequest::FocusAgent(request) => {
+                let agent = self.focus_agent(&request.session_id, &request.agent_id)?;
+                Ok(LocalDaemonResponse::AgentFocused { agent })
+            }
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                let agent = self.cycle_agent_focus(&request.session_id)?;
+                Ok(LocalDaemonResponse::AgentFocusCycled { agent })
+            }
+            LocalDaemonRequest::ResizeTerminal(request) => {
+                self.resize_terminal(&request.session_id, request.cols, request.rows)?;
+                Ok(LocalDaemonResponse::TerminalResized {
+                    session_id: request.session_id,
+                    cols: request.cols,
+                    rows: request.rows,
+                })
+            }
+            LocalDaemonRequest::PollRuntimeNotices(request) => {
+                let _ = self
+                    .app
+                    .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+                Ok(LocalDaemonResponse::RuntimeNotices {
+                    notices: self
+                        .app
+                        .terminal()
+                        .drain_notice_records(&request.session_id, &request.attachment_id),
+                })
+            }
+            LocalDaemonRequest::UpdateSessionConfig(request) => {
+                let session_id = request.session_id.clone();
+                let config = self.update_session_config(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.values,
+                    request.requires_idle,
+                )?;
+                let session = self.app.local_api_session_snapshot(&session_id)?;
+                Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
+            }
+            LocalDaemonRequest::AliasSession(request) => {
+                let session = self.alias_session(&request.session_id, request.alias)?;
+                Ok(LocalDaemonResponse::SessionAliased { session })
+            }
+            LocalDaemonRequest::SpawnAgent(request) => {
+                let create_request =
+                    CreateAgentRequest::new(&request.session_id, &request.provider);
+                let create_request = if let Some(alias) = request.alias {
+                    create_request.with_alias(alias)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(model) = request.model {
+                    create_request.with_model(model)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(effort) = request.effort {
+                    create_request.with_effort(effort)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(worktree_id) = request.worktree_id {
+                    create_request.with_worktree(worktree_id)
+                } else {
+                    create_request
+                };
+                let create_request = if let Some(machine_ref) = request.machine_ref {
+                    create_request.with_machine(machine_ref)
+                } else {
+                    create_request
+                };
+                let agent = self.app.spawn_agent(create_request)?;
+                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
+                Ok(LocalDaemonResponse::AgentSpawned { agent })
+            }
+            LocalDaemonRequest::DestroyAgent(request) => {
+                let agent = self.app.destroy_agent(&request.agent_id)?;
+                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
+                Ok(LocalDaemonResponse::AgentDestroyed { agent })
+            }
+            LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
+                session: self.end_session(&request.session_id)?,
+            }),
+            LocalDaemonRequest::DeleteSession(request) => Ok(LocalDaemonResponse::SessionDeleted {
+                session: self
+                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
+            }),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "execute session request",
+                message: "request is not handled by the session runtime".to_string(),
+            }),
+        }
     }
 
     pub(crate) fn create_session(
@@ -127,6 +162,29 @@ impl<'a> KernelSessionService<'a> {
         );
 
         Ok((session, agent))
+    }
+
+    pub(crate) fn create_session_response(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (mut session, agent) = self.create_session(request)?;
+        let agents = self.app.agents().get_session_agents(session.id());
+        session.set_agents(agents);
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session created with default agent",
+            serde_json::json!({
+                "session_id": session.id(),
+                "session_alias": session.alias(),
+                "workspace_id": session.workspace_id(),
+                "worktree_id": session.worktree_id(),
+                "execution_mode": format!("{:?}", session.execution_mode()),
+                "agent_id": agent.id(),
+                "agent_ref": agent.agent_ref(),
+            }),
+        );
+        Ok(LocalDaemonResponse::SessionCreated { session, agent })
     }
 
     pub(crate) fn alias_session(
