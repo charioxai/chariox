@@ -1,4 +1,5 @@
 pub mod agent_actor;
+pub mod agent_prompt_service;
 pub mod capability_executor;
 pub mod command;
 pub mod event_log;

@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
 use crate::error::DaemonError;
+use crate::kernel::agent_prompt_service::AgentPromptCommandService;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjection, AgentRuntimeProjectionStore,
     SessionStateProjectionStore,
@@ -43,8 +44,7 @@ struct AgentCommandEnvelope {
 
 #[derive(Clone)]
 struct AgentRuntimeCommandExecutor {
-    app: Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: ProviderRunOperationLanes,
+    prompt_commands: AgentPromptCommandService,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     prompt_id_allocator: PromptIdAllocator,
@@ -52,15 +52,13 @@ struct AgentRuntimeCommandExecutor {
 
 impl AgentRuntimeCommandExecutor {
     fn new(
-        app: Arc<Mutex<DaemonApp>>,
-        provider_runtime_lanes: ProviderRunOperationLanes,
+        prompt_commands: AgentPromptCommandService,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
         prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
         Self {
-            app,
-            provider_runtime_lanes,
+            prompt_commands,
             session_projection,
             agent_runtime_projection,
             prompt_id_allocator,
@@ -96,40 +94,31 @@ impl AgentRuntimeCommandExecutor {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "no target agent".to_string(),
                 })?;
-        let prepared = {
-            let mut app = self.app.lock().await;
-            let prompt = PromptQueueItem::new(
-                self.prompt_id_allocator.next_prompt_id(),
-                &request.attachment_id,
-                &target_agent_id,
-                &request.prompt,
-                PromptStatus::Queued,
-            )
-            .with_attachments(request.attachments);
-            app.kernel_agents().submit_prepared_prompt_for_kernel(
-                KernelPreparedPromptSubmission {
-                    session_id: request.session_id.clone(),
-                    prompt,
-                    force_queue: false,
-                },
-            )?
-        };
+        let prompt = PromptQueueItem::new(
+            self.prompt_id_allocator.next_prompt_id(),
+            &request.attachment_id,
+            &target_agent_id,
+            &request.prompt,
+            PromptStatus::Queued,
+        )
+        .with_attachments(request.attachments);
+        let prepared = self
+            .prompt_commands
+            .submit_prepared_prompt(KernelPreparedPromptSubmission {
+                session_id: request.session_id.clone(),
+                prompt,
+                force_queue: false,
+            })
+            .await?;
         self.session_projection.update(prepared.session.clone());
         self.agent_runtime_projection
             .update_session(&prepared.session);
 
         if let Some(dispatch) = prepared.dispatch {
-            DaemonApp::spawn_kernel_prompt_dispatch_operation(
-                Arc::clone(&self.app),
-                self.provider_runtime_lanes.clone(),
-                dispatch,
-            );
+            self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
         if let Some(dispatch) = prepared.remote_dispatch {
-            DaemonApp::spawn_kernel_remote_prompt_dispatch_operation(
-                Arc::clone(&self.app),
-                dispatch,
-            );
+            self.prompt_commands.spawn_remote_prompt_dispatch(dispatch);
         }
 
         Ok(LocalDaemonResponse::PromptSubmitted {
@@ -143,24 +132,20 @@ impl AgentRuntimeCommandExecutor {
         request: crate::local::CancelActivePromptRequest,
         target_agent_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let prepared = {
-            let mut app = self.app.lock().await;
-            app.kernel_agents().cancel_agent_prompt_for_kernel(
+        let prepared = self
+            .prompt_commands
+            .cancel_agent_prompt(
                 &request.session_id,
                 &target_agent_id,
                 &request.attachment_id,
-            )?
-        };
+            )
+            .await?;
         self.session_projection.update(prepared.session.clone());
         self.agent_runtime_projection
             .update_session(&prepared.session);
 
         if let Some(dispatch) = prepared.dispatch {
-            DaemonApp::spawn_kernel_prompt_abort_operation(
-                Arc::clone(&self.app),
-                self.provider_runtime_lanes.clone(),
-                dispatch,
-            );
+            self.prompt_commands.spawn_prompt_abort(dispatch);
         }
 
         Ok(LocalDaemonResponse::PromptCancelled {
@@ -174,19 +159,14 @@ impl AgentRuntimeCommandExecutor {
         target_agent_id: String,
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let completion = {
-            let mut app = self.app.lock().await;
-            let provider_run_id = app
-                .providers()
-                .get_run_for_agent(&request.session_id, &target_agent_id)
-                .map(|run| run.id().to_string());
-            app.kernel_agents().complete_active_prompt_for_kernel(
+        let completion = self
+            .prompt_commands
+            .complete_agent_prompt(
                 &request.session_id,
                 &target_agent_id,
-                provider_run_id.as_deref(),
-                next_queued_prompt.as_ref(),
-            )?
-        };
+                next_queued_prompt.clone(),
+            )
+            .await?;
         let session = self
             .session_projection
             .get(&request.session_id)
@@ -471,9 +451,12 @@ impl AgentRuntime {
         }
         let (tx, rx) = mpsc::channel(AGENT_COMMAND_QUEUE_LIMIT);
         lanes.insert(agent_id.to_string(), tx.clone());
-        let executor = AgentRuntimeCommandExecutor::new(
+        let prompt_commands = AgentPromptCommandService::new(
             Arc::clone(&self.app),
             self.provider_runtime_lanes.clone(),
+        );
+        let executor = AgentRuntimeCommandExecutor::new(
+            prompt_commands,
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
             self.prompt_id_allocator.clone(),

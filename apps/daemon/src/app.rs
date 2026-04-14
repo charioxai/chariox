@@ -17,7 +17,10 @@ mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod workflow_runtime;
 
-pub(crate) use prompt_lifecycle::KernelPreparedPromptSubmission;
+pub(crate) use prompt_lifecycle::{
+    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
+    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
+};
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
