@@ -12,6 +12,66 @@ use crate::transport::relay_peer::RelayPromptAttachment;
 use base64::Engine;
 use std::fs;
 
+pub(crate) struct ProviderPromptDispatcher<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderPromptDispatcher<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn dispatch_prompt_to_provider(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        attachment_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<(), DaemonError> {
+        let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
+            .reconcile_provider_run_exit(session_id, provider_run_id)?;
+        let provider_run = crate::app::ProviderRunReadService::new(self.app)
+            .ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if provider_run.state() != ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run_id.to_string(),
+                state: provider_run.state(),
+                operation: "submit prompt",
+            });
+        }
+
+        if self
+            .app
+            .providers
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            let agent_id = provider_run
+                .agent_instance_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "provider run has no agent".to_string(),
+                })?
+                .to_string();
+            self.app.providers.enqueue_structured_prompt_submit(
+                session_id.to_string(),
+                provider_run_id.to_string(),
+                agent_id,
+                &provider_run,
+                prompt,
+                attachments,
+            )?;
+            return Ok(());
+        }
+
+        crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
+            session_id,
+            provider_run_id,
+            attachment_id,
+            prompt.as_bytes(),
+        )
+    }
+}
+
 pub(crate) struct KernelPromptSubmission {
     pub(crate) outcome: PromptSubmissionOutcome,
     pub(crate) session: crate::session::RuntimeSession,

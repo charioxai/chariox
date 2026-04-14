@@ -140,7 +140,7 @@ impl TransportService {
             };
         }
         let dispatch = |app: &mut DaemonApp, provider_run_id: &str| {
-            app.dispatch_prompt_to_provider(
+            crate::app::ProviderPromptDispatcher::new(app).dispatch_prompt_to_provider(
                 session_id,
                 provider_run_id,
                 prompt.source_attachment_id(),

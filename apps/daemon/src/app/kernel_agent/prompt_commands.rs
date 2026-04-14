@@ -963,13 +963,15 @@ impl<'a> KernelAgentService<'a> {
             {
                 if is_workflow_prompt {
                     let active = self.app.prompt_owner_activate_prompt(session_id, next)?;
-                    if let Err(dispatch_error) = self.app.dispatch_prompt_to_provider(
-                        session_id,
-                        &provider_run_id,
-                        active.source_attachment_id(),
-                        active.prompt(),
-                        active.attachments(),
-                    ) {
+                    if let Err(dispatch_error) = crate::app::ProviderPromptDispatcher::new(self.app)
+                        .dispatch_prompt_to_provider(
+                            session_id,
+                            &provider_run_id,
+                            active.source_attachment_id(),
+                            active.prompt(),
+                            active.attachments(),
+                        )
+                    {
                         let cancelled = self
                             .app
                             .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id)?;
@@ -1008,13 +1010,15 @@ impl<'a> KernelAgentService<'a> {
                 continue;
             }
 
-            if let Err(error) = self.app.dispatch_prompt_to_provider(
-                session_id,
-                &provider_run_id,
-                next.source_attachment_id(),
-                next.prompt(),
-                next.attachments(),
-            ) {
+            if let Err(error) = crate::app::ProviderPromptDispatcher::new(self.app)
+                .dispatch_prompt_to_provider(
+                    session_id,
+                    &provider_run_id,
+                    next.source_attachment_id(),
+                    next.prompt(),
+                    next.attachments(),
+                )
+            {
                 self.app.record_notice(
                     session_id,
                     Some(&provider_run_id),
