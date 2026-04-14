@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
@@ -47,12 +46,12 @@ pub(crate) struct WorkflowRuntime {
 
 impl WorkflowRuntime {
     pub(crate) fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
         Self::with_store(
-            WorkflowRuntimeStore::new(CompatibilityRuntimeState::new(app)),
+            WorkflowRuntimeStore::new(state),
             session_projection,
             agent_runtime_projection,
         )
@@ -782,6 +781,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::kernel::workflow_actor::WorkflowRuntime;
     use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
@@ -794,7 +794,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = WorkflowRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             session_projection,
             AgentRuntimeProjectionStore::default(),
         );

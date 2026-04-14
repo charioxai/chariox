@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::agent::CreateAgentRequest;
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
@@ -70,7 +69,7 @@ pub(crate) struct SessionRuntime {
 
 impl SessionRuntime {
     pub(crate) fn with_queue_limit_and_focus_projection(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         queue_limit: usize,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
@@ -78,7 +77,7 @@ impl SessionRuntime {
         terminal_stream: TerminalStreamStore,
     ) -> Self {
         Self::with_store_and_focus_projection(
-            SessionRuntimeStore::new(CompatibilityRuntimeState::new(app)),
+            SessionRuntimeStore::new(state),
             queue_limit,
             focus_projection,
             session_projection,
@@ -1016,6 +1015,7 @@ mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
+    use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::kernel::session_actor::{
         projected_config_update_absence_response, session_response_projection_action,
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
@@ -1085,7 +1085,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             1,
             FocusedAgentProjection::default(),
             session_projection,
@@ -1162,7 +1162,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             1,
             FocusedAgentProjection::default(),
             session_projection,
@@ -1251,7 +1251,7 @@ mod tests {
         );
 
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             1,
             FocusedAgentProjection::default(),
             SessionStateProjectionStore::default(),

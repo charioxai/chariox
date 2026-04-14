@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
-use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
@@ -30,18 +25,15 @@ struct TerminalOutputStore {
 
 impl TerminalOutputExecutor {
     pub(crate) fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
         provider_run_projection: ProviderRunProjectionStore,
         terminal_stream: TerminalStreamStore,
     ) -> Self {
-        let terminal_output_store = TerminalOutputStore::new(
-            CompatibilityRuntimeState::new(app),
-            session_projection.clone(),
-            agent_runtime_projection,
-        );
+        let terminal_output_store =
+            TerminalOutputStore::new(state, session_projection.clone(), agent_runtime_projection);
         Self {
             terminal_output_store,
             provider_runtime_lanes,

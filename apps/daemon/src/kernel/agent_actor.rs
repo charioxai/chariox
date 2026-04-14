@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
+use crate::app::KernelPreparedPromptSubmission;
 use crate::error::DaemonError;
 use crate::kernel::agent_prompt_service::AgentPromptCommandService;
 use crate::kernel::projection::{
@@ -201,7 +201,7 @@ pub(crate) struct AgentRuntime {
 
 impl AgentRuntime {
     pub(crate) fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
@@ -210,7 +210,7 @@ impl AgentRuntime {
         prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
         Self::with_store(
-            AgentRuntimeStore::new(CompatibilityRuntimeState::new(app)),
+            AgentRuntimeStore::new(state),
             provider_runtime_lanes,
             focus_projection,
             session_projection,
@@ -632,6 +632,7 @@ mod tests {
     use crate::kernel::agent_actor::AgentRuntime;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::prompt_state::PromptStateOwner;
+    use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::LocalDaemonResponse;
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
@@ -669,7 +670,7 @@ mod tests {
         agent_runtime_projection.update_session(&session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             SessionStateProjectionStore::default(),
@@ -703,7 +704,7 @@ mod tests {
         session_projection.update(session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -771,7 +772,7 @@ mod tests {
         let prompt_state_owner = app.prompt_state_owner();
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -800,7 +801,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -839,7 +840,7 @@ mod tests {
         session_projection.update(session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -877,7 +878,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            CompatibilityRuntimeState::new(Arc::clone(&app)),
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,

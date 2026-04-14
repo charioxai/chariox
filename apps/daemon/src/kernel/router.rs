@@ -115,9 +115,9 @@ impl CommandRouter {
         ) = router_projection_stores(&app);
         let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
-        let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
+        let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
             session_projection.clone(),
@@ -126,7 +126,7 @@ impl CommandRouter {
             prompt_id_allocator.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            Arc::clone(&app),
+            runtime_state.clone(),
             session_capacity,
             focus_projection.clone(),
             session_projection.clone(),
@@ -134,12 +134,12 @@ impl CommandRouter {
             terminal_stream.clone(),
         );
         let workflow_runtime = WorkflowRuntime::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
         let terminal_output_executor = TerminalOutputExecutor::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             provider_runtime_lanes.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),
@@ -213,9 +213,9 @@ impl CommandRouter {
         ) = router_projection_stores(&app);
         let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
-        let capability_runtime = CapabilityRuntimeStore::new(Arc::clone(&app));
+        let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             provider_runtime_lanes.clone(),
             focus_projection.clone(),
             session_projection.clone(),
@@ -224,7 +224,7 @@ impl CommandRouter {
             prompt_id_allocator.clone(),
         );
         let session_runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            Arc::clone(&app),
+            runtime_state.clone(),
             crate::kernel::session_actor::SESSION_COMMAND_QUEUE_LIMIT,
             focus_projection.clone(),
             session_projection.clone(),
@@ -232,12 +232,12 @@ impl CommandRouter {
             terminal_stream.clone(),
         );
         let workflow_runtime = WorkflowRuntime::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),
         );
         let terminal_output_executor = TerminalOutputExecutor::new(
-            Arc::clone(&app),
+            runtime_state.clone(),
             provider_runtime_lanes.clone(),
             session_projection.clone(),
             agent_runtime_projection.clone(),

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::app::DaemonApp;
 use crate::capability::{
@@ -285,10 +285,8 @@ pub(crate) struct CapabilityRuntimeStore {
 }
 
 impl CapabilityRuntimeStore {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self {
-            state: CompatibilityRuntimeState::new(app),
-        }
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+        Self { state }
     }
 
     async fn context(
@@ -369,6 +367,7 @@ mod tests {
     };
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::error::DaemonError;
+    use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -390,7 +389,7 @@ mod tests {
         let health = CapabilityExecutorHealthStore::new(0);
 
         let response = execute_capability_request(
-            &CapabilityRuntimeStore::new(app),
+            &CapabilityRuntimeStore::new(CompatibilityRuntimeState::new(app)),
             health.clone(),
             LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
                 session_id: session.id().to_string(),
