@@ -416,8 +416,7 @@ impl<'a> KernelSessionService<'a> {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        let _ = self
-            .app
+        let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
             .reconcile_provider_run_exit(session_id, provider_run_id)?;
         let provider_run = self
             .app

@@ -82,7 +82,8 @@ impl DaemonApp {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
+        let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self)
+            .reconcile_provider_run_exit(session_id, provider_run_id)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
@@ -463,15 +464,6 @@ impl DaemonApp {
         attachments: &[PromptAttachment],
     ) -> Result<Vec<RelayPromptAttachment>, DaemonError> {
         serialize_remote_prompt_attachments(attachments)
-    }
-
-    pub(crate) fn reconcile_provider_run_exit(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        super::provider_runtime::ProviderRunLivenessRuntime::new(self)
-            .reconcile_provider_run_exit(session_id, provider_run_id)
     }
 
     pub(crate) fn finalize_active_prompt_cancellation(

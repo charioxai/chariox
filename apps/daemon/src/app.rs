@@ -723,7 +723,8 @@ impl DaemonApp {
         attachment_id: &str,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
-        let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
+        let _ = provider_runtime::ProviderRunLivenessRuntime::new(self)
+            .reconcile_provider_run_exit(session_id, provider_run_id)?;
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
             self.ensure_attachment_in_session(session_id, attachment_id)?;
         }
@@ -871,7 +872,8 @@ impl DaemonApp {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let _ = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
+        let _ = provider_runtime::ProviderRunLivenessRuntime::new(self)
+            .reconcile_provider_run_exit(session_id, provider_run_id)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
