@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::attachment::ClientCapabilityLevel;
+use crate::kernel::command::KernelCommand;
+use crate::kernel::router::CommandRouter;
 use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
@@ -36,6 +40,44 @@ use futures_util::SinkExt;
 use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+static LOCAL_API_ROUTER_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+
+struct LocalApiRouterHarness {
+    runtime: tokio::runtime::Runtime,
+    app: Arc<tokio::sync::Mutex<DaemonApp>>,
+    router: CommandRouter,
+}
+
+impl LocalApiRouterHarness {
+    fn new() -> Self {
+        let app = Arc::new(tokio::sync::Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests())
+                .expect("daemon bootstrap should succeed"),
+        ));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 16);
+        Self {
+            runtime: tokio::runtime::Runtime::new().expect("test runtime should start"),
+            app,
+            router,
+        }
+    }
+
+    fn dispatch(&self, request: LocalDaemonRequest) -> Result<LocalDaemonResponse, DaemonError> {
+        let command_id = format!(
+            "local-api-router-test-{}",
+            LOCAL_API_ROUTER_COMMAND_ID.fetch_add(1, Ordering::SeqCst)
+        );
+        let command = KernelCommand::from_local_request(&command_id, None, None, &request);
+        self.runtime
+            .block_on(self.router.dispatch(command, request))
+    }
+
+    fn with_app<R>(&self, f: impl FnOnce(&DaemonApp) -> R) -> R {
+        let app = self.runtime.block_on(self.app.lock());
+        f(&app)
+    }
+}
+
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
     match app
         .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
@@ -58,10 +100,9 @@ fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &
 
 #[test]
 fn local_request_api_supports_session_attach_and_end() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, _default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -70,8 +111,8 @@ fn local_request_api_supports_session_attach_and_end() {
         _ => panic!("unexpected local response"),
     };
 
-    let attachment = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "client-1".to_string(),
@@ -84,8 +125,8 @@ fn local_request_api_supports_session_attach_and_end() {
         _ => panic!("unexpected local response"),
     };
 
-    let detached = match app
-        .handle_local_request(LocalDaemonRequest::DetachFromSession(
+    let detached = match harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
             DetachFromSessionRequest {
                 attachment_id: attachment.id().to_string(),
             },
@@ -96,8 +137,8 @@ fn local_request_api_supports_session_attach_and_end() {
         _ => panic!("unexpected local response"),
     };
 
-    let ended = match app
-        .handle_local_request(LocalDaemonRequest::EndSession(EndSessionRequest {
+    let ended = match harness
+        .dispatch(LocalDaemonRequest::EndSession(EndSessionRequest {
             session_id: session.id().to_string(),
         }))
         .expect("end session should succeed")
@@ -108,7 +149,9 @@ fn local_request_api_supports_session_attach_and_end() {
 
     assert_eq!(detached.id(), attachment.id());
     assert_eq!(ended.id(), session.id());
-    assert!(app.attachments().get_attachment(detached.id()).is_err());
+    harness.with_app(|app| {
+        assert!(app.attachments().get_attachment(detached.id()).is_err());
+    });
 }
 
 #[test]

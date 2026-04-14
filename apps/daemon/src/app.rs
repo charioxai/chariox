@@ -876,7 +876,7 @@ impl DaemonApp {
             return Ok(());
         }
 
-        self.send_provider_input(
+        terminal_input::ProviderTerminalInput::new(self).send_provider_input(
             session_id,
             provider_run_id,
             attachment_id,

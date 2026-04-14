@@ -789,16 +789,17 @@ impl<'a> KernelAgentService<'a> {
             });
         };
 
-        let dispatch = if uses_structured_prompt_io {
-            Some(KernelPromptAbortDispatch {
-                session_id: session_id.clone(),
-                provider_run_id: provider_run_id.clone(),
-            })
-        } else {
-            self.app
-                .send_provider_input(&session_id, &provider_run_id, &attachment_id, b"\x03")?;
-            None
-        };
+        let dispatch =
+            if uses_structured_prompt_io {
+                Some(KernelPromptAbortDispatch {
+                    session_id: session_id.clone(),
+                    provider_run_id: provider_run_id.clone(),
+                })
+            } else {
+                crate::app::terminal_input::ProviderTerminalInput::new(self.app)
+                    .send_provider_input(&session_id, &provider_run_id, &attachment_id, b"\x03")?;
+                None
+            };
 
         let prompt = self
             .app
@@ -1322,7 +1323,7 @@ impl<'a> KernelAgentService<'a> {
             .providers
             .run_uses_structured_prompt_io(&provider_run);
         if !uses_structured_prompt_io {
-            self.app.send_provider_input(
+            crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
                 session_id,
                 &provider_run_id,
                 attachment_id.unwrap_or(active_prompt.source_attachment_id()),

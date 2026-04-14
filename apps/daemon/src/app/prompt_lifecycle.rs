@@ -158,7 +158,7 @@ impl DaemonApp {
                 &dispatch.attachments,
             );
         }
-        self.send_provider_input(
+        crate::app::terminal_input::ProviderTerminalInput::new(self).send_provider_input(
             &dispatch.session_id,
             &dispatch.provider_run_id,
             &dispatch.source_attachment_id,
