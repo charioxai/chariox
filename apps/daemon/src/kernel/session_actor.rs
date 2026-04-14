@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::agent::CreateAgentRequest;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
@@ -558,8 +559,35 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            app.kernel_agents()
-                .execute_request(LocalDaemonRequest::SpawnAgent(request))
+            let create_request = CreateAgentRequest::new(&request.session_id, &request.provider);
+            let create_request = if let Some(alias) = request.alias {
+                create_request.with_alias(alias)
+            } else {
+                create_request
+            };
+            let create_request = if let Some(model) = request.model {
+                create_request.with_model(model)
+            } else {
+                create_request
+            };
+            let create_request = if let Some(effort) = request.effort {
+                create_request.with_effort(effort)
+            } else {
+                create_request
+            };
+            let create_request = if let Some(worktree_id) = request.worktree_id {
+                create_request.with_worktree(worktree_id)
+            } else {
+                create_request
+            };
+            let create_request = if let Some(machine_ref) = request.machine_ref {
+                create_request.with_machine(machine_ref)
+            } else {
+                create_request
+            };
+            let agent = app.spawn_agent(create_request)?;
+            let _ = app.local_api_session_snapshot(agent.session_id())?;
+            Ok(LocalDaemonResponse::AgentSpawned { agent })
         })
         .await
     }
@@ -572,8 +600,9 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            app.kernel_agents()
-                .execute_request(LocalDaemonRequest::DestroyAgent(request))
+            let agent = app.destroy_agent(&request.agent_id)?;
+            let _ = app.local_api_session_snapshot(agent.session_id())?;
+            Ok(LocalDaemonResponse::AgentDestroyed { agent })
         })
         .await
     }
