@@ -734,7 +734,7 @@ mod tests {
                 "worktree-owner-route",
             ))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-owner-route",
@@ -906,7 +906,7 @@ mod tests {
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "cli-1",
@@ -954,7 +954,7 @@ mod tests {
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "cli-1",

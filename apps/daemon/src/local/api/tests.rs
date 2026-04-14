@@ -2495,7 +2495,7 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let attachment = app
+    let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
             "client-1",
@@ -2797,7 +2797,7 @@ fn prompt_idle_fallback_completes_after_recorded_completion_without_response_tex
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-    let attachment = app
+    let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
             "client-completion-fallback",

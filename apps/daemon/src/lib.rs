@@ -82,7 +82,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -90,7 +90,7 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let ended = app
+        let ended = crate::app::KernelSessionService::new(&mut app)
             .end_session(session.id())
             .expect("session should end cleanly through the app");
 
@@ -106,7 +106,7 @@ mod tests {
             .sessions_mut()
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -247,7 +247,7 @@ mod tests {
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -388,7 +388,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -406,7 +406,7 @@ mod tests {
             ))
             .expect("provider run should launch");
 
-        let _detached = app
+        let _detached = crate::app::KernelSessionService::new(&mut app)
             .detach(attachment.id())
             .expect("last attachment should detach cleanly");
 
@@ -425,7 +425,7 @@ mod tests {
             super::provider::ProviderRunState::Parked
         );
 
-        let reattached = app
+        let reattached = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
@@ -492,14 +492,14 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let first = app
+        let first = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("first attachment should attach");
-        let second = app
+        let second = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
@@ -578,7 +578,7 @@ mod tests {
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -604,9 +604,11 @@ mod tests {
             Vec::new(),
         )
         .expect("prompt should submit");
-        let _ = app.end_session(session.id()).expect("session should end");
+        let _ = crate::app::KernelSessionService::new(&mut app)
+            .end_session(session.id())
+            .expect("session should end");
 
-        let reopened = app
+        let reopened = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
@@ -643,13 +645,13 @@ mod tests {
             )
             .expect("session should be created");
 
-        let deleted = app
+        let deleted = crate::app::KernelSessionService::new(&mut app)
             .delete_session_ref("main", Some("workspace-1"))
             .expect("session should delete");
 
         assert_eq!(deleted.id(), session.id());
         assert!(matches!(
-            app.attach(AttachRequest::new(
+            crate::app::KernelSessionService::new(&mut app).attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
@@ -667,14 +669,14 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
-        let source = app
+        let source = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("source attachment should attach");
-        let observer = app
+        let observer = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
@@ -730,14 +732,14 @@ mod tests {
             .sessions_mut()
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
-        let first = app
+        let first = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let second = app
+        let second = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-b",
@@ -773,7 +775,7 @@ mod tests {
             .sessions_mut()
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
-        let _attachment = app
+        let _attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-a",
@@ -839,7 +841,7 @@ mod tests {
                 worktree_root.display().to_string(),
             ))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-shell",
@@ -887,7 +889,7 @@ mod tests {
                 worktree_root.display().to_string(),
             ))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-capability",
@@ -981,7 +983,7 @@ mod tests {
                 std::env::temp_dir().display().to_string(),
             ))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-screenshot",
@@ -1024,7 +1026,7 @@ mod tests {
                 worktree_root.display().to_string(),
             ))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-transfer",

@@ -1230,7 +1230,7 @@ mod tests {
             let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace", "worktree"))
                 .expect("session should be created");
-            let attachment = app
+            let attachment = crate::app::KernelSessionService::new(&mut app)
                 .attach(AttachRequest::new(
                     session.id(),
                     "cli-terminal-cleanup",
@@ -1332,7 +1332,7 @@ mod tests {
         let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "cli-1",

@@ -1430,7 +1430,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 &session_id,
                 "cli-agent-runtime-projection",
@@ -1501,7 +1501,7 @@ mod tests {
             .expect("second agent should spawn")
             .id()
             .to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 &session_id,
                 "cli-agent-runtime-one-agent-refresh",
@@ -1558,7 +1558,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 &session_id,
                 "cli-projection-invariant",

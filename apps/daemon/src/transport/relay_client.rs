@@ -1661,7 +1661,8 @@ mod tests {
         client_id: &str,
         capability_level: ClientCapabilityLevel,
     ) -> String {
-        app.attach(AttachRequest::new(session_id, client_id, capability_level))
+        crate::app::KernelSessionService::new(app)
+            .attach(AttachRequest::new(session_id, client_id, capability_level))
             .expect("session should attach")
             .id()
             .to_string()
@@ -2367,7 +2368,7 @@ mod tests {
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
-            let attachment = app_home
+            let attachment = crate::app::KernelSessionService::new(&mut app_home)
                 .attach(AttachRequest::new(
                     session.id(),
                     "home-client",
@@ -2503,7 +2504,7 @@ mod tests {
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
-            let attachment = app_home
+            let attachment = crate::app::KernelSessionService::new(&mut app_home)
                 .attach(AttachRequest::new(
                     session.id(),
                     "home-client",
@@ -2664,7 +2665,7 @@ mod tests {
             let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
-            let attachment = app_home
+            let attachment = crate::app::KernelSessionService::new(&mut app_home)
                 .attach(AttachRequest::new(
                     session.id(),
                     "home-client",
@@ -2725,7 +2726,7 @@ mod tests {
             let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("session should be created");
-            let attachment = app
+            let attachment = crate::app::KernelSessionService::new(&mut app)
                 .attach(AttachRequest::new(
                     session.id(),
                     "home-client",

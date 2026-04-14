@@ -1,29 +1,6 @@
 use crate::app::DaemonApp;
-use crate::attachment::{AttachRequest, RuntimeAttachment};
-use crate::error::DaemonError;
-use crate::session::RuntimeSession;
 
 impl DaemonApp {
-    pub fn attach(&mut self, request: AttachRequest) -> Result<RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self).attach(request)
-    }
-
-    pub fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self).detach(attachment_id)
-    }
-
-    pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self).end_session(session_id)
-    }
-
-    pub fn delete_session_ref(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self).delete_session_ref(session_ref, workspace_id)
-    }
-
     pub(crate) fn other_attachment_ids(
         &self,
         session_id: &str,

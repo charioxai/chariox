@@ -374,12 +374,13 @@ mod tests {
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should exist");
-        app.attach(AttachRequest::new(
-            session.id(),
-            "client-a",
-            ClientCapabilityLevel::InteractiveStructured,
-        ))
-        .expect("attachment should attach");
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("attachment should attach");
         let agent_id = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")

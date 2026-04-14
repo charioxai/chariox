@@ -1782,12 +1782,13 @@ mod tests {
                 "worktree-scheduler",
             ))
             .expect("session should exist");
-        app.attach(AttachRequest::new(
-            session.id(),
-            client_id,
-            ClientCapabilityLevel::InteractiveStructured,
-        ))
-        .expect("attachment should attach");
+        crate::app::KernelSessionService::new(app)
+            .attach(AttachRequest::new(
+                session.id(),
+                client_id,
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("attachment should attach");
         let agent_id = crate::app::KernelSessionService::new(&mut *app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")

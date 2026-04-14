@@ -1413,7 +1413,7 @@ mod tests {
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session create should succeed");
-        let _attachment = app
+        let _attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
                 "client-1",
@@ -1479,7 +1479,9 @@ mod tests {
             .values()
             .any(|process| { process.owner_provider_run_ids == vec![run.id().to_string()] }));
 
-        let _ = app.end_session(session.id()).expect("session should end");
+        let _ = crate::app::KernelSessionService::new(&mut app)
+            .end_session(session.id())
+            .expect("session should end");
 
         assert!(app.tracked_provider_processes.is_empty());
         assert!(app.tracked_provider_run_processes.is_empty());

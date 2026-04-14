@@ -1873,7 +1873,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-slow-history",
@@ -1979,7 +1979,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-slow-catalog",
@@ -2688,7 +2688,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-1",
@@ -2950,7 +2950,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-agent-lane-cleanup",
@@ -3029,7 +3029,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-agent-destroy-lane-cleanup",
@@ -3101,7 +3101,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-1",
@@ -3173,7 +3173,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-1",
@@ -3262,7 +3262,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-session-projection-focus",
@@ -3359,7 +3359,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-1",
@@ -3463,7 +3463,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-1",
@@ -3532,7 +3532,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-config-projection",
@@ -3675,14 +3675,14 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let source = app
+        let source = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-notice-source",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("source attachment should attach");
-        let recipient = app
+        let recipient = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-notice-recipient",
@@ -3804,7 +3804,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-complete-projection",
@@ -3907,7 +3907,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-prompt-shadow-refresh",
@@ -3986,7 +3986,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let default_agent_id = default_agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-complete-owner-projection",
@@ -4087,7 +4087,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-cancel-projection",
@@ -4198,7 +4198,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let default_agent_id = default_agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-cancel-owner-projection",
@@ -4303,7 +4303,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-history-load",
@@ -4376,7 +4376,7 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-history-projection",
@@ -5560,12 +5560,13 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        app.attach(crate::attachment::AttachRequest::new(
-            &session_id,
-            "cli-pump-projection",
-            ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
+        crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "cli-pump-projection",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
@@ -5622,7 +5623,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-pump-buffered",
@@ -5687,7 +5688,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-pump-active",
@@ -5755,7 +5756,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
-        let attachment = app
+        let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 &session_id,
                 "cli-pump-parked",

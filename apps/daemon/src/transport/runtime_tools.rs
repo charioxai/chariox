@@ -1010,12 +1010,13 @@ mod tests {
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut *app)
             .create_session(CreateSessionRequest::new(workspace_id, worktree_id))
             .expect("session should exist");
-        app.attach(AttachRequest::new(
-            session.id(),
-            client_id,
-            ClientCapabilityLevel::InteractiveStructured,
-        ))
-        .expect("attachment should attach");
+        crate::app::KernelSessionService::new(app)
+            .attach(AttachRequest::new(
+                session.id(),
+                client_id,
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("attachment should attach");
         let agent_id = spawn_runtime_agent(app, session.id(), agent_alias, worktree_id);
         let workflow_id = app
             .sessions_mut()

@@ -633,7 +633,7 @@ impl DaemonApp {
         let mut first_error = None;
 
         for session_id in session_ids {
-            if let Err(error) = self.end_session(&session_id) {
+            if let Err(error) = KernelSessionService::new(self).end_session(&session_id) {
                 crate::logging::error_with_fields(
                     "daemon.shutdown",
                     "failed to end session during daemon shutdown",
