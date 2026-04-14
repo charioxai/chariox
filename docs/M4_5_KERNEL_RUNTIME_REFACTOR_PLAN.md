@@ -203,6 +203,38 @@ New regression coverage locks in the current responsiveness contract while owner
 
 These tests do not prove actor ownership is complete. They specifically prevent backsliding on the M4.5 exit criterion that user-visible interactive commands must stay responsive while slow read/background work is running.
 
+### Compatibility Facade Retirement Checklist
+
+Retiring the facade is separate from final I/O coordination. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place and defer file-level claims, port claims, sandboxing, coordinator-owned patch application, and transactional rebase/repair to the final I/O slice.
+
+Work the retirement in this order:
+
+1. Retire `DaemonApp::handle_local_request` as a public facade API.
+   - Add or use a router-backed local daemon client/harness that accepts `LocalDaemonRequest`, builds a `KernelCommand`, and dispatches through `CommandRouter`.
+   - Move external integration tests and public smoke harnesses off direct `DaemonApp::handle_local_request` calls. The known blocker is `apps/daemon/tests/runtime_integration.rs`, which is an external integration crate and therefore forces the method to remain public while it calls the facade directly.
+   - Demote the method to `pub(crate)` once no external crate needs it. Internal compatibility unit tests may still call it until their owning services are split, but new tests should prefer the router-backed client unless they are specifically testing the compatibility handler.
+   - Exit check: `cargo test --manifest-path apps/daemon/Cargo.toml` passes, and `rg "handle_local_request\\(" apps/daemon/tests apps/daemon/src/local/harness.rs` returns no external/public harness callers.
+
+2. Keep router independence locked.
+   - Maintain the current invariant that production `CommandRouter` code does not call `DaemonApp::handle_local_request` and has no generic normal/background compatibility fallback.
+   - Keep named cold compatibility branches explicit while moving them behind service-owned stores one at a time.
+   - Exit check: `rg "handle_local_request\\(" apps/daemon/src/kernel/router.rs` has test-only matches, and every production router arm is explicit.
+
+3. Move actor workers off the compatibility mutation container.
+   - Replace `Arc<Mutex<DaemonApp>>` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` workers with injected service handles and runtime-owned stores.
+   - Keep compatibility mirrors only as read/projection bridges while each service migrates.
+   - Exit check: actor workers no longer call `DaemonApp::handle_session_request`, `DaemonApp::handle_agent_request`, or `DaemonApp::handle_workflow_request` for normal command mutation.
+
+4. Split runtime-owned services out of `DaemonApp`.
+   - Extract session, agent, prompt, provider, terminal, workflow, relay, capability-context, history, and projection ownership into explicit runtime services.
+   - Make `DaemonApp` bootstrap those services instead of owning mutable command state directly.
+   - Exit check: remaining `Arc<Mutex<DaemonApp>>` uses are bootstrap/shutdown only, not command admission or command mutation.
+
+5. Retire the remaining facade-only compatibility handlers.
+   - Delete or privatize facade dispatch helpers once all transports, runtime tools, actors, harnesses, and integration tests enter through router/service boundaries.
+   - Run the full daemon suite plus multi-agent and workflow live drills before deleting the final compatibility shim.
+   - Exit check: `rg "handle_.*_request|handle_local_request" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows only service-owned handlers with a single authority for each mutation path.
+
 ## Non-Goals
 
 - Do not rewrite provider adapters for every provider family.
