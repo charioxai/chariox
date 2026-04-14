@@ -113,7 +113,11 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
-        let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
+        let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(&app),
+            terminal_stream.clone(),
+            workspace_coordinator.clone(),
+        );
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(
@@ -211,7 +215,11 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
-        let runtime_state = CompatibilityRuntimeState::new(Arc::clone(&app));
+        let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(&app),
+            terminal_stream.clone(),
+            workspace_coordinator.clone(),
+        );
         let pending_provider_launch_sessions = Arc::new(Mutex::new(HashSet::new()));
         let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
         let agent_runtime = AgentRuntime::new(

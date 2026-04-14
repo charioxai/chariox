@@ -257,6 +257,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 made the remaining raw app-lock helper inside `CompatibilityRuntimeState` private. Runtime callers must enter through named compatibility ports instead of using a generic app mutation escape hatch.
 - Landed: Phase 8 gave `CommandRouter` an explicit `CompatibilityRuntimeState` boundary for remaining app-backed runtime-tool and provider-launch side effects. Authenticated/forwarded runtime-tool calls and provider-launch dispatch no longer lock `DaemonApp` directly from router code.
 - Landed: Phase 8 changed session, agent, workflow, terminal-output, and capability runtime constructors to receive the router-owned `CompatibilityRuntimeState` directly. Router bootstrap now creates one runtime-state boundary and shares it with runtime workers/executors instead of each component re-wrapping `Arc<Mutex<DaemonApp>>`.
+- Landed: Phase 8 moved the first owned runtime stores behind `CompatibilityRuntimeState`: router bootstrap now injects the shared `TerminalStreamStore` and `WorkspaceCoordinator`, and the session notice and capability authorization ports consume those owned handles instead of re-reading them through `DaemonApp`.
 
 Still open:
 

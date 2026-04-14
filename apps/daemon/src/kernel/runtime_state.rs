@@ -12,11 +12,33 @@ use arroba_relay::protocol::ClientTarget;
 #[derive(Clone)]
 pub(crate) struct CompatibilityRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
+    owned: Option<CompatibilityRuntimeOwnedState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CompatibilityRuntimeOwnedState {
+    terminal_stream: crate::terminal::TerminalStreamStore,
+    workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
 
 impl CompatibilityRuntimeState {
+    #[cfg(test)]
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+        Self { app, owned: None }
+    }
+
+    pub(crate) fn new_with_owned_state(
+        app: Arc<Mutex<DaemonApp>>,
+        terminal_stream: crate::terminal::TerminalStreamStore,
+        workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
+    ) -> Self {
+        Self {
+            app,
+            owned: Some(CompatibilityRuntimeOwnedState {
+                terminal_stream,
+                workspace_coordinator,
+            }),
+        }
     }
 
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
@@ -33,7 +55,12 @@ impl CompatibilityRuntimeState {
         operation: impl FnOnce(&mut SessionRuntimeCompatibilityContext<'_>) -> R,
     ) -> R {
         self.with_app_mut(|app| {
-            let mut context = SessionRuntimeCompatibilityContext::new(app);
+            let mut context = SessionRuntimeCompatibilityContext::new(
+                app,
+                self.owned
+                    .as_ref()
+                    .map(|owned| owned.terminal_stream.clone()),
+            );
             operation(&mut context)
         })
         .await
@@ -210,7 +237,12 @@ impl CompatibilityRuntimeState {
         operation: impl FnOnce(&CapabilityRuntimeCompatibilityContext<'_>) -> R,
     ) -> R {
         let app = self.app.lock().await;
-        let context = CapabilityRuntimeCompatibilityContext::new(&app);
+        let context = CapabilityRuntimeCompatibilityContext::new(
+            &app,
+            self.owned
+                .as_ref()
+                .map(|owned| owned.workspace_coordinator.clone()),
+        );
         operation(&context)
     }
 
@@ -250,6 +282,7 @@ enum PromptAbortDispatchOutcome {
 
 pub(crate) struct SessionRuntimeCompatibilityContext<'a> {
     app: &'a mut DaemonApp,
+    terminal_stream: Option<crate::terminal::TerminalStreamStore>,
 }
 
 pub(crate) struct AgentRuntimeCompatibilityContext<'a> {
@@ -384,6 +417,7 @@ pub(crate) struct TerminalOutputCompatibilityContext<'a> {
 
 pub(crate) struct CapabilityRuntimeCompatibilityContext<'a> {
     app: &'a DaemonApp,
+    workspace_coordinator: Option<crate::kernel::workspace_coordinator::WorkspaceCoordinator>,
 }
 
 pub(crate) struct CapabilityRuntimeSnapshot {
@@ -429,8 +463,14 @@ impl<'a> ProviderLaunchCompatibilityContext<'a> {
 }
 
 impl<'a> CapabilityRuntimeCompatibilityContext<'a> {
-    fn new(app: &'a DaemonApp) -> Self {
-        Self { app }
+    fn new(
+        app: &'a DaemonApp,
+        workspace_coordinator: Option<crate::kernel::workspace_coordinator::WorkspaceCoordinator>,
+    ) -> Self {
+        Self {
+            app,
+            workspace_coordinator,
+        }
     }
 
     pub(crate) fn capability_context(
@@ -447,7 +487,10 @@ impl<'a> CapabilityRuntimeCompatibilityContext<'a> {
         Ok(CapabilityRuntimeSnapshot {
             workspace_id: context.workspace_id,
             worktree_root: context.worktree_root,
-            workspace_coordinator: self.app.workspace_coordinator(),
+            workspace_coordinator: self
+                .workspace_coordinator
+                .clone()
+                .unwrap_or_else(|| self.app.workspace_coordinator()),
         })
     }
 }
@@ -561,8 +604,14 @@ fn workflow_response_session(
 }
 
 impl<'a> SessionRuntimeCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+    fn new(
+        app: &'a mut DaemonApp,
+        terminal_stream: Option<crate::terminal::TerminalStreamStore>,
+    ) -> Self {
+        Self {
+            app,
+            terminal_stream,
+        }
     }
 
     pub(crate) fn resolve_session_ref_id(
@@ -648,6 +697,9 @@ impl<'a> SessionRuntimeCompatibilityContext<'a> {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
+        if let Some(terminal_stream) = &self.terminal_stream {
+            return terminal_stream.drain_notice_records(session_id, attachment_id);
+        }
         self.app
             .terminal()
             .drain_notice_records(session_id, attachment_id)
