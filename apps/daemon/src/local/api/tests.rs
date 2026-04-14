@@ -344,10 +344,9 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
 
 #[test]
 fn local_request_api_resolves_and_deletes_sessions_by_ref() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, _agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, _agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
         ))
         .expect("session create should succeed")
@@ -356,8 +355,8 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         _ => panic!("unexpected local response"),
     };
 
-    let resolved = match app
-        .handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+    let resolved = match harness
+        .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "mai".to_string(),
             workspace_id: Some("workspace-1".to_string()),
         }))
@@ -367,8 +366,8 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         _ => panic!("unexpected local response"),
     };
 
-    let deleted = match app
-        .handle_local_request(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+    let deleted = match harness
+        .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
             session_ref: session.id()[..8].to_string(),
             workspace_id: Some("workspace-1".to_string()),
         }))
@@ -383,14 +382,14 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
     assert_eq!(deleted.alias(), Some("main"));
     assert_eq!(deleted.status(), crate::session::SessionStatus::Ended);
     assert!(matches!(
-        app.handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+        harness.dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "main".to_string(),
             workspace_id: Some("workspace-1".to_string()),
         })),
         Err(DaemonError::SessionNotFound { .. })
     ));
-    let listed = match app
-        .handle_local_request(LocalDaemonRequest::ListSessions(ListSessionsRequest))
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListSessions(ListSessionsRequest))
         .expect("list should succeed")
     {
         LocalDaemonResponse::SessionsListed { sessions } => sessions,
@@ -401,10 +400,9 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
 
 #[test]
 fn local_request_api_aliases_sessions() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -413,8 +411,8 @@ fn local_request_api_aliases_sessions() {
         _ => panic!("unexpected local response"),
     };
 
-    let aliased = match app
-        .handle_local_request(LocalDaemonRequest::AliasSession(AliasSessionRequest {
+    let aliased = match harness
+        .dispatch(LocalDaemonRequest::AliasSession(AliasSessionRequest {
             session_id: session.id().to_string(),
             alias: "alpha".to_string(),
         }))
@@ -425,8 +423,8 @@ fn local_request_api_aliases_sessions() {
     };
     assert_eq!(aliased.alias(), Some("alpha"));
 
-    let resolved = match app
-        .handle_local_request(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+    let resolved = match harness
+        .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "alpha".to_string(),
             workspace_id: Some("workspace-1".to_string()),
         }))
@@ -441,10 +439,9 @@ fn local_request_api_aliases_sessions() {
 
 #[test]
 fn local_request_api_spawns_and_focuses_agents() {
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let harness = LocalApiRouterHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
         ))
         .expect("session create should succeed")
@@ -453,8 +450,8 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
-    let spawned = match app
-        .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
             provider: "opencode".to_string(),
@@ -469,8 +466,8 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
-    let session_state = match app
-        .handle_local_request(LocalDaemonRequest::GetSessionState(
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
                 session_id: session.id().to_string(),
             },
@@ -510,8 +507,8 @@ fn local_request_api_spawns_and_focuses_agents() {
         crate::agent::AgentState::Focused
     );
 
-    let focused_default = match app
-        .handle_local_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+    let focused_default = match harness
+        .dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
             session_id: session.id().to_string(),
             agent_id: default_agent.id().to_string(),
         }))
@@ -523,8 +520,8 @@ fn local_request_api_spawns_and_focuses_agents() {
 
     assert_eq!(focused_default.id(), default_agent.id());
 
-    let cycled = match app
-        .handle_local_request(LocalDaemonRequest::CycleAgentFocus(
+    let cycled = match harness
+        .dispatch(LocalDaemonRequest::CycleAgentFocus(
             CycleAgentFocusRequest {
                 session_id: session.id().to_string(),
             },
@@ -539,8 +536,8 @@ fn local_request_api_spawns_and_focuses_agents() {
 
     assert_eq!(cycled.id(), spawned.id());
 
-    let listed = match app
-        .handle_local_request(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
             session_id: session.id().to_string(),
         }))
         .expect("list should succeed")
