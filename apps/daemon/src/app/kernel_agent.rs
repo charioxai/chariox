@@ -116,12 +116,13 @@ mod tests {
     use crate::app::KernelPreparedPromptSubmission;
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
+        test_support::LocalRouterTestHarness, AttachToSessionRequest, LocalDaemonRequest,
+        LocalDaemonResponse,
     };
+    use crate::provider::LaunchProviderRequest;
     use crate::session::{
         CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     };
-    use crate::{DaemonApp, DaemonConfig};
 
     #[test]
     fn queue_candidate_selection_prefers_runtime_expected_prompt() {
@@ -137,12 +138,13 @@ mod tests {
 
     #[test]
     fn prepared_remote_submit_returns_dispatch_without_relay_io() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
-            .expect("session should be created");
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
+        let harness = LocalRouterTestHarness::new();
+        let (session, agent) = harness.with_app_mut(|app| {
+            app.create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created")
+        });
+        let attachment = match harness
+            .dispatch(LocalDaemonRequest::AttachToSession(
                 AttachToSessionRequest {
                     session_id: session.id().to_string(),
                     client_id: "cli-remote-submit".to_string(),
@@ -154,33 +156,34 @@ mod tests {
             LocalDaemonResponse::SessionAttached { attachment } => attachment,
             _ => panic!("unexpected local response"),
         };
-        app.agents
-            .bind_remote_execution(
+        let prepared = harness.with_app_mut(|app| {
+            app.agents
+                .bind_remote_execution(
+                    agent.id(),
+                    RemoteAgentBinding {
+                        worker_kernel_id: "worker-kernel-1".to_string(),
+                        worker_machine_id: "worker-machine-1".to_string(),
+                        execution_lease_id: "lease-1".to_string(),
+                        leased_agent_id: "leased-agent-1".to_string(),
+                    },
+                )
+                .expect("agent should bind to remote execution");
+            let prompt = PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                attachment.id(),
                 agent.id(),
-                RemoteAgentBinding {
-                    worker_kernel_id: "worker-kernel-1".to_string(),
-                    worker_machine_id: "worker-machine-1".to_string(),
-                    execution_lease_id: "lease-1".to_string(),
-                    leased_agent_id: "leased-agent-1".to_string(),
-                },
-            )
-            .expect("agent should bind to remote execution");
-        let prompt = PromptQueueItem::new(
-            app.sessions_mut().reserve_prompt_id(),
-            attachment.id(),
-            agent.id(),
-            "remote prompt should dispatch after ack",
-            PromptStatus::Queued,
-        );
+                "remote prompt should dispatch after ack",
+                PromptStatus::Queued,
+            );
 
-        let prepared = app
-            .kernel_agents()
-            .submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
-                session_id: session.id().to_string(),
-                prompt,
-                force_queue: false,
-            })
-            .expect("prepared remote submit should not require relay I/O");
+            app.kernel_agents()
+                .submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
+                    session_id: session.id().to_string(),
+                    prompt,
+                    force_queue: false,
+                })
+                .expect("prepared remote submit should not require relay I/O")
+        });
 
         assert!(prepared.dispatch.is_none());
         let remote_dispatch = prepared
@@ -195,21 +198,24 @@ mod tests {
             PromptSubmissionOutcome::Queued { .. } => panic!("remote prompt should start"),
         }
         assert!(
-            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
-                .expect("prompt owner should resolve")
-                .is_some(),
+            harness.with_app_mut(|app| {
+                app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                    .expect("prompt owner should resolve")
+                    .is_some()
+            }),
             "remote relay dispatch is now a deferred side effect; prompt ownership is already recorded"
         );
     }
 
     #[test]
     fn completion_uses_prompt_owner_when_session_mirror_is_stale() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
-            .expect("session should be created");
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
+        let harness = LocalRouterTestHarness::new();
+        let (session, agent) = harness.with_app_mut(|app| {
+            app.create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created")
+        });
+        let attachment = match harness
+            .dispatch(LocalDaemonRequest::AttachToSession(
                 AttachToSessionRequest {
                     session_id: session.id().to_string(),
                     client_id: "cli-1".to_string(),
@@ -221,61 +227,65 @@ mod tests {
             LocalDaemonResponse::SessionAttached { attachment } => attachment,
             _ => panic!("unexpected local response"),
         };
-        let provider_run = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
+        let provider_run = harness.with_app_mut(|app| {
+            app.launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
             .expect("provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+        });
 
-        let outcome = app
-            .submit_prompt(
+        let outcome = harness.with_app_mut(|app| {
+            app.submit_prompt(
                 session.id(),
                 attachment.id(),
                 Some(agent.id()),
                 "hello",
                 Vec::new(),
             )
-            .expect("prompt submit should succeed");
+            .expect("prompt submit should succeed")
+        });
         let prompt_id = match outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
             _ => panic!("prompt should start"),
         };
 
-        app.sessions_mut()
-            .cancel_active_prompt(session.id(), agent.id())
-            .expect("test should be able to corrupt only the compatibility mirror");
+        harness.with_app_mut(|app| {
+            app.sessions_mut()
+                .cancel_active_prompt(session.id(), agent.id())
+                .expect("test should be able to corrupt only the compatibility mirror");
+        });
         assert!(
-            app.sessions()
-                .get_session(session.id())
-                .expect("session mirror should exist")
-                .active_prompt_for_agent(agent.id())
-                .is_none(),
+            harness.with_app(|app| {
+                app.sessions()
+                    .get_session(session.id())
+                    .expect("session mirror should exist")
+                    .active_prompt_for_agent(agent.id())
+                    .is_none()
+            }),
             "compatibility mirror is intentionally stale"
         );
 
-        let completion = app
-            .complete_active_prompt(session.id(), agent.id(), Some(provider_run.id()))
-            .expect("prompt owner should still complete active prompt");
+        let completion = harness.with_app_mut(|app| {
+            app.complete_active_prompt(session.id(), agent.id(), Some(provider_run.id()))
+                .expect("prompt owner should still complete active prompt")
+        });
 
         assert_eq!(completion.completed.id(), prompt_id);
         assert!(
-            app.sessions()
-                .get_session(session.id())
-                .expect("session mirror should exist")
-                .active_prompt_for_agent(agent.id())
-                .is_none(),
+            harness.with_app(|app| {
+                app.sessions()
+                    .get_session(session.id())
+                    .expect("session mirror should exist")
+                    .active_prompt_for_agent(agent.id())
+                    .is_none()
+            }),
             "owner completion should remirror the idle state"
         );
     }

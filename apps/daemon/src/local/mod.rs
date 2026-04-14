@@ -3,6 +3,8 @@ mod client;
 mod harness;
 mod ipc;
 pub(crate) mod provider_requests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use api::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasSessionRequest,

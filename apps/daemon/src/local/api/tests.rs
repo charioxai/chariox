@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::attachment::ClientCapabilityLevel;
-use crate::kernel::command::KernelCommand;
-use crate::kernel::router::CommandRouter;
+use crate::local::test_support::LocalRouterTestHarness;
 use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, WorkflowHandoffPayload, WorkflowNodeRunStatus,
@@ -40,170 +37,6 @@ use futures_util::SinkExt;
 use tokio::sync::oneshot;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-static LOCAL_API_ROUTER_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct LocalApiRouterHarness {
-    runtime: tokio::runtime::Runtime,
-    app: Arc<tokio::sync::Mutex<DaemonApp>>,
-    router: CommandRouter,
-}
-
-impl LocalApiRouterHarness {
-    fn new() -> Self {
-        Self::with_config(DaemonConfig::for_tests())
-    }
-
-    fn with_config(config: DaemonConfig) -> Self {
-        let app = Arc::new(tokio::sync::Mutex::new(
-            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
-        ));
-        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 16);
-        Self {
-            runtime: tokio::runtime::Runtime::new().expect("test runtime should start"),
-            app,
-            router,
-        }
-    }
-
-    fn dispatch(&self, request: LocalDaemonRequest) -> Result<LocalDaemonResponse, DaemonError> {
-        let command_id = format!(
-            "local-api-router-test-{}",
-            LOCAL_API_ROUTER_COMMAND_ID.fetch_add(1, Ordering::SeqCst)
-        );
-        let command = KernelCommand::from_local_request(&command_id, None, None, &request);
-        self.runtime
-            .block_on(self.router.dispatch(command, request))
-    }
-
-    fn with_app<R>(&self, f: impl FnOnce(&DaemonApp) -> R) -> R {
-        let app = self.runtime.block_on(self.app.lock());
-        f(&app)
-    }
-
-    fn with_app_mut<R>(&self, f: impl FnOnce(&mut DaemonApp) -> R) -> R {
-        let mut app = self.runtime.block_on(self.app.lock());
-        f(&mut app)
-    }
-
-    fn spawn_workflow_test_agent(
-        &self,
-        session_id: &str,
-        alias: &str,
-    ) -> crate::agent::AgentInstance {
-        match self
-            .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.to_string(),
-                alias: Some(alias.to_string()),
-                provider: "dev-stub".to_string(),
-                model: Some("default".to_string()),
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("workflow test agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected local response"),
-        }
-    }
-
-    fn add_workflow_test_node(
-        &self,
-        session_id: &str,
-        workflow_id: &str,
-        agent_id: &str,
-    ) -> crate::session::WorkflowNodeDefinition {
-        match self
-            .dispatch(LocalDaemonRequest::AddWorkflowNode(
-                AddWorkflowNodeRequest {
-                    session_id: session_id.to_string(),
-                    workflow_ref: workflow_id.to_string(),
-                    agent_id: agent_id.to_string(),
-                },
-            ))
-            .expect("workflow test node should be added")
-        {
-            LocalDaemonResponse::WorkflowNodeAdded { node, .. } => node,
-            _ => panic!("unexpected local response"),
-        }
-    }
-
-    fn add_workflow_test_edge(
-        &self,
-        session_id: &str,
-        workflow_id: &str,
-        from_node_id: &str,
-        to_node_id: &str,
-    ) {
-        match self
-            .dispatch(LocalDaemonRequest::AddWorkflowEdge(
-                AddWorkflowEdgeRequest {
-                    session_id: session_id.to_string(),
-                    workflow_ref: workflow_id.to_string(),
-                    from_node_id: from_node_id.to_string(),
-                    to_node_id: to_node_id.to_string(),
-                    output_schema_ref: None,
-                    validation_policy: None,
-                },
-            ))
-            .expect("workflow test edge should be added")
-        {
-            LocalDaemonResponse::WorkflowEdgeAdded { .. } => {}
-            _ => panic!("unexpected local response"),
-        }
-    }
-
-    fn complete_workflow_test_prompt(&self, session_id: &str, label: &str) {
-        match self
-            .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-                session_id: session_id.to_string(),
-            }))
-            .unwrap_or_else(|error| panic!("{label} should complete: {error}"))
-        {
-            LocalDaemonResponse::PromptCompleted { .. } => {}
-            _ => panic!("unexpected local response"),
-        }
-    }
-
-    fn get_workflow_test_run(
-        &self,
-        session_id: &str,
-        workflow_run_id: &str,
-    ) -> crate::session::WorkflowRun {
-        match self
-            .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
-                session_id: session_id.to_string(),
-                workflow_run_ref: workflow_run_id.to_string(),
-            }))
-            .expect("workflow test run should resolve")
-        {
-            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
-            _ => panic!("unexpected local response"),
-        }
-    }
-
-    fn wait_for_active_provider_run(&self, session_id: &str) -> String {
-        self.runtime.block_on(async {
-            for _ in 0..50 {
-                if let Some(provider_run_id) = self
-                    .app
-                    .lock()
-                    .await
-                    .sessions()
-                    .get_session(session_id)
-                    .expect("session should resolve")
-                    .active_provider_run_id()
-                    .map(str::to_string)
-                {
-                    return provider_run_id;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            panic!("provider run should become active")
-        })
-    }
-}
-
 fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
     match app
         .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
@@ -226,7 +59,7 @@ fn launch_slow_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &
 
 #[test]
 fn local_request_api_supports_session_attach_and_end() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -430,7 +263,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     let mut config = DaemonConfig::for_tests();
     config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config.relay_token = Some("secret".to_string());
-    let harness = LocalApiRouterHarness::with_config(config);
+    let harness = LocalRouterTestHarness::with_config(config);
 
     let machines = match harness
         .dispatch(LocalDaemonRequest::ListRemoteMachines(
@@ -470,7 +303,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
 
 #[test]
 fn local_request_api_resolves_and_deletes_sessions_by_ref() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"),
@@ -526,7 +359,7 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
 
 #[test]
 fn local_request_api_aliases_sessions() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -565,7 +398,7 @@ fn local_request_api_aliases_sessions() {
 
 #[test]
 fn local_request_api_spawns_and_focuses_agents() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -689,7 +522,7 @@ fn local_request_api_spawns_and_focuses_agents() {
 
 #[test]
 fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -920,7 +753,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
 #[test]
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -1108,7 +941,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
 
 #[test]
 fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -1387,7 +1220,7 @@ fn local_request_api_routes_and_schedules_downstream_workflow_nodes() {
 
 #[test]
 fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-ack", "worktree-ack"),
@@ -1660,7 +1493,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
 
 #[test]
 fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-mailbox", "worktree-mailbox"),
@@ -1906,7 +1739,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
 
 #[test]
 fn local_request_api_resumes_stopped_active_workflow_node_runs() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-resume", "worktree-resume"),
@@ -2070,7 +1903,7 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
 
 #[test]
 fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capability() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-control", "worktree-control"),
@@ -2139,7 +1972,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
 
 #[test]
 fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -2744,7 +2577,7 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
 
 #[test]
 fn local_request_api_auto_launches_provider_run_for_prompt() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -2794,7 +2627,7 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
 
 #[test]
 fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -2870,7 +2703,7 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
 
 #[test]
 fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -3008,7 +2841,7 @@ fn prompt_idle_fallback_completes_after_recorded_completion_without_response_tex
 
 #[test]
 fn local_request_api_rejects_invalid_provider_adapter() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -3192,7 +3025,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
 
 #[test]
 fn local_request_api_can_cancel_an_active_prompt() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
 
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -3264,7 +3097,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
 fn local_request_api_runs_shell_command_capability() {
     let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
@@ -3314,7 +3147,7 @@ fn local_request_api_runs_shell_command_capability() {
 fn local_request_api_rejects_shell_command_for_unauthorized_attachment() {
     let worktree_root = std::env::temp_dir().join("arroba-shell-local-api-denied-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
@@ -3365,7 +3198,7 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment() {
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("notes.txt"), "hello").expect("file should exist");
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
@@ -3418,7 +3251,7 @@ fn local_request_api_reads_directory_tree_file_and_git_status() {
         .output()
         .expect("git init should work");
 
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
@@ -3512,7 +3345,7 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
 
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
@@ -3588,7 +3421,7 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
 
 #[test]
 fn local_request_api_rejects_cross_session_provider_prompt_workspace_claims() {
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session_1 = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-shared"),
@@ -3947,7 +3780,7 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
     let source = worktree_root.join("artifact.txt");
     std::fs::write(&source, "artifact").expect("file should exist");
 
-    let harness = LocalApiRouterHarness::new();
+    let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", worktree_root.display().to_string()),
