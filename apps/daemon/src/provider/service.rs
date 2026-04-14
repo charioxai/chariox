@@ -142,20 +142,8 @@ impl ProviderProcessService {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
-            DaemonError::ProviderAdapterNotFound {
-                adapter_key: request.adapter_key.clone(),
-            }
-        })?;
-
-        let run_id = self.next_run_id();
-        let launch_result = adapter.connect(&request)?;
-        let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
-        run.mark_running();
-
-        self.runs.insert(run_id, run.clone());
-
-        Ok(run)
+        let outcome = self.start_run_provider_only(request)?;
+        self.mark_run_running(outcome.run().id())
     }
 
     pub(crate) fn park_run_provider_only(
