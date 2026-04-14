@@ -154,7 +154,6 @@ mod tests {
     use super::*;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
-    use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest};
     use crate::provider::LaunchProviderRequest;
     use crate::session::CreateSessionRequest;
 
@@ -192,22 +191,19 @@ mod tests {
             .expect("provider run should be registered")
             .id()
             .to_string();
-        match app
-            .kernel_agents()
-            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session_id.clone(),
-                attachment_id: attachment.id().to_string(),
-                target_agent_id: Some(agent_id.clone()),
-                prompt: "projected settlement".to_string(),
-                attachments: Vec::new(),
-            }))
-            .expect("prompt should submit")
-        {
-            LocalDaemonResponse::PromptSubmitted { session, .. } => {
-                app.update_session_projection(session);
-            }
-            _ => panic!("unexpected prompt response"),
-        }
+        app.kernel_agents()
+            .submit_prompt(
+                &session_id,
+                attachment.id(),
+                Some(&agent_id),
+                "projected settlement",
+                Vec::new(),
+            )
+            .expect("prompt should submit");
+        let session = app
+            .local_api_session_snapshot(&session_id)
+            .expect("session snapshot should load");
+        app.update_session_projection(session);
         app.sessions_mut()
             .complete_active_prompt_only(&session_id, &agent_id)
             .expect("session active prompt should be removed without refreshing projection");

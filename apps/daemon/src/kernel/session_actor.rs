@@ -1039,7 +1039,7 @@ mod tests {
     };
     use crate::local::{
         EndSessionRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        ResizeTerminalRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        ResizeTerminalRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -1350,16 +1350,15 @@ mod tests {
             .focus_agent(session.id(), default_agent.id())
             .expect("focus should succeed");
 
-        let started = app
-            .kernel_agents()
-            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                target_agent_id: None,
-                prompt: "hello".to_string(),
-                attachments: Vec::new(),
-            }))
-            .expect("prompt should start");
+        let started = LocalDaemonResponse::PromptSubmitted {
+            outcome: app
+                .kernel_agents()
+                .submit_prompt(session.id(), attachment.id(), None, "hello", Vec::new())
+                .expect("prompt should start"),
+            session: app
+                .local_api_session_snapshot(session.id())
+                .expect("session snapshot should load"),
+        };
 
         match started {
             LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {

@@ -634,9 +634,7 @@ mod tests {
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::prompt_state::PromptStateOwner;
     use crate::kernel::session_actor::FocusedAgentProjection;
-    use crate::local::{
-        CancelActivePromptRequest, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
-    };
+    use crate::local::LocalDaemonResponse;
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::session::{
         CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
@@ -921,16 +919,22 @@ mod tests {
             .expect("attach should succeed");
         launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
 
-        let response = app
+        let outcome = app
             .kernel_agents()
-            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                target_agent_id: Some(agent.id().to_string()),
-                prompt: "hello".to_string(),
-                attachments: Vec::new(),
-            }))
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "hello",
+                Vec::new(),
+            )
             .expect("prompt submit should succeed");
+        let response = LocalDaemonResponse::PromptSubmitted {
+            outcome,
+            session: app
+                .local_api_session_snapshot(session.id())
+                .expect("session snapshot should load"),
+        };
 
         match response {
             LocalDaemonResponse::PromptSubmitted {
@@ -964,24 +968,21 @@ mod tests {
             .expect("attach should succeed");
         launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
         app.kernel_agents()
-            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session.id().to_string(),
-                attachment_id: attachment.id().to_string(),
-                target_agent_id: Some(agent.id().to_string()),
-                prompt: "hello".to_string(),
-                attachments: Vec::new(),
-            }))
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "hello",
+                Vec::new(),
+            )
             .expect("prompt submit should succeed");
 
-        let response = app
-            .kernel_agents()
-            .execute_request(LocalDaemonRequest::CancelActivePrompt(
-                CancelActivePromptRequest {
-                    session_id: session.id().to_string(),
-                    attachment_id: attachment.id().to_string(),
-                },
-            ))
-            .expect("prompt cancel should succeed");
+        let response = LocalDaemonResponse::PromptCancelled {
+            cancellation: app
+                .kernel_agents()
+                .cancel_active_prompt(session.id(), attachment.id())
+                .expect("prompt cancel should succeed"),
+        };
 
         match response {
             LocalDaemonResponse::PromptCancelled { cancellation } => {

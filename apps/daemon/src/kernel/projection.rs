@@ -1231,7 +1231,6 @@ mod tests {
         ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot, SessionSnapshotProjection,
         SessionStateProjectionStore, TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
-    use crate::local::{LocalDaemonRequest, SubmitPromptRequest};
     use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
     use crate::session::CreateSessionRequest;
     use crate::terminal::TerminalStreamHealthSnapshot;
@@ -1266,13 +1265,13 @@ mod tests {
         prompt: &str,
     ) {
         app.kernel_agents()
-            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-                target_agent_id: Some(agent_id.to_string()),
-                prompt: prompt.to_string(),
-                attachments: Vec::new(),
-            }))
+            .submit_prompt(
+                session_id,
+                attachment_id,
+                Some(agent_id),
+                prompt,
+                Vec::new(),
+            )
             .expect("prompt should submit");
     }
 

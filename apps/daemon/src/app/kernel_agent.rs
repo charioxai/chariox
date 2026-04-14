@@ -1,7 +1,4 @@
 use super::DaemonApp;
-use crate::agent::CreateAgentRequest;
-use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::session::PromptQueueItem;
 
 mod prompt_commands;
@@ -13,92 +10,6 @@ pub(crate) struct KernelAgentService<'a> {
 impl<'a> KernelAgentService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
-    }
-
-    pub(crate) fn execute_request(
-        &mut self,
-        request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request {
-            LocalDaemonRequest::SubmitPrompt(request) => {
-                let outcome = self.submit_prompt(
-                    &request.session_id,
-                    &request.attachment_id,
-                    request.target_agent_id.as_deref(),
-                    &request.prompt,
-                    request.attachments,
-                )?;
-                let session = self.app.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
-            }
-            LocalDaemonRequest::CompletePrompt(request) => {
-                let agent_id = self
-                    .app
-                    .sessions()
-                    .get_session(&request.session_id)?
-                    .active_prompt_agent_id()
-                    .ok_or_else(|| DaemonError::NoActivePrompt {
-                        session_id: request.session_id.clone(),
-                    })?;
-                let provider_run_id = self
-                    .app
-                    .providers()
-                    .get_run_for_agent(&request.session_id, &agent_id)
-                    .map(|run| run.id().to_string());
-                let completion = self.complete_active_prompt(
-                    &request.session_id,
-                    &agent_id,
-                    provider_run_id.as_deref(),
-                )?;
-                Ok(LocalDaemonResponse::PromptCompleted { completion })
-            }
-            LocalDaemonRequest::CancelActivePrompt(request) => {
-                let cancellation =
-                    self.cancel_active_prompt(&request.session_id, &request.attachment_id)?;
-                Ok(LocalDaemonResponse::PromptCancelled { cancellation })
-            }
-            LocalDaemonRequest::SpawnAgent(request) => {
-                let create_request =
-                    CreateAgentRequest::new(&request.session_id, &request.provider);
-                let create_request = if let Some(alias) = request.alias {
-                    create_request.with_alias(alias)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(model) = request.model {
-                    create_request.with_model(model)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(effort) = request.effort {
-                    create_request.with_effort(effort)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(worktree_id) = request.worktree_id {
-                    create_request.with_worktree(worktree_id)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(machine_ref) = request.machine_ref {
-                    create_request.with_machine(machine_ref)
-                } else {
-                    create_request
-                };
-                let agent = self.app.spawn_agent(create_request)?;
-                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentSpawned { agent })
-            }
-            LocalDaemonRequest::DestroyAgent(request) => {
-                let agent = self.app.destroy_agent(&request.agent_id)?;
-                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentDestroyed { agent })
-            }
-            _ => Err(DaemonError::LocalTransport {
-                operation: "execute agent request",
-                message: "request is not handled by the agent runtime".to_string(),
-            }),
-        }
     }
 }
 
