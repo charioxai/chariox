@@ -328,6 +328,14 @@ async fn run_session_command_lane(
     session_id: String,
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
+    let executor = SessionRuntimeCommandExecutor::new(
+        app,
+        focus_projection,
+        session_projection,
+        agent_runtime_projection,
+        terminal_stream,
+        session_id.clone(),
+    );
     while let Some(envelope) = rx.recv().await {
         crate::logging::info_with_fields(
             "daemon.kernel_session_actor",
@@ -338,41 +346,79 @@ async fn run_session_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
+        let result = executor.execute(envelope.request).await;
+        let _ = envelope.result_tx.send(result);
+    }
+}
+
+#[derive(Clone)]
+struct SessionRuntimeCommandExecutor {
+    app: Arc<Mutex<DaemonApp>>,
+    focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    terminal_stream: TerminalStreamStore,
+    session_id: String,
+}
+
+impl SessionRuntimeCommandExecutor {
+    fn new(
+        app: Arc<Mutex<DaemonApp>>,
+        focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        terminal_stream: TerminalStreamStore,
+        session_id: String,
+    ) -> Self {
+        Self {
+            app,
+            focus_projection,
+            session_projection,
+            agent_runtime_projection,
+            terminal_stream,
+            session_id,
+        }
+    }
+
+    async fn execute(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
-            &session_projection,
-            &terminal_stream,
-            &envelope.request,
+            &self.session_projection,
+            &self.terminal_stream,
+            &request,
         ) {
             let projection_action = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
-                    .and_then(|session_id| session_projection.get(&session_id))
+                    .and_then(|session_id| self.session_projection.get(&session_id))
                     .map(SessionProjectionAction::Update)
             } else {
                 None
             };
             (result, projection_action)
         } else if let Some(result) =
-            projected_resize_terminal_response(&session_projection, &envelope.request)
+            projected_resize_terminal_response(&self.session_projection, &request)
         {
             let projection_action = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
-                    .and_then(|session_id| session_projection.get(&session_id))
+                    .and_then(|session_id| self.session_projection.get(&session_id))
                     .map(SessionProjectionAction::Update)
             } else {
                 None
             };
             (result, projection_action)
         } else if let Some(result) =
-            projected_config_update_absence_response(&session_projection, &envelope.request)
+            projected_config_update_absence_response(&self.session_projection, &request)
         {
             (result, None)
         } else if let Some(result) =
-            projected_session_absence_response(&session_projection, &envelope.request)
+            projected_session_absence_response(&self.session_projection, &request)
         {
             (result, None)
         } else {
-            let mut app = app.lock().await;
-            let result = execute_session_runtime_request(&mut app, envelope.request);
+            let mut app = self.app.lock().await;
+            let result = execute_session_runtime_request(&mut app, request);
             let projection_action = if let Ok(response) = result.as_ref() {
                 session_response_projection_action(response).or_else(|| {
                     session_id_for_projection_refresh(&result)
@@ -386,20 +432,20 @@ async fn run_session_command_lane(
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
-                agent_runtime_projection.update_session(&session);
-                session_projection.update(session.clone());
+                self.agent_runtime_projection.update_session(&session);
+                self.session_projection.update(session.clone());
                 Some(session)
             }
             Some(SessionProjectionAction::Remove { session_id }) => {
-                agent_runtime_projection.remove_session(&session_id);
-                session_projection.remove(&session_id);
+                self.agent_runtime_projection.remove_session(&session_id);
+                self.session_projection.remove(&session_id);
                 None
             }
             None => None,
         };
         update_focus_projection_after_session_command(
-            &focus_projection,
-            &session_id,
+            &self.focus_projection,
+            &self.session_id,
             &result,
             projected_session
                 .as_ref()
@@ -411,9 +457,9 @@ async fn run_session_command_lane(
             Ok(LocalDaemonResponse::SessionEnded { .. })
                 | Ok(LocalDaemonResponse::SessionDeleted { .. })
         ) {
-            terminal_stream.remove_session(&session_id);
+            self.terminal_stream.remove_session(&self.session_id);
         }
-        let _ = envelope.result_tx.send(result);
+        result
     }
 }
 
