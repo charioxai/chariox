@@ -549,29 +549,23 @@ fn completion_started_next_is_compatible(
 pub(crate) struct AgentActor;
 
 impl AgentActor {
+    pub(crate) fn is_agent_interactive_command(request: &LocalDaemonRequest) -> bool {
+        matches!(
+            request,
+            LocalDaemonRequest::SubmitPrompt(_)
+                | LocalDaemonRequest::CompletePrompt(_)
+                | LocalDaemonRequest::CancelActivePrompt(_)
+        )
+    }
+
     pub(crate) fn handle_interactive_command(
         app: &mut DaemonApp,
         request: LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        match request {
-            LocalDaemonRequest::SubmitPrompt(request) => Some((|| {
-                let outcome = app.kernel_agents().submit_prompt(
-                    &request.session_id,
-                    &request.attachment_id,
-                    request.target_agent_id.as_deref(),
-                    &request.prompt,
-                    request.attachments,
-                )?;
-                let session = app.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
-            })()),
-            LocalDaemonRequest::CancelActivePrompt(request) => Some(
-                app.kernel_agents()
-                    .cancel_active_prompt(&request.session_id, &request.attachment_id)
-                    .map(|cancellation| LocalDaemonResponse::PromptCancelled { cancellation }),
-            ),
-            _ => None,
+        if Self::is_agent_interactive_command(&request) {
+            return Some(app.handle_agent_request(request));
         }
+        None
     }
 }
 

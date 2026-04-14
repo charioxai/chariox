@@ -196,45 +196,9 @@ impl DaemonApp {
                     next_cursor: page.next_cursor,
                 })
             }
-            LocalDaemonRequest::SubmitPrompt(request) => {
-                let outcome = if request.target_agent_id.is_some() {
-                    crate::transport::TransportService::schedule_direct_prompt_to_agent(
-                        self,
-                        &request.session_id,
-                        &request.attachment_id,
-                        request.target_agent_id.as_deref(),
-                        &request.prompt,
-                        request.attachments,
-                    )?
-                } else {
-                    crate::transport::TransportService::schedule_direct_prompt(
-                        self,
-                        &request.session_id,
-                        &request.attachment_id,
-                        &request.prompt,
-                        request.attachments,
-                    )?
-                };
-                let session = self.local_api_session_snapshot(&request.session_id)?;
-                Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
-            }
-            LocalDaemonRequest::CompletePrompt(request) => {
-                Ok(LocalDaemonResponse::PromptCompleted {
-                    completion: crate::transport::TransportService::complete_active_prompt(
-                        self,
-                        &request.session_id,
-                    )?,
-                })
-            }
-            LocalDaemonRequest::CancelActivePrompt(request) => {
-                Ok(LocalDaemonResponse::PromptCancelled {
-                    cancellation: crate::transport::TransportService::cancel_active_prompt(
-                        self,
-                        &request.session_id,
-                        &request.attachment_id,
-                    )?,
-                })
-            }
+            request @ (LocalDaemonRequest::SubmitPrompt(_)
+            | LocalDaemonRequest::CompletePrompt(_)
+            | LocalDaemonRequest::CancelActivePrompt(_)) => self.handle_agent_request(request),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Ok(LocalDaemonResponse::TerminalOutput {
                     records: self

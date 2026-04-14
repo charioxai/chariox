@@ -4,6 +4,7 @@ use super::prompt_lifecycle::{
 };
 use super::DaemonApp;
 use crate::error::DaemonError;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::ProviderRunState;
 use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem, PromptStatus,
@@ -13,6 +14,55 @@ use crate::transport::flow_control;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
+
+impl DaemonApp {
+    pub(crate) fn handle_agent_request(
+        &mut self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request {
+            LocalDaemonRequest::SubmitPrompt(request) => {
+                let outcome = self.submit_prompt(
+                    &request.session_id,
+                    &request.attachment_id,
+                    request.target_agent_id.as_deref(),
+                    &request.prompt,
+                    request.attachments,
+                )?;
+                let session = self.local_api_session_snapshot(&request.session_id)?;
+                Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
+            }
+            LocalDaemonRequest::CompletePrompt(request) => {
+                let agent_id = self
+                    .sessions()
+                    .get_session(&request.session_id)?
+                    .active_prompt_agent_id()
+                    .ok_or_else(|| DaemonError::NoActivePrompt {
+                        session_id: request.session_id.clone(),
+                    })?;
+                let provider_run_id = self
+                    .providers()
+                    .get_run_for_agent(&request.session_id, &agent_id)
+                    .map(|run| run.id().to_string());
+                let completion = self.complete_active_prompt(
+                    &request.session_id,
+                    &agent_id,
+                    provider_run_id.as_deref(),
+                )?;
+                Ok(LocalDaemonResponse::PromptCompleted { completion })
+            }
+            LocalDaemonRequest::CancelActivePrompt(request) => {
+                let cancellation =
+                    self.cancel_active_prompt(&request.session_id, &request.attachment_id)?;
+                Ok(LocalDaemonResponse::PromptCancelled { cancellation })
+            }
+            _ => Err(DaemonError::LocalTransport {
+                operation: "execute agent request",
+                message: "request is not handled by the agent runtime".to_string(),
+            }),
+        }
+    }
+}
 
 pub(crate) struct KernelAgentService<'a> {
     app: &'a mut DaemonApp,
