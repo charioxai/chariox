@@ -107,7 +107,8 @@ impl DaemonApp {
         Ok(LocalDaemonResponse::AgentsListed { agents })
     }
 
-    pub fn handle_local_request(
+    #[allow(dead_code)]
+    pub(crate) fn handle_local_request(
         &mut self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {

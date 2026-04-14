@@ -460,3 +460,10 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved local provider prompt PTY writes and provider actor enqueue work into the spawned provider-run operation dispatch after owner-backed prompt mutation, reducing work done inline by the per-agent mailbox response path.
 - Added session-runtime terminal cleanup on session end/delete so terminal input, pending output, notices, completions, and terminal backlog health do not retain stale records for removed sessions.
 - Added CLI request helpers for `CompletePrompt` and `AckWorkflowTurn` so deterministic live drills can use the public kernel API once the non-I/O runtime slices are complete.
+
+### M4.5 compatibility facade retirement update
+
+- Added an explicit facade-retirement checklist to the M4.5 plan, separating public facade retirement, router independence, actor ownership, runtime service extraction, and final compatibility handler deletion.
+- Added a router-backed in-process local daemon client for tests and smoke harnesses that need to send `LocalDaemonRequest` without calling `DaemonApp::handle_local_request` directly.
+- Moved the local smoke harness and external daemon integration test off direct `handle_local_request` calls.
+- Demoted `DaemonApp::handle_local_request` to crate-private compatibility surface. It remains only for internal compatibility tests and transitional service code until later ownership slices remove the remaining facade-only handlers.

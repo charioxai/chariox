@@ -22,6 +22,7 @@ use super::api::{
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
+#[allow(dead_code)]
 impl DaemonApp {
     pub(super) fn handle_launch_provider_run_request(
         &mut self,

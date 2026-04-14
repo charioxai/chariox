@@ -1,4 +1,5 @@
 mod api;
+mod client;
 mod harness;
 mod ipc;
 pub(crate) mod provider_requests;
@@ -32,5 +33,6 @@ pub use api::{
     TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
 };
+pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

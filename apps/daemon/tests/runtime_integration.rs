@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use arroba_daemon::agent::CreateAgentRequest;
 use arroba_daemon::attachment::{AttachRequest, ClientCapabilityLevel};
 use arroba_daemon::local::{
-    AttachToSessionRequest, EndSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest,
-    LocalDaemonResponse, PumpTerminalOutputRequest, SubmitPromptRequest,
-    UpdateSessionConfigRequest,
+    AttachToSessionRequest, EndSessionRequest, GetSessionStateRequest, LaunchProviderRunRequest,
+    LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest,
+    SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 use arroba_daemon::provider::{LaunchProviderRequest, ProviderRunState};
 use arroba_daemon::session::{
@@ -419,11 +419,12 @@ fn provider_run_switching_parks_previous_run_and_keeps_terminal_flow_working() {
 
 #[test]
 fn local_request_surface_supports_prompt_queue_and_config_updates() {
-    let mut app =
+    let app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let client = LocalDaemonClient::new(app).expect("local daemon client should start");
 
-    let session = match app
-        .handle_local_request(LocalDaemonRequest::CreateSession(
+    let session = match client
+        .send(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-integration", "worktree-integration"),
         ))
         .expect("session create should succeed")
@@ -432,8 +433,8 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         _ => panic!("unexpected local response"),
     };
 
-    let first = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let first = match client
+        .send(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "first".to_string(),
@@ -446,8 +447,8 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         _ => panic!("unexpected local response"),
     };
 
-    let second = match app
-        .handle_local_request(LocalDaemonRequest::AttachToSession(
+    let second = match client
+        .send(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
                 session_id: session.id().to_string(),
                 client_id: "second".to_string(),
@@ -460,8 +461,8 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         _ => panic!("unexpected local response"),
     };
 
-    let _provider_run = match app
-        .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
+    let provider_run = match client
+        .send(LocalDaemonRequest::LaunchProviderRun(
             LaunchProviderRunRequest {
                 session_id: session.id().to_string(),
                 agent_id: None,
@@ -474,12 +475,15 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
         ))
         .expect("provider launch should succeed")
     {
-        LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
         _ => panic!("unexpected local response"),
     };
 
-    let first_prompt = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    wait_for_local_provider_run_ready(&client, session.id(), provider_run.id());
+
+    let first_prompt = client
+        .send(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: first.id().to_string(),
             target_agent_id: None,
@@ -487,8 +491,8 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             attachments: Vec::new(),
         }))
         .expect("first prompt should start");
-    let second_prompt = app
-        .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+    let second_prompt = client
+        .send(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: session.id().to_string(),
             attachment_id: second.id().to_string(),
             target_agent_id: None,
@@ -496,8 +500,8 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             attachments: Vec::new(),
         }))
         .expect("second prompt should queue");
-    let config = app
-        .handle_local_request(LocalDaemonRequest::UpdateSessionConfig(
+    let config = client
+        .send(LocalDaemonRequest::UpdateSessionConfig(
             UpdateSessionConfigRequest {
                 session_id: session.id().to_string(),
                 attachment_id: first.id().to_string(),
@@ -506,9 +510,9 @@ fn local_request_surface_supports_prompt_queue_and_config_updates() {
             },
         ))
         .expect("config update should succeed");
-    let echoed_output = wait_for_local_terminal_output(&mut app, session.id(), second.id());
-    let ended = app
-        .handle_local_request(LocalDaemonRequest::EndSession(EndSessionRequest {
+    let echoed_output = wait_for_local_terminal_output(&client, session.id(), second.id());
+    let ended = client
+        .send(LocalDaemonRequest::EndSession(EndSessionRequest {
             session_id: session.id().to_string(),
         }))
         .expect("end session should succeed");
@@ -2569,7 +2573,7 @@ fn wait_for_terminal_output(
 }
 
 fn wait_for_local_terminal_output(
-    app: &mut DaemonApp,
+    client: &LocalDaemonClient,
     session_id: &str,
     attachment_id: &str,
 ) -> String {
@@ -2577,8 +2581,8 @@ fn wait_for_local_terminal_output(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
-        let response = app
-            .handle_local_request(LocalDaemonRequest::PumpTerminalOutput(
+        let response = client
+            .send(LocalDaemonRequest::PumpTerminalOutput(
                 PumpTerminalOutputRequest {
                     session_id: session_id.to_string(),
                     attachment_id: attachment_id.to_string(),
@@ -2602,6 +2606,37 @@ fn wait_for_local_terminal_output(
         assert!(
             Instant::now() < deadline,
             "timed out waiting for local terminal output after {timeout_ms}ms"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_local_provider_run_ready(
+    client: &LocalDaemonClient,
+    session_id: &str,
+    provider_run_id: &str,
+) {
+    let timeout_ms = output_timeout_ms();
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
+    loop {
+        let response = client
+            .send(LocalDaemonRequest::GetSessionState(
+                GetSessionStateRequest {
+                    session_id: session_id.to_string(),
+                },
+            ))
+            .expect("session state polling should succeed");
+
+        if let LocalDaemonResponse::SessionState { session } = response {
+            if session.active_provider_run_id() == Some(provider_run_id) {
+                return;
+            }
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for provider run activation after {timeout_ms}ms"
         );
         thread::sleep(Duration::from_millis(10));
     }

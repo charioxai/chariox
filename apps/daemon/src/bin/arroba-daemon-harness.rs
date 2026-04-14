@@ -2,8 +2,8 @@ use arroba_daemon::local::run_local_harness;
 use arroba_daemon::{DaemonApp, DaemonConfig};
 
 fn main() -> Result<(), arroba_daemon::DaemonError> {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())?;
-    let report = run_local_harness(&mut app)?;
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests())?;
+    let report = run_local_harness(app)?;
 
     println!(
         "local harness ok: session={} prompt_source={} second_attachment={} run={} preview={}",

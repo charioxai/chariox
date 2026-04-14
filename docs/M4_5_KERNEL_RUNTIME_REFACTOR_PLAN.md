@@ -156,6 +156,7 @@ Status as of 2026-04-13:
 - Landed: the normal/background router path is now exhaustive. Cold session/provider/capability requests are named router branches, and the old generic `execute_local_request_with_async_boundaries` fallback to `DaemonApp::handle_local_request` has been removed.
 - Landed: router cold session/list/resolve/state/agent-list and OpenCode provider-run sync paths now call named compatibility helpers directly instead of re-entering the public local API facade. `CommandRouter` production code no longer calls `DaemonApp::handle_local_request`.
 - Landed: post-slice live drills passed on 2026-04-14. Coverage included the daemon smoke harness, focused-agent multi-agent prompt routing, shared-endpoint multi-agent prompt routing, workflow progression without terminal pumps, downstream workflow scheduling, join-node scheduling, workflow workspace-claim retry, and CLI workflow graph/outline drill catalogs.
+- Landed: `DaemonApp::handle_local_request` is no longer a public facade API. The local smoke harness and external daemon integration test now use a router-backed `LocalDaemonClient`, and the remaining compatibility dispatcher is crate-private for internal compatibility tests only.
 
 Still open:
 
@@ -209,7 +210,7 @@ Retiring the facade is separate from final I/O coordination. The goal here is to
 
 Work the retirement in this order:
 
-1. Retire `DaemonApp::handle_local_request` as a public facade API.
+1. Retire `DaemonApp::handle_local_request` as a public facade API. **Done.**
    - Add or use a router-backed local daemon client/harness that accepts `LocalDaemonRequest`, builds a `KernelCommand`, and dispatches through `CommandRouter`.
    - Move external integration tests and public smoke harnesses off direct `DaemonApp::handle_local_request` calls. The known blocker is `apps/daemon/tests/runtime_integration.rs`, which is an external integration crate and therefore forces the method to remain public while it calls the facade directly.
    - Demote the method to `pub(crate)` once no external crate needs it. Internal compatibility unit tests may still call it until their owning services are split, but new tests should prefer the router-backed client unless they are specifically testing the compatibility handler.
