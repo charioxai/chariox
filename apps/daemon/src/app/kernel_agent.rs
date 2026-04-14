@@ -1,6 +1,7 @@
 use super::prompt_lifecycle::{
-    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
+    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptAdmission,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptOwnerSubmission,
+    KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use super::DaemonApp;
 use crate::agent::CreateAgentRequest;
@@ -333,115 +334,185 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
-        let session_id = prepared.session_id.as_str();
+        let admission = self.prepare_prompt_admission(prepared)?;
+        self.spawn_prompt_history_append(&admission)?;
+        let submitted = self.submit_admitted_prompt_to_owner(admission)?;
+        let (dispatch, remote_dispatch) = self.prepare_prompt_submission_effects(&submitted)?;
+        let session = self
+            .app
+            .local_api_session_snapshot(&submitted.admission.session_id)?;
+        Ok(KernelPromptSubmission {
+            outcome: submitted.outcome,
+            session,
+            dispatch,
+            remote_dispatch,
+        })
+    }
+
+    fn prepare_prompt_admission(
+        &mut self,
+        prepared: KernelPreparedPromptSubmission,
+    ) -> Result<KernelPromptAdmission, DaemonError> {
+        let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         self.app
-            .ensure_attachment_in_session(session_id, &attachment_id)?;
+            .ensure_attachment_in_session(&session_id, &attachment_id)?;
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
-        if let Some(remote_execution) = target_agent.remote_execution().cloned() {
-            self.app.spawn_user_prompt_history_append(
-                session_id,
-                &attachment_id,
-                &target_agent_id,
-                prepared.prompt.prompt(),
-                prepared.prompt.attachments(),
-            )?;
-            let outcome = self.app.prompt_owner_submit_prepared_prompt(
-                session_id,
-                prepared.prompt.clone(),
-                prepared.force_queue,
-            )?;
-            let mut remote_dispatch = None;
-            if let PromptSubmissionOutcome::Started { prompt } = &outcome {
-                remote_dispatch = Some(KernelRemotePromptDispatch {
-                    session_id: session_id.to_string(),
-                    agent_id: target_agent_id.clone(),
-                    worker_kernel_id: remote_execution.worker_kernel_id,
-                    leased_agent_id: remote_execution.leased_agent_id,
-                    source_attachment_id: prompt.source_attachment_id().to_string(),
-                    prompt: prompt.prompt().to_string(),
-                    attachments: prompt.attachments().to_vec(),
-                    workflow_context: None,
-                });
-            }
-            let session = self.app.local_api_session_snapshot(session_id)?;
-            return Ok(KernelPromptSubmission {
-                outcome,
-                session,
-                dispatch: None,
-                remote_dispatch,
+        let remote_execution = target_agent.remote_execution().cloned();
+        let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {
+            (None, false)
+        } else {
+            let queued_while_active = self
+                .app
+                .prompt_owner_active_prompt_for_agent(&session_id, &target_agent_id)?
+                .is_some();
+            let provider_run_id = if queued_while_active {
+                self.app
+                    .providers
+                    .get_run_for_agent(&session_id, &target_agent_id)
+                    .map(|run| run.id().to_string())
+            } else {
+                Some(
+                    self.app
+                        .ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)?,
+                )
+            };
+            let provider_run_is_starting = provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| self.app.providers.get_run(provider_run_id).ok())
+                .is_some_and(|run| run.state() == ProviderRunState::Starting);
+            (provider_run_id, provider_run_is_starting)
+        };
+
+        Ok(KernelPromptAdmission {
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt: prepared.prompt,
+            force_queue: prepared.force_queue,
+            provider_run_id,
+            remote_execution,
+            provider_run_is_starting,
+        })
+    }
+
+    fn spawn_prompt_history_append(
+        &self,
+        admission: &KernelPromptAdmission,
+    ) -> Result<(), DaemonError> {
+        self.app.spawn_user_prompt_history_append(
+            &admission.session_id,
+            &admission.attachment_id,
+            &admission.target_agent_id,
+            admission.prompt.prompt(),
+            admission.prompt.attachments(),
+        )
+    }
+
+    fn submit_admitted_prompt_to_owner(
+        &mut self,
+        admission: KernelPromptAdmission,
+    ) -> Result<KernelPromptOwnerSubmission, DaemonError> {
+        let outcome = self.app.prompt_owner_submit_prepared_prompt(
+            &admission.session_id,
+            admission.prompt.clone(),
+            admission.force_queue || admission.provider_run_is_starting,
+        )?;
+        Ok(KernelPromptOwnerSubmission { admission, outcome })
+    }
+
+    fn prepare_prompt_submission_effects(
+        &mut self,
+        submitted: &KernelPromptOwnerSubmission,
+    ) -> Result<
+        (
+            Option<KernelPromptDispatch>,
+            Option<KernelRemotePromptDispatch>,
+        ),
+        DaemonError,
+    > {
+        if submitted.admission.remote_execution.is_some() {
+            return self.prepare_remote_prompt_submission_effects(submitted);
+        }
+        self.prepare_local_prompt_submission_effects(submitted)
+    }
+
+    fn prepare_remote_prompt_submission_effects(
+        &mut self,
+        submitted: &KernelPromptOwnerSubmission,
+    ) -> Result<
+        (
+            Option<KernelPromptDispatch>,
+            Option<KernelRemotePromptDispatch>,
+        ),
+        DaemonError,
+    > {
+        let mut remote_dispatch = None;
+        if let (Some(remote_execution), PromptSubmissionOutcome::Started { prompt }) = (
+            submitted.admission.remote_execution.as_ref(),
+            &submitted.outcome,
+        ) {
+            remote_dispatch = Some(KernelRemotePromptDispatch {
+                session_id: submitted.admission.session_id.clone(),
+                agent_id: submitted.admission.target_agent_id.clone(),
+                worker_kernel_id: remote_execution.worker_kernel_id.clone(),
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                source_attachment_id: prompt.source_attachment_id().to_string(),
+                prompt: prompt.prompt().to_string(),
+                attachments: prompt.attachments().to_vec(),
+                workflow_context: None,
             });
         }
+        Ok((None, remote_dispatch))
+    }
 
-        let queued_while_active = self
-            .app
-            .prompt_owner_active_prompt_for_agent(session_id, &target_agent_id)?
-            .is_some();
-        let provider_run_id = if queued_while_active {
-            self.app
-                .providers
-                .get_run_for_agent(session_id, &target_agent_id)
-                .map(|run| run.id().to_string())
-        } else {
-            Some(
-                self.app
-                    .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)?,
-            )
-        };
-        let provider_run_is_starting = provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.app.providers.get_run(provider_run_id).ok())
-            .is_some_and(|run| run.state() == ProviderRunState::Starting);
-
-        self.app.spawn_user_prompt_history_append(
-            session_id,
-            &attachment_id,
-            &target_agent_id,
-            prepared.prompt.prompt(),
-            prepared.prompt.attachments(),
-        )?;
-
-        let outcome = self.app.prompt_owner_submit_prepared_prompt(
-            session_id,
-            prepared.prompt.clone(),
-            prepared.force_queue || provider_run_is_starting,
-        )?;
-
+    fn prepare_local_prompt_submission_effects(
+        &mut self,
+        submitted: &KernelPromptOwnerSubmission,
+    ) -> Result<
+        (
+            Option<KernelPromptDispatch>,
+            Option<KernelRemotePromptDispatch>,
+        ),
+        DaemonError,
+    > {
         let mut dispatch = None;
-        match &outcome {
+        match &submitted.outcome {
             PromptSubmissionOutcome::Started { prompt } => {
                 let provider_run_id =
-                    provider_run_id
+                    submitted
+                        .admission
+                        .provider_run_id
                         .as_deref()
                         .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                            session_id: session_id.to_string(),
+                            session_id: submitted.admission.session_id.clone(),
                         })?;
                 self.app.echo_prompt_to_other_attachments(
-                    session_id,
+                    &submitted.admission.session_id,
                     provider_run_id,
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                     prompt.attachments(),
                 );
                 if let Err(error) = self.acquire_provider_prompt_claim(
-                    session_id,
+                    &submitted.admission.session_id,
                     provider_run_id,
-                    &target_agent_id,
+                    &submitted.admission.target_agent_id,
                     prompt.source_attachment_id(),
                 ) {
                     self.cancel_active_after_prompt_start_failure(
-                        session_id,
-                        &target_agent_id,
+                        &submitted.admission.session_id,
+                        &submitted.admission.target_agent_id,
                         provider_run_id,
                     );
                     return Err(error);
                 }
                 dispatch = Some(KernelPromptDispatch {
-                    session_id: session_id.to_string(),
+                    session_id: submitted.admission.session_id.clone(),
                     provider_run_id: provider_run_id.to_string(),
-                    agent_id: target_agent_id.clone(),
+                    agent_id: submitted.admission.target_agent_id.clone(),
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
                     attachments: prompt.attachments().to_vec(),
@@ -450,11 +521,14 @@ impl<'a> KernelAgentService<'a> {
             PromptSubmissionOutcome::Queued { prompt } => {
                 let queue_depth = self
                     .app
-                    .prompt_owner_queued_prompt_count_for_agent(session_id, &target_agent_id)
+                    .prompt_owner_queued_prompt_count_for_agent(
+                        &submitted.admission.session_id,
+                        &submitted.admission.target_agent_id,
+                    )
                     .unwrap_or(0);
-                if let Some(provider_run_id) = provider_run_id.as_deref() {
+                if let Some(provider_run_id) = submitted.admission.provider_run_id.as_deref() {
                     self.app.echo_prompt_to_other_attachments(
-                        session_id,
+                        &submitted.admission.session_id,
                         provider_run_id,
                         prompt.source_attachment_id(),
                         prompt.prompt(),
@@ -462,28 +536,24 @@ impl<'a> KernelAgentService<'a> {
                     );
                 }
                 self.app.record_notice(
-                    session_id,
-                    provider_run_id.as_deref(),
-                    self.app.other_attachment_ids(session_id, &attachment_id),
+                    &submitted.admission.session_id,
+                    submitted.admission.provider_run_id.as_deref(),
+                    self.app.other_attachment_ids(
+                        &submitted.admission.session_id,
+                        &submitted.admission.attachment_id,
+                    ),
                     format!(
                         "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
-                        attachment_id,
-                        target_agent_id,
-                        session_id,
+                        submitted.admission.attachment_id,
+                        submitted.admission.target_agent_id,
+                        submitted.admission.session_id,
                         prompt.id(),
                         queue_depth
                     ),
                 );
             }
         }
-
-        let session = self.app.local_api_session_snapshot(session_id)?;
-        Ok(KernelPromptSubmission {
-            outcome,
-            session,
-            dispatch,
-            remote_dispatch: None,
-        })
+        Ok((dispatch, None))
     }
 
     pub(crate) fn complete_active_prompt(

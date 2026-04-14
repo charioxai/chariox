@@ -1,3 +1,4 @@
+use crate::agent::RemoteAgentBinding;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::execution_lease::RemoteWorkflowTurnContext;
@@ -26,6 +27,22 @@ pub(crate) struct KernelPreparedPromptSubmission {
     pub(crate) session_id: String,
     pub(crate) prompt: PromptQueueItem,
     pub(crate) force_queue: bool,
+}
+
+pub(crate) struct KernelPromptAdmission {
+    pub(crate) session_id: String,
+    pub(crate) attachment_id: String,
+    pub(crate) target_agent_id: String,
+    pub(crate) prompt: PromptQueueItem,
+    pub(crate) force_queue: bool,
+    pub(crate) provider_run_id: Option<String>,
+    pub(crate) remote_execution: Option<RemoteAgentBinding>,
+    pub(crate) provider_run_is_starting: bool,
+}
+
+pub(crate) struct KernelPromptOwnerSubmission {
+    pub(crate) admission: KernelPromptAdmission,
+    pub(crate) outcome: PromptSubmissionOutcome,
 }
 
 pub(crate) struct KernelPromptDispatch {
