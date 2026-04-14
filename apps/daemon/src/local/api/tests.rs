@@ -2355,9 +2355,12 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut saw_output = false;
     while Instant::now() < deadline {
-        let records = app
-            .pump_terminal_output(session.id(), attachment.id())
-            .expect("terminal output should keep pumping");
+        let records = crate::app::provider_output::pump_terminal_output_for_attachment(
+            &mut app,
+            session.id(),
+            attachment.id(),
+        )
+        .expect("terminal output should keep pumping");
         if !records.is_empty() {
             saw_output = true;
             break;
@@ -2483,9 +2486,12 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
         b"late output\n",
     );
 
-    let records = app
-        .pump_terminal_output(session.id(), attachment.id())
-        .expect("draining buffered output should not require an active focused provider run");
+    let records = crate::app::provider_output::pump_terminal_output_for_attachment(
+        &mut app,
+        session.id(),
+        attachment.id(),
+    )
+    .expect("draining buffered output should not require an active focused provider run");
 
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].bytes, b"late output\n");

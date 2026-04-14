@@ -1002,9 +1002,12 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
 
         loop {
-            let records = app
-                .pump_terminal_output(session_id, attachment_id)
-                .expect("terminal output should fan out");
+            let records = crate::app::provider_output::pump_terminal_output_for_attachment(
+                app,
+                session_id,
+                attachment_id,
+            )
+            .expect("terminal output should fan out");
             if !records.is_empty() {
                 return records;
             }

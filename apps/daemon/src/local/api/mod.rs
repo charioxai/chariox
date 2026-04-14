@@ -224,8 +224,11 @@ impl DaemonApp {
             | LocalDaemonRequest::DestroyAgent(_)) => self.handle_agent_request(request),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Ok(LocalDaemonResponse::TerminalOutput {
-                    records: self
-                        .pump_terminal_output(&request.session_id, &request.attachment_id)?,
+                    records: crate::app::provider_output::pump_terminal_output_for_attachment(
+                        self,
+                        &request.session_id,
+                        &request.attachment_id,
+                    )?,
                 })
             }
             LocalDaemonRequest::RunShellCommand(request) => {

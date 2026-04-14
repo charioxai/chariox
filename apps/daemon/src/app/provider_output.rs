@@ -41,6 +41,30 @@ pub(crate) struct ProviderOutputPumpRequest<'a> {
     pub(crate) recipient_attachment_ids: Vec<String>,
 }
 
+pub(crate) fn pump_terminal_output_for_attachment(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+    app.reap_structured_prompt_jobs();
+    app.ensure_attachment_in_session(session_id, attachment_id)?;
+    let provider_run_id = app
+        .sessions
+        .get_session(session_id)?
+        .active_provider_run_id()
+        .map(str::to_string);
+
+    if let Some(provider_run_id) = provider_run_id {
+        let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session_id);
+        let _ = ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
+            session_id,
+            provider_run_id: &provider_run_id,
+            recipient_attachment_ids,
+        })?;
+    }
+    Ok(app.terminal.drain_output_records(session_id, attachment_id))
+}
+
 pub(crate) struct ProviderOutputPump<'a> {
     context: ProviderOutputPumpContext<'a>,
 }

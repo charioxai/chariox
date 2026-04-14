@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
+use crate::app::provider_output::{
+    pump_terminal_output_for_attachment, ProviderOutputPump, ProviderOutputPumpRequest,
+};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::projection::{
@@ -47,7 +49,11 @@ impl TerminalOutputExecutor {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let Some(session) = self.session_projection.get(&request.session_id) else {
             let mut app = self.app.lock().await;
-            let records = app.pump_terminal_output(&request.session_id, &request.attachment_id)?;
+            let records = pump_terminal_output_for_attachment(
+                &mut app,
+                &request.session_id,
+                &request.attachment_id,
+            )?;
             if let Ok(session) = app.local_api_session_snapshot(&request.session_id) {
                 self.agent_runtime_projection.update_session(&session);
                 self.session_projection.update(session);

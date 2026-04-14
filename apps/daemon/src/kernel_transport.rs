@@ -1076,7 +1076,11 @@ pub(crate) fn watch_subscription_state(
         return WatchResult::Unavailable("Current session is no longer available.".to_string());
     }
 
-    let records = match app.pump_terminal_output(session_id, attachment_id) {
+    let records = match crate::app::provider_output::pump_terminal_output_for_attachment(
+        app,
+        session_id,
+        attachment_id,
+    ) {
         Ok(records) => records,
         Err(DaemonError::NoActiveProviderRun { .. }) => Vec::new(),
         Err(DaemonError::SessionNotFound { .. })

@@ -783,34 +783,6 @@ impl DaemonApp {
             .resize_terminal(session_id, cols, rows)
     }
 
-    pub fn pump_terminal_output(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.reap_structured_prompt_jobs();
-        self.ensure_attachment_in_session(session_id, attachment_id)?;
-        let provider_run_id = self
-            .sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_string);
-
-        if let Some(provider_run_id) = provider_run_id {
-            let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
-            let _ = provider_output::ProviderOutputPump::new(self).pump_provider_output(
-                provider_output::ProviderOutputPumpRequest {
-                    session_id,
-                    provider_run_id: &provider_run_id,
-                    recipient_attachment_ids,
-                },
-            )?;
-        }
-        Ok(self
-            .terminal
-            .drain_output_records(session_id, attachment_id))
-    }
-
     pub fn pump_active_prompt_outputs(&mut self) {
         self.reap_structured_prompt_jobs();
         let sessions = self.sessions.list_sessions();
@@ -1447,7 +1419,8 @@ impl DaemonApp {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
         if pump_output {
-            let _ = self.pump_terminal_output(
+            let _ = provider_output::pump_terminal_output_for_attachment(
+                self,
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_attachment_id,
             )?;
