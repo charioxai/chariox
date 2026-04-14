@@ -352,31 +352,23 @@ impl<'a> SessionRuntimeContext<'a> {
     }
 
     fn resolve_session_ref_id(
-        &self,
+        &mut self,
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        Ok(self
-            .app
-            .resolve_session_ref(session_ref, workspace_id)?
-            .id()
-            .to_string())
+        crate::app::KernelSessionService::new(self.app)
+            .resolve_session_ref_id(session_ref, workspace_id)
     }
 
-    fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
-        Ok(self
-            .app
-            .attachments()
-            .get_attachment(attachment_id)?
-            .session_id()
-            .to_string())
+    fn attachment_session_id(&mut self, attachment_id: &str) -> Result<String, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).attachment_session_id(attachment_id)
     }
 
     fn session_snapshot(
-        &self,
+        &mut self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.app.local_api_session_snapshot(session_id)
+        crate::app::KernelSessionService::new(self.app).session_snapshot(session_id)
     }
 
     fn create_session_response(
@@ -425,12 +417,11 @@ impl<'a> SessionRuntimeContext<'a> {
     }
 
     fn ensure_attachment_in_session(
-        &self,
+        &mut self,
         session_id: &str,
         attachment_id: &str,
     ) -> Result<(), DaemonError> {
-        let _ = self
-            .app
+        let _ = crate::app::KernelSessionService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         Ok(())
     }
@@ -472,14 +463,14 @@ impl<'a> SessionRuntimeContext<'a> {
         &mut self,
         request: CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.app.spawn_agent(request)
+        crate::app::KernelSessionService::new(self.app).spawn_agent(request)
     }
 
     fn destroy_agent(
         &mut self,
         agent_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.app.destroy_agent(agent_id)
+        crate::app::KernelSessionService::new(self.app).destroy_agent(agent_id)
     }
 
     fn end_session(

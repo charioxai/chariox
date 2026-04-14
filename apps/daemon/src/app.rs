@@ -457,36 +457,12 @@ impl DaemonApp {
         &mut self,
         request: crate::agent::CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
-        if let Some(machine_ref) = request.machine_ref.clone() {
-            return self.spawn_remote_agent(request, &machine_ref);
-        }
-        self.agents.create_agent(request, &mut self.sessions)
+        crate::app::KernelSessionService::new(self).spawn_agent(request)
     }
 
     /// Destroy an agent
     pub fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
-        let agent = self.agents.get_agent(agent_id)?;
-        if let Some(remote) = agent.remote_execution().cloned() {
-            let target = ClientTarget {
-                daemon_id: Some(remote.worker_kernel_id.clone()),
-                daemon_alias: None,
-            };
-            self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &self.config,
-                target.clone(),
-                RelayPeerRequest::DestroyLeasedAgent {
-                    leased_agent_id: remote.leased_agent_id.clone(),
-                },
-            ))?;
-            self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &self.config,
-                target,
-                RelayPeerRequest::DestroyExecutionLease {
-                    lease_id: remote.execution_lease_id.clone(),
-                },
-            ))?;
-        }
-        self.agents.destroy_agent(agent_id, &mut self.sessions)
+        crate::app::KernelSessionService::new(self).destroy_agent(agent_id)
     }
 
     /// Focus a specific agent in a session

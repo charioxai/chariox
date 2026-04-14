@@ -65,6 +65,47 @@ impl<'a> KernelSessionService<'a> {
         Ok(LocalDaemonResponse::SessionCreated { session, agent })
     }
 
+    pub(crate) fn resolve_session_ref_id(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        Ok(self
+            .app
+            .sessions
+            .resolve_session_ref(session_ref, workspace_id)?
+            .id()
+            .to_string())
+    }
+
+    pub(crate) fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
+        Ok(self
+            .app
+            .attachments
+            .get_attachment(attachment_id)?
+            .session_id()
+            .to_string())
+    }
+
+    pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.app.local_api_session_snapshot(session_id)
+    }
+
+    pub(crate) fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<RuntimeAttachment, DaemonError> {
+        let attachment = self.app.attachments.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        Ok(attachment)
+    }
+
     pub(crate) fn alias_session(
         &mut self,
         session_id: &str,
@@ -171,6 +212,49 @@ impl<'a> KernelSessionService<'a> {
             }),
         );
         Ok(attachment)
+    }
+
+    pub(crate) fn spawn_agent(
+        &mut self,
+        request: CreateAgentRequest,
+    ) -> Result<AgentInstance, DaemonError> {
+        if let Some(machine_ref) = request.machine_ref.clone() {
+            return self.app.spawn_remote_agent(request, &machine_ref);
+        }
+        self.app
+            .agents
+            .create_agent(request, &mut self.app.sessions)
+    }
+
+    pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        let agent = self.app.agents.get_agent(agent_id)?;
+        if let Some(remote) = agent.remote_execution().cloned() {
+            let target = arroba_relay::protocol::ClientTarget {
+                daemon_id: Some(remote.worker_kernel_id.clone()),
+                daemon_alias: None,
+            };
+            self.app.block_on_relay_future(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &self.app.config,
+                    target.clone(),
+                    crate::transport::relay_peer::RelayPeerRequest::DestroyLeasedAgent {
+                        leased_agent_id: remote.leased_agent_id.clone(),
+                    },
+                ),
+            )?;
+            self.app.block_on_relay_future(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &self.app.config,
+                    target,
+                    crate::transport::relay_peer::RelayPeerRequest::DestroyExecutionLease {
+                        lease_id: remote.execution_lease_id.clone(),
+                    },
+                ),
+            )?;
+        }
+        self.app
+            .agents
+            .destroy_agent(agent_id, &mut self.app.sessions)
     }
 
     pub(crate) fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
