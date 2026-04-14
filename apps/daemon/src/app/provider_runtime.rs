@@ -132,11 +132,17 @@ impl ProviderRunLivenessProcesses {
     }
 }
 
-struct ProviderRunLivenessRecipients;
+struct ProviderRunLivenessNotices;
 
-impl ProviderRunLivenessRecipients {
-    fn attachment_ids(app: &DaemonApp, session_id: &str) -> Vec<String> {
-        app.attachments.list_session_attachment_ids(session_id)
+impl ProviderRunLivenessNotices {
+    fn record_provider_exit(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+        message: String,
+    ) {
+        let recipients = app.attachments.list_session_attachment_ids(session_id);
+        app.record_notice(session_id, Some(provider_run_id), recipients, message);
     }
 }
 
@@ -206,10 +212,10 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             active_prompt_status,
         )?;
 
-        self.app.record_notice(
+        ProviderRunLivenessNotices::record_provider_exit(
+            self.app,
             session_id,
-            Some(provider_run_id),
-            ProviderRunLivenessRecipients::attachment_ids(self.app, session_id),
+            provider_run_id,
             format!(
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 provider_run_id,
