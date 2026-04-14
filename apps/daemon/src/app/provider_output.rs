@@ -3,10 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::provider::RuntimeProviderRun;
+use crate::history::SessionHistoryEntry;
 use crate::provider::{AgentEndpointMode, ProviderRunState};
+use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 use crate::pty::PtyOutputChunk;
-use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
+use crate::session::PromptStatus;
+use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore};
 
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
@@ -163,6 +165,60 @@ impl<'a> ProviderOutputRecipientResolver<'a> {
     }
 }
 
+struct ProviderOutputFanout<'a> {
+    app: &'a DaemonApp,
+    terminal: TerminalStreamStore,
+}
+
+impl<'a> ProviderOutputFanout<'a> {
+    fn new(app: &'a DaemonApp) -> Self {
+        Self {
+            app,
+            terminal: app.terminal.clone(),
+        }
+    }
+
+    fn fan_out(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let agent_id = self
+            .app
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let record = self.terminal.fan_out_output(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            kind.clone(),
+            merge_key.clone(),
+            recipient_attachment_ids,
+            bytes,
+        );
+        if kind != TerminalOutputKind::PromptEcho {
+            self.app.append_history_entry(
+                session_id,
+                SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    agent_id.as_deref(),
+                    kind,
+                    merge_key,
+                    String::from_utf8_lossy(bytes).into_owned(),
+                ),
+            );
+        }
+        record
+    }
+}
+
 impl<'a> ProviderOutputPumpContext<'a> {
     fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -303,7 +359,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             } else {
                 self.recipient_attachment_ids_for_session(&session_id)
             };
-            let records = self.app.apply_structured_output_batch(
+            let records = self.apply_structured_output_batch(
                 &session_id,
                 &provider_run_id,
                 recipient_attachment_ids,
@@ -318,6 +374,111 @@ impl<'a> ProviderOutputPumpContext<'a> {
             }
         }
         Ok(requested_records)
+    }
+
+    fn apply_structured_output_batch(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        poll_result: ProviderPromptSignalBatch,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+        self.app
+            .providers
+            .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        self.app
+            .update_provider_run_projection(provider_run.clone());
+        for notice in &poll_result.notices {
+            self.app.record_notice(
+                session_id,
+                Some(provider_run_id),
+                recipient_attachment_ids.clone(),
+                notice.to_string(),
+            );
+        }
+        let saw_response_content = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
+            )
+        });
+        let saw_runtime_activity = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                TerminalOutputKind::ProviderOutput
+                    | TerminalOutputKind::ProviderReasoning
+                    | TerminalOutputKind::ProviderTool
+                    | TerminalOutputKind::ProviderStatus
+            )
+        });
+        if saw_response_content {
+            crate::transport::flow_control::note_prompt_response_content(self.app, provider_run_id);
+        } else if saw_runtime_activity {
+            crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
+        }
+        for completion in &poll_result.completions {
+            self.app.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+            crate::transport::flow_control::mark_prompt_completion_recorded(
+                self.app,
+                provider_run_id,
+            );
+        }
+        let prompt_completed = poll_result.prompt_completed;
+        let records = poll_result
+            .chunks
+            .into_iter()
+            .map(|chunk| {
+                self.fan_out_terminal_output(
+                    session_id,
+                    provider_run_id,
+                    chunk.kind,
+                    chunk.merge_key,
+                    recipient_attachment_ids.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect();
+        let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
+        if exited {
+            return Ok(records);
+        }
+        let agent_id =
+            provider_run
+                .agent_instance_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "provider run has no agent".to_string(),
+                })?;
+        let active_prompt_status = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .map(|prompt| prompt.status());
+        if active_prompt_status == Some(PromptStatus::Cancelling) {
+            if prompt_completed {
+                let _ = self.app.finalize_active_prompt_cancellation(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                )?;
+            }
+        } else if prompt_completed && active_prompt_status.is_some() {
+            let _ = self
+                .app
+                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+        } else if !prompt_completed && active_prompt_status == Some(PromptStatus::Cancelling) {
+            crate::transport::flow_control::maybe_complete_active_prompt(
+                self.app,
+                session_id,
+                provider_run_id,
+            )?;
+        }
+        Ok(records)
     }
 
     fn drain_pty_output(
@@ -354,11 +515,30 @@ impl<'a> ProviderOutputPumpContext<'a> {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
-        self.app.fan_out_output(
+        self.fan_out_terminal_output(
             session_id,
             provider_run_id,
             TerminalOutputKind::ProviderOutput,
             None,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    fn fan_out_terminal_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        ProviderOutputFanout::new(self.app).fan_out(
+            session_id,
+            provider_run_id,
+            kind,
+            merge_key,
             recipient_attachment_ids,
             bytes,
         )
