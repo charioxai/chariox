@@ -21,6 +21,35 @@ pub(crate) struct KernelAgentService<'a> {
     app: &'a mut DaemonApp,
 }
 
+enum KernelPromptCancellationAdmission {
+    Remote {
+        session_id: String,
+        target_agent_id: String,
+        attachment_id: String,
+    },
+    AlreadyCancelling {
+        session_id: String,
+        active_prompt: PromptQueueItem,
+    },
+    Local {
+        session_id: String,
+        target_agent_id: String,
+        attachment_id: String,
+        active_prompt: PromptQueueItem,
+        provider_run_id: String,
+        uses_structured_prompt_io: bool,
+    },
+}
+
+struct KernelPromptOwnerCancellation {
+    session_id: String,
+    attachment_id: String,
+    active_prompt: PromptQueueItem,
+    provider_run_id: String,
+    prompt: PromptQueueItem,
+    dispatch: Option<KernelPromptAbortDispatch>,
+}
+
 impl<'a> KernelAgentService<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -1227,20 +1256,39 @@ impl<'a> KernelAgentService<'a> {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
-        self.app
-            .ensure_attachment_in_session(session_id, attachment_id)?;
-        let target_agent = self.app.agents.get_agent(&target_agent_id)?;
-        if target_agent.remote_execution().is_some() {
-            let cancellation = self.cancel_active_prompt_internal(
+        let admission =
+            self.prepare_prompt_cancellation_admission(session_id, target_agent_id, attachment_id)?;
+        match admission {
+            KernelPromptCancellationAdmission::Remote {
                 session_id,
                 target_agent_id,
-                Some(attachment_id),
-            )?;
-            let session = self.app.local_api_session_snapshot(session_id)?;
-            return Ok(KernelPromptCancellation {
-                cancellation,
-                session,
-                dispatch: None,
+                attachment_id,
+            } => self.cancel_remote_agent_prompt(&session_id, &target_agent_id, &attachment_id),
+            KernelPromptCancellationAdmission::AlreadyCancelling {
+                session_id,
+                active_prompt,
+            } => self.finish_already_cancelling_prompt(&session_id, active_prompt),
+            KernelPromptCancellationAdmission::Local { .. } => {
+                let cancelled = self.cancel_local_prompt_from_admission(admission)?;
+                self.finish_local_prompt_cancellation(cancelled)
+            }
+        }
+    }
+
+    fn prepare_prompt_cancellation_admission(
+        &mut self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<KernelPromptCancellationAdmission, DaemonError> {
+        self.app
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent = self.app.agents.get_agent(target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return Ok(KernelPromptCancellationAdmission::Remote {
+                session_id: session_id.to_string(),
+                target_agent_id: target_agent_id.to_string(),
+                attachment_id: attachment_id.to_string(),
             });
         }
 
@@ -1251,14 +1299,9 @@ impl<'a> KernelAgentService<'a> {
                 session_id: session_id.to_string(),
             })?;
         if active_prompt.status() == PromptStatus::Cancelling {
-            let session = self.app.local_api_session_snapshot(session_id)?;
-            return Ok(KernelPromptCancellation {
-                cancellation: PromptCancellation {
-                    prompt: active_prompt,
-                    started_next: None,
-                },
-                session,
-                dispatch: None,
+            return Ok(KernelPromptCancellationAdmission::AlreadyCancelling {
+                session_id: session_id.to_string(),
+                active_prompt,
             });
         }
 
@@ -1273,44 +1316,123 @@ impl<'a> KernelAgentService<'a> {
         let provider_run = self
             .app
             .ensure_provider_run_in_session(session_id, &provider_run_id)?;
-        let dispatch = if self
+        let uses_structured_prompt_io = self
             .app
             .providers
-            .run_uses_structured_prompt_io(&provider_run)
-        {
+            .run_uses_structured_prompt_io(&provider_run);
+
+        Ok(KernelPromptCancellationAdmission::Local {
+            session_id: session_id.to_string(),
+            target_agent_id: target_agent_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+            active_prompt,
+            provider_run_id,
+            uses_structured_prompt_io,
+        })
+    }
+
+    fn cancel_remote_agent_prompt(
+        &mut self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<KernelPromptCancellation, DaemonError> {
+        let cancellation =
+            self.cancel_active_prompt_internal(session_id, target_agent_id, Some(attachment_id))?;
+        let session = self.app.local_api_session_snapshot(session_id)?;
+        Ok(KernelPromptCancellation {
+            cancellation,
+            session,
+            dispatch: None,
+        })
+    }
+
+    fn finish_already_cancelling_prompt(
+        &self,
+        session_id: &str,
+        active_prompt: PromptQueueItem,
+    ) -> Result<KernelPromptCancellation, DaemonError> {
+        let session = self.app.local_api_session_snapshot(session_id)?;
+        Ok(KernelPromptCancellation {
+            cancellation: PromptCancellation {
+                prompt: active_prompt,
+                started_next: None,
+            },
+            session,
+            dispatch: None,
+        })
+    }
+
+    fn cancel_local_prompt_from_admission(
+        &mut self,
+        admission: KernelPromptCancellationAdmission,
+    ) -> Result<KernelPromptOwnerCancellation, DaemonError> {
+        let KernelPromptCancellationAdmission::Local {
+            session_id,
+            target_agent_id,
+            attachment_id,
+            active_prompt,
+            provider_run_id,
+            uses_structured_prompt_io,
+        } = admission
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel prompt admission",
+                message: "expected local prompt cancellation admission".to_string(),
+            });
+        };
+
+        let dispatch = if uses_structured_prompt_io {
             Some(KernelPromptAbortDispatch {
-                session_id: session_id.to_string(),
+                session_id: session_id.clone(),
                 provider_run_id: provider_run_id.clone(),
             })
         } else {
             self.app
-                .send_provider_input(session_id, &provider_run_id, attachment_id, b"\x03")?;
+                .send_provider_input(&session_id, &provider_run_id, &attachment_id, b"\x03")?;
             None
         };
 
         let prompt = self
             .app
-            .prompt_owner_begin_cancelling_active_prompt(session_id, target_agent_id)?;
+            .prompt_owner_begin_cancelling_active_prompt(&session_id, &target_agent_id)?;
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
-        self.app.record_notice(
+
+        Ok(KernelPromptOwnerCancellation {
             session_id,
-            Some(&provider_run_id),
-            self.app.other_attachment_ids(session_id, attachment_id),
+            attachment_id,
+            active_prompt,
+            provider_run_id,
+            prompt,
+            dispatch,
+        })
+    }
+
+    fn finish_local_prompt_cancellation(
+        &mut self,
+        cancelled: KernelPromptOwnerCancellation,
+    ) -> Result<KernelPromptCancellation, DaemonError> {
+        self.app.record_notice(
+            &cancelled.session_id,
+            Some(&cancelled.provider_run_id),
+            self.app
+                .other_attachment_ids(&cancelled.session_id, &cancelled.attachment_id),
             format!(
-                "Attachment `{attachment_id}` requested cancellation of active prompt `{}` on provider run `{}`.",
-                active_prompt.id(),
-                provider_run.id()
+                "Attachment `{}` requested cancellation of active prompt `{}` on provider run `{}`.",
+                cancelled.attachment_id,
+                cancelled.active_prompt.id(),
+                cancelled.provider_run_id
             ),
         );
-        let session = self.app.publish_session_projection(session_id)?;
+        let session = self.app.publish_session_projection(&cancelled.session_id)?;
 
         Ok(KernelPromptCancellation {
             cancellation: PromptCancellation {
-                prompt,
+                prompt: cancelled.prompt,
                 started_next: None,
             },
             session,
-            dispatch,
+            dispatch: cancelled.dispatch,
         })
     }
 }
