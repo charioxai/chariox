@@ -9,7 +9,22 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{
+    AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
+    AliasWorkflowEndpointRequest, AliasWorkflowRequest, BindWorkflowEndpointRequest,
+    CancelWorkflowRunRequest, ClearQueuedWorkflowLaunchesRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, CreateWorkflowWatchdogRequest, GetWorkflowRunRequest,
+    InvokeWorkflowEndpointRequest, ListQueuedWorkflowLaunchesRequest, ListWorkflowRunsRequest,
+    ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    RemoveQueuedWorkflowLaunchRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    RemoveWorkflowWatchdogRequest, ResolveWorkflowRequest, ResumeWorkflowRunRequest,
+    SetWorkflowFlushContextRequest, SetWorkflowIntermediateOutputSchemaRequest,
+    SetWorkflowLaunchPolicyRequest, SetWorkflowNodeCanCompleteRunRequest,
+    SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
+    SetWorkflowRunOutputSchemaRequest, SetWorkflowWatchdogEnabledRequest,
+    UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
+};
 
 pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 
@@ -149,6 +164,11 @@ pub(crate) struct WorkflowRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
 }
 
+type WorkflowStoreExecutionResult = (
+    Result<LocalDaemonResponse, DaemonError>,
+    Option<crate::session::RuntimeSession>,
+);
+
 impl WorkflowRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self { app }
@@ -172,90 +192,25 @@ impl WorkflowRuntimeStore {
         };
         (result, projected_session)
     }
-}
 
-async fn run_workflow_command_lane(
-    store: WorkflowRuntimeStore,
-    session_projection: SessionStateProjectionStore,
-    agent_runtime_projection: AgentRuntimeProjectionStore,
-    session_id: String,
-    mut rx: mpsc::Receiver<WorkflowCommandEnvelope>,
-) {
-    let executor = WorkflowRuntimeCommandExecutor::new(
-        store,
-        session_projection,
-        agent_runtime_projection,
-        session_id.clone(),
-    );
-    while let Some(envelope) = rx.recv().await {
-        crate::logging::info_with_fields(
-            "daemon.kernel_workflow_actor",
-            "workflow kernel command dispatched",
-            serde_json::json!({
-                "session_id": session_id,
-                "command_id": envelope.command_id,
-                "command_type": envelope.command_type,
-            }),
-        );
-        let result = executor.execute(envelope.request).await;
-        let _ = envelope.result_tx.send(result);
-    }
-}
-
-#[derive(Clone)]
-struct WorkflowRuntimeCommandExecutor {
-    store: WorkflowRuntimeStore,
-    session_projection: SessionStateProjectionStore,
-    agent_runtime_projection: AgentRuntimeProjectionStore,
-    session_id: String,
-}
-
-impl WorkflowRuntimeCommandExecutor {
-    fn new(
-        store: WorkflowRuntimeStore,
-        session_projection: SessionStateProjectionStore,
-        agent_runtime_projection: AgentRuntimeProjectionStore,
-        session_id: String,
-    ) -> Self {
-        Self {
-            store,
-            session_projection,
-            agent_runtime_projection,
-            session_id,
-        }
-    }
-
-    async fn execute(
+    async fn create_workflow(
         &self,
-        request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (result, projected_session) = self
-            .store
-            .execute_operation(&self.session_id, move |app| {
-                execute_workflow_command_mutation(app, request)
-            })
-            .await;
-        if let Some(session) = projected_session {
-            self.agent_runtime_projection.update_session(&session);
-            self.session_projection.update(session);
-        }
-        result
-    }
-}
-
-fn execute_workflow_command_mutation(
-    app: &mut DaemonApp,
-    request: LocalDaemonRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    match request {
-        LocalDaemonRequest::CreateWorkflow(request) => {
+        request: CreateWorkflowRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow = app
                 .sessions_mut()
                 .create_workflow(&request.session_id, request.alias)?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
-        }
-        LocalDaemonRequest::AliasWorkflow(request) => {
+        })
+        .await
+    }
+
+    async fn alias_workflow(&self, request: AliasWorkflowRequest) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow = app.sessions_mut().assign_workflow_alias(
                 &request.session_id,
                 &request.workflow_ref,
@@ -263,16 +218,41 @@ fn execute_workflow_command_mutation(
             )?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
-        }
-        LocalDaemonRequest::ListWorkflows(request) => Ok(LocalDaemonResponse::WorkflowsListed {
-            workflows: app.sessions().list_workflows(&request.session_id)?,
-        }),
-        LocalDaemonRequest::ResolveWorkflow(request) => Ok(LocalDaemonResponse::WorkflowResolved {
-            workflow: app
-                .sessions()
-                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
-        }),
-        LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
+        })
+        .await
+    }
+
+    async fn list_workflows(&self, request: ListWorkflowsRequest) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            Ok(LocalDaemonResponse::WorkflowsListed {
+                workflows: app.sessions().list_workflows(&request.session_id)?,
+            })
+        })
+        .await
+    }
+
+    async fn resolve_workflow(
+        &self,
+        request: ResolveWorkflowRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            Ok(LocalDaemonResponse::WorkflowResolved {
+                workflow: app
+                    .sessions()
+                    .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
+            })
+        })
+        .await
+    }
+
+    async fn create_workflow_endpoint(
+        &self,
+        request: CreateWorkflowEndpointRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let endpoint = app.sessions_mut().create_workflow_endpoint(
                 &request.session_id,
                 &request.workflow_ref,
@@ -288,8 +268,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::AliasWorkflowEndpoint(request) => {
+        })
+        .await
+    }
+
+    async fn alias_workflow_endpoint(
+        &self,
+        request: AliasWorkflowEndpointRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let endpoint = app.sessions_mut().assign_workflow_endpoint_alias(
                 &request.session_id,
                 &request.workflow_ref,
@@ -305,8 +293,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::BindWorkflowEndpoint(request) => {
+        })
+        .await
+    }
+
+    async fn bind_workflow_endpoint(
+        &self,
+        request: BindWorkflowEndpointRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let endpoint = app.sessions_mut().bind_workflow_endpoint(
                 &request.session_id,
                 &request.workflow_ref,
@@ -322,8 +318,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::AddWorkflowNode(request) => {
+        })
+        .await
+    }
+
+    async fn add_workflow_node(
+        &self,
+        request: AddWorkflowNodeRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let agent_exists = app
                 .agents()
                 .get_session_agents(&request.session_id)
@@ -348,8 +352,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::RemoveWorkflowNode(request) => {
+        })
+        .await
+    }
+
+    async fn remove_workflow_node(
+        &self,
+        request: RemoveWorkflowNodeRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app.sessions_mut().remove_workflow_node(
                 &request.session_id,
                 &request.workflow_ref,
@@ -364,8 +376,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => {
+        })
+        .await
+    }
+
+    async fn update_workflow_node_instructions(
+        &self,
+        request: UpdateWorkflowNodeInstructionsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app.sessions_mut().update_workflow_node_instructions(
                 &request.session_id,
                 &request.workflow_ref,
@@ -381,8 +401,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_node_can_complete_run(
+        &self,
+        request: SetWorkflowNodeCanCompleteRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app.sessions_mut().set_workflow_node_can_complete_run(
                 &request.session_id,
                 &request.workflow_ref,
@@ -398,8 +426,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_node_can_emit_intermediate_output(
+        &self,
+        request: SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app
                 .sessions_mut()
                 .set_workflow_node_can_emit_intermediate_output(
@@ -419,8 +455,16 @@ fn execute_workflow_command_mutation(
                     session,
                 },
             )
-        }
-        LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_node_intermediate_output_schema(
+        &self,
+        request: SetWorkflowNodeIntermediateOutputSchemaRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app
                 .sessions_mut()
                 .set_workflow_node_intermediate_output_schema_ref(
@@ -440,8 +484,16 @@ fn execute_workflow_command_mutation(
                     session,
                 },
             )
-        }
-        LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_node_max_turns(
+        &self,
+        request: SetWorkflowNodeMaxTurnsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let node = app.sessions_mut().set_workflow_node_max_turns(
                 &request.session_id,
                 &request.workflow_ref,
@@ -457,8 +509,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::AddWorkflowEdge(request) => {
+        })
+        .await
+    }
+
+    async fn add_workflow_edge(
+        &self,
+        request: AddWorkflowEdgeRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let edge = app.sessions_mut().add_workflow_edge(
                 &request.session_id,
                 &request.workflow_ref,
@@ -476,8 +536,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::RemoveWorkflowEdge(request) => {
+        })
+        .await
+    }
+
+    async fn remove_workflow_edge(
+        &self,
+        request: RemoveWorkflowEdgeRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let edge = app.sessions_mut().remove_workflow_edge(
                 &request.session_id,
                 &request.workflow_ref,
@@ -492,8 +560,16 @@ fn execute_workflow_command_mutation(
                 workflow,
                 session,
             })
-        }
-        LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
+        })
+        .await
+    }
+
+    async fn invoke_workflow_endpoint(
+        &self,
+        request: InvokeWorkflowEndpointRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let outcome = app.invoke_workflow_endpoint_with_admission(
                 &request.session_id,
                 &request.workflow_ref,
@@ -523,20 +599,46 @@ fn execute_workflow_command_mutation(
                     session,
                 }),
             }
-        }
-        LocalDaemonRequest::ListWorkflowRuns(request) => {
+        })
+        .await
+    }
+
+    async fn list_workflow_runs(
+        &self,
+        request: ListWorkflowRunsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             Ok(LocalDaemonResponse::WorkflowRunsListed {
                 workflow_runs: app
                     .sessions()
                     .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?,
             })
-        }
-        LocalDaemonRequest::GetWorkflowRun(request) => Ok(LocalDaemonResponse::WorkflowRun {
-            workflow_run: app
-                .sessions()
-                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
-        }),
-        LocalDaemonRequest::CancelWorkflowRun(request) => {
+        })
+        .await
+    }
+
+    async fn get_workflow_run(
+        &self,
+        request: GetWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
+            Ok(LocalDaemonResponse::WorkflowRun {
+                workflow_run: app
+                    .sessions()
+                    .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
+            })
+        })
+        .await
+    }
+
+    async fn cancel_workflow_run(
+        &self,
+        request: CancelWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow_run_id = app
                 .sessions()
                 .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
@@ -571,8 +673,16 @@ fn execute_workflow_command_mutation(
                 workflow_run,
                 session,
             })
-        }
-        LocalDaemonRequest::ResumeWorkflowRun(request) => {
+        })
+        .await
+    }
+
+    async fn resume_workflow_run(
+        &self,
+        request: ResumeWorkflowRunRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow_run = app
                 .resume_workflow_run_from_runtime(&request.session_id, &request.workflow_run_ref)?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
@@ -580,8 +690,16 @@ fn execute_workflow_command_mutation(
                 workflow_run,
                 session,
             })
-        }
-        LocalDaemonRequest::CreateWorkflowWatchdog(request) => {
+        })
+        .await
+    }
+
+    async fn create_workflow_watchdog(
+        &self,
+        request: CreateWorkflowWatchdogRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let watchdog = app.sessions_mut().create_workflow_watchdog(
                 &request.session_id,
                 &request.workflow_ref,
@@ -610,16 +728,32 @@ fn execute_workflow_command_mutation(
                 endpoint,
                 session,
             })
-        }
-        LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+        })
+        .await
+    }
+
+    async fn list_workflow_watchdogs(
+        &self,
+        request: ListWorkflowWatchdogsRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
                 watchdogs: app.sessions().list_workflow_watchdogs(
                     &request.session_id,
                     request.workflow_ref.as_deref(),
                 )?,
             })
-        }
-        LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_watchdog_enabled(
+        &self,
+        request: SetWorkflowWatchdogEnabledRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let watchdog = app.sessions_mut().set_workflow_watchdog_enabled(
                 &request.session_id,
                 &request.watchdog_ref,
@@ -627,15 +761,31 @@ fn execute_workflow_command_mutation(
             )?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
-        }
-        LocalDaemonRequest::RemoveWorkflowWatchdog(request) => {
+        })
+        .await
+    }
+
+    async fn remove_workflow_watchdog(
+        &self,
+        request: RemoveWorkflowWatchdogRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let watchdog = app
                 .sessions_mut()
                 .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
-        }
-        LocalDaemonRequest::SetWorkflowFlushContext(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_flush_context(
+        &self,
+        request: SetWorkflowFlushContextRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow = app
                 .sessions_mut()
                 .set_workflow_flush_agent_context_before_run(
@@ -645,8 +795,16 @@ fn execute_workflow_command_mutation(
                 )?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
-        }
-        LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_run_output_schema(
+        &self,
+        request: SetWorkflowRunOutputSchemaRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow = app.sessions_mut().set_workflow_run_output_schema_ref(
                 &request.session_id,
                 &request.workflow_ref,
@@ -654,8 +812,16 @@ fn execute_workflow_command_mutation(
             )?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
-        }
-        LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_intermediate_output_schema(
+        &self,
+        request: SetWorkflowIntermediateOutputSchemaRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let workflow = app
                 .sessions_mut()
                 .set_workflow_intermediate_output_schema_ref(
@@ -665,23 +831,47 @@ fn execute_workflow_command_mutation(
                 )?;
             let session = app.local_api_session_snapshot(&request.session_id)?;
             Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
-        }
-        LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
+        })
+        .await
+    }
+
+    async fn set_workflow_launch_policy(
+        &self,
+        request: SetWorkflowLaunchPolicyRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let session = app
                 .sessions_mut()
                 .set_workflow_launch_policy(&request.session_id, request.policy)?;
             let mut session = session;
             session.set_agents(app.agents().get_session_agents(&request.session_id));
             Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
-        }
-        LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+        })
+        .await
+    }
+
+    async fn list_queued_workflow_launches(
+        &self,
+        request: ListQueuedWorkflowLaunchesRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
                 queued_launches: app
                     .sessions()
                     .list_queued_workflow_launches(&request.session_id)?,
             })
-        }
-        LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => {
+        })
+        .await
+    }
+
+    async fn remove_queued_workflow_launch(
+        &self,
+        request: RemoveQueuedWorkflowLaunchRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let queued_launch = app
                 .sessions_mut()
                 .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
@@ -690,8 +880,16 @@ fn execute_workflow_command_mutation(
                 queued_launch,
                 session,
             })
-        }
-        LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
+        })
+        .await
+    }
+
+    async fn clear_queued_workflow_launches(
+        &self,
+        request: ClearQueuedWorkflowLaunchesRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let queued_launches = app
                 .sessions_mut()
                 .clear_queued_workflow_launches(&request.session_id)?;
@@ -700,8 +898,16 @@ fn execute_workflow_command_mutation(
                 queued_launches,
                 session,
             })
-        }
-        LocalDaemonRequest::ValidateWorkflowOutput(request) => {
+        })
+        .await
+    }
+
+    async fn validate_workflow_output(
+        &self,
+        request: ValidateWorkflowOutputRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             let result = crate::transport::runtime_tools::dispatch_runtime_tool_call(
                 app,
                 crate::transport::runtime_tools::RuntimeToolCall {
@@ -731,8 +937,16 @@ fn execute_workflow_command_mutation(
                     .map(str::to_string)
                     .filter(|value| !value.is_empty()),
             })
-        }
-        LocalDaemonRequest::AckWorkflowTurn(request) => {
+        })
+        .await
+    }
+
+    async fn ack_workflow_turn(
+        &self,
+        request: AckWorkflowTurnRequest,
+    ) -> WorkflowStoreExecutionResult {
+        let session_id = request.session_id.clone();
+        self.execute_operation(&session_id, move |app| {
             crate::transport::runtime_tools::dispatch_runtime_tool_call(
                 app,
                 crate::transport::runtime_tools::RuntimeToolCall {
@@ -762,11 +976,180 @@ fn execute_workflow_command_mutation(
                 workflow_run,
                 session,
             })
+        })
+        .await
+    }
+}
+
+async fn run_workflow_command_lane(
+    store: WorkflowRuntimeStore,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    session_id: String,
+    mut rx: mpsc::Receiver<WorkflowCommandEnvelope>,
+) {
+    let executor = WorkflowRuntimeCommandExecutor::new(
+        store,
+        session_projection,
+        agent_runtime_projection,
+    );
+    while let Some(envelope) = rx.recv().await {
+        crate::logging::info_with_fields(
+            "daemon.kernel_workflow_actor",
+            "workflow kernel command dispatched",
+            serde_json::json!({
+                "session_id": session_id,
+                "command_id": envelope.command_id,
+                "command_type": envelope.command_type,
+            }),
+        );
+        let result = executor.execute(envelope.request).await;
+        let _ = envelope.result_tx.send(result);
+    }
+}
+
+#[derive(Clone)]
+struct WorkflowRuntimeCommandExecutor {
+    store: WorkflowRuntimeStore,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+}
+
+impl WorkflowRuntimeCommandExecutor {
+    fn new(
+        store: WorkflowRuntimeStore,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+    ) -> Self {
+        Self {
+            store,
+            session_projection,
+            agent_runtime_projection,
         }
-        _ => Err(DaemonError::LocalTransport {
-            operation: "execute workflow request",
-            message: "request is not handled by the workflow runtime".to_string(),
-        }),
+    }
+
+    async fn execute(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let (result, projected_session) = match request {
+            LocalDaemonRequest::CreateWorkflow(request) => {
+                self.store.create_workflow(request).await
+            }
+            LocalDaemonRequest::AliasWorkflow(request) => self.store.alias_workflow(request).await,
+            LocalDaemonRequest::ListWorkflows(request) => self.store.list_workflows(request).await,
+            LocalDaemonRequest::ResolveWorkflow(request) => {
+                self.store.resolve_workflow(request).await
+            }
+            LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
+                self.store.create_workflow_endpoint(request).await
+            }
+            LocalDaemonRequest::AliasWorkflowEndpoint(request) => {
+                self.store.alias_workflow_endpoint(request).await
+            }
+            LocalDaemonRequest::BindWorkflowEndpoint(request) => {
+                self.store.bind_workflow_endpoint(request).await
+            }
+            LocalDaemonRequest::AddWorkflowNode(request) => {
+                self.store.add_workflow_node(request).await
+            }
+            LocalDaemonRequest::RemoveWorkflowNode(request) => {
+                self.store.remove_workflow_node(request).await
+            }
+            LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => {
+                self.store.update_workflow_node_instructions(request).await
+            }
+            LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => {
+                self.store.set_workflow_node_can_complete_run(request).await
+            }
+            LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
+                self.store
+                    .set_workflow_node_can_emit_intermediate_output(request)
+                    .await
+            }
+            LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
+                self.store
+                    .set_workflow_node_intermediate_output_schema(request)
+                    .await
+            }
+            LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
+                self.store.set_workflow_node_max_turns(request).await
+            }
+            LocalDaemonRequest::AddWorkflowEdge(request) => {
+                self.store.add_workflow_edge(request).await
+            }
+            LocalDaemonRequest::RemoveWorkflowEdge(request) => {
+                self.store.remove_workflow_edge(request).await
+            }
+            LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
+                self.store.invoke_workflow_endpoint(request).await
+            }
+            LocalDaemonRequest::ListWorkflowRuns(request) => {
+                self.store.list_workflow_runs(request).await
+            }
+            LocalDaemonRequest::GetWorkflowRun(request) => {
+                self.store.get_workflow_run(request).await
+            }
+            LocalDaemonRequest::CancelWorkflowRun(request) => {
+                self.store.cancel_workflow_run(request).await
+            }
+            LocalDaemonRequest::ResumeWorkflowRun(request) => {
+                self.store.resume_workflow_run(request).await
+            }
+            LocalDaemonRequest::CreateWorkflowWatchdog(request) => {
+                self.store.create_workflow_watchdog(request).await
+            }
+            LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+                self.store.list_workflow_watchdogs(request).await
+            }
+            LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => {
+                self.store.set_workflow_watchdog_enabled(request).await
+            }
+            LocalDaemonRequest::RemoveWorkflowWatchdog(request) => {
+                self.store.remove_workflow_watchdog(request).await
+            }
+            LocalDaemonRequest::SetWorkflowFlushContext(request) => {
+                self.store.set_workflow_flush_context(request).await
+            }
+            LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => {
+                self.store.set_workflow_run_output_schema(request).await
+            }
+            LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
+                self.store
+                    .set_workflow_intermediate_output_schema(request)
+                    .await
+            }
+            LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
+                self.store.set_workflow_launch_policy(request).await
+            }
+            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+                self.store.list_queued_workflow_launches(request).await
+            }
+            LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => {
+                self.store.remove_queued_workflow_launch(request).await
+            }
+            LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
+                self.store.clear_queued_workflow_launches(request).await
+            }
+            LocalDaemonRequest::ValidateWorkflowOutput(request) => {
+                self.store.validate_workflow_output(request).await
+            }
+            LocalDaemonRequest::AckWorkflowTurn(request) => {
+                self.store.ack_workflow_turn(request).await
+            }
+            _ => (
+                Err(DaemonError::LocalTransport {
+                    operation: "execute workflow request",
+                    message: "request is not handled by the workflow runtime".to_string(),
+                }),
+                None,
+            ),
+        };
+        if let Some(session) = projected_session {
+            self.agent_runtime_projection.update_session(&session);
+            self.session_projection.update(session);
+        }
+        result
     }
 }
 
