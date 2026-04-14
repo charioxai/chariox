@@ -132,6 +132,24 @@ impl ProviderRunLivenessProcesses {
     }
 }
 
+struct ProviderRunLivenessState;
+
+impl ProviderRunLivenessState {
+    fn reconcile_run_liveness(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+        process_running: Option<bool>,
+    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
+        app.providers.reconcile_run_liveness(
+            &mut app.sessions,
+            session_id,
+            provider_run_id,
+            process_running,
+        )
+    }
+}
+
 struct ProviderRunLivenessNotices;
 
 impl ProviderRunLivenessNotices {
@@ -165,8 +183,8 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
-        match self.app.providers.reconcile_run_liveness(
-            &mut self.app.sessions,
+        match ProviderRunLivenessState::reconcile_run_liveness(
+            self.app,
             session_id,
             provider_run_id,
             None,
@@ -191,8 +209,8 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         let had_active_prompt = active_prompt_status.is_some();
         let process_running =
             ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)?;
-        let ended_run = match self.app.providers.reconcile_run_liveness(
-            &mut self.app.sessions,
+        let ended_run = match ProviderRunLivenessState::reconcile_run_liveness(
+            self.app,
             session_id,
             provider_run_id,
             Some(process_running),
