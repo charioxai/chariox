@@ -51,7 +51,7 @@ struct SessionCommandEnvelope {
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntime {
-    app: Arc<Mutex<DaemonApp>>,
+    store: SessionRuntimeStore,
     queue_limit: usize,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
@@ -69,8 +69,26 @@ impl SessionRuntime {
         agent_runtime_projection: AgentRuntimeProjectionStore,
         terminal_stream: TerminalStreamStore,
     ) -> Self {
+        Self::with_store_and_focus_projection(
+            SessionRuntimeStore::new(app),
+            queue_limit,
+            focus_projection,
+            session_projection,
+            agent_runtime_projection,
+            terminal_stream,
+        )
+    }
+
+    pub(crate) fn with_store_and_focus_projection(
+        store: SessionRuntimeStore,
+        queue_limit: usize,
+        focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        terminal_stream: TerminalStreamStore,
+    ) -> Self {
         Self {
-            app,
+            store,
             queue_limit,
             focus_projection,
             session_projection,
@@ -169,11 +187,9 @@ impl SessionRuntime {
                 {
                     return result;
                 }
-                let app = self.app.lock().await;
-                Ok(app
-                    .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?
-                    .id()
-                    .to_string())
+                self.store
+                    .resolve_session_ref_id(&request.session_ref, request.workspace_id.as_deref())
+                    .await
             }
             LocalDaemonRequest::DetachFromSession(request) => {
                 if let Some(session_id) = self
@@ -187,12 +203,9 @@ impl SessionRuntime {
                         attachment_id: request.attachment_id.clone(),
                     });
                 }
-                let app = self.app.lock().await;
-                Ok(app
-                    .attachments()
-                    .get_attachment(&request.attachment_id)?
-                    .session_id()
-                    .to_string())
+                self.store
+                    .attachment_session_id(&request.attachment_id)
+                    .await
             }
             _ => Err(DaemonError::LocalTransport {
                 operation: "route session kernel command",
@@ -248,7 +261,7 @@ impl SessionRuntime {
         let (tx, rx) = mpsc::channel(self.queue_limit);
         lanes.insert(session_id.to_string(), tx.clone());
         tokio::spawn(run_session_command_lane(
-            Arc::clone(&self.app),
+            self.store.clone(),
             self.focus_projection.clone(),
             self.session_projection.clone(),
             self.agent_runtime_projection.clone(),
@@ -317,8 +330,61 @@ impl SessionRuntime {
     }
 }
 
-async fn run_session_command_lane(
+#[derive(Clone)]
+pub(crate) struct SessionRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
+}
+
+impl SessionRuntimeStore {
+    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
+        Self { app }
+    }
+
+    async fn resolve_session_ref_id(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        let app = self.app.lock().await;
+        Ok(app
+            .resolve_session_ref(session_ref, workspace_id)?
+            .id()
+            .to_string())
+    }
+
+    async fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
+        let app = self.app.lock().await;
+        Ok(app
+            .attachments()
+            .get_attachment(attachment_id)?
+            .session_id()
+            .to_string())
+    }
+
+    async fn execute_request(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let mut app = self.app.lock().await;
+        let result = app.kernel_sessions().execute_request(request);
+        let projection_action = if let Ok(response) = result.as_ref() {
+            session_response_projection_action(response).or_else(|| {
+                session_id_for_projection_refresh(&result)
+                    .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
+                    .map(SessionProjectionAction::Update)
+            })
+        } else {
+            None
+        };
+        (result, projection_action)
+    }
+}
+
+async fn run_session_command_lane(
+    store: SessionRuntimeStore,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -327,7 +393,7 @@ async fn run_session_command_lane(
     mut rx: mpsc::Receiver<SessionCommandEnvelope>,
 ) {
     let executor = SessionRuntimeCommandExecutor::new(
-        app,
+        store,
         focus_projection,
         session_projection,
         agent_runtime_projection,
@@ -351,7 +417,7 @@ async fn run_session_command_lane(
 
 #[derive(Clone)]
 struct SessionRuntimeCommandExecutor {
-    app: Arc<Mutex<DaemonApp>>,
+    store: SessionRuntimeStore,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -361,7 +427,7 @@ struct SessionRuntimeCommandExecutor {
 
 impl SessionRuntimeCommandExecutor {
     fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        store: SessionRuntimeStore,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -369,7 +435,7 @@ impl SessionRuntimeCommandExecutor {
         session_id: String,
     ) -> Self {
         Self {
-            app,
+            store,
             focus_projection,
             session_projection,
             agent_runtime_projection,
@@ -415,18 +481,7 @@ impl SessionRuntimeCommandExecutor {
         {
             (result, None)
         } else {
-            let mut app = self.app.lock().await;
-            let result = app.kernel_sessions().execute_request(request);
-            let projection_action = if let Ok(response) = result.as_ref() {
-                session_response_projection_action(response).or_else(|| {
-                    session_id_for_projection_refresh(&result)
-                        .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
-                        .map(SessionProjectionAction::Update)
-                })
-            } else {
-                None
-            };
-            (result, projection_action)
+            self.store.execute_request(request).await
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
