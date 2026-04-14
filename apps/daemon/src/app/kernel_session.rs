@@ -4,12 +4,77 @@ use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
-use crate::local::LocalDaemonResponse;
+use crate::local::{
+    GetSessionStateRequest, ListAgentsRequest, LocalDaemonResponse, ResolveSessionRequest,
+};
 use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, SessionStatus};
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
+}
+
+pub(crate) struct KernelSessionReadService<'a> {
+    app: &'a DaemonApp,
+}
+
+impl<'a> KernelSessionReadService<'a> {
+    pub(crate) fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        let mut session = self.app.sessions().get_session(session_id)?;
+        let agents = self.app.agents().get_session_agents(session_id);
+        session.set_agents(agents);
+        self.app.project_session_runtime_view(&mut session);
+        self.app.update_session_projection(session.clone());
+        Ok(session)
+    }
+
+    pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
+        let sessions = self.app.sessions().list_sessions();
+        let sessions_with_agents: Vec<_> = sessions
+            .into_iter()
+            .map(|mut session| {
+                let agents = self.app.agents().get_session_agents(session.id());
+                session.set_agents(agents);
+                session
+            })
+            .collect();
+        Ok(LocalDaemonResponse::SessionsListed {
+            sessions: sessions_with_agents,
+        })
+    }
+
+    pub(crate) fn resolve_session_response(
+        &self,
+        request: ResolveSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut session = self
+            .app
+            .sessions()
+            .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())?;
+        let agents = self.app.agents().get_session_agents(session.id());
+        session.set_agents(agents);
+        Ok(LocalDaemonResponse::SessionResolved { session })
+    }
+
+    pub(crate) fn get_session_state_response(
+        &self,
+        request: GetSessionStateRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let session = self.session_snapshot(&request.session_id)?;
+        Ok(LocalDaemonResponse::SessionState { session })
+    }
+
+    pub(crate) fn list_agents_response(
+        &self,
+        request: ListAgentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let agents = self.app.agents().get_session_agents(&request.session_id);
+        Ok(LocalDaemonResponse::AgentsListed { agents })
+    }
 }
 
 impl<'a> KernelSessionService<'a> {

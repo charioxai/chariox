@@ -72,7 +72,7 @@ use crate::transport::relay_peer::{
     RelayProjectedOutputChunk, RelayPromptAttachment,
 };
 pub(crate) use kernel_agent::KernelAgentService;
-pub(crate) use kernel_session::KernelSessionService;
+pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use provider_runtime::StartedProviderLaunch;
 
@@ -532,6 +532,13 @@ impl DaemonApp {
         workspace_id: Option<&str>,
     ) -> Result<RuntimeSession, DaemonError> {
         self.sessions.resolve_session_ref(session_ref, workspace_id)
+    }
+
+    pub(crate) fn local_api_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)
     }
 
     pub fn run_shell_command(

@@ -650,7 +650,7 @@ impl CommandRouter {
         _request: ListSessionsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
-        app.list_sessions_response()
+        crate::app::KernelSessionReadService::new(&app).list_sessions_response()
     }
 
     async fn execute_cold_resolve_session_request(
@@ -658,7 +658,7 @@ impl CommandRouter {
         request: ResolveSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
-        app.resolve_session_response(request)
+        crate::app::KernelSessionReadService::new(&app).resolve_session_response(request)
     }
 
     async fn execute_cold_get_session_state_request(
@@ -666,7 +666,7 @@ impl CommandRouter {
         request: GetSessionStateRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
-        app.get_session_state_response(request)
+        crate::app::KernelSessionReadService::new(&app).get_session_state_response(request)
     }
 
     async fn execute_cold_list_agents_request(
@@ -674,7 +674,7 @@ impl CommandRouter {
         request: ListAgentsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let app = self.app.lock().await;
-        app.list_agents_response(request)
+        crate::app::KernelSessionReadService::new(&app).list_agents_response(request)
     }
 
     async fn execute_get_provider_run_request(
