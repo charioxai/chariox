@@ -8,7 +8,13 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{
+    AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+    DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
+    LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
+    SpawnAgentRequest, UpdateSessionConfigRequest,
+};
+use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalStreamStore;
 
 pub(crate) const SESSION_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -361,15 +367,15 @@ impl SessionRuntimeStore {
             .to_string())
     }
 
-    async fn execute_request(
+    async fn with_session_projection_action(
         &self,
-        request: LocalDaemonRequest,
+        operation: impl FnOnce(&mut DaemonApp) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let mut app = self.app.lock().await;
-        let result = app.kernel_sessions().execute_request(request);
+        let result = operation(&mut app);
         let projection_action = if let Ok(response) = result.as_ref() {
             session_response_projection_action(response).or_else(|| {
                 session_id_for_projection_refresh(&result)
@@ -380,6 +386,228 @@ impl SessionRuntimeStore {
             None
         };
         (result, projection_action)
+    }
+
+    async fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            app.kernel_sessions().create_session_response(request)
+        })
+        .await
+    }
+
+    async fn attach_to_session(
+        &self,
+        request: AttachToSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::SessionAttached {
+                attachment: app
+                    .kernel_sessions()
+                    .attach(crate::attachment::AttachRequest::new(
+                        request.session_id,
+                        request.client_id,
+                        request.capability_level,
+                    ))?,
+            })
+        })
+        .await
+    }
+
+    async fn detach_from_session(
+        &self,
+        request: DetachFromSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::SessionDetached {
+                attachment: app.kernel_sessions().detach(&request.attachment_id)?,
+            })
+        })
+        .await
+    }
+
+    async fn focus_agent(
+        &self,
+        request: FocusAgentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::AgentFocused {
+                agent: app
+                    .kernel_sessions()
+                    .focus_agent(&request.session_id, &request.agent_id)?,
+            })
+        })
+        .await
+    }
+
+    async fn cycle_agent_focus(
+        &self,
+        request: CycleAgentFocusRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::AgentFocusCycled {
+                agent: app
+                    .kernel_sessions()
+                    .cycle_agent_focus(&request.session_id)?,
+            })
+        })
+        .await
+    }
+
+    async fn resize_terminal(
+        &self,
+        request: ResizeTerminalRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            app.kernel_sessions().resize_terminal(
+                &request.session_id,
+                request.cols,
+                request.rows,
+            )?;
+            Ok(LocalDaemonResponse::TerminalResized {
+                session_id: request.session_id,
+                cols: request.cols,
+                rows: request.rows,
+            })
+        })
+        .await
+    }
+
+    async fn poll_runtime_notices(
+        &self,
+        request: PollRuntimeNoticesRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            let _ =
+                app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
+            Ok(LocalDaemonResponse::RuntimeNotices {
+                notices: app
+                    .terminal()
+                    .drain_notice_records(&request.session_id, &request.attachment_id),
+            })
+        })
+        .await
+    }
+
+    async fn update_session_config(
+        &self,
+        request: UpdateSessionConfigRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            let session_id = request.session_id.clone();
+            let config = app.kernel_sessions().update_session_config(
+                &request.session_id,
+                &request.attachment_id,
+                request.values,
+                request.requires_idle,
+            )?;
+            let session = app.local_api_session_snapshot(&session_id)?;
+            Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
+        })
+        .await
+    }
+
+    async fn alias_session(
+        &self,
+        request: AliasSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::SessionAliased {
+                session: app
+                    .kernel_sessions()
+                    .alias_session(&request.session_id, request.alias)?,
+            })
+        })
+        .await
+    }
+
+    async fn spawn_agent(
+        &self,
+        request: SpawnAgentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            app.kernel_agents()
+                .execute_request(LocalDaemonRequest::SpawnAgent(request))
+        })
+        .await
+    }
+
+    async fn destroy_agent(
+        &self,
+        request: DestroyAgentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            app.kernel_agents()
+                .execute_request(LocalDaemonRequest::DestroyAgent(request))
+        })
+        .await
+    }
+
+    async fn end_session(
+        &self,
+        request: EndSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::SessionEnded {
+                session: app.kernel_sessions().end_session(&request.session_id)?,
+            })
+        })
+        .await
+    }
+
+    async fn delete_session(
+        &self,
+        request: DeleteSessionRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        self.with_session_projection_action(|app| {
+            Ok(LocalDaemonResponse::SessionDeleted {
+                session: app
+                    .kernel_sessions()
+                    .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
+            })
+        })
+        .await
     }
 }
 
@@ -481,7 +709,7 @@ impl SessionRuntimeCommandExecutor {
         {
             (result, None)
         } else {
-            self.store.execute_request(request).await
+            self.execute_store_request(request).await
         };
         let projected_session = match projection_action {
             Some(SessionProjectionAction::Update(session)) => {
@@ -513,6 +741,49 @@ impl SessionRuntimeCommandExecutor {
             self.terminal_stream.remove_session(&self.session_id);
         }
         result
+    }
+
+    async fn execute_store_request(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        match request {
+            LocalDaemonRequest::CreateSession(request) => self.store.create_session(request).await,
+            LocalDaemonRequest::AttachToSession(request) => {
+                self.store.attach_to_session(request).await
+            }
+            LocalDaemonRequest::DetachFromSession(request) => {
+                self.store.detach_from_session(request).await
+            }
+            LocalDaemonRequest::FocusAgent(request) => self.store.focus_agent(request).await,
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                self.store.cycle_agent_focus(request).await
+            }
+            LocalDaemonRequest::ResizeTerminal(request) => {
+                self.store.resize_terminal(request).await
+            }
+            LocalDaemonRequest::PollRuntimeNotices(request) => {
+                self.store.poll_runtime_notices(request).await
+            }
+            LocalDaemonRequest::UpdateSessionConfig(request) => {
+                self.store.update_session_config(request).await
+            }
+            LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
+            LocalDaemonRequest::SpawnAgent(request) => self.store.spawn_agent(request).await,
+            LocalDaemonRequest::DestroyAgent(request) => self.store.destroy_agent(request).await,
+            LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,
+            LocalDaemonRequest::DeleteSession(request) => self.store.delete_session(request).await,
+            _ => (
+                Err(DaemonError::LocalTransport {
+                    operation: "execute session request",
+                    message: "request is not handled by the session runtime".to_string(),
+                }),
+                None,
+            ),
+        }
     }
 }
 
@@ -738,9 +1009,8 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        EndSessionRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        ResizeTerminalRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -1007,16 +1277,15 @@ mod tests {
         let (session, _agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let response = app
+        let attachment = app
             .kernel_sessions()
-            .execute_request(LocalDaemonRequest::AttachToSession(
-                AttachToSessionRequest {
-                    session_id: session.id().to_string(),
-                    client_id: "cli-1".to_string(),
-                    capability_level: ClientCapabilityLevel::FullTerminal,
-                },
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attach should succeed");
+        let response = LocalDaemonResponse::SessionAttached { attachment };
 
         assert!(matches!(
             response,
@@ -1049,10 +1318,7 @@ mod tests {
             launch_dev_stub_provider(&mut app, session.id(), second_agent.id(), "opus");
 
         app.kernel_sessions()
-            .execute_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
-                session_id: session.id().to_string(),
-                agent_id: default_agent.id().to_string(),
-            }))
+            .focus_agent(session.id(), default_agent.id())
             .expect("focus should succeed");
 
         let started = app
@@ -1076,13 +1342,11 @@ mod tests {
             _ => panic!("unexpected local response"),
         }
 
-        let response = app
+        let agent = app
             .kernel_sessions()
-            .execute_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
-                session_id: session.id().to_string(),
-                agent_id: second_agent.id().to_string(),
-            }))
+            .focus_agent(session.id(), second_agent.id())
             .expect("focus should succeed");
+        let response = LocalDaemonResponse::AgentFocused { agent };
 
         assert!(matches!(response, LocalDaemonResponse::AgentFocused { .. }));
         let session_state = app
