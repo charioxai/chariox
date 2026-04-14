@@ -51,7 +51,9 @@ export function applyTranscriptDisplayState(
   for (const turnId of turnIds) {
     const turnEntries = normalized.filter((entry) => entry.turnId === turnId)
     const finalSummary = [...turnEntries].reverse().find((entry) => entry.role === "assistant")
-    const collapsibleTurn = Boolean(finalSummary) && turnId !== activeTurnId
+    const collapsibleTurn = Boolean(finalSummary)
+      && turnId !== activeTurnId
+      && hasCollapsibleTurnBody(turnEntries, finalSummary!.id)
     const expanded = collapsibleTurn ? !collapsedTurnIdSet.has(turnId) : false
 
     for (const entry of turnEntries) {
@@ -166,6 +168,10 @@ function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number 
     return false
   }
   return entry.role === "tool" || entry.role === "error" || entry.role === "status" || entry.role === "notice"
+}
+
+function hasCollapsibleTurnBody(turnEntries: TranscriptEntry[], finalSummaryId: number) {
+  return turnEntries.some((entry) => entry.role !== "user" && entry.id !== finalSummaryId)
 }
 
 function describeCollapsedBlob(entry: TranscriptEntry) {

@@ -82,6 +82,22 @@ test("applyTranscriptDisplayState keeps the active turn expanded until completio
   assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
 })
 
+test("applyTranscriptDisplayState omits turn toggle when collapse would hide nothing", () => {
+  const entries = applyTranscriptDisplayState([
+    { id: 1, role: "user", text: "Hi", turnId: 1 },
+    { id: 2, role: "assistant", text: "hi", turnId: 1 },
+  ])
+
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Hi"],
+      ["assistant", "hi"],
+    ],
+  )
+  assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+})
+
 test("setTranscriptBlobCollapsed expands an individual blob without disturbing turn expansion", () => {
   const expandedTurn = applyTranscriptDisplayState(baseTurnEntries())
   const entries = setTranscriptBlobCollapsed(expandedTurn, 3, [], false)
