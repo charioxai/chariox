@@ -30,6 +30,46 @@ struct TerminalOutputStore {
     agent_runtime_projection: AgentRuntimeProjectionStore,
 }
 
+struct TerminalOutputContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> TerminalOutputContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn pump_terminal_output(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        pump_terminal_output_for_attachment(self.app, session_id, attachment_id)
+    }
+
+    fn pump_active_provider_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<(), DaemonError> {
+        let _ =
+            ProviderOutputPump::new(self.app).pump_provider_output(ProviderOutputPumpRequest {
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+            })?;
+        Ok(())
+    }
+
+    fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.app.local_api_session_snapshot(session_id)
+    }
+}
+
 impl TerminalOutputExecutor {
     pub(crate) fn new(
         app: Arc<Mutex<DaemonApp>>,
@@ -125,8 +165,9 @@ impl TerminalOutputStore {
         attachment_id: &str,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let mut app = self.app.lock().await;
-        let records = pump_terminal_output_for_attachment(&mut app, session_id, attachment_id)?;
-        self.refresh_session_projection(&app, session_id);
+        let mut context = TerminalOutputContext::new(&mut app);
+        let records = context.pump_terminal_output(session_id, attachment_id)?;
+        self.refresh_session_projection(&context, session_id);
         Ok(records)
     }
 
@@ -137,18 +178,18 @@ impl TerminalOutputStore {
         recipient_attachment_ids: Vec<String>,
     ) -> Result<(), DaemonError> {
         let mut app = self.app.lock().await;
-        let _ =
-            ProviderOutputPump::new(&mut app).pump_provider_output(ProviderOutputPumpRequest {
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            })?;
-        self.refresh_session_projection(&app, session_id);
+        let mut context = TerminalOutputContext::new(&mut app);
+        context.pump_active_provider_output(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+        )?;
+        self.refresh_session_projection(&context, session_id);
         Ok(())
     }
 
-    fn refresh_session_projection(&self, app: &DaemonApp, session_id: &str) {
-        if let Ok(session) = app.local_api_session_snapshot(session_id) {
+    fn refresh_session_projection(&self, context: &TerminalOutputContext<'_>, session_id: &str) {
+        if let Ok(session) = context.session_snapshot(session_id) {
             self.agent_runtime_projection.update_session(&session);
             self.session_projection.update(session);
         }
