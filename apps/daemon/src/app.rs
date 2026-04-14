@@ -71,6 +71,7 @@ use crate::transport::relay_peer::{
 };
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::KernelSessionService;
+pub(crate) use provider_runtime::StartedProviderLaunch;
 
 pub struct DaemonApp {
     config: DaemonConfig,
