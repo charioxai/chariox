@@ -703,14 +703,8 @@ mod tests {
     ) -> crate::provider::RuntimeProviderRun {
         let provider_run = app
             .launch_provider(
-                LaunchProviderRequest::new(
-                    session_id,
-                    "dev-stub",
-                    "claude-code",
-                    "default",
-                    model,
-                )
-                .with_agent_id(agent_id),
+                LaunchProviderRequest::new(session_id, "dev-stub", "claude-code", "default", model)
+                    .with_agent_id(agent_id),
             )
             .expect("provider launch should succeed");
         app.update_provider_run_projection(provider_run.clone());
@@ -993,9 +987,7 @@ mod tests {
             launch_dev_stub_provider(&mut app, session.id(), default_agent.id(), "sonnet");
 
         let second_agent = app
-            .spawn_agent(
-                CreateAgentRequest::new(session.id(), "claude-code").with_alias("agent-b"),
-            )
+            .spawn_agent(CreateAgentRequest::new(session.id(), "claude-code").with_alias("agent-b"))
             .expect("second agent should spawn");
 
         let _second_run =

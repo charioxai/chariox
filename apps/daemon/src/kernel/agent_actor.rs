@@ -599,14 +599,8 @@ mod tests {
     ) {
         let provider_run = app
             .launch_provider(
-                LaunchProviderRequest::new(
-                    session_id,
-                    "dev-stub",
-                    "claude-code",
-                    "default",
-                    model,
-                )
-                .with_agent_id(agent_id),
+                LaunchProviderRequest::new(session_id, "dev-stub", "claude-code", "default", model)
+                    .with_agent_id(agent_id),
             )
             .expect("provider launch should succeed");
         app.update_provider_run_projection(provider_run);

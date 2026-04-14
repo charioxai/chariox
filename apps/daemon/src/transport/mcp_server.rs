@@ -286,12 +286,9 @@ mod tests {
     use serde_json::Value;
     use tokio::sync::Mutex;
 
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::router::CommandRouter;
-    use crate::local::{
-        AddWorkflowNodeRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-        InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
-    };
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
@@ -374,95 +371,53 @@ mod tests {
     #[tokio::test]
     async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = match app
-            .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-1", "worktree-1"),
-            ))
-            .expect("session should exist")
-        {
-            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
-                (session, agent)
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let (session, _default_agent) = app
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should exist");
         app.attach(AttachRequest::new(
             session.id(),
             "client-a",
             ClientCapabilityLevel::InteractiveStructured,
         ))
         .expect("attachment should attach");
-        let agent_id = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session.id().to_string(),
-                alias: Some("agent-a".to_string()),
-                provider: "dev-stub".to_string(),
-                model: Some("test-model".to_string()),
-                effort: None,
-                worktree_id: Some("worktree-1".to_string()),
-                machine_ref: None,
-            }))
+        let agent_id = app
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("agent-a")
+                    .with_model("test-model")
+                    .with_worktree("worktree-1"),
+            )
             .expect("agent should spawn")
-        {
-            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let workflow_id = match app
-            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
-                session_id: session.id().to_string(),
-                alias: Some("wf".to_string()),
-            }))
+            .id()
+            .to_string();
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf".to_string()))
             .expect("workflow should exist")
-        {
-            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
-                workflow.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let node_id = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
-                AddWorkflowNodeRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id.clone(),
-                    agent_id: agent_id.clone(),
-                },
-            ))
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, &agent_id)
             .expect("node should be added")
-        {
-            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
-                node.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        match app
-            .handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
-                CreateWorkflowEndpointRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id.clone(),
-                    entry_node_id: node_id,
-                    alias: Some("entry".to_string()),
-                },
-            ))
-            .expect("endpoint should exist")
-        {
-            crate::local::LocalDaemonResponse::WorkflowEndpointCreated { .. } => {}
-            other => panic!("unexpected response: {other:?}"),
-        }
-        let workflow_run = match app
-            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
-                InvokeWorkflowEndpointRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id,
-                    endpoint_ref: "entry".to_string(),
-                    prompt: Some("start".to_string()),
-                },
-            ))
-            .expect("workflow should invoke")
-        {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
-                workflow_run
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should exist");
+        let (workflow_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session.id(),
+                &workflow_id,
+                "entry",
+                Some("start".to_string()),
+            )
+            .expect("workflow should invoke");
         let node_run = workflow_run
             .node_runs()
             .first()

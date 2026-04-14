@@ -3260,7 +3260,12 @@ mod tests {
         ));
         let (created_session_id, default_agent_id) = {
             let mut app = app.lock().await;
-            create_test_session_with_alias(&mut app, "workspace-relay-test", "worktree-relay-test", "main")
+            create_test_session_with_alias(
+                &mut app,
+                "workspace-relay-test",
+                "worktree-relay-test",
+                "main",
+            )
         };
         let attachment_id = {
             let mut app = app.lock().await;

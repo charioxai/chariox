@@ -212,7 +212,7 @@ Status as of 2026-04-13:
 - Landed: public `DaemonApp` prompt facade methods for submit/complete/cancel are now crate-private compatibility shims. External integration tests continue to enter prompt lifecycle through the transport/router-facing surfaces instead of the app facade.
 - Landed: runtime integration tests now use public `TransportService` prompt/output pump helpers instead of direct `DaemonApp` output-pump methods, keeping external drills off private app facade methods while preserving direct pump coverage.
 - Landed: terminal output pumping now enters through a dedicated `TerminalOutputExecutor` boundary instead of embedding provider-output pumping inside `CommandRouter`. The executor still uses compatibility-backed provider/session stores, but it isolates the active `PumpTerminalOutput` ownership split target.
-- Landed: non-local-api actor/projection/transport setup tests no longer use `DaemonApp::handle_local_request` as a convenience facade for agent/session/projection/flow-control/relay-client setup. They now use explicit app/service APIs or router-facing request surfaces, keeping the remaining dispatcher usage concentrated in migration-target modules.
+- Landed: non-local-api actor/projection/transport setup tests no longer use `DaemonApp::handle_local_request` as a convenience facade for agent/session/projection/flow-control/relay-client/MCP setup. They now use explicit app/service APIs or router-facing request surfaces, keeping the remaining dispatcher usage concentrated in migration-target modules.
 
 Still open:
 
