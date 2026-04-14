@@ -168,28 +168,50 @@ type WorkflowStoreExecutionResult = (
     Option<crate::session::RuntimeSession>,
 );
 
+struct WorkflowRuntimeContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> WorkflowRuntimeContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn execute_service_operation(
+        &mut self,
+        session_id: &str,
+        operation: impl FnOnce(
+            &mut KernelWorkflowService<'_>,
+        ) -> Result<LocalDaemonResponse, DaemonError>,
+    ) -> WorkflowStoreExecutionResult {
+        let result = {
+            let mut workflows = KernelWorkflowService::new(self.app);
+            operation(&mut workflows)
+        };
+        let projected_session = if let Ok(response) = result.as_ref() {
+            workflow_response_session(response)
+                .or_else(|| self.app.local_api_session_snapshot(session_id).ok())
+        } else {
+            None
+        };
+        (result, projected_session)
+    }
+}
+
 impl WorkflowRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self { app }
     }
 
-    async fn execute_operation(
+    async fn execute_service_operation(
         &self,
         session_id: &str,
-        operation: impl FnOnce(&mut DaemonApp) -> Result<LocalDaemonResponse, DaemonError>,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<crate::session::RuntimeSession>,
-    ) {
+        operation: impl FnOnce(
+            &mut KernelWorkflowService<'_>,
+        ) -> Result<LocalDaemonResponse, DaemonError>,
+    ) -> WorkflowStoreExecutionResult {
         let mut app = self.app.lock().await;
-        let result = operation(&mut app);
-        let projected_session = if let Ok(response) = result.as_ref() {
-            workflow_response_session(response)
-                .or_else(|| app.local_api_session_snapshot(session_id).ok())
-        } else {
-            None
-        };
-        (result, projected_session)
+        WorkflowRuntimeContext::new(&mut app).execute_service_operation(session_id, operation)
     }
 
     async fn create_workflow(
@@ -197,24 +219,24 @@ impl WorkflowRuntimeStore {
         request: CreateWorkflowRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).create_workflow(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.create_workflow(request)
         })
         .await
     }
 
     async fn alias_workflow(&self, request: AliasWorkflowRequest) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).alias_workflow(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.alias_workflow(request)
         })
         .await
     }
 
     async fn list_workflows(&self, request: ListWorkflowsRequest) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).list_workflows(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.list_workflows(request)
         })
         .await
     }
@@ -224,8 +246,8 @@ impl WorkflowRuntimeStore {
         request: ResolveWorkflowRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).resolve_workflow(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.resolve_workflow(request)
         })
         .await
     }
@@ -235,8 +257,8 @@ impl WorkflowRuntimeStore {
         request: CreateWorkflowEndpointRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).create_workflow_endpoint(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.create_workflow_endpoint(request)
         })
         .await
     }
@@ -246,8 +268,8 @@ impl WorkflowRuntimeStore {
         request: AliasWorkflowEndpointRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).alias_workflow_endpoint(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.alias_workflow_endpoint(request)
         })
         .await
     }
@@ -257,8 +279,8 @@ impl WorkflowRuntimeStore {
         request: BindWorkflowEndpointRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).bind_workflow_endpoint(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.bind_workflow_endpoint(request)
         })
         .await
     }
@@ -268,8 +290,8 @@ impl WorkflowRuntimeStore {
         request: AddWorkflowNodeRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).add_workflow_node(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.add_workflow_node(request)
         })
         .await
     }
@@ -279,8 +301,8 @@ impl WorkflowRuntimeStore {
         request: RemoveWorkflowNodeRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).remove_workflow_node(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.remove_workflow_node(request)
         })
         .await
     }
@@ -290,8 +312,8 @@ impl WorkflowRuntimeStore {
         request: UpdateWorkflowNodeInstructionsRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).update_workflow_node_instructions(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.update_workflow_node_instructions(request)
         })
         .await
     }
@@ -301,8 +323,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowNodeCanCompleteRunRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_node_can_complete_run(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_node_can_complete_run(request)
         })
         .await
     }
@@ -312,8 +334,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowNodeCanEmitIntermediateOutputRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_node_can_emit_intermediate_output(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_node_can_emit_intermediate_output(request)
         })
         .await
     }
@@ -323,8 +345,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowNodeIntermediateOutputSchemaRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_node_intermediate_output_schema(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_node_intermediate_output_schema(request)
         })
         .await
     }
@@ -334,8 +356,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowNodeMaxTurnsRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_node_max_turns(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_node_max_turns(request)
         })
         .await
     }
@@ -345,8 +367,8 @@ impl WorkflowRuntimeStore {
         request: AddWorkflowEdgeRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).add_workflow_edge(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.add_workflow_edge(request)
         })
         .await
     }
@@ -356,8 +378,8 @@ impl WorkflowRuntimeStore {
         request: RemoveWorkflowEdgeRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).remove_workflow_edge(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.remove_workflow_edge(request)
         })
         .await
     }
@@ -367,8 +389,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowFlushContextRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_flush_context(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_flush_context(request)
         })
         .await
     }
@@ -378,8 +400,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowRunOutputSchemaRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_run_output_schema(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_run_output_schema(request)
         })
         .await
     }
@@ -389,8 +411,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowIntermediateOutputSchemaRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_intermediate_output_schema(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_intermediate_output_schema(request)
         })
         .await
     }
@@ -400,8 +422,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowLaunchPolicyRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_launch_policy(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_launch_policy(request)
         })
         .await
     }
@@ -411,8 +433,8 @@ impl WorkflowRuntimeStore {
         request: InvokeWorkflowEndpointRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).invoke_workflow_endpoint(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.invoke_workflow_endpoint(request)
         })
         .await
     }
@@ -422,8 +444,8 @@ impl WorkflowRuntimeStore {
         request: ListWorkflowRunsRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).list_workflow_runs(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.list_workflow_runs(request)
         })
         .await
     }
@@ -433,8 +455,8 @@ impl WorkflowRuntimeStore {
         request: GetWorkflowRunRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).get_workflow_run(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.get_workflow_run(request)
         })
         .await
     }
@@ -444,8 +466,8 @@ impl WorkflowRuntimeStore {
         request: CancelWorkflowRunRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).cancel_workflow_run(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.cancel_workflow_run(request)
         })
         .await
     }
@@ -455,8 +477,8 @@ impl WorkflowRuntimeStore {
         request: ResumeWorkflowRunRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).resume_workflow_run(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.resume_workflow_run(request)
         })
         .await
     }
@@ -466,8 +488,8 @@ impl WorkflowRuntimeStore {
         request: CreateWorkflowWatchdogRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).create_workflow_watchdog(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.create_workflow_watchdog(request)
         })
         .await
     }
@@ -477,8 +499,8 @@ impl WorkflowRuntimeStore {
         request: ListWorkflowWatchdogsRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).list_workflow_watchdogs(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.list_workflow_watchdogs(request)
         })
         .await
     }
@@ -488,8 +510,8 @@ impl WorkflowRuntimeStore {
         request: SetWorkflowWatchdogEnabledRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).set_workflow_watchdog_enabled(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.set_workflow_watchdog_enabled(request)
         })
         .await
     }
@@ -499,8 +521,8 @@ impl WorkflowRuntimeStore {
         request: RemoveWorkflowWatchdogRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).remove_workflow_watchdog(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.remove_workflow_watchdog(request)
         })
         .await
     }
@@ -510,8 +532,8 @@ impl WorkflowRuntimeStore {
         request: ListQueuedWorkflowLaunchesRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).list_queued_workflow_launches(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.list_queued_workflow_launches(request)
         })
         .await
     }
@@ -521,8 +543,8 @@ impl WorkflowRuntimeStore {
         request: RemoveQueuedWorkflowLaunchRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).remove_queued_workflow_launch(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.remove_queued_workflow_launch(request)
         })
         .await
     }
@@ -532,8 +554,8 @@ impl WorkflowRuntimeStore {
         request: ClearQueuedWorkflowLaunchesRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).clear_queued_workflow_launches(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.clear_queued_workflow_launches(request)
         })
         .await
     }
@@ -543,8 +565,8 @@ impl WorkflowRuntimeStore {
         request: ValidateWorkflowOutputRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).validate_workflow_output(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.validate_workflow_output(request)
         })
         .await
     }
@@ -554,8 +576,8 @@ impl WorkflowRuntimeStore {
         request: AckWorkflowTurnRequest,
     ) -> WorkflowStoreExecutionResult {
         let session_id = request.session_id.clone();
-        self.execute_operation(&session_id, move |app| {
-            KernelWorkflowService::new(app).ack_workflow_turn(request)
+        self.execute_service_operation(&session_id, move |workflows| {
+            workflows.ack_workflow_turn(request)
         })
         .await
     }
