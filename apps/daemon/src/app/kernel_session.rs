@@ -8,15 +8,6 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, SessionStatus};
 
-impl DaemonApp {
-    pub(crate) fn handle_session_request(
-        &mut self,
-        request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.kernel_sessions().execute_request(request)
-    }
-}
-
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
 }

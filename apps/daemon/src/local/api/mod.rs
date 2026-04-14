@@ -100,7 +100,9 @@ impl DaemonApp {
             | LocalDaemonRequest::UpdateSessionConfig(_)
             | LocalDaemonRequest::AliasSession(_)
             | LocalDaemonRequest::EndSession(_)
-            | LocalDaemonRequest::DeleteSession(_)) => self.handle_session_request(request),
+            | LocalDaemonRequest::DeleteSession(_)) => {
+                self.kernel_sessions().execute_request(request)
+            }
             LocalDaemonRequest::LaunchProviderRun(request) => {
                 self.handle_launch_provider_run_request(request)
             }
@@ -305,7 +307,7 @@ impl DaemonApp {
             | LocalDaemonRequest::RemoveWorkflowWatchdog(_)
             | LocalDaemonRequest::SetWorkflowWatchdogEnabled(_)
             | LocalDaemonRequest::ListWorkflowWatchdogs(_)) => {
-                self.handle_workflow_request(request)
+                crate::kernel::workflow_actor::execute_workflow_runtime_request(self, request)
             }
         }
     }

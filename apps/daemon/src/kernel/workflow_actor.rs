@@ -206,7 +206,7 @@ impl WorkflowRuntimeCommandExecutor {
     }
 }
 
-fn execute_workflow_runtime_request(
+pub(crate) fn execute_workflow_runtime_request(
     app: &mut DaemonApp,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
