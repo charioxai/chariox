@@ -133,7 +133,6 @@ impl CommandRouter {
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
-            terminal_stream.clone(),
             interactive_rx,
         ));
         Self {
@@ -222,7 +221,6 @@ impl CommandRouter {
         );
         tokio::spawn(run_interactive_command_lane(
             Arc::clone(&app),
-            terminal_stream.clone(),
             interactive_rx,
         ));
         Self {
@@ -1300,7 +1298,6 @@ fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
 
 async fn run_interactive_command_lane(
     app: Arc<Mutex<DaemonApp>>,
-    terminal_stream: TerminalStreamStore,
     mut rx: mpsc::Receiver<InteractiveCommandEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
@@ -1316,20 +1313,17 @@ async fn run_interactive_command_lane(
                 "agent_id": envelope.command.agent_id,
             }),
         );
-        let result = execute_interactive_request(&app, &terminal_stream, envelope.request).await;
+        let result = execute_interactive_request(&app, envelope.request).await;
         let _ = envelope.result_tx.send(result);
     }
 }
 
 async fn execute_interactive_request(
     app: &Arc<Mutex<DaemonApp>>,
-    terminal_stream: &TerminalStreamStore,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut app = app.lock().await;
-    if let Some(result) =
-        SessionActor::handle_interactive_command(&mut app, terminal_stream, request.clone())
-    {
+    if let Some(result) = SessionActor::handle_interactive_command(&mut app, request.clone()) {
         return result;
     }
     if let Some(result) = AgentActor::handle_interactive_command(&mut app, request.clone()) {
