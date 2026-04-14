@@ -150,7 +150,7 @@ async fn run_workflow_command_lane(
         );
         let (result, projected_session) = {
             let mut app = app.lock().await;
-            let result = app.handle_local_request(envelope.request);
+            let result = app.handle_workflow_request(envelope.request);
             let projected_session = if let Ok(response) = result.as_ref() {
                 workflow_response_session(response)
                     .or_else(|| app.local_api_session_snapshot(&session_id).ok())

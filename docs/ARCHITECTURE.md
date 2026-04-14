@@ -124,6 +124,7 @@ Current implementation note:
 - the primary local client is the TypeScript OpenTUI app in [apps/cli](/Users/miguel/arroba/apps/cli)
 - `arroba-cli` is currently a Rust launcher for that client
 - the primary local transport is the kernel WebSocket event stream; local IPC remains as a lower-level compatibility and harness surface
+- M4.5 workflow commands are routed through the kernel command router into bounded workflow-runtime lanes; both local IPC and relay-proxied workflow requests delegate to the same workflow-runtime request handler while the legacy `DaemonApp` remains only as the current mutation mirror
 
 ### 3.2 Machine
 
