@@ -35,6 +35,28 @@ export function stripTranscriptDisplayEntries(entries: TranscriptEntry[]) {
   return entries.filter((entry) => entry.role !== "turn_toggle")
 }
 
+export function collapseLatestTranscriptTurn(
+  entries: TranscriptEntry[],
+  collapsedTurnIds: readonly number[] = [],
+) {
+  const nextCollapsedTurnIds = new Set(collapsedTurnIds)
+  const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries))
+  const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
+  const latestTurnId = turnIds.at(-1)
+  if (latestTurnId === undefined) {
+    return sortedTurnIds(nextCollapsedTurnIds)
+  }
+
+  const turnEntries = normalized.filter((entry) => entry.turnId === latestTurnId)
+  const finalSummary = [...turnEntries].reverse().find((entry) => entry.role === "assistant")
+  if (!finalSummary || !hasCollapsibleTurnBody(turnEntries, finalSummary.id)) {
+    return sortedTurnIds(nextCollapsedTurnIds)
+  }
+
+  nextCollapsedTurnIds.add(latestTurnId)
+  return sortedTurnIds(nextCollapsedTurnIds)
+}
+
 export function applyTranscriptDisplayState(
   entries: TranscriptEntry[],
   expandedTurnIds: readonly number[] = [],
@@ -172,6 +194,10 @@ function computeBlobCollapsible(entry: TranscriptEntry, _finalSummaryId: number 
 
 function hasCollapsibleTurnBody(turnEntries: TranscriptEntry[], finalSummaryId: number) {
   return turnEntries.some((entry) => entry.role !== "user" && entry.id !== finalSummaryId)
+}
+
+function sortedTurnIds(turnIds: Iterable<number>) {
+  return [...turnIds].sort((left, right) => left - right)
 }
 
 function describeCollapsedBlob(entry: TranscriptEntry) {

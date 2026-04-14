@@ -4,6 +4,7 @@ import test from "node:test"
 import type { TranscriptEntry } from "./cli-types.js"
 import {
   applyTranscriptDisplayState,
+  collapseLatestTranscriptTurn,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
@@ -96,6 +97,38 @@ test("applyTranscriptDisplayState omits turn toggle when collapse would hide not
     ],
   )
   assert.equal(entries.find((entry) => entry.role === "turn_toggle"), undefined)
+})
+
+test("collapseLatestTranscriptTurn marks the latest completed collapsible turn", () => {
+  const collapsedTurnIds = collapseLatestTranscriptTurn(baseTurnEntries())
+  const entries = applyTranscriptDisplayState([
+    ...baseTurnEntries(),
+    { id: 5, role: "user", text: "Next prompt", turnId: 2 },
+  ], collapsedTurnIds)
+
+  assert.deepEqual(collapsedTurnIds, [1])
+  assert.deepEqual(
+    entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
+    [
+      ["user", "Investigate the CLI transcript UI"],
+      ["turn_toggle", "click to expand"],
+      ["assistant", "I changed the transcript layout."],
+      ["user", "Next prompt"],
+    ],
+  )
+})
+
+test("collapseLatestTranscriptTurn preserves collapsed ids and skips trivial latest turns", () => {
+  const collapsedTurnIds = collapseLatestTranscriptTurn(
+    [
+      ...baseTurnEntries(),
+      { id: 5, role: "user", text: "Hi", turnId: 2 },
+      { id: 6, role: "assistant", text: "hi", turnId: 2 },
+    ],
+    [1],
+  )
+
+  assert.deepEqual(collapsedTurnIds, [1])
 })
 
 test("setTranscriptBlobCollapsed expands an individual blob without disturbing turn expansion", () => {

@@ -197,6 +197,7 @@ import { createSessionAttachmentController } from "./session-attachment-controll
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import {
   applyTranscriptDisplayState,
+  collapseLatestTranscriptTurn,
   resolveVisibleTurnToggle,
   setTranscriptBlobCollapsed,
 } from "./transcript-display.js"
@@ -2585,8 +2586,9 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const applyVisibleTranscriptState = (
     nextEntries: TranscriptEntry[],
     agentId: string | null | undefined = visibleTranscriptAgentId(),
+    turnIds = expandedTurnIdsForAgent(agentId),
   ) => {
-    const preparedEntries = applyTranscriptDisplayState(nextEntries, expandedTurnIdsForAgent(agentId))
+    const preparedEntries = applyTranscriptDisplayState(nextEntries, turnIds)
     setEntries(reconcile(preparedEntries))
     setEntryCounter(preparedEntries.reduce((max, entry) => Math.max(max, entry.id), 0))
     return preparedEntries
@@ -2631,7 +2633,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     retainPromptFocus()
   }
 
-  const appendEntry = (entry: Omit<TranscriptEntry, "id">) => {
+  const appendEntry = (entry: Omit<TranscriptEntry, "id">, turnIds = expandedTurnIdsForAgent(visibleTranscriptAgentId())) => {
     const previousEntry = entries.at(-1)
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
       return
@@ -2642,7 +2644,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (nextEntry.turnId === undefined && currentTurnId !== null) {
       nextEntry.turnId = currentTurnId
     }
-    const nextEntries = applyVisibleTranscriptState([...currentEntries, nextEntry])
+    const nextEntries = applyVisibleTranscriptState([...currentEntries, nextEntry], visibleTranscriptAgentId(), turnIds)
     persistVisibleTranscriptEntries(nextEntries)
     reconcileMountedTranscript(currentEntries, nextEntries)
     enforceTranscriptRetention()
@@ -2690,14 +2692,14 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     submittingAgentId = targetAgentId
     setStreamingAgentId(targetAgentId)
     markAgentBusy(targetAgentId)
-    clearExpandedTurnsForAgent(targetAgentId)
     if (splitAgentResponseMode() && targetAgentId && targetAgentId !== responsePrimaryAgent()?.id) {
-      const paneEntries = agentPaneEntries()[targetAgentId] ?? []
+      const paneEntries = currentAgentPaneEntries(targetAgentId)
+      const nextTurnIds = collapseLatestTurnForAgent(targetAgentId, paneEntries)
       appendTranscriptEntryToAgentPane(targetAgentId, {
         role: "user",
         text: trimSingleTrailingNewline(text),
         turnId: computeNextTurnId(paneEntries),
-      })
+      }, nextTurnIds)
       setSubmitting(true)
       setWorking(true)
       renderSessionChromeBoundary()
@@ -2706,7 +2708,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const turnId = nextTurnId
     nextTurnId += 1
     currentTurnId = turnId
-    appendEntry({ role: "user", text: trimSingleTrailingNewline(text), turnId })
+    const nextTurnIds = collapseLatestTurnForAgent(targetAgentId, entries.filter(Boolean))
+    appendEntry({ role: "user", text: trimSingleTrailingNewline(text), turnId }, nextTurnIds)
     syncVisibleTranscriptPreview()
     setSubmitting(true)
     setWorking(true)
@@ -3777,18 +3780,36 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
 
-  const clearExpandedTurnsForAgent = (agentId: string | null | undefined) => {
+  const replaceExpandedTurnsForAgent = (agentId: string | null | undefined, turnIds: readonly number[]) => {
     if (!agentId) {
       return
     }
     setExpandedTurnIdsByAgent((current) => {
-      if (!(agentId in current)) {
+      const nextTurnIds = [...new Set(turnIds)].sort((left, right) => left - right)
+      if (nextTurnIds.length === 0) {
+        if (!(agentId in current)) {
+          return current
+        }
+        const next = { ...current }
+        delete next[agentId]
+        return next
+      }
+
+      const currentTurnIds = current[agentId] ?? []
+      if (currentTurnIds.length === nextTurnIds.length && currentTurnIds.every((value, index) => value === nextTurnIds[index])) {
         return current
       }
-      const next = { ...current }
-      delete next[agentId]
-      return next
+      return {
+        ...current,
+        [agentId]: nextTurnIds,
+      }
     })
+  }
+
+  const collapseLatestTurnForAgent = (agentId: string | null | undefined, paneEntries: TranscriptEntry[]) => {
+    const nextTurnIds = collapseLatestTranscriptTurn(paneEntries, expandedTurnIdsForAgent(agentId))
+    replaceExpandedTurnsForAgent(agentId, nextTurnIds)
+    return nextTurnIds
   }
 
   const applyExpandedTurns = (entries: TranscriptEntry[], expandedTurnIds: readonly number[]) => {
@@ -3809,9 +3830,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPanePreview(agentId, formatTranscriptPreview(persistedEntries))
   }
 
-  const setAgentTranscriptEntries = (agentId: string, nextEntries: TranscriptEntry[]) => {
+  const setAgentTranscriptEntries = (
+    agentId: string,
+    nextEntries: TranscriptEntry[],
+    turnIds = expandedTurnIdsForAgent(agentId),
+  ) => {
     const previousPaneEntries = agentPaneEntries()[agentId] ?? []
-    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), expandedTurnIdsForAgent(agentId))
+    const sanitizedEntries = applyTranscriptDisplayState(nextEntries.filter(Boolean), turnIds)
     commitAgentPaneEntries(agentId, sanitizedEntries)
     if (splitAgentResponseMode() && agentId === responsePrimaryAgent()?.id) {
       replaceTranscriptEntries(sanitizedEntries.map((entry) => ({ ...entry })), agentId)
@@ -4102,7 +4127,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     }))
   }
 
-  const appendTranscriptEntryToAgentPane = (agentId: string, entry: Omit<TranscriptEntry, "id">) => {
+  const appendTranscriptEntryToAgentPane = (
+    agentId: string,
+    entry: Omit<TranscriptEntry, "id">,
+    turnIds = expandedTurnIdsForAgent(agentId),
+  ) => {
     const currentEntries = currentAgentPaneEntries(agentId).map((item) => ({ ...item }))
     const previousEntry = currentEntries.at(-1)
     if (shouldSkipConsecutiveTranscriptEntry(previousEntry, entry)) {
@@ -4121,6 +4150,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentTranscriptEntries(
       agentId,
       trimLiveAgentPaneEntries(agentId, [...currentEntries, nextEntry]),
+      turnIds,
     )
   }
 
