@@ -11,6 +11,7 @@ use crate::kernel::projection::{
     SessionStateProjectionStore,
 };
 use crate::kernel::prompt_state::PromptStateOwner;
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
@@ -209,7 +210,7 @@ impl AgentRuntime {
         prompt_id_allocator: PromptIdAllocator,
     ) -> Self {
         Self::with_store(
-            AgentRuntimeStore::new(app),
+            AgentRuntimeStore::new(CompatibilityRuntimeState::new(app)),
             provider_runtime_lanes,
             focus_projection,
             session_projection,
@@ -522,7 +523,7 @@ impl AgentRuntime {
 
 #[derive(Clone)]
 pub(crate) struct AgentRuntimeStore {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
 }
 
 struct AgentRuntimeContext<'a> {
@@ -549,28 +550,30 @@ impl<'a> AgentRuntimeContext<'a> {
 }
 
 impl AgentRuntimeStore {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+        Self { state }
     }
 
     async fn active_prompt_agent_id(
         &self,
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        let mut app = self.app.lock().await;
-        AgentRuntimeContext::new(&mut app).active_prompt_agent_id(session_id)
+        self.state
+            .with_app_mut(|app| AgentRuntimeContext::new(app).active_prompt_agent_id(session_id))
+            .await
     }
 
     async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
-        let mut app = self.app.lock().await;
-        AgentRuntimeContext::new(&mut app).focused_agent_id(session_id)
+        self.state
+            .with_app_mut(|app| AgentRuntimeContext::new(app).focused_agent_id(session_id))
+            .await
     }
 
     fn prompt_command_service(
         &self,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> AgentPromptCommandService {
-        AgentPromptCommandService::new(Arc::clone(&self.app), provider_runtime_lanes)
+        AgentPromptCommandService::new(self.state.app(), provider_runtime_lanes)
     }
 }
 

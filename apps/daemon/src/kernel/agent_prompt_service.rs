@@ -9,6 +9,7 @@ use crate::app::{
     KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::provider::ProviderRunOperationLanes;
 use crate::session::{PromptCompletion, PromptQueueItem};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -17,7 +18,7 @@ use arroba_relay::protocol::ClientTarget;
 
 #[derive(Clone)]
 pub(crate) struct AgentPromptCommandService {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
@@ -27,7 +28,7 @@ struct AgentPromptCommandContext<'a> {
 
 #[derive(Clone)]
 struct AgentPromptDispatchContext {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
@@ -77,15 +78,18 @@ impl<'a> AgentPromptCommandContext<'a> {
 }
 
 impl AgentPromptDispatchContext {
-    fn new(app: Arc<Mutex<DaemonApp>>, provider_runtime_lanes: ProviderRunOperationLanes) -> Self {
+    fn new(
+        state: CompatibilityRuntimeState,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) -> Self {
         Self {
-            app,
+            state,
             provider_runtime_lanes,
         }
     }
 
     fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
-        let app = Arc::clone(&self.app);
+        let app = self.state.app();
         let provider_runtime_lanes = self.provider_runtime_lanes.clone();
         tokio::spawn(async move {
             let _permit = provider_runtime_lanes
@@ -99,7 +103,7 @@ impl AgentPromptDispatchContext {
     }
 
     fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {
-        let app = Arc::clone(&self.app);
+        let app = self.state.app();
         tokio::spawn(async move {
             let config = {
                 let app = app.lock().await;
@@ -152,7 +156,7 @@ impl AgentPromptDispatchContext {
     }
 
     fn spawn_prompt_abort(&self, dispatch: KernelPromptAbortDispatch) {
-        let app = Arc::clone(&self.app);
+        let app = self.state.app();
         let provider_runtime_lanes = self.provider_runtime_lanes.clone();
         tokio::spawn(async move {
             let _permit = provider_runtime_lanes
@@ -183,7 +187,7 @@ impl AgentPromptCommandService {
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         Self {
-            app,
+            state: CompatibilityRuntimeState::new(app),
             provider_runtime_lanes,
         }
     }
@@ -192,8 +196,11 @@ impl AgentPromptCommandService {
         &self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
-        let mut app = self.app.lock().await;
-        AgentPromptCommandContext::new(&mut app).submit_prepared_prompt(prepared)
+        self.state
+            .with_app_mut(|app| {
+                AgentPromptCommandContext::new(app).submit_prepared_prompt(prepared)
+            })
+            .await
     }
 
     pub(crate) async fn cancel_agent_prompt(
@@ -202,12 +209,15 @@ impl AgentPromptCommandService {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
-        let mut app = self.app.lock().await;
-        AgentPromptCommandContext::new(&mut app).cancel_agent_prompt(
-            session_id,
-            target_agent_id,
-            attachment_id,
-        )
+        self.state
+            .with_app_mut(|app| {
+                AgentPromptCommandContext::new(app).cancel_agent_prompt(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                )
+            })
+            .await
     }
 
     pub(crate) async fn complete_agent_prompt(
@@ -216,12 +226,15 @@ impl AgentPromptCommandService {
         target_agent_id: &str,
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<PromptCompletion, DaemonError> {
-        let mut app = self.app.lock().await;
-        AgentPromptCommandContext::new(&mut app).complete_agent_prompt(
-            session_id,
-            target_agent_id,
-            next_queued_prompt.as_ref(),
-        )
+        self.state
+            .with_app_mut(|app| {
+                AgentPromptCommandContext::new(app).complete_agent_prompt(
+                    session_id,
+                    target_agent_id,
+                    next_queued_prompt.as_ref(),
+                )
+            })
+            .await
     }
 
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
@@ -238,6 +251,6 @@ impl AgentPromptCommandService {
     }
 
     fn dispatch_context(&self) -> AgentPromptDispatchContext {
-        AgentPromptDispatchContext::new(Arc::clone(&self.app), self.provider_runtime_lanes.clone())
+        AgentPromptDispatchContext::new(self.state.clone(), self.provider_runtime_lanes.clone())
     }
 }

@@ -9,6 +9,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
@@ -77,7 +78,7 @@ impl SessionRuntime {
         terminal_stream: TerminalStreamStore,
     ) -> Self {
         Self::with_store_and_focus_projection(
-            SessionRuntimeStore::new(app),
+            SessionRuntimeStore::new(CompatibilityRuntimeState::new(app)),
             queue_limit,
             focus_projection,
             session_projection,
@@ -339,7 +340,7 @@ impl SessionRuntime {
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntimeStore {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
 }
 
 struct SessionRuntimeContext<'a> {
@@ -491,8 +492,8 @@ impl<'a> SessionRuntimeContext<'a> {
 }
 
 impl SessionRuntimeStore {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+        Self { state }
     }
 
     async fn resolve_session_ref_id(
@@ -500,13 +501,19 @@ impl SessionRuntimeStore {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        let mut app = self.app.lock().await;
-        SessionRuntimeContext::new(&mut app).resolve_session_ref_id(session_ref, workspace_id)
+        self.state
+            .with_app_mut(|app| {
+                SessionRuntimeContext::new(app).resolve_session_ref_id(session_ref, workspace_id)
+            })
+            .await
     }
 
     async fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
-        let mut app = self.app.lock().await;
-        SessionRuntimeContext::new(&mut app).attachment_session_id(attachment_id)
+        self.state
+            .with_app_mut(|app| {
+                SessionRuntimeContext::new(app).attachment_session_id(attachment_id)
+            })
+            .await
     }
 
     async fn with_session_projection_action(
@@ -518,19 +525,22 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let mut app = self.app.lock().await;
-        let mut context = SessionRuntimeContext::new(&mut app);
-        let result = operation(&mut context);
-        let projection_action = if let Ok(response) = result.as_ref() {
-            session_response_projection_action(response).or_else(|| {
-                session_id_for_projection_refresh(&result)
-                    .and_then(|session_id| context.session_snapshot(&session_id).ok())
-                    .map(SessionProjectionAction::Update)
+        self.state
+            .with_app_mut(|app| {
+                let mut context = SessionRuntimeContext::new(app);
+                let result = operation(&mut context);
+                let projection_action = if let Ok(response) = result.as_ref() {
+                    session_response_projection_action(response).or_else(|| {
+                        session_id_for_projection_refresh(&result)
+                            .and_then(|session_id| context.session_snapshot(&session_id).ok())
+                            .map(SessionProjectionAction::Update)
+                    })
+                } else {
+                    None
+                };
+                (result, projection_action)
             })
-        } else {
-            None
-        };
-        (result, projection_action)
+            .await
     }
 
     async fn create_session(

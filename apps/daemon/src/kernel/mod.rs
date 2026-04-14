@@ -7,6 +7,7 @@ pub mod projection;
 pub mod prompt_state;
 pub mod provider_launch_executor;
 pub mod router;
+pub(crate) mod runtime_state;
 pub mod session_actor;
 pub mod terminal_output_executor;
 pub mod workflow_actor;

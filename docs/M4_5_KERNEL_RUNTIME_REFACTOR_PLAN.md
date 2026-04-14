@@ -246,6 +246,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed app-level session/agent lifecycle convenience helpers for create/spawn/destroy/focus/cycle/config/resolve paths. Production code and tests now enter those mutations through `KernelSessionService`, `SessionRuntimeContext`, or concrete stores instead of `DaemonApp` facade methods.
 
 - Landed: Phase 8 moved remote execution lease, leased-agent, leased-prompt, runtime-tool binding, and leased projection handling behind `RemoteLeaseRuntime`. Relay peer handling and runtime-tool lookup now enter this explicit remote-lease boundary instead of `DaemonApp` facade methods.
+- Landed: Phase 8 introduced `CompatibilityRuntimeState` as the explicit quarantine boundary for the remaining app-backed session, agent, workflow, and prompt-command runtime workers. `SessionRuntimeStore`, `AgentRuntimeStore`, and `WorkflowRuntimeStore` no longer own `Arc<Mutex<DaemonApp>>` directly; the remaining compatibility lock is centralized behind the runtime-state port so the next extraction can move owned stores behind that port without changing worker APIs again.
 
 Still open:
 

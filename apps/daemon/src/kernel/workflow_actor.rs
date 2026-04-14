@@ -8,6 +8,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{
     AckWorkflowTurnRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, BindWorkflowEndpointRequest,
@@ -51,7 +52,7 @@ impl WorkflowRuntime {
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
         Self::with_store(
-            WorkflowRuntimeStore::new(app),
+            WorkflowRuntimeStore::new(CompatibilityRuntimeState::new(app)),
             session_projection,
             agent_runtime_projection,
         )
@@ -160,7 +161,7 @@ impl WorkflowRuntime {
 
 #[derive(Clone)]
 pub(crate) struct WorkflowRuntimeStore {
-    app: Arc<Mutex<DaemonApp>>,
+    state: CompatibilityRuntimeState,
 }
 
 type WorkflowStoreExecutionResult = (
@@ -202,8 +203,8 @@ impl<'a> WorkflowRuntimeContext<'a> {
 }
 
 impl WorkflowRuntimeStore {
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+        Self { state }
     }
 
     async fn execute_service_operation(
@@ -213,8 +214,11 @@ impl WorkflowRuntimeStore {
             &mut KernelWorkflowService<'_>,
         ) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> WorkflowStoreExecutionResult {
-        let mut app = self.app.lock().await;
-        WorkflowRuntimeContext::new(&mut app).execute_service_operation(session_id, operation)
+        self.state
+            .with_app_mut(|app| {
+                WorkflowRuntimeContext::new(app).execute_service_operation(session_id, operation)
+            })
+            .await
     }
 
     async fn create_workflow(
