@@ -1764,53 +1764,96 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
-    use crate::local::{
-        AddWorkflowNodeRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-        InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
-        UpdateWorkflowNodeInstructionsRequest,
-    };
     use crate::provider::LaunchProviderRequest;
-    use crate::session::{CreateSessionRequest, WorkflowMessage};
+    use crate::session::{CreateSessionRequest, RuntimeSession, WorkflowMessage, WorkflowRun};
     use crate::{DaemonApp, DaemonConfig};
 
     use super::{parse_workflow_structured_output, prepare_workflow_turn_prompt};
 
-    #[test]
-    fn workflow_instruction_reference_is_written_under_agent_workdir() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = match app
-            .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
+    fn create_scheduler_session_and_agent(
+        app: &mut DaemonApp,
+        client_id: &str,
+    ) -> (RuntimeSession, String) {
+        let (session, _default_agent) = app
+            .create_session(CreateSessionRequest::new(
+                "workspace-scheduler",
+                "worktree-scheduler",
             ))
-            .expect("session should exist")
-        {
-            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
-                (session, agent)
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+            .expect("session should exist");
         app.attach(AttachRequest::new(
             session.id(),
-            "client-scheduler",
+            client_id,
             ClientCapabilityLevel::InteractiveStructured,
         ))
         .expect("attachment should attach");
-        let agent_id = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session.id().to_string(),
-                alias: Some("agent-scheduler".to_string()),
-                provider: "dev-stub".to_string(),
-                model: Some("test-model".to_string()),
-                effort: None,
-                worktree_id: Some("worktree-scheduler".to_string()),
-                machine_ref: None,
-            }))
+        let agent_id = app
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("agent-scheduler")
+                    .with_model("test-model")
+                    .with_worktree("worktree-scheduler"),
+            )
             .expect("agent should spawn")
-        {
-            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
-            other => panic!("unexpected response: {other:?}"),
-        };
+            .id()
+            .to_string();
+        (session, agent_id)
+    }
+
+    fn create_workflow_node(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_alias: &str,
+        agent_id: &str,
+    ) -> (String, String) {
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session_id, Some(workflow_alias.to_string()))
+            .expect("workflow should exist")
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session_id, &workflow_id, agent_id)
+            .expect("node should be added")
+            .id()
+            .to_string();
+        (workflow_id, node_id)
+    }
+
+    fn invoke_workflow_node(
+        app: &mut DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+        node_id: &str,
+    ) -> WorkflowRun {
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(session_id, &workflow_id, false)
+            .expect("workflow flush context should update");
+        app.sessions_mut()
+            .create_workflow_endpoint(
+                session_id,
+                &workflow_id,
+                &node_id,
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should exist");
+        let (workflow_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session_id,
+                &workflow_id,
+                "entry",
+                Some("start".to_string()),
+            )
+            .expect("workflow should invoke");
+        workflow_run
+    }
+
+    #[test]
+    fn workflow_instruction_reference_is_written_under_agent_workdir() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
 
         let workdir = std::env::temp_dir().join(format!(
             "arroba-workflow-runtime-test-{}",
@@ -1831,75 +1874,45 @@ mod tests {
         )
         .expect("provider run should launch");
 
-        let workflow_id = match app
-            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
-                session_id: session.id().to_string(),
-                alias: Some("wf-scheduler".to_string()),
-            }))
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf-scheduler".to_string()))
             .expect("workflow should exist")
-        {
-            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
-                workflow.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let node_id = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
-                AddWorkflowNodeRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id.clone(),
-                    agent_id: agent_id.clone(),
-                },
-            ))
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, &agent_id)
             .expect("node should be added")
-        {
-            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
-                node.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        app.handle_local_request(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
-            UpdateWorkflowNodeInstructionsRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                node_id: node_id.clone(),
-                instructions: Some("Read me from a workspace-local hidden file.".to_string()),
-            },
-        ))
-        .expect("instructions should update");
-        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
-            crate::local::SetWorkflowFlushContextRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                flush_agent_context_before_run: false,
-            },
-        ))
-        .expect("workflow flush context should update");
-        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
-            CreateWorkflowEndpointRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                entry_node_id: node_id.clone(),
-                alias: Some("entry".to_string()),
-            },
-        ))
-        .expect("endpoint should exist");
-        let workflow_run = match app
-            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
-                InvokeWorkflowEndpointRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id,
-                    endpoint_ref: "entry".to_string(),
-                    prompt: Some("start".to_string()),
-                },
-            ))
-            .expect("workflow should invoke")
-        {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
-                workflow_run
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .update_workflow_node_instructions(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                Some("Read me from a workspace-local hidden file.".to_string()),
+            )
+            .expect("instructions should update");
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(session.id(), &workflow_id, false)
+            .expect("workflow flush context should update");
+        app.sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should exist");
+        let (workflow_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session.id(),
+                &workflow_id,
+                "entry",
+                Some("start".to_string()),
+            )
+            .expect("workflow should invoke");
         let node_run_id = workflow_run
             .node_runs()
             .first()
@@ -1952,105 +1965,22 @@ mod tests {
     #[test]
     fn terminating_nodes_receive_completion_and_last_turn_prompt_blocks() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = match app
-            .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
-            ))
-            .expect("session should exist")
-        {
-            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
-                (session, agent)
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        app.attach(AttachRequest::new(
-            session.id(),
-            "client-scheduler-terminating",
-            ClientCapabilityLevel::InteractiveStructured,
-        ))
-        .expect("attachment should attach");
-        let agent_id = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session.id().to_string(),
-                alias: Some("agent-scheduler".to_string()),
-                provider: "dev-stub".to_string(),
-                model: Some("test-model".to_string()),
-                effort: None,
-                worktree_id: Some("worktree-scheduler".to_string()),
-                machine_ref: None,
-            }))
-            .expect("agent should spawn")
-        {
-            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let (session, agent_id) =
+            create_scheduler_session_and_agent(&mut app, "client-scheduler-terminating");
 
-        let workflow_id = match app
-            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
-                session_id: session.id().to_string(),
-                alias: Some("wf-scheduler-terminating".to_string()),
-            }))
-            .expect("workflow should exist")
-        {
-            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
-                workflow.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let node_id = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
-                AddWorkflowNodeRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id.clone(),
-                    agent_id: agent_id.clone(),
-                },
-            ))
-            .expect("node should be added")
-        {
-            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
-                node.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let (workflow_id, node_id) = create_workflow_node(
+            &mut app,
+            session.id(),
+            "wf-scheduler-terminating",
+            &agent_id,
+        );
         app.sessions_mut()
             .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
             .expect("node completion setting should update");
         app.sessions_mut()
             .set_workflow_node_max_turns(session.id(), &workflow_id, &node_id, Some(1))
             .expect("node max turns should update");
-        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
-            crate::local::SetWorkflowFlushContextRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                flush_agent_context_before_run: false,
-            },
-        ))
-        .expect("workflow flush context should update");
-        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
-            CreateWorkflowEndpointRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                entry_node_id: node_id.clone(),
-                alias: Some("entry".to_string()),
-            },
-        ))
-        .expect("endpoint should exist");
-        let workflow_run = match app
-            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
-                InvokeWorkflowEndpointRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id,
-                    endpoint_ref: "entry".to_string(),
-                    prompt: Some("start".to_string()),
-                },
-            ))
-            .expect("workflow should invoke")
-        {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
-                workflow_run
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let workflow_run = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
         let node_run_id = workflow_run
             .node_runs()
             .first()
@@ -2078,102 +2008,15 @@ mod tests {
     #[test]
     fn non_last_turn_nodes_still_receive_turn_index_prompt_block() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = match app
-            .handle_local_request(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new("workspace-scheduler", "worktree-scheduler"),
-            ))
-            .expect("session should exist")
-        {
-            crate::local::LocalDaemonResponse::SessionCreated { session, agent } => {
-                (session, agent)
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        app.attach(AttachRequest::new(
-            session.id(),
-            "client-scheduler-turn-index",
-            ClientCapabilityLevel::InteractiveStructured,
-        ))
-        .expect("attachment should attach");
-        let agent_id = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session.id().to_string(),
-                alias: Some("agent-scheduler".to_string()),
-                provider: "dev-stub".to_string(),
-                model: Some("test-model".to_string()),
-                effort: None,
-                worktree_id: Some("worktree-scheduler".to_string()),
-                machine_ref: None,
-            }))
-            .expect("agent should spawn")
-        {
-            crate::local::LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let (session, agent_id) =
+            create_scheduler_session_and_agent(&mut app, "client-scheduler-turn-index");
 
-        let workflow_id = match app
-            .handle_local_request(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
-                session_id: session.id().to_string(),
-                alias: Some("wf-scheduler-turn-index".to_string()),
-            }))
-            .expect("workflow should exist")
-        {
-            crate::local::LocalDaemonResponse::WorkflowCreated { workflow, .. } => {
-                workflow.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let node_id = match app
-            .handle_local_request(LocalDaemonRequest::AddWorkflowNode(
-                AddWorkflowNodeRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id.clone(),
-                    agent_id: agent_id.clone(),
-                },
-            ))
-            .expect("node should be added")
-        {
-            crate::local::LocalDaemonResponse::WorkflowNodeAdded { node, .. } => {
-                node.id().to_string()
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let (workflow_id, node_id) =
+            create_workflow_node(&mut app, session.id(), "wf-scheduler-turn-index", &agent_id);
         app.sessions_mut()
             .set_workflow_node_max_turns(session.id(), &workflow_id, &node_id, Some(3))
             .expect("node max turns should update");
-        app.handle_local_request(LocalDaemonRequest::SetWorkflowFlushContext(
-            crate::local::SetWorkflowFlushContextRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                flush_agent_context_before_run: false,
-            },
-        ))
-        .expect("workflow flush context should update");
-        app.handle_local_request(LocalDaemonRequest::CreateWorkflowEndpoint(
-            CreateWorkflowEndpointRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_id.clone(),
-                entry_node_id: node_id.clone(),
-                alias: Some("entry".to_string()),
-            },
-        ))
-        .expect("endpoint should exist");
-        let workflow_run = match app
-            .handle_local_request(LocalDaemonRequest::InvokeWorkflowEndpoint(
-                InvokeWorkflowEndpointRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: workflow_id,
-                    endpoint_ref: "entry".to_string(),
-                    prompt: Some("start".to_string()),
-                },
-            ))
-            .expect("workflow should invoke")
-        {
-            crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => {
-                workflow_run
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+        let workflow_run = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
         let node_run_id = workflow_run
             .node_runs()
             .first()
