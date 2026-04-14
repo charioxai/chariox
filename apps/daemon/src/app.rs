@@ -104,7 +104,7 @@ pub struct DaemonApp {
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
-    pending_structured_output_records: BTreeMap<String, Vec<TerminalOutputRecord>>,
+    pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
@@ -210,7 +210,8 @@ impl DaemonApp {
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
-            pending_structured_output_records: BTreeMap::new(),
+            pending_structured_output_records:
+                provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),

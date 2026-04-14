@@ -1,9 +1,39 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::pty::PtyOutputChunk;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
+
+#[derive(Clone, Default)]
+pub(crate) struct StructuredOutputRecordStore {
+    records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
+}
+
+impl StructuredOutputRecordStore {
+    fn take(&self, provider_run_id: &str) -> Vec<TerminalOutputRecord> {
+        self.records
+            .lock()
+            .expect("structured output record store poisoned")
+            .remove(provider_run_id)
+            .unwrap_or_default()
+    }
+
+    fn append(&self, provider_run_id: String, records: Vec<TerminalOutputRecord>) {
+        if records.is_empty() {
+            return;
+        }
+        self.records
+            .lock()
+            .expect("structured output record store poisoned")
+            .entry(provider_run_id)
+            .or_default()
+            .extend(records);
+    }
+}
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
     pub(crate) session_id: &'a str,
@@ -151,8 +181,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let mut records = self
             .app
             .pending_structured_output_records
-            .remove(provider_run_id)
-            .unwrap_or_default();
+            .take(provider_run_id);
         records.extend(self.drain_finished_structured_output_jobs_for_run(
             session_id,
             provider_run_id,
@@ -245,12 +274,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
             )?;
             if is_requested_run {
                 requested_records.extend(records);
-            } else if !records.is_empty() {
+            } else {
                 self.app
                     .pending_structured_output_records
-                    .entry(provider_run_id)
-                    .or_default()
-                    .extend(records);
+                    .append(provider_run_id, records);
             }
         }
         Ok(requested_records)
