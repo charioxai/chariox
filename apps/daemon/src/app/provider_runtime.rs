@@ -86,6 +86,151 @@ impl<'a> ProviderProcessTracker<'a> {
         }
         Ok(removed)
     }
+
+    pub(crate) fn list(
+        app: &DaemonApp,
+        provider: Option<&str>,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        let processes = Self::snapshot(app);
+        app.update_provider_process_projection(processes.clone());
+        Ok(filter_provider_processes(processes, provider))
+    }
+
+    pub(crate) fn teardown_safe_processes(
+        &mut self,
+        provider: Option<&str>,
+    ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
+        let safe_processes = Self::list(self.app, provider)?
+            .into_iter()
+            .filter(|process| process.teardown_safe)
+            .collect::<Vec<_>>();
+        for process in &safe_processes {
+            let run_ids: Vec<String> = self
+                .app
+                .tracked_provider_processes
+                .values()
+                .find(|tracked| tracked.process_id == process.process_id)
+                .map(|tracked| tracked.owner_provider_run_ids.clone())
+                .unwrap_or_else(|| process.owner_provider_run_ids.clone());
+            for run_id in run_ids {
+                let run = match self.app.providers.get_run(&run_id) {
+                    Ok(run) => run,
+                    Err(_) => continue,
+                };
+                if run.state() == ProviderRunState::Ended {
+                    continue;
+                }
+                if let Ok(terminated_run) = self.app.providers.terminate_run(
+                    &mut self.app.sessions,
+                    run.session_id(),
+                    run.id(),
+                ) {
+                    self.app.update_provider_run_projection(terminated_run);
+                }
+                let _ = self.remove_run(run.id());
+            }
+        }
+        self.app
+            .update_provider_process_projection(Self::snapshot(self.app));
+        Ok(safe_processes)
+    }
+
+    fn snapshot(app: &DaemonApp) -> Vec<ProviderProcessInfo> {
+        let mut processes = Vec::new();
+        for tracked in app.tracked_provider_processes.values() {
+            let runs = tracked
+                .owner_provider_run_ids
+                .iter()
+                .filter_map(|run_id| app.providers.get_run(run_id).ok())
+                .filter(|run| run.state() != ProviderRunState::Ended)
+                .collect::<Vec<_>>();
+            if runs.is_empty() {
+                continue;
+            }
+            let owner_session_ids = runs
+                .iter()
+                .map(|run| run.session_id().to_string())
+                .collect::<BTreeSet<_>>();
+            let attached_session_ids = owner_session_ids
+                .iter()
+                .filter(|session_id| {
+                    !app.attachments
+                        .list_session_attachment_ids(session_id)
+                        .is_empty()
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let active_workflow_run_ids = owner_session_ids
+                .iter()
+                .flat_map(|session_id| {
+                    app.sessions
+                        .get_session(session_id)
+                        .ok()
+                        .map(|session| session.workflow_runs().iter().cloned().collect::<Vec<_>>())
+                        .into_iter()
+                        .flatten()
+                        .filter(|run| {
+                            !matches!(
+                                run.status(),
+                                crate::session::WorkflowRunStatus::Completed
+                                    | crate::session::WorkflowRunStatus::Failed
+                                    | crate::session::WorkflowRunStatus::Stopped
+                            )
+                        })
+                        .map(|run| run.id().to_string())
+                })
+                .collect::<BTreeSet<_>>();
+            let has_active_prompt = owner_session_ids.iter().any(|session_id| {
+                app.sessions
+                    .get_session(session_id)
+                    .ok()
+                    .and_then(|session| session.active_prompt().cloned())
+                    .is_some()
+            });
+            let mut teardown_blockers = Vec::new();
+            if !attached_session_ids.is_empty() {
+                teardown_blockers.push(format!(
+                    "attached sessions: {}",
+                    attached_session_ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            if has_active_prompt {
+                teardown_blockers.push("active prompt".to_string());
+            }
+            if !active_workflow_run_ids.is_empty() {
+                teardown_blockers.push(format!(
+                    "active workflow runs: {}",
+                    active_workflow_run_ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            let teardown_safe = attached_session_ids.is_empty()
+                && active_workflow_run_ids.is_empty()
+                && !has_active_prompt;
+            if let Some(mut process) = ProviderProcessInfo::from_runs(
+                tracked.process_id.clone(),
+                &runs,
+                attached_session_ids,
+                active_workflow_run_ids,
+                teardown_safe,
+                teardown_blockers,
+            ) {
+                process.pid = tracked.pid;
+                process.process_label = tracked.process_label.clone();
+                process.endpoint_mode = tracked.endpoint_mode;
+                process.started_at_ms = tracked.started_at_ms;
+                processes.push(process);
+            }
+        }
+        processes
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -671,144 +816,14 @@ impl DaemonApp {
         &self,
         provider: Option<&str>,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
-        let processes = self.provider_process_snapshot();
-        self.update_provider_process_projection(processes.clone());
-        Ok(filter_provider_processes(processes, provider))
-    }
-
-    fn provider_process_snapshot(&self) -> Vec<ProviderProcessInfo> {
-        let mut processes = Vec::new();
-        for tracked in self.tracked_provider_processes.values() {
-            let runs = tracked
-                .owner_provider_run_ids
-                .iter()
-                .filter_map(|run_id| self.providers.get_run(run_id).ok())
-                .filter(|run| run.state() != ProviderRunState::Ended)
-                .collect::<Vec<_>>();
-            if runs.is_empty() {
-                continue;
-            }
-            let owner_session_ids = runs
-                .iter()
-                .map(|run| run.session_id().to_string())
-                .collect::<BTreeSet<_>>();
-            let attached_session_ids = owner_session_ids
-                .iter()
-                .filter(|session_id| {
-                    !self
-                        .attachments
-                        .list_session_attachment_ids(session_id)
-                        .is_empty()
-                })
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            let active_workflow_run_ids = owner_session_ids
-                .iter()
-                .flat_map(|session_id| {
-                    self.sessions
-                        .get_session(session_id)
-                        .ok()
-                        .map(|session| session.workflow_runs().iter().cloned().collect::<Vec<_>>())
-                        .into_iter()
-                        .flatten()
-                        .filter(|run| {
-                            !matches!(
-                                run.status(),
-                                crate::session::WorkflowRunStatus::Completed
-                                    | crate::session::WorkflowRunStatus::Failed
-                                    | crate::session::WorkflowRunStatus::Stopped
-                            )
-                        })
-                        .map(|run| run.id().to_string())
-                })
-                .collect::<BTreeSet<_>>();
-            let has_active_prompt = owner_session_ids.iter().any(|session_id| {
-                self.sessions
-                    .get_session(session_id)
-                    .ok()
-                    .and_then(|session| session.active_prompt().cloned())
-                    .is_some()
-            });
-            let mut teardown_blockers = Vec::new();
-            if !attached_session_ids.is_empty() {
-                teardown_blockers.push(format!(
-                    "attached sessions: {}",
-                    attached_session_ids
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
-            }
-            if has_active_prompt {
-                teardown_blockers.push("active prompt".to_string());
-            }
-            if !active_workflow_run_ids.is_empty() {
-                teardown_blockers.push(format!(
-                    "active workflow runs: {}",
-                    active_workflow_run_ids
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
-            }
-            let teardown_safe = attached_session_ids.is_empty()
-                && active_workflow_run_ids.is_empty()
-                && !has_active_prompt;
-            if let Some(mut process) = ProviderProcessInfo::from_runs(
-                tracked.process_id.clone(),
-                &runs,
-                attached_session_ids,
-                active_workflow_run_ids,
-                teardown_safe,
-                teardown_blockers,
-            ) {
-                process.pid = tracked.pid;
-                process.process_label = tracked.process_label.clone();
-                process.endpoint_mode = tracked.endpoint_mode;
-                process.started_at_ms = tracked.started_at_ms;
-                processes.push(process);
-            }
-        }
-        processes
+        ProviderProcessTracker::list(self, provider)
     }
 
     pub fn teardown_provider_processes(
         &mut self,
         provider: Option<&str>,
     ) -> Result<Vec<ProviderProcessInfo>, DaemonError> {
-        let safe_processes = self
-            .list_provider_processes(provider)?
-            .into_iter()
-            .filter(|process| process.teardown_safe)
-            .collect::<Vec<_>>();
-        for process in &safe_processes {
-            let run_ids: Vec<String> = self
-                .tracked_provider_processes
-                .values()
-                .find(|tracked| tracked.process_id == process.process_id)
-                .map(|tracked| tracked.owner_provider_run_ids.clone())
-                .unwrap_or_else(|| process.owner_provider_run_ids.clone());
-            for run_id in run_ids {
-                let run = match self.providers.get_run(&run_id) {
-                    Ok(run) => run,
-                    Err(_) => continue,
-                };
-                if run.state() == ProviderRunState::Ended {
-                    continue;
-                }
-                if let Ok(terminated_run) =
-                    self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
-                {
-                    self.update_provider_run_projection(terminated_run);
-                }
-                let _ = ProviderProcessTracker::new(self).remove_run(run.id());
-            }
-        }
-        self.update_provider_process_projection(self.provider_process_snapshot());
-        Ok(safe_processes)
+        ProviderProcessTracker::new(self).teardown_safe_processes(provider)
     }
 
     pub(crate) fn sync_active_provider_run_for_agent(
