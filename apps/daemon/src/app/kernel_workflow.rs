@@ -17,6 +17,7 @@ use crate::local::{
     UpdateWorkflowNodeInstructionsRequest, ValidateWorkflowOutputRequest,
 };
 use crate::session::{RuntimeSession, SessionService};
+use std::sync::MutexGuard;
 
 pub(crate) struct KernelWorkflowService<'a> {
     context: KernelWorkflowContext<'a>,
@@ -31,11 +32,11 @@ impl<'a> KernelWorkflowContext<'a> {
         Self { app }
     }
 
-    fn sessions(&self) -> &SessionService {
+    fn sessions(&self) -> SessionService {
         self.app.sessions()
     }
 
-    fn sessions_mut(&mut self) -> &mut SessionService {
+    fn sessions_mut(&mut self) -> MutexGuard<'_, SessionService> {
         self.app.sessions_mut()
     }
 

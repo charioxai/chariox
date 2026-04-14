@@ -227,12 +227,15 @@ impl DaemonApp {
             endpoint_ref,
         )?;
         WorkflowProgression::validate_agents(self, session_id, &workflow)?;
-        match self.sessions_mut().admit_manual_workflow_launch(
-            session_id,
-            workflow.id(),
-            endpoint.id(),
-            prompt.clone(),
-        )? {
+        let admission = {
+            self.sessions_mut().admit_manual_workflow_launch(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                prompt.clone(),
+            )?
+        };
+        match admission {
             WorkflowLaunchAdmission::StartNow => {
                 self.flush_workflow_agent_context_if_needed(session_id, &workflow)?;
                 let workflow_run = self.sessions_mut().invoke_workflow_endpoint(

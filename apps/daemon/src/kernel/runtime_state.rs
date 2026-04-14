@@ -6,6 +6,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
+use crate::session::SessionStateStore;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
@@ -18,6 +19,7 @@ pub(crate) struct CompatibilityRuntimeState {
 #[derive(Clone)]
 pub(crate) struct CompatibilityRuntimeOwnedState {
     config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
+    session_store: SessionStateStore,
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -34,6 +36,7 @@ impl CompatibilityRuntimeState {
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
+        session_store: SessionStateStore,
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -44,6 +47,7 @@ impl CompatibilityRuntimeState {
             app,
             owned: Some(CompatibilityRuntimeOwnedState {
                 config_projection,
+                session_store,
                 session_projection,
                 provider_run_projection,
                 prompt_state_owner,
@@ -83,9 +87,8 @@ impl CompatibilityRuntimeState {
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
         if let Some(owned) = &self.owned {
-            if let Some(session) = owned.session_projection.get(session_id) {
-                return Ok(session.focused_agent_id().map(str::to_string));
-            }
+            let session = owned.session_store.get_session(session_id)?;
+            return Ok(session.focused_agent_id().map(str::to_string));
         }
         self.with_app_mut(|app| {
             Ok(app
@@ -102,6 +105,14 @@ impl CompatibilityRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return Ok(owned
+                .session_store
+                .read()
+                .resolve_session_ref(session_ref, workspace_id)?
+                .id()
+                .to_string());
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app)
                 .resolve_session_ref_id(session_ref, workspace_id)

@@ -99,21 +99,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
             CreateSessionRequest::new(format!("remote-lease:{}", lease.home_session_id), worktree)
                 .with_hidden(true),
         )?;
-        let attachment = self.app.attachments.attach(
-            &mut self.app.sessions,
-            AttachRequest::new(
-                session.id(),
-                format!("leased-agent:{}", lease.home_agent_id),
-                ClientCapabilityLevel::MessageTransport,
-            ),
-        )?;
-        let backing_agent = self.app.agents.create_agent(
-            CreateAgentRequest::new(session.id(), provider)
-                .with_worktree(session.worktree_id())
-                .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
-                .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string())),
-            &mut self.app.sessions,
-        )?;
+        let session_store = self.app.session_state_store();
+        let attachment = {
+            let mut sessions = session_store.write();
+            self.app.attachments.attach(
+                &mut sessions,
+                AttachRequest::new(
+                    session.id(),
+                    format!("leased-agent:{}", lease.home_agent_id),
+                    ClientCapabilityLevel::MessageTransport,
+                ),
+            )?
+        };
+        let backing_agent = {
+            let mut sessions = session_store.write();
+            self.app.agents.create_agent(
+                CreateAgentRequest::new(session.id(), provider)
+                    .with_worktree(session.worktree_id())
+                    .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
+                    .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string())),
+                &mut sessions,
+            )?
+        };
         self.app.next_leased_agent_number = self.app.next_leased_agent_number.wrapping_add(1);
         let agent_id = format!(
             "leased-agent-{:016x}",
@@ -148,14 +155,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
-        let _ = self
-            .app
-            .attachments
-            .detach(&mut self.app.sessions, &agent.backing_attachment_id);
-        let _ = self
-            .app
-            .agents
-            .destroy_agent(&agent.backing_agent_id, &mut self.app.sessions);
+        let session_store = self.app.session_state_store();
+        let _ = {
+            let mut sessions = session_store.write();
+            self.app
+                .attachments
+                .detach(&mut sessions, &agent.backing_attachment_id)
+        };
+        let _ = {
+            let mut sessions = session_store.write();
+            self.app
+                .agents
+                .destroy_agent(&agent.backing_agent_id, &mut sessions)
+        };
         let _ = self.app.sessions.end_session(&agent.backing_session_id);
         let _ = self.app.sessions.delete_session(&agent.backing_session_id);
         self.app

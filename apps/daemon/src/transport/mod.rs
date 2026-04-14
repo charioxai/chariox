@@ -182,10 +182,11 @@ impl TransportService {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        match app
-            .sessions_mut()
-            .cancel_active_prompt(session_id, agent_id)
-        {
+        let cancel_result = {
+            app.sessions_mut()
+                .cancel_active_prompt(session_id, agent_id)
+        };
+        match cancel_result {
             Ok((_, cancelled)) => {
                 if let Some(provider_run_id) = provider_run_id {
                     flow_control::clear_prompt_activity(app, provider_run_id);

@@ -106,6 +106,7 @@ impl CommandRouter {
             provider_process_projection,
             agent_runtime_projection,
             config_projection,
+            session_store,
             relay_state,
             terminal_health,
             terminal_stream,
@@ -116,6 +117,7 @@ impl CommandRouter {
         let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
+            session_store.clone(),
             session_projection.clone(),
             provider_run_projection.clone(),
             prompt_state_owner.clone(),
@@ -212,6 +214,7 @@ impl CommandRouter {
             provider_process_projection,
             agent_runtime_projection,
             config_projection,
+            session_store,
             relay_state,
             terminal_health,
             terminal_stream,
@@ -222,6 +225,7 @@ impl CommandRouter {
         let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
+            session_store.clone(),
             session_projection.clone(),
             provider_run_projection.clone(),
             prompt_state_owner.clone(),
@@ -1497,6 +1501,7 @@ fn router_projection_stores(
     ProviderProcessProjectionStore,
     AgentRuntimeProjectionStore,
     DaemonConfigProjectionStore,
+    crate::session::SessionStateStore,
     Arc<RwLock<RelayClientState>>,
     TerminalStreamHealthStore,
     TerminalStreamStore,
@@ -1516,6 +1521,7 @@ fn router_projection_stores(
         app.provider_process_projection_store(),
         app.agent_runtime_projection_store(),
         app.config_projection_store(),
+        app.session_state_store(),
         app.relay_client_state(),
         app.terminal_health_store(),
         app.terminal_stream_store(),
@@ -3945,7 +3951,7 @@ mod tests {
             .is_some());
 
         {
-            let mut app = app.lock().await;
+            let app = app.lock().await;
             app.sessions_mut()
                 .complete_active_prompt_only(&session_id, &agent_id)
                 .expect("compatibility state should be externally settled");

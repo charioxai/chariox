@@ -44,7 +44,7 @@ use crate::provider::{
     ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
-use crate::session::{RuntimeSession, SessionService};
+use crate::session::{RuntimeSession, SessionService, SessionStateStore};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
@@ -72,7 +72,7 @@ pub struct DaemonApp {
     prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
     pub(crate) prompt_idle_timeout: Duration,
     prompt_state_owner: PromptStateOwner,
-    pub(crate) sessions: SessionService,
+    pub(crate) sessions: SessionStateStore,
     history: SessionHistoryStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
@@ -155,7 +155,7 @@ impl DaemonApp {
             prompt_workspace_claims: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             prompt_state_owner: PromptStateOwner::default(),
-            sessions: SessionService::new(&config),
+            sessions: SessionStateStore::new(SessionService::new(&config)),
             history: SessionHistoryStore::new_with_read_delay(
                 config.session_history_root.clone(),
                 config.session_history_read_delay_ms,
@@ -216,8 +216,12 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub fn sessions(&self) -> &SessionService {
-        &self.sessions
+    pub(crate) fn session_state_store(&self) -> SessionStateStore {
+        self.sessions.clone()
+    }
+
+    pub fn sessions(&self) -> SessionService {
+        self.sessions.snapshot()
     }
 
     pub(crate) fn history_store(&self) -> SessionHistoryStore {
@@ -354,8 +358,8 @@ impl DaemonApp {
         self.provider_process_projection.update_list(processes);
     }
 
-    pub fn sessions_mut(&mut self) -> &mut SessionService {
-        &mut self.sessions
+    pub fn sessions_mut(&self) -> std::sync::MutexGuard<'_, SessionService> {
+        self.sessions.write()
     }
 
     pub fn agents(&self) -> &AgentService {
@@ -485,10 +489,15 @@ impl DaemonApp {
     ) -> Result<AgentInstance, DaemonError> {
         let worker_kernel =
             self.select_remote_kernel_for_machine(machine_ref, &request.provider)?;
-        let agent = self.agents.create_agent(request, &mut self.sessions)?;
+        let session_store = self.session_state_store();
+        let agent = {
+            let mut sessions = session_store.write();
+            self.agents.create_agent(request, &mut sessions)?
+        };
         let remote_setup = self.bind_remote_agent_to_worker(&agent, &worker_kernel);
         if remote_setup.is_err() {
-            let _ = self.agents.destroy_agent(agent.id(), &mut self.sessions);
+            let mut sessions = session_store.write();
+            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
         }
         remote_setup
     }

@@ -4,7 +4,7 @@ mod service;
 mod store;
 mod types;
 
-pub(crate) use owner::{SessionStateOwner, SessionStateReader};
+pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowLaunchAdmission, WorkflowOutputValidationWarning, WorkflowWatchdogTickPlan,

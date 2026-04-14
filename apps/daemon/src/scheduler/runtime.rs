@@ -591,17 +591,20 @@ pub fn on_workflow_prompt_completed(
         provider_run_id,
     );
     let max_turns = workflow_max_turns(app, session_id);
+    let completion_result = {
+        app.sessions_mut().complete_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            completion_snapshot.clone(),
+            max_turns,
+        )
+    };
     let WorkflowCompletionUpdate {
         workflow_run,
         dispatches,
         validation_warnings,
-    } = match app.sessions_mut().complete_workflow_node_run(
-        session_id,
-        workflow_run_id,
-        workflow_node_run_id,
-        completion_snapshot.clone(),
-        max_turns,
-    ) {
+    } = match completion_result {
         Ok(update) => update,
         Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
             edge_id, message, ..
