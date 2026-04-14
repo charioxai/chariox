@@ -29,6 +29,26 @@ pub(crate) enum ProviderRunLivenessReconciliation {
     NewlyEnded(RuntimeProviderRun),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderRunEndedOutcome {
+    run: RuntimeProviderRun,
+    already_ended: bool,
+}
+
+impl ProviderRunEndedOutcome {
+    pub(crate) fn run(&self) -> &RuntimeProviderRun {
+        &self.run
+    }
+
+    pub(crate) fn into_run(self) -> RuntimeProviderRun {
+        self.run
+    }
+
+    pub(crate) fn already_ended(&self) -> bool {
+        self.already_ended
+    }
+}
+
 impl ProviderProcessService {
     pub fn new() -> Self {
         Self {
@@ -343,7 +363,9 @@ impl ProviderProcessService {
             ));
         }
 
-        let ended = self.mark_run_ended_provider_only(session_id, run_id)?;
+        let ended = self
+            .mark_run_ended_provider_only(session_id, run_id)?
+            .into_run();
         Ok(ProviderRunLivenessReconciliation::NewlyEnded(ended))
     }
 
@@ -728,20 +750,20 @@ impl ProviderProcessService {
             .get_session(session_id)?
             .active_provider_run_id()
             .map(str::to_owned);
-        let run = self.mark_run_ended_provider_only(session_id, run_id)?;
+        let outcome = self.mark_run_ended_provider_only(session_id, run_id)?;
 
         if active_run_id.as_deref() == Some(run_id) {
             sessions.set_active_provider_run(session_id, None)?;
         }
 
-        Ok(run)
+        Ok(outcome.into_run())
     }
 
     pub(crate) fn mark_run_ended_provider_only(
         &mut self,
         session_id: &str,
         run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
         let run_snapshot = self.get_run(run_id)?;
         if run_snapshot.session_id() != session_id {
             return Err(DaemonError::ProviderRunNotInSession {
@@ -751,7 +773,10 @@ impl ProviderProcessService {
         }
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
-            return Ok(run_snapshot);
+            return Ok(ProviderRunEndedOutcome {
+                run: run_snapshot,
+                already_ended: true,
+            });
         }
 
         let run = self.get_run_mut(run_id)?;
@@ -760,7 +785,10 @@ impl ProviderProcessService {
 
         self.clear_runtime(run_id);
 
-        Ok(run)
+        Ok(ProviderRunEndedOutcome {
+            run,
+            already_ended: false,
+        })
     }
 
     fn get_run_mut(&mut self, run_id: &str) -> Result<&mut RuntimeProviderRun, DaemonError> {
@@ -995,6 +1023,39 @@ mod tests {
                 .state(),
             ProviderRunState::Ended
         );
+    }
+
+    #[test]
+    fn provider_only_mark_run_ended_returns_outcome_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let outcome = providers
+            .mark_run_ended_provider_only(session.id(), run.id())
+            .expect("provider-only ending should succeed");
+
+        assert!(!outcome.already_ended());
+        assert_eq!(outcome.run().id(), run.id());
+        assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
+        );
+
+        let outcome = providers
+            .mark_run_ended_provider_only(session.id(), run.id())
+            .expect("already-ended provider-only ending should succeed");
+        assert!(outcome.already_ended());
+        assert_eq!(outcome.run().id(), run.id());
     }
 
     #[test]
