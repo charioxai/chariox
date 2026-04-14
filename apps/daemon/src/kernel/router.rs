@@ -24,14 +24,16 @@ use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, Session
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
 use crate::kernel::workspace_coordinator::WorkspaceCoordinator;
 use crate::local::provider_requests::{
-    launch_provider_request_from_local, load_provider_catalog, logout_provider_response,
-    provider_auth_status_response, provider_command_catalogs_response,
+    forgotten_machine_record, launch_provider_request_from_local, load_provider_catalog,
+    logout_provider_response, provider_auth_status_response, provider_command_catalogs_response,
+    record_for_machine_id, resolve_machine_for_registry, resolve_machine_id_for_registry,
     start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{
+    ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
     GetSessionHistoryRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
     LocalDaemonRequest, LocalDaemonResponse, PumpTerminalOutputRequest, RelayStatus,
-    TeardownProviderProcessesRequest,
+    RenameRemoteMachineRequest, TeardownProviderProcessesRequest,
 };
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
@@ -395,6 +397,18 @@ impl CommandRouter {
 
         let session_refresh = session_projection_refresh(&request);
         let result = match request {
+            LocalDaemonRequest::ConfigureRelay(request) => {
+                self.execute_configure_relay_request(request).await
+            }
+            LocalDaemonRequest::ApproveRemoteMachine(request) => {
+                self.execute_approve_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::ForgetRemoteMachine(request) => {
+                self.execute_forget_remote_machine_request(request).await
+            }
+            LocalDaemonRequest::RenameRemoteMachine(request) => {
+                self.execute_rename_remote_machine_request(request).await
+            }
             LocalDaemonRequest::GetSessionHistory(request) => {
                 self.execute_session_history_request(request).await
             }
@@ -569,18 +583,8 @@ impl CommandRouter {
     }
 
     async fn projected_relay_status_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config_projection.snapshot();
-        let connected = self.relay_state.read().await.connected();
         Ok(LocalDaemonResponse::RelayStatus {
-            status: RelayStatus {
-                configured: config.relay_url.is_some() && config.relay_token.is_some(),
-                connected,
-                relay_url: config.relay_url,
-                relay_token_configured: config.relay_token.is_some(),
-                daemon_id: config.daemon_id,
-                machine_id: config.host_machine_id,
-                machine_alias: config.host_machine_alias,
-            },
+            status: self.projected_relay_status().await,
         })
     }
 
@@ -608,6 +612,90 @@ impl CommandRouter {
             machine_ref,
             kernels,
         })
+    }
+
+    async fn projected_relay_status(&self) -> RelayStatus {
+        let config = self.config_projection.snapshot();
+        let connected = self.relay_state.read().await.connected();
+        RelayStatus {
+            configured: config.relay_url.is_some() && config.relay_token.is_some(),
+            connected,
+            relay_url: config.relay_url,
+            relay_token_configured: config.relay_token.is_some(),
+            daemon_id: config.daemon_id,
+            machine_id: config.host_machine_id,
+            machine_alias: config.host_machine_alias,
+        }
+    }
+
+    async fn invalidate_provider_catalog_caches(&self) {
+        self.provider_catalog_projection.invalidate();
+        if let Ok(mut app) = self.app.try_lock() {
+            app.invalidate_provider_catalog_cache();
+        }
+    }
+
+    async fn execute_configure_relay_request(
+        &self,
+        request: ConfigureRelayRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        {
+            let mut app = self.app.lock().await;
+            app.configure_relay(request.relay_url, request.relay_token)?;
+            app.invalidate_provider_catalog_cache();
+        }
+        self.provider_catalog_projection.invalidate();
+        Ok(LocalDaemonResponse::RelayConfigured {
+            status: self.projected_relay_status().await,
+        })
+    }
+
+    async fn execute_approve_remote_machine_request(
+        &self,
+        request: ApproveRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let live = crate::transport::relay_discovery::list_live_machines(&config)
+            .await
+            .unwrap_or_default();
+        let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
+        crate::config::DaemonConfig::approve_remote_machine(
+            machine.machine_id.clone(),
+            machine.machine_alias.clone(),
+        )?;
+        self.invalidate_provider_catalog_caches().await;
+        let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
+        Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
+    }
+
+    async fn execute_forget_remote_machine_request(
+        &self,
+        request: ForgetRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let live = crate::transport::relay_discovery::list_live_machines(&config)
+            .await
+            .unwrap_or_default();
+        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
+        let saved = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
+        self.invalidate_provider_catalog_caches().await;
+        let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
+        Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
+    }
+
+    async fn execute_rename_remote_machine_request(
+        &self,
+        request: RenameRemoteMachineRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let config = self.config_projection.snapshot();
+        let live = crate::transport::relay_discovery::list_live_machines(&config)
+            .await
+            .unwrap_or_default();
+        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
+        crate::config::DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
+        self.invalidate_provider_catalog_caches().await;
+        let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
+        Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
 
     async fn projected_provider_catalog_response(

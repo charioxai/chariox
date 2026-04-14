@@ -639,7 +639,7 @@ pub(crate) fn resolve_registered_or_raw_machine_ref(machine_ref: &str) -> String
         .unwrap_or_else(|| machine_ref.trim().to_string())
 }
 
-fn resolve_machine_for_registry(
+pub(crate) fn resolve_machine_for_registry(
     machine_ref: &str,
     live_machines: &[RelayMachinePresence],
 ) -> Result<RelayMachinePresence, DaemonError> {
@@ -657,7 +657,7 @@ fn resolve_machine_for_registry(
         })
 }
 
-fn resolve_machine_id_for_registry(
+pub(crate) fn resolve_machine_id_for_registry(
     machine_ref: &str,
     live_machines: &[RelayMachinePresence],
 ) -> Result<String, DaemonError> {
@@ -667,7 +667,7 @@ fn resolve_machine_id_for_registry(
     resolve_machine_for_registry(machine_ref, live_machines).map(|machine| machine.machine_id)
 }
 
-fn record_for_machine_id(
+pub(crate) fn record_for_machine_id(
     machine_id: String,
     live_machines: Vec<RelayMachinePresence>,
     local_machine_id: &str,
@@ -681,7 +681,7 @@ fn record_for_machine_id(
         })
 }
 
-fn forgotten_machine_record(
+pub(crate) fn forgotten_machine_record(
     machine_id: String,
     registry_alias: Option<String>,
     live_machines: Vec<RelayMachinePresence>,
