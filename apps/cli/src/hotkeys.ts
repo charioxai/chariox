@@ -2,6 +2,14 @@ import { keybindFromEvent, matchKeybind, parseKeybinds, type ParsedShortcut } fr
 
 export type ShortcutEvent = ParsedShortcut
 
+export type TabFocusCycleContext = {
+  attached: boolean
+  hotkeysOpen: boolean
+  promptFocused: boolean
+  commandCenterOpen: boolean
+  commandCenterQuery: string
+}
+
 export type HotkeysToggleMatch = {
   matched: boolean
   normalizedName: string
@@ -45,4 +53,20 @@ export function matchHotkeysToggleEvent(event: ShortcutEvent, platform = process
 
 export function isHotkeysToggleEvent(event: ShortcutEvent, platform = process.platform) {
   return matchHotkeysToggleEvent(event, platform).matched
+}
+
+export function shouldCycleFocusOnTabEvent(
+  event: ShortcutEvent,
+  context: TabFocusCycleContext,
+) {
+  if (event.eventType === "release" || event.name !== "tab") {
+    return false
+  }
+  if (!context.attached || context.hotkeysOpen) {
+    return false
+  }
+  if (context.promptFocused && (context.commandCenterOpen || context.commandCenterQuery.startsWith("/"))) {
+    return false
+  }
+  return true
 }

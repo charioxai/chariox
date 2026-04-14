@@ -80,6 +80,7 @@ const COMMAND_TREE: CommandNode[] = [
       { id: "workflow-launch-policy", label: "launch-policy", description: "Set session-wide workflow launch admission", value: "/workflow launch-policy " },
       { id: "workflow-max-turns", label: "max-turns", description: "Set max workflow turns across all agents", value: "/workflow max-turns " },
       { id: "workflow-runs", label: "runs", description: "List workflow runs in the session", value: "/workflow runs " },
+      { id: "workflow-add-node-all", label: "add node all", description: "Add every session agent that is not already a workflow node", value: "/workflow add node all" },
       {
         id: "workflow-queue",
         label: "queue",
@@ -115,6 +116,7 @@ const COMMAND_TREE: CommandNode[] = [
         value: "/workflow node ",
         children: [
           { id: "workflow-node-add", label: "add", description: "Add a workflow node for an agent", value: "/workflow node add " },
+          { id: "workflow-node-add-all", label: "add all", description: "Add every session agent that is not already a workflow node", value: "/workflow node add all" },
           { id: "workflow-node-remove", label: "remove", description: "Remove a workflow node", value: "/workflow node remove " },
           { id: "workflow-node-can-complete-run", label: "can-complete-run", description: "Allow a node to complete the workflow run", value: "/workflow node can-complete-run " },
           { id: "workflow-node-max-turns", label: "max-turns", description: "Set the node turn budget for one workflow run", value: "/workflow node max-turns " },
@@ -264,6 +266,27 @@ export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, cur
     return currentPrompt.trim() === item.value
   }
   return currentPrompt.startsWith(item.value) || currentPrompt === item.value.trim()
+}
+
+export function nextCommandCenterIndex(
+  currentIndex: number,
+  items: CommandCenterItem[],
+  input: string,
+) {
+  if (items.length === 0) {
+    return 0
+  }
+
+  const normalized = input.trim()
+  const exactGroupIndex = items.findIndex((item) => (
+    item.kind === "group"
+    && (normalized === item.value.trim() || input === item.value)
+  ))
+  if (exactGroupIndex >= 0) {
+    return exactGroupIndex
+  }
+
+  return Math.max(0, Math.min(currentIndex, items.length - 1))
 }
 
 function rootItems(context: CommandContext) {

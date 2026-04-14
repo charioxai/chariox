@@ -88,6 +88,171 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   )
 })
 
+test("workflow add node all adds only agents missing from the selected workflow", async () => {
+  const existingAgent = makeAgent({
+    id: "agent-existing",
+    agent_ref: "agent-existing",
+  })
+  const firstMissingAgent = makeAgent({
+    id: "agent-missing-a",
+    agent_ref: "agent-missing-a",
+    alias: "reviewer",
+  })
+  const secondMissingAgent = makeAgent({
+    id: "agent-missing-b",
+    agent_ref: "agent-missing-b",
+  })
+  let workflow: WorkflowDefinition = {
+    id: "workflow-1",
+    alias: null,
+    nodes: [{ id: "node-existing", agent_id: existingAgent.id }],
+    edges: [],
+    endpoints: [],
+  }
+  let flashedMessage = ""
+  const addedAgentIds: string[] = []
+  const selectedWorkflowIds: string[] = []
+  const upsertedWorkflowNodeCounts: number[] = []
+  const currentSession = () => makeSession({
+    focused_agent_id: existingAgent.id,
+    agents: [existingAgent, firstMissingAgent, secondMissingAgent],
+    workflows: [workflow],
+  })
+
+  const handlers = createCommandActionHandlers({
+    workspace: "workspace-1",
+    worktree: "worktree-1",
+    accountProfile: "default",
+    isAttached: () => true,
+    sessionState: currentSession,
+    attachmentState: (): RuntimeAttachment => ({ id: "attachment-1", session_id: "session-1" }),
+    providerRunState: (): RuntimeProviderRun | null => null,
+    currentModelId: () => "openai/gpt-5",
+    currentVariantId: () => "medium",
+    currentProviderId: () => "opencode",
+    focusedAgentId: () => existingAgent.id,
+    multiAgentResponseLayout: () => "split",
+    maxAgentsPerScreen: () => 3,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    createSession: async () => ({ id: "session-1", alias: null }),
+    attachBinding: async () => {},
+    resolveSession: async () => ({ id: "session-1", alias: null }),
+    listSessions: async () => [],
+    deleteSessionByRef: async () => ({ id: "session-1", alias: null }),
+    transitionToNoSession: () => {},
+    applyModelSelection: async () => {},
+    applyVariantSelection: async () => {},
+    setMultiAgentResponseLayout: () => {},
+    applyResponseLayout: () => {},
+    updateSessionResponseLayout: async () => ({ session: currentSession(), config: currentSession().config_state }),
+    updateSessionConfig: async () => ({ session: currentSession(), config: currentSession().config_state }),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    saveUiPreferences: async () => {},
+    rebuildTranscript: () => {},
+    requestRender: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: currentSession() }),
+    launchAgentProviderRun: async () => { throw new Error("should not launch provider") },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession(),
+    spawnAgent: async () => ({ agent: firstMissingAgent, session: currentSession() }),
+    destroyAgent: async () => currentSession(),
+    focusAgent: async () => ({ agent: existingAgent, session: currentSession() }),
+    resolveSessionAgent: () => ({ agent: existingAgent }),
+    workflowScreenActive: () => false,
+    showWorkflowScreen: () => {},
+    selectedWorkflowId: () => "workflow-1",
+    selectWorkflowCanvas: (workflowId) => { selectedWorkflowIds.push(workflowId ?? "null") },
+    replaceWorkflowDefinitions: () => {},
+    upsertWorkflowDefinition: (nextWorkflow) => {
+      workflow = nextWorkflow
+      upsertedWorkflowNodeCounts.push(nextWorkflow.nodes?.length ?? 0)
+    },
+    createWorkflow: async () => ({ workflow, session: currentSession() }),
+    listWorkflows: async () => [workflow],
+    resolveWorkflow: async (workflowRef) => {
+      if (workflowRef !== workflow.id) {
+        throw new Error(`unknown workflow: ${workflowRef}`)
+      }
+      return { workflow }
+    },
+    assignWorkflowAlias: async () => null,
+    createWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-existing" },
+      workflow,
+      session: currentSession(),
+    }),
+    assignWorkflowEndpointAlias: async () => ({
+      endpoint: { id: "endpoint-1", alias: "entry", entry_node_id: "node-existing" },
+      workflow,
+      session: currentSession(),
+    }),
+    bindWorkflowEndpoint: async () => ({
+      endpoint: { id: "endpoint-1", alias: null, entry_node_id: "node-existing" },
+      workflow,
+      session: currentSession(),
+    }),
+    addWorkflowNode: async (_workflowRef, agentId) => {
+      addedAgentIds.push(agentId)
+      const node = { id: `node-${addedAgentIds.length}`, agent_id: agentId }
+      workflow = {
+        ...workflow,
+        nodes: [...(workflow.nodes ?? []), node],
+      }
+      return {
+        node,
+        workflow,
+        session: currentSession(),
+      }
+    },
+    removeWorkflowNode: async (_workflowRef, nodeId) => ({
+      node: { id: nodeId, agent_id: existingAgent.id },
+      workflow,
+      session: currentSession(),
+    }),
+    addWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-existing", to_node_id: "node-1" },
+      workflow,
+      session: currentSession(),
+    }),
+    removeWorkflowEdge: async () => ({
+      edge: { id: "edge-1", from_node_id: "node-existing", to_node_id: "node-1" },
+      workflow,
+      session: currentSession(),
+    }),
+    formatAgentLabel: (agent) => agent?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+    formatSessionList: () => "",
+  })
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow add node all",
+    args: ["add", "node", "all"],
+  })
+
+  assert.deepEqual(addedAgentIds, ["agent-missing-a", "agent-missing-b"])
+  assert.deepEqual(workflow.nodes?.map((node) => node.agent_id), [
+    "agent-existing",
+    "agent-missing-a",
+    "agent-missing-b",
+  ])
+  assert.deepEqual(selectedWorkflowIds, ["workflow-1"])
+  assert.deepEqual(upsertedWorkflowNodeCounts, [1, 2, 3])
+  assert.equal(flashedMessage, "added 2 workflow nodes for agent-missing-a, agent-missing-b")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow node add all",
+    args: ["node", "add", "all"],
+  })
+
+  assert.deepEqual(addedAgentIds, ["agent-missing-a", "agent-missing-b"])
+  assert.equal(flashedMessage, "workflow workflow-1 already has nodes for all session agents")
+})
+
 test("provider command can switch backends and manage codex auth", async () => {
   const events: string[] = []
   let flashedMessage = ""

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   buildCommandCenterItems,
+  nextCommandCenterIndex,
   shouldSubmitExactCommandCenterMatch,
 } from "./command-center.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
@@ -182,8 +183,40 @@ test("buildCommandCenterItems drills into workflow node subcommands", () => {
   })
 
   assert.equal(items.some((item) => item.label === "add"), true)
+  assert.equal(items.some((item) => item.label === "add all"), true)
   assert.equal(items.some((item) => item.label === "remove"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "instructions"), true)
+})
+
+test("buildCommandCenterItems exposes workflow add node all shorthand", () => {
+  const items = buildCommandCenterItems("/workflow add", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items[0]?.label, "add node all")
+  assert.equal(items[0]?.value, "/workflow add node all")
+})
+
+test("nextCommandCenterIndex selects exact parent groups instead of preserving stale child indexes", () => {
+  const items = buildCommandCenterItems("/workflow", {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: "opencode",
+    currentModel: "openai/gpt-5.4",
+    currentVariant: "high",
+  })
+
+  assert.equal(items[0]?.kind, "group")
+  assert.equal(items[0]?.label, "/workflow")
+  assert.equal(items[2]?.kind, "command")
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow"), 0)
+  assert.equal(nextCommandCenterIndex(2, items, "/workflow "), 0)
 })
 
 test("buildCommandCenterItems exposes the focused provider namespace", () => {

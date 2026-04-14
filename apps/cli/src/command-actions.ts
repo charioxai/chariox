@@ -461,6 +461,33 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
   }
 
+  const addAllRemainingWorkflowNodes = async (workflowRef: string) => {
+    const resolved = await deps.resolveWorkflow(workflowRef)
+    deps.upsertWorkflowDefinition(resolved.workflow)
+
+    const existingAgentIds = new Set((resolved.workflow.nodes ?? []).map((node) => node.agent_id))
+    const agentsToAdd = deps.sessionState().agents.filter((agent) => !existingAgentIds.has(agent.id))
+    if (agentsToAdd.length === 0) {
+      deps.selectWorkflowCanvas(resolved.workflow.id)
+      deps.flashFooter(`workflow ${resolved.workflow.id} already has nodes for all session agents`, "info")
+      return
+    }
+
+    let latestWorkflow = resolved.workflow
+    for (const agent of agentsToAdd) {
+      const payload = await deps.addWorkflowNode(latestWorkflow.id, agent.id)
+      latestWorkflow = payload.workflow
+      deps.applySessionState(payload.session)
+      deps.upsertWorkflowDefinition(payload.workflow)
+    }
+
+    deps.selectWorkflowCanvas(latestWorkflow.id)
+    deps.flashFooter(
+      `added ${agentsToAdd.length} workflow node${agentsToAdd.length === 1 ? "" : "s"} for ${agentsToAdd.map((agent) => deps.formatAgentLabel(agent)).join(", ")}`,
+      "info",
+    )
+  }
+
   const formatWorkflowRunSummary = (workflowRun: WorkflowRun) => {
     const failureSummary = (workflowRun.failure_events?.length ?? 0) > 0
       ? `, failures ${workflowRun.failure_events?.length ?? 0}`
@@ -1515,6 +1542,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
 
+    if (subcommand === "add" && args[1] === "node") {
+      const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+      const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+      const target = explicitWorkflowRef ? args[3] : args[2]
+      if (!workflowRef || target !== "all") {
+        deps.flashFooter("usage: /workflow add node [workflow-ref] all", "error")
+        return
+      }
+      await addAllRemainingWorkflowNodes(workflowRef)
+      return
+    }
+
     if (subcommand === "node") {
       const action = args[1]
       if (action === "add") {
@@ -1522,7 +1561,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
         const agentRef = explicitWorkflowRef ? args[3] : args[2]
         if (!workflowRef || !agentRef) {
-          deps.flashFooter("usage: /workflow node add [workflow-ref] <agent-id>", "error")
+          deps.flashFooter("usage: /workflow node add [workflow-ref] <agent-id|all>", "error")
+          return
+        }
+        if (agentRef === "all") {
+          await addAllRemainingWorkflowNodes(workflowRef)
           return
         }
         const resolvedAgent = deps.resolveSessionAgent(agentRef)
@@ -1734,7 +1777,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow node add [workflow-ref] <agent-id> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
+        "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
         "error",
       )
       return
