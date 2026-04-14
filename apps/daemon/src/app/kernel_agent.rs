@@ -21,6 +21,23 @@ impl DaemonApp {
         &mut self,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.kernel_agents().execute_request(request)
+    }
+}
+
+pub(crate) struct KernelAgentService<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> KernelAgentService<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn execute_request(
+        &mut self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::SubmitPrompt(request) => {
                 let outcome = self.submit_prompt(
@@ -30,11 +47,12 @@ impl DaemonApp {
                     &request.prompt,
                     request.attachments,
                 )?;
-                let session = self.local_api_session_snapshot(&request.session_id)?;
+                let session = self.app.local_api_session_snapshot(&request.session_id)?;
                 Ok(LocalDaemonResponse::PromptSubmitted { outcome, session })
             }
             LocalDaemonRequest::CompletePrompt(request) => {
                 let agent_id = self
+                    .app
                     .sessions()
                     .get_session(&request.session_id)?
                     .active_prompt_agent_id()
@@ -42,6 +60,7 @@ impl DaemonApp {
                         session_id: request.session_id.clone(),
                     })?;
                 let provider_run_id = self
+                    .app
                     .providers()
                     .get_run_for_agent(&request.session_id, &agent_id)
                     .map(|run| run.id().to_string());
@@ -85,13 +104,13 @@ impl DaemonApp {
                 } else {
                     create_request
                 };
-                let agent = self.spawn_agent(create_request)?;
-                let _ = self.local_api_session_snapshot(agent.session_id())?;
+                let agent = self.app.spawn_agent(create_request)?;
+                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
                 Ok(LocalDaemonResponse::AgentSpawned { agent })
             }
             LocalDaemonRequest::DestroyAgent(request) => {
-                let agent = self.destroy_agent(&request.agent_id)?;
-                let _ = self.local_api_session_snapshot(agent.session_id())?;
+                let agent = self.app.destroy_agent(&request.agent_id)?;
+                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
                 Ok(LocalDaemonResponse::AgentDestroyed { agent })
             }
             _ => Err(DaemonError::LocalTransport {
@@ -99,16 +118,6 @@ impl DaemonApp {
                 message: "request is not handled by the agent runtime".to_string(),
             }),
         }
-    }
-}
-
-pub(crate) struct KernelAgentService<'a> {
-    app: &'a mut DaemonApp,
-}
-
-impl<'a> KernelAgentService<'a> {
-    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
     }
 
     fn acquire_provider_prompt_claim(

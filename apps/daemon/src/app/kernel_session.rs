@@ -88,43 +88,14 @@ impl<'a> KernelSessionService<'a> {
                 let session = self.alias_session(&request.session_id, request.alias)?;
                 Ok(LocalDaemonResponse::SessionAliased { session })
             }
-            LocalDaemonRequest::SpawnAgent(request) => {
-                let create_request =
-                    CreateAgentRequest::new(&request.session_id, &request.provider);
-                let create_request = if let Some(alias) = request.alias {
-                    create_request.with_alias(alias)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(model) = request.model {
-                    create_request.with_model(model)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(effort) = request.effort {
-                    create_request.with_effort(effort)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(worktree_id) = request.worktree_id {
-                    create_request.with_worktree(worktree_id)
-                } else {
-                    create_request
-                };
-                let create_request = if let Some(machine_ref) = request.machine_ref {
-                    create_request.with_machine(machine_ref)
-                } else {
-                    create_request
-                };
-                let agent = self.app.spawn_agent(create_request)?;
-                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentSpawned { agent })
-            }
-            LocalDaemonRequest::DestroyAgent(request) => {
-                let agent = self.app.destroy_agent(&request.agent_id)?;
-                let _ = self.app.local_api_session_snapshot(agent.session_id())?;
-                Ok(LocalDaemonResponse::AgentDestroyed { agent })
-            }
+            LocalDaemonRequest::SpawnAgent(request) => self
+                .app
+                .kernel_agents()
+                .execute_request(LocalDaemonRequest::SpawnAgent(request)),
+            LocalDaemonRequest::DestroyAgent(request) => self
+                .app
+                .kernel_agents()
+                .execute_request(LocalDaemonRequest::DestroyAgent(request)),
             LocalDaemonRequest::EndSession(request) => Ok(LocalDaemonResponse::SessionEnded {
                 session: self.end_session(&request.session_id)?,
             }),

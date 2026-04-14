@@ -312,21 +312,6 @@ impl DaemonApp {
             .complete_active_prompt(session_id, agent_id, provider_run_id)
     }
 
-    pub(crate) fn complete_active_prompt_for_kernel(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: Option<&str>,
-        next_queued_prompt: Option<&PromptQueueItem>,
-    ) -> Result<PromptCompletion, DaemonError> {
-        self.kernel_agents().complete_active_prompt_for_kernel(
-            session_id,
-            agent_id,
-            provider_run_id,
-            next_queued_prompt,
-        )
-    }
-
     pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,

@@ -180,7 +180,7 @@ impl AgentRuntimeCommandExecutor {
                 .providers()
                 .get_run_for_agent(&request.session_id, &target_agent_id)
                 .map(|run| run.id().to_string());
-            app.complete_active_prompt_for_kernel(
+            app.kernel_agents().complete_active_prompt_for_kernel(
                 &request.session_id,
                 &target_agent_id,
                 provider_run_id.as_deref(),
