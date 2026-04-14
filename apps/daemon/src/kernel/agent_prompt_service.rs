@@ -1,9 +1,5 @@
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-
 use crate::app::{
-    DaemonApp, KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
+    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
     KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
@@ -51,11 +47,11 @@ impl AgentPromptDispatchContext {
 
 impl AgentPromptCommandService {
     pub(crate) fn new(
-        app: Arc<Mutex<DaemonApp>>,
+        state: CompatibilityRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         Self {
-            state: CompatibilityRuntimeState::new(app),
+            state,
             provider_runtime_lanes,
         }
     }

@@ -550,7 +550,7 @@ impl AgentRuntimeStore {
         &self,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> AgentPromptCommandService {
-        AgentPromptCommandService::new(self.state.app(), provider_runtime_lanes)
+        AgentPromptCommandService::new(self.state.clone(), provider_runtime_lanes)
     }
 }
 

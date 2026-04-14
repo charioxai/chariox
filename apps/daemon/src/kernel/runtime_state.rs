@@ -19,10 +19,6 @@ impl CompatibilityRuntimeState {
         Self { app }
     }
 
-    pub(crate) fn app(&self) -> Arc<Mutex<DaemonApp>> {
-        Arc::clone(&self.app)
-    }
-
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
         self.with_app_mut(|app| app.config().clone()).await
     }
