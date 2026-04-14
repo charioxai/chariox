@@ -899,6 +899,15 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let addedWorkflowNodeAgentId: string | null = null
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
   let addedWorkflowEdgeWorkflowRef: string | null = null
+  let createdWorkflowEndpointArgs: { workflowRef: string; entryNodeId: string; alias: string | null | undefined } | null = null
+  let createdWorkflowWatchdogArgs: {
+    workflowRef: string
+    endpointRef: string
+    intervalSeconds: number
+    invocationPrompt: string
+    policy: "skip" | "queue"
+    maxWakeups?: number | null | undefined
+  } | null = null
   let invokedWorkflowRunArgs: { workflowRef: string; endpointRef: string; prompt: string | null | undefined } | null = null
   let workflowLaunchPolicy: "reject" | "queue" = "reject"
   let workflowFlushContext = true
@@ -1082,11 +1091,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
         }),
       }
     },
-    createWorkflowEndpoint: async (workflowRef, entryNodeId, alias) => ({
-      endpoint: { id: "endpoint-1", alias: alias ?? null, entry_node_id: entryNodeId },
-      workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
-      session: makeSession(),
-    }),
+    createWorkflowEndpoint: async (workflowRef, entryNodeId, alias) => {
+      createdWorkflowEndpointArgs = { workflowRef, entryNodeId, alias }
+      return {
+        endpoint: { id: "endpoint-1", alias: alias ?? null, entry_node_id: entryNodeId },
+        workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
+        session: makeSession(),
+      }
+    },
     assignWorkflowEndpointAlias: async (_workflowRef, endpointRef, alias) => ({
       endpoint: { id: endpointRef, alias, entry_node_id: "node-1" },
       workflow: { id: "workflow-1", alias: null },
@@ -1270,6 +1282,29 @@ test("workflow command opens the workflow screen and manages local workflows", a
     },
     openWorkflowTerminalPanel: (workflowId) => {
       openedWorkflowTerminalId = workflowId
+    },
+    createWorkflowWatchdog: async (workflowRef, endpointRef, intervalSeconds, invocationPrompt, policy, maxWakeups) => {
+      createdWorkflowWatchdogArgs = { workflowRef, endpointRef, intervalSeconds, invocationPrompt, policy, maxWakeups }
+      return {
+        watchdog: {
+          id: "watchdog-1",
+          workflow_id: workflowRef,
+          endpoint_id: endpointRef,
+          interval_seconds: intervalSeconds,
+          invocation_prompt: invocationPrompt,
+          policy,
+          max_wakeups: maxWakeups ?? null,
+          wakeups_executed: 0,
+          enabled: true,
+          next_run_at_ms: 1,
+          pending_run: false,
+          created_at_ms: 0,
+          updated_at_ms: 0,
+        },
+        workflow: workflows.get(workflowRef) ?? { id: workflowRef, alias: null },
+        endpoint: { id: endpointRef, alias: null, entry_node_id: "node-1" },
+        session: makeSession({ workflows: [...workflows.values()] }),
+      }
     },
     formatAgentLabel: (agent) => agent?.agent_ref ?? "",
     refreshSplitPaneFocusRepaint: () => {},
@@ -1521,6 +1556,21 @@ test("workflow command opens the workflow screen and manages local workflows", a
   assert.equal(flashedMessage, "created workflow workflow-1 (review)")
   assert.deepEqual(selectedWorkflowIds, ["workflow-1"])
 
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow show", args: ["show"] })
+  assert.equal(flashedMessage, "workflow workflow-1 (review)")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow run entry summarize selected workflow",
+    args: ["run", "entry", "summarize", "selected", "workflow"],
+  })
+  assert.deepEqual(invokedWorkflowRunArgs, {
+    workflowRef: "workflow-1",
+    endpointRef: "entry",
+    prompt: "summarize selected workflow",
+  })
+  assert.equal(flashedMessage, "started workflow run run-1 [running]")
+
   await handlers.handleWorkflowCommand({
     kind: "workflow",
     raw: "/workflow run workflow-1 entry summarize changes",
@@ -1556,6 +1606,13 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
+    raw: "/workflow flush-context true",
+    args: ["flush-context", "true"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 flush-context set to true")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
     raw: "/workflow run-output-schema workflow-1",
     args: ["run-output-schema", "workflow-1"],
   })
@@ -1567,6 +1624,13 @@ test("workflow command opens the workflow screen and manages local workflows", a
     args: ["run-output-schema", "workflow-1", "/tmp/schema.json"],
   })
   assert.equal(flashedMessage, "workflow workflow-1 run-output-schema set to /tmp/schema.json")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow run-output-schema /tmp/selected-schema.json",
+    args: ["run-output-schema", "/tmp/selected-schema.json"],
+  })
+  assert.equal(flashedMessage, "workflow workflow-1 run-output-schema set to /tmp/selected-schema.json")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
@@ -1606,6 +1670,13 @@ test("workflow command opens the workflow screen and manages local workflows", a
     args: ["node", "max-turns", "workflow-1", "node-1", "2"],
   })
   assert.equal(flashedMessage, "workflow node node-1 max-turns set to 2")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow node can-complete-run node-1 false",
+    args: ["node", "can-complete-run", "node-1", "false"],
+  })
+  assert.equal(flashedMessage, "workflow node node-1 can-complete-run set to false")
 
   queuedWorkflowLaunches.push({
     id: "queued-2",
@@ -1664,6 +1735,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
   assert.equal(flashedMessage, `added workflow node node-1 for agent ${plannerRef}`)
   assert.equal(addedWorkflowNodeAgentId, "agent-instance-1")
 
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: `/workflow node add ${plannerRef}`,
+    args: ["node", "add", plannerRef],
+  })
+  assert.equal(flashedMessage, `added workflow node node-1 for agent ${plannerRef}`)
+  assert.equal(addedWorkflowNodeAgentId, "agent-instance-1")
+
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow edge add workflow-1 node-1 node-2", args: ["edge", "add", "workflow-1", "node-1", "node-2"] })
   assert.equal(flashedMessage, "added workflow edge edge-1")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
@@ -1702,6 +1781,13 @@ test("workflow command opens the workflow screen and manages local workflows", a
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",
+    raw: "/workflow edge remove edge-1",
+    args: ["edge", "remove", "edge-1"],
+  })
+  assert.equal(flashedMessage, "removed workflow edge edge-1")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
     raw: `/workflow workflow-1 ${plannerRef} ${reviewerRef}`,
     args: ["workflow-1", plannerRef, reviewerRef],
   })
@@ -1724,8 +1810,31 @@ test("workflow command opens the workflow screen and manages local workflows", a
   assert.equal(flashedMessage, "workflow edges must connect two different nodes")
   assert.deepEqual(addedWorkflowEdgeRefs, { fromNodeId: "node-1", toNodeId: "node-2" })
 
+  await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow endpoint new node-1 selected-start", args: ["endpoint", "new", "node-1", "selected-start"] })
+  assert.equal(flashedMessage, "created workflow endpoint endpoint-1")
+  assert.deepEqual(createdWorkflowEndpointArgs, {
+    workflowRef: "workflow-1",
+    entryNodeId: "node-1",
+    alias: "selected-start",
+  })
+
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow endpoint new workflow-1 node-1 start", args: ["endpoint", "new", "workflow-1", "node-1", "start"] })
   assert.equal(flashedMessage, "created workflow endpoint endpoint-1")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow watchdog add entry every 5m queue max-wakeups 2 scheduled selected",
+    args: ["watchdog", "add", "entry", "every", "5m", "queue", "max-wakeups", "2", "scheduled", "selected"],
+  })
+  assert.equal(flashedMessage, "created workflow watchdog watchdog-1")
+  assert.deepEqual(createdWorkflowWatchdogArgs, {
+    workflowRef: "workflow-1",
+    endpointRef: "entry",
+    intervalSeconds: 300,
+    invocationPrompt: "scheduled selected",
+    policy: "queue",
+    maxWakeups: 2,
+  })
 
   await handlers.handleWorkflowCommand({ kind: "workflow", raw: "/workflow missing shipit", args: ["missing", "shipit"] })
   assert.equal(flashedMessage, "unknown workflow: missing")

@@ -411,9 +411,16 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   }
   const workflowEdgeAddUsage = "usage: /workflow edge add [workflow-ref] <from-node-id|from-agent-ref> <to-node-id|to-agent-ref>"
   const selectedWorkflowRef = () => deps.selectedWorkflowId?.() ?? null
+  const workflowRefOrSelected = (workflowRef: string | null | undefined) => workflowRef ?? selectedWorkflowRef()
+  const firstWorkflowArgIsExplicit = (workflowRef: string | undefined) => (
+    !selectedWorkflowRef() || isKnownWorkflowReference(workflowRef)
+  )
   const isKnownWorkflowReference = (reference: string | undefined) => {
     if (!reference) {
       return false
+    }
+    if (reference === selectedWorkflowRef()) {
+      return true
     }
     return (deps.sessionState().workflows ?? []).some((workflow) => (
       workflow.id === reference || workflow.alias === reference
@@ -1161,9 +1168,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "show") {
-      const workflowRef = args[1]
+      const workflowRef = workflowRefOrSelected(args[1])
       if (!workflowRef) {
-        deps.flashFooter("usage: /workflow show <workflow-ref>", "error")
+        deps.flashFooter("usage: /workflow show [workflow-ref]", "error")
         return
       }
       const payload = await deps.resolveWorkflow(workflowRef)
@@ -1190,11 +1197,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "run" || subcommand === "start") {
-      const workflowRef = args[1]
-      const endpointRef = args[2]
-      const prompt = args.slice(3).join(" ").trim()
+      const firstArg = args[1]
+      const explicitWorkflowRef = firstWorkflowArgIsExplicit(firstArg) ? firstArg : null
+      const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+      const endpointRef = explicitWorkflowRef ? args[2] : firstArg
+      const prompt = args.slice(explicitWorkflowRef ? 3 : 2).join(" ").trim()
       if (!workflowRef || !endpointRef) {
-        deps.flashFooter("usage: /workflow run|start <workflow-ref> <endpoint-ref> [prompt]", "error")
+        deps.flashFooter("usage: /workflow run|start [workflow-ref] <endpoint-ref> [prompt]", "error")
         return
       }
       if (!deps.invokeWorkflowEndpoint) {
@@ -1241,10 +1250,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "flush-context") {
-      const workflowRef = args[1]
-      const value = args[2]?.trim().toLowerCase()
+      const firstArg = args[1]?.trim().toLowerCase()
+      const selectedRef = selectedWorkflowRef()
+      const firstArgIsValue = firstArg === "true" || firstArg === "false"
+      const workflowRef = workflowRefOrSelected(firstArgIsValue ? null : args[1])
+      const value = (firstArgIsValue ? args[1] : args[2])?.trim().toLowerCase()
       if (!workflowRef) {
-        deps.flashFooter("usage: /workflow flush-context <workflow-ref> [true|false]", "error")
+        deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
+        return
+      }
+      if (firstArgIsValue && !selectedRef) {
+        deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
         return
       }
       const resolved = await deps.resolveWorkflow(workflowRef)
@@ -1257,7 +1273,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (value !== "true" && value !== "false") {
-        deps.flashFooter("usage: /workflow flush-context <workflow-ref> [true|false]", "error")
+        deps.flashFooter("usage: /workflow flush-context [workflow-ref] [true|false]", "error")
         return
       }
       if (!deps.setWorkflowFlushContext) {
@@ -1278,10 +1294,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "run-output-schema") {
-      const workflowRef = args[1]
-      const value = args[2]
+      const explicitWorkflowRef = firstWorkflowArgIsExplicit(args[1]) ? args[1] : null
+      const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+      const value = explicitWorkflowRef ? args[2] : args[1]
       if (!workflowRef) {
-        deps.flashFooter("usage: /workflow run-output-schema <workflow-ref> [schema-ref|none]", "error")
+        deps.flashFooter("usage: /workflow run-output-schema [workflow-ref] [schema-ref|none]", "error")
         return
       }
       const resolved = await deps.resolveWorkflow(workflowRef)
@@ -1309,10 +1326,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "intermediate-output-schema") {
-      const workflowRef = args[1]
-      const value = args[2]
+      const explicitWorkflowRef = firstWorkflowArgIsExplicit(args[1]) ? args[1] : null
+      const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+      const value = explicitWorkflowRef ? args[2] : args[1]
       if (!workflowRef) {
-        deps.flashFooter("usage: /workflow intermediate-output-schema <workflow-ref> [schema-ref|none]", "error")
+        deps.flashFooter("usage: /workflow intermediate-output-schema [workflow-ref] [schema-ref|none]", "error")
         return
       }
       const resolved = await deps.resolveWorkflow(workflowRef)
@@ -1483,7 +1501,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
 
     if (subcommand === "terminal") {
-      const workflowRef = args[1] ?? deps.sessionState().workflows?.[0]?.id ?? null
+      const workflowRef = workflowRefOrSelected(args[1]) ?? deps.sessionState().workflows?.[0]?.id ?? null
       if (!workflowRef) {
         deps.flashFooter("usage: /workflow terminal [workflow-ref]", "error")
         return
@@ -1499,11 +1517,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
     if (subcommand === "node") {
       const action = args[1]
-      const workflowRef = args[2]
       if (action === "add") {
-        const agentRef = args[3]
+        const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const agentRef = explicitWorkflowRef ? args[3] : args[2]
         if (!workflowRef || !agentRef) {
-          deps.flashFooter("usage: /workflow node add <workflow-ref> <agent-id>", "error")
+          deps.flashFooter("usage: /workflow node add [workflow-ref] <agent-id>", "error")
           return
         }
         const resolvedAgent = deps.resolveSessionAgent(agentRef)
@@ -1518,9 +1537,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "remove") {
-        const nodeId = args[3]
+        const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[3] : args[2]
         if (!workflowRef || !nodeId) {
-          deps.flashFooter("usage: /workflow node remove <workflow-ref> <node-id>", "error")
+          deps.flashFooter("usage: /workflow node remove [workflow-ref] <node-id>", "error")
           return
         }
         const payload = await deps.removeWorkflowNode(workflowRef, nodeId)
@@ -1531,12 +1552,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       }
       if (action === "instructions") {
         const instructionsAction = args[2]
-        const instructionsWorkflowRef = args[3]
-        const nodeId = args[4]
-        const fileRef = args[5]
         if (!instructionsAction) {
           deps.flashFooter(
-            "usage: /workflow node instructions show|set|save|close <workflow-ref> <node-id> [file]",
+            "usage: /workflow node instructions show|set|save|close [workflow-ref] <node-id> [file]",
             "error",
           )
           return
@@ -1563,9 +1581,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           deps.flashFooter(`saved node instructions for ${payload.node.id}`, "info")
           return
         }
+        const explicitWorkflowRef = firstWorkflowArgIsExplicit(args[3]) ? args[3] : null
+        const instructionsWorkflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[4] : args[3]
+        const fileRef = explicitWorkflowRef ? args[5] : args[4]
         if (!instructionsWorkflowRef || !nodeId) {
           deps.flashFooter(
-            "usage: /workflow node instructions show|set <workflow-ref> <node-id> [file]",
+            "usage: /workflow node instructions show|set [workflow-ref] <node-id> [file]",
             "error",
           )
           return
@@ -1589,7 +1611,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         }
         if (instructionsAction !== "set") {
           deps.flashFooter(
-            "usage: /workflow node instructions show|set|save|close <workflow-ref> <node-id> [file]",
+            "usage: /workflow node instructions show|set|save|close [workflow-ref] <node-id> [file]",
             "error",
           )
           return
@@ -1612,10 +1634,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "can-complete-run") {
-        const nodeId = args[3]
-        const value = args[4]?.trim().toLowerCase()
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[3] : args[2]
+        const value = (explicitWorkflowRef ? args[4] : args[3])?.trim().toLowerCase()
         if (!workflowRef || !nodeId || (value !== "true" && value !== "false")) {
-          deps.flashFooter("usage: /workflow node can-complete-run <workflow-ref> <node-id> <true|false>", "error")
+          deps.flashFooter("usage: /workflow node can-complete-run [workflow-ref] <node-id> <true|false>", "error")
           return
         }
         if (!deps.setWorkflowNodeCanCompleteRun) {
@@ -1632,10 +1656,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "can-emit-intermediate-output") {
-        const nodeId = args[3]
-        const value = args[4]?.trim().toLowerCase()
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[3] : args[2]
+        const value = (explicitWorkflowRef ? args[4] : args[3])?.trim().toLowerCase()
         if (!workflowRef || !nodeId || (value !== "true" && value !== "false")) {
-          deps.flashFooter("usage: /workflow node can-emit-intermediate-output <workflow-ref> <node-id> <true|false>", "error")
+          deps.flashFooter("usage: /workflow node can-emit-intermediate-output [workflow-ref] <node-id> <true|false>", "error")
           return
         }
         if (!deps.setWorkflowNodeCanEmitIntermediateOutput) {
@@ -1652,10 +1678,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "intermediate-output-schema") {
-        const nodeId = args[3]
-        const value = args[4]
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[3] : args[2]
+        const value = explicitWorkflowRef ? args[4] : args[3]
         if (!workflowRef || !nodeId || value === undefined) {
-          deps.flashFooter("usage: /workflow node intermediate-output-schema <workflow-ref> <node-id> <schema-ref|none>", "error")
+          deps.flashFooter("usage: /workflow node intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none>", "error")
           return
         }
         if (!deps.setWorkflowNodeIntermediateOutputSchema) {
@@ -1673,10 +1701,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "max-turns") {
-        const nodeId = args[3]
-        const value = args[4]?.trim().toLowerCase()
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const nodeId = explicitWorkflowRef ? args[3] : args[2]
+        const value = (explicitWorkflowRef ? args[4] : args[3])?.trim().toLowerCase()
         if (!workflowRef || !nodeId || !value) {
-          deps.flashFooter("usage: /workflow node max-turns <workflow-ref> <node-id> <count|none>", "error")
+          deps.flashFooter("usage: /workflow node max-turns [workflow-ref] <node-id> <count|none>", "error")
           return
         }
         if (!deps.setWorkflowNodeMaxTurns) {
@@ -1689,7 +1719,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         } else {
           const parsed = Number.parseInt(value, 10)
           if (!Number.isFinite(parsed) || parsed <= 0) {
-            deps.flashFooter("usage: /workflow node max-turns <workflow-ref> <node-id> <count|none>", "error")
+            deps.flashFooter("usage: /workflow node max-turns [workflow-ref] <node-id> <count|none>", "error")
             return
           }
           maxTurns = parsed
@@ -1704,7 +1734,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow node add <workflow-ref> <agent-id> | remove <workflow-ref> <node-id> | instructions ... | can-complete-run <workflow-ref> <node-id> <true|false> | can-emit-intermediate-output <workflow-ref> <node-id> <true|false> | intermediate-output-schema <workflow-ref> <node-id> <schema-ref|none> | max-turns <workflow-ref> <node-id> <count|none>",
+        "usage: /workflow node add [workflow-ref] <agent-id> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none>",
         "error",
       )
       return
@@ -1752,10 +1782,11 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "remove") {
-        const workflowRef = args[2]
-        const edgeId = args[3]
+        const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const edgeId = explicitWorkflowRef ? args[3] : args[2]
         if (!workflowRef || !edgeId) {
-          deps.flashFooter("usage: /workflow edge remove <workflow-ref> <edge-id>", "error")
+          deps.flashFooter("usage: /workflow edge remove [workflow-ref] <edge-id>", "error")
           return
         }
         const payload = await deps.removeWorkflowEdge(workflowRef, edgeId)
@@ -1765,7 +1796,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        `${workflowEdgeAddUsage} | remove <workflow-ref> <edge-id>`,
+        `${workflowEdgeAddUsage} | remove [workflow-ref] <edge-id>`,
         "error",
       )
       return
@@ -1773,13 +1804,14 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
 
     if (subcommand === "endpoint") {
       const action = args[1]
-      const workflowRef = args[2]
       if (action === "new") {
-        const entryNodeId = args[3]
-        const alias = args[4] ?? null
+        const explicitWorkflowRef = firstWorkflowArgIsExplicit(args[2]) ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const entryNodeId = explicitWorkflowRef ? args[3] : args[2]
+        const alias = (explicitWorkflowRef ? args[4] : args[3]) ?? null
         if (!workflowRef || !entryNodeId) {
           deps.flashFooter(
-            "usage: /workflow endpoint new <workflow-ref> <entry-node-id> [alias]",
+            "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias]",
             "error",
           )
           return
@@ -1791,11 +1823,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "alias") {
-        const endpointRef = args[3]
-        const alias = args[4]
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const endpointRef = explicitWorkflowRef ? args[3] : args[2]
+        const alias = explicitWorkflowRef ? args[4] : args[3]
         if (!workflowRef || !endpointRef || !alias) {
           deps.flashFooter(
-            "usage: /workflow endpoint alias <workflow-ref> <endpoint-ref> <alias>",
+            "usage: /workflow endpoint alias [workflow-ref] <endpoint-ref> <alias>",
             "error",
           )
           return
@@ -1810,11 +1844,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       if (action === "bind") {
-        const endpointRef = args[3]
-        const entryNodeId = args[4]
+        const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const endpointRef = explicitWorkflowRef ? args[3] : args[2]
+        const entryNodeId = explicitWorkflowRef ? args[4] : args[3]
         if (!workflowRef || !endpointRef || !entryNodeId) {
           deps.flashFooter(
-            "usage: /workflow endpoint bind <workflow-ref> <endpoint-ref> <entry-node-id>",
+            "usage: /workflow endpoint bind [workflow-ref] <endpoint-ref> <entry-node-id>",
             "error",
           )
           return
@@ -1829,7 +1865,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow endpoint new <workflow-ref> <entry-node-id> [alias] | alias <workflow-ref> <endpoint-ref> <alias> | bind <workflow-ref> <endpoint-ref> <entry-node-id>",
+        "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>",
         "error",
       )
       return
@@ -1842,23 +1878,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
           deps.flashFooter("workflow watchdogs are unavailable in this build", "error")
           return
         }
-        const workflowRef = args[2]
-        const endpointRef = args[3]
-        const everyLiteral = args[4]
-        const intervalLiteral = args[5]
-        const hasPolicyArg = args[6] === "skip" || args[6] === "queue"
-        const policy = (hasPolicyArg ? args[6] : "skip") as "skip" | "queue"
-        const maxWakeupsKeyword = args[hasPolicyArg ? 7 : 6]
+        const explicitWorkflowRef = args[4] === "every" ? args[2] : null
+        const workflowRef = workflowRefOrSelected(explicitWorkflowRef)
+        const endpointRef = explicitWorkflowRef ? args[3] : args[2]
+        const everyLiteral = explicitWorkflowRef ? args[4] : args[3]
+        const intervalLiteral = explicitWorkflowRef ? args[5] : args[4]
+        const optionStartIndex = explicitWorkflowRef ? 6 : 5
+        const hasPolicyArg = args[optionStartIndex] === "skip" || args[optionStartIndex] === "queue"
+        const policy = (hasPolicyArg ? args[optionStartIndex] : "skip") as "skip" | "queue"
+        const maxWakeupsKeyword = args[optionStartIndex + (hasPolicyArg ? 1 : 0)]
         const hasMaxWakeupsArg = maxWakeupsKeyword === "max-wakeups"
-        const maxWakeupsLiteral = hasMaxWakeupsArg ? args[hasPolicyArg ? 8 : 7] : undefined
+        const maxWakeupsLiteral = hasMaxWakeupsArg ? args[optionStartIndex + (hasPolicyArg ? 2 : 1)] : undefined
         const maxWakeups = hasMaxWakeupsArg ? parseWatchdogMaxWakeups(maxWakeupsLiteral) : undefined
         const prompt = args
-          .slice(hasMaxWakeupsArg ? (hasPolicyArg ? 9 : 8) : (hasPolicyArg ? 7 : 6))
+          .slice(optionStartIndex + (hasPolicyArg ? 1 : 0) + (hasMaxWakeupsArg ? 2 : 0))
           .join(" ")
           .trim() || "Run the workflow exactly as instructed."
         if (!workflowRef || !endpointRef || everyLiteral !== "every") {
           deps.flashFooter(
-            "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt]",
+            "usage: /workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt]",
             "error",
           )
           return
@@ -1936,7 +1974,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       deps.flashFooter(
-        "usage: /workflow watchdog add <workflow-ref> <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
+        "usage: /workflow watchdog add [workflow-ref] <endpoint-ref> every <Ns|Nm|Nh|Nd> [skip|queue] [max-wakeups <n|null>] [prompt] | list [workflow-ref] | enable <watchdog-ref> | disable <watchdog-ref> | remove <watchdog-ref>",
         "error",
       )
       return
@@ -1976,7 +2014,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     const alias = args[1]
     if (!alias) {
       deps.flashFooter(
-        "usage: /workflow | /workflow list | /workflow show <workflow-ref> | /workflow new [alias] | /workflow run|start <workflow-ref> <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema <workflow-ref> [schema-ref|none] | /workflow intermediate-output-schema <workflow-ref> [schema-ref|none] | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow terminal [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
+        "usage: /workflow | /workflow list | /workflow show [workflow-ref] | /workflow new [alias] | /workflow run|start [workflow-ref] <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema [workflow-ref] [schema-ref|none] | /workflow intermediate-output-schema [workflow-ref] [schema-ref|none] | /workflow runs [workflow-ref] | /workflow cancel <run-ref> | /workflow resume <run-ref> | /workflow terminal [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ...",
         "error",
       )
       return
