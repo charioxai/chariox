@@ -12,6 +12,7 @@ use crate::capability::{
     StoreTransferredFileRequest,
 };
 use crate::error::DaemonError;
+use crate::kernel::runtime_state::CompatibilityRuntimeState;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use serde::{Deserialize, Serialize};
 
@@ -280,43 +281,14 @@ impl CapabilityContext {
 
 #[derive(Clone)]
 pub(crate) struct CapabilityRuntimeStore {
-    app: Arc<Mutex<DaemonApp>>,
-}
-
-struct CapabilityRuntimeContext<'a> {
-    app: &'a DaemonApp,
-}
-
-impl<'a> CapabilityRuntimeContext<'a> {
-    fn new(app: &'a DaemonApp) -> Self {
-        Self { app }
-    }
-
-    fn capability_context(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        capability: &'static str,
-    ) -> Result<CapabilityContext, DaemonError> {
-        let context = crate::app::KernelSessionReadService::new(self.app).capability_context(
-            session_id,
-            attachment_id,
-            capability,
-        )?;
-        let workspace_coordinator = self.app.workspace_coordinator();
-        Ok(CapabilityContext {
-            session_id: session_id.to_string(),
-            attachment_id: attachment_id.to_string(),
-            workspace_id: context.workspace_id,
-            worktree_root: context.worktree_root,
-            workspace_coordinator,
-        })
-    }
+    state: CompatibilityRuntimeState,
 }
 
 impl CapabilityRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app }
+        Self {
+            state: CompatibilityRuntimeState::new(app),
+        }
     }
 
     async fn context(
@@ -325,12 +297,19 @@ impl CapabilityRuntimeStore {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityContext, DaemonError> {
-        let app = self.app.lock().await;
-        CapabilityRuntimeContext::new(&app).capability_context(
-            session_id,
-            attachment_id,
-            capability,
-        )
+        let snapshot = self
+            .state
+            .with_capability_runtime(|capability_runtime| {
+                capability_runtime.capability_context(session_id, attachment_id, capability)
+            })
+            .await?;
+        Ok(CapabilityContext {
+            session_id: session_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+            workspace_id: snapshot.workspace_id,
+            worktree_root: snapshot.worktree_root,
+            workspace_coordinator: snapshot.workspace_coordinator,
+        })
     }
 }
 

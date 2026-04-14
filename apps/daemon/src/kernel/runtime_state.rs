@@ -204,6 +204,15 @@ impl CompatibilityRuntimeState {
         })
         .await
     }
+
+    pub(crate) async fn with_capability_runtime<R>(
+        &self,
+        operation: impl FnOnce(&CapabilityRuntimeCompatibilityContext<'_>) -> R,
+    ) -> R {
+        let app = self.app.lock().await;
+        let context = CapabilityRuntimeCompatibilityContext::new(&app);
+        operation(&context)
+    }
 }
 
 enum PromptAbortDispatchOutcome {
@@ -345,6 +354,16 @@ pub(crate) struct TerminalOutputCompatibilityContext<'a> {
     app: &'a mut DaemonApp,
 }
 
+pub(crate) struct CapabilityRuntimeCompatibilityContext<'a> {
+    app: &'a DaemonApp,
+}
+
+pub(crate) struct CapabilityRuntimeSnapshot {
+    pub(crate) workspace_id: String,
+    pub(crate) worktree_root: std::path::PathBuf,
+    pub(crate) workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
+}
+
 impl<'a> ProviderLaunchCompatibilityContext<'a> {
     fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -378,6 +397,30 @@ impl<'a> ProviderLaunchCompatibilityContext<'a> {
         error: &DaemonError,
     ) {
         self.app.fail_provider_launch(started, error);
+    }
+}
+
+impl<'a> CapabilityRuntimeCompatibilityContext<'a> {
+    fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn capability_context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
+        let context = crate::app::KernelSessionReadService::new(self.app).capability_context(
+            session_id,
+            attachment_id,
+            capability,
+        )?;
+        Ok(CapabilityRuntimeSnapshot {
+            workspace_id: context.workspace_id,
+            worktree_root: context.worktree_root,
+            workspace_coordinator: self.app.workspace_coordinator(),
+        })
     }
 }
 
