@@ -41,6 +41,37 @@ pub(crate) struct ProviderRunLivenessRuntime<'a> {
     app: &'a mut DaemonApp,
 }
 
+struct ProviderRunLivenessProcesses;
+
+impl ProviderRunLivenessProcesses {
+    fn poll_process_running(
+        app: &mut DaemonApp,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        match app.pty.poll_process_state(provider_run_id) {
+            Ok(PtyProcessState::Running) => Ok(true),
+            Ok(PtyProcessState::Exited) => Ok(false),
+            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn remove_tracked_process(
+        app: &mut DaemonApp,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        app.remove_tracked_provider_process_for_run(provider_run_id)
+    }
+}
+
+struct ProviderRunLivenessRecipients;
+
+impl ProviderRunLivenessRecipients {
+    fn attachment_ids(app: &DaemonApp, session_id: &str) -> Vec<String> {
+        app.attachments.list_session_attachment_ids(session_id)
+    }
+}
+
 impl<'a> ProviderRunLivenessRuntime<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -68,9 +99,10 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         )? {
             ProviderRunLivenessReconciliation::AlreadyEnded(run) => {
                 self.app.update_provider_run_projection(run);
-                let _ = self
-                    .app
-                    .remove_tracked_provider_process_for_run(provider_run_id)?;
+                let _ = ProviderRunLivenessProcesses::remove_tracked_process(
+                    self.app,
+                    provider_run_id,
+                )?;
                 return Ok(true);
             }
             ProviderRunLivenessReconciliation::ExternalEndpoint(_)
@@ -83,12 +115,8 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
             .map(|prompt| prompt.status());
         let had_active_prompt = active_prompt_status.is_some();
-        let process_running = match self.app.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => true,
-            Ok(PtyProcessState::Exited) => false,
-            Err(DaemonError::PtyProcessNotFound { .. }) => false,
-            Err(error) => return Err(error),
-        };
+        let process_running =
+            ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)?;
         let ended_run = match self.app.providers.reconcile_run_liveness(
             &mut self.app.sessions,
             session_id,
@@ -101,9 +129,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             | ProviderRunLivenessReconciliation::StillRunning(_) => return Ok(false),
         };
         self.app.update_provider_run_projection(ended_run.clone());
-        let _ = self
-            .app
-            .remove_tracked_provider_process_for_run(provider_run_id)?;
+        let _ = ProviderRunLivenessProcesses::remove_tracked_process(self.app, provider_run_id)?;
 
         let started_next = self.settle_provider_exit_prompt_state(
             session_id,
@@ -115,7 +141,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         self.app.record_notice(
             session_id,
             Some(provider_run_id),
-            self.app.attachments.list_session_attachment_ids(session_id),
+            ProviderRunLivenessRecipients::attachment_ids(self.app, session_id),
             format!(
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 provider_run_id,
