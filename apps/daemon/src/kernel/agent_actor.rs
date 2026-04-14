@@ -11,7 +11,7 @@ use crate::kernel::projection::{
 };
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::session_actor::FocusedAgentProjection;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
 use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus};
 
@@ -543,19 +543,6 @@ fn completion_started_next_is_compatible(
     match (next_queued_prompt, completion.started_next.as_ref()) {
         (Some(expected), Some(started)) => expected.id() == started.id(),
         _ => true,
-    }
-}
-
-pub(crate) struct AgentActor;
-
-impl AgentActor {
-    pub(crate) fn is_agent_interactive_command(request: &LocalDaemonRequest) -> bool {
-        matches!(
-            request,
-            LocalDaemonRequest::SubmitPrompt(_)
-                | LocalDaemonRequest::CompletePrompt(_)
-                | LocalDaemonRequest::CancelActivePrompt(_)
-        )
     }
 }
 
