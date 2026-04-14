@@ -50,9 +50,12 @@ struct LocalApiRouterHarness {
 
 impl LocalApiRouterHarness {
     fn new() -> Self {
+        Self::with_config(DaemonConfig::for_tests())
+    }
+
+    fn with_config(config: DaemonConfig) -> Self {
         let app = Arc::new(tokio::sync::Mutex::new(
-            DaemonApp::bootstrap(DaemonConfig::for_tests())
-                .expect("daemon bootstrap should succeed"),
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
         ));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 16);
         Self {
@@ -427,10 +430,10 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     let mut config = DaemonConfig::for_tests();
     config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config.relay_token = Some("secret".to_string());
-    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let harness = LocalApiRouterHarness::with_config(config);
 
-    let machines = match app
-        .handle_local_request(LocalDaemonRequest::ListRemoteMachines(
+    let machines = match harness
+        .dispatch(LocalDaemonRequest::ListRemoteMachines(
             ListRemoteMachinesRequest,
         ))
         .expect("remote machines request should succeed")
@@ -445,8 +448,8 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     assert_eq!(machine.machine_alias.as_deref(), Some("machine 1 (macOS)"));
     assert_eq!(machine.available_providers, vec!["codex", "opencode"]);
 
-    let kernels = match app
-        .handle_local_request(LocalDaemonRequest::ListRemoteMachineKernels(
+    let kernels = match harness
+        .dispatch(LocalDaemonRequest::ListRemoteMachineKernels(
             ListRemoteMachineKernelsRequest {
                 machine_ref: "machine 1 (macOS)".to_string(),
             },
