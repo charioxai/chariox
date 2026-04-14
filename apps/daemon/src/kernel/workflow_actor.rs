@@ -139,6 +139,12 @@ async fn run_workflow_command_lane(
     session_id: String,
     mut rx: mpsc::Receiver<WorkflowCommandEnvelope>,
 ) {
+    let executor = WorkflowRuntimeCommandExecutor::new(
+        app,
+        session_projection,
+        agent_runtime_projection,
+        session_id.clone(),
+    );
     while let Some(envelope) = rx.recv().await {
         crate::logging::info_with_fields(
             "daemon.kernel_workflow_actor",
@@ -149,22 +155,54 @@ async fn run_workflow_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
+        let result = executor.execute(envelope.request).await;
+        let _ = envelope.result_tx.send(result);
+    }
+}
+
+#[derive(Clone)]
+struct WorkflowRuntimeCommandExecutor {
+    app: Arc<Mutex<DaemonApp>>,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    session_id: String,
+}
+
+impl WorkflowRuntimeCommandExecutor {
+    fn new(
+        app: Arc<Mutex<DaemonApp>>,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        session_id: String,
+    ) -> Self {
+        Self {
+            app,
+            session_projection,
+            agent_runtime_projection,
+            session_id,
+        }
+    }
+
+    async fn execute(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projected_session) = {
-            let mut app = app.lock().await;
-            let result = execute_workflow_runtime_request(&mut app, envelope.request);
+            let mut app = self.app.lock().await;
+            let result = execute_workflow_runtime_request(&mut app, request);
             let projected_session = if let Ok(response) = result.as_ref() {
                 workflow_response_session(response)
-                    .or_else(|| app.local_api_session_snapshot(&session_id).ok())
+                    .or_else(|| app.local_api_session_snapshot(&self.session_id).ok())
             } else {
                 None
             };
             (result, projected_session)
         };
         if let Some(session) = projected_session {
-            agent_runtime_projection.update_session(&session);
-            session_projection.update(session);
+            self.agent_runtime_projection.update_session(&session);
+            self.session_projection.update(session);
         }
-        let _ = envelope.result_tx.send(result);
+        result
     }
 }
 
