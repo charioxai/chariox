@@ -342,6 +342,163 @@ pub(crate) struct SessionRuntimeStore {
     app: Arc<Mutex<DaemonApp>>,
 }
 
+struct SessionRuntimeContext<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> SessionRuntimeContext<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn resolve_session_ref_id(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        Ok(self
+            .app
+            .resolve_session_ref(session_ref, workspace_id)?
+            .id()
+            .to_string())
+    }
+
+    fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
+        Ok(self
+            .app
+            .attachments()
+            .get_attachment(attachment_id)?
+            .session_id()
+            .to_string())
+    }
+
+    fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.app.local_api_session_snapshot(session_id)
+    }
+
+    fn create_session_response(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).create_session_response(request)
+    }
+
+    fn attach(
+        &mut self,
+        request: crate::attachment::AttachRequest,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).attach(request)
+    }
+
+    fn detach(
+        &mut self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).detach(attachment_id)
+    }
+
+    fn focus_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).focus_agent(session_id, agent_id)
+    }
+
+    fn cycle_agent_focus(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).cycle_agent_focus(session_id)
+    }
+
+    fn resize_terminal(
+        &mut self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        crate::app::KernelSessionService::new(self.app).resize_terminal(session_id, cols, rows)
+    }
+
+    fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _ = self
+            .app
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        Ok(())
+    }
+
+    fn drain_notice_records(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
+        self.app
+            .terminal()
+            .drain_notice_records(session_id, attachment_id)
+    }
+
+    fn update_session_config(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        values: std::collections::BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<crate::session::SessionConfigState, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).update_session_config(
+            session_id,
+            attachment_id,
+            values,
+            requires_idle,
+        )
+    }
+
+    fn alias_session(
+        &mut self,
+        session_id: &str,
+        alias: String,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).alias_session(session_id, alias)
+    }
+
+    fn spawn_agent(
+        &mut self,
+        request: CreateAgentRequest,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.app.spawn_agent(request)
+    }
+
+    fn destroy_agent(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.app.destroy_agent(agent_id)
+    }
+
+    fn end_session(
+        &mut self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        crate::app::KernelSessionService::new(self.app).end_session(session_id)
+    }
+
+    fn delete_session_ref(
+        &mut self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        crate::app::KernelSessionService::new(self.app)
+            .delete_session_ref(session_ref, workspace_id)
+    }
+}
+
 impl SessionRuntimeStore {
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
         Self { app }
@@ -352,35 +509,31 @@ impl SessionRuntimeStore {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        let app = self.app.lock().await;
-        Ok(app
-            .resolve_session_ref(session_ref, workspace_id)?
-            .id()
-            .to_string())
+        let mut app = self.app.lock().await;
+        SessionRuntimeContext::new(&mut app).resolve_session_ref_id(session_ref, workspace_id)
     }
 
     async fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
-        let app = self.app.lock().await;
-        Ok(app
-            .attachments()
-            .get_attachment(attachment_id)?
-            .session_id()
-            .to_string())
+        let mut app = self.app.lock().await;
+        SessionRuntimeContext::new(&mut app).attachment_session_id(attachment_id)
     }
 
     async fn with_session_projection_action(
         &self,
-        operation: impl FnOnce(&mut DaemonApp) -> Result<LocalDaemonResponse, DaemonError>,
+        operation: impl FnOnce(
+            &mut SessionRuntimeContext<'_>,
+        ) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let mut app = self.app.lock().await;
-        let result = operation(&mut app);
+        let mut context = SessionRuntimeContext::new(&mut app);
+        let result = operation(&mut context);
         let projection_action = if let Ok(response) = result.as_ref() {
             session_response_projection_action(response).or_else(|| {
                 session_id_for_projection_refresh(&result)
-                    .and_then(|session_id| app.local_api_session_snapshot(&session_id).ok())
+                    .and_then(|session_id| context.session_snapshot(&session_id).ok())
                     .map(SessionProjectionAction::Update)
             })
         } else {
@@ -396,10 +549,8 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        self.with_session_projection_action(|app| {
-            crate::app::KernelSessionService::new(app).create_session_response(request)
-        })
-        .await
+        self.with_session_projection_action(|app| app.create_session_response(request))
+            .await
     }
 
     async fn attach_to_session(
@@ -411,13 +562,11 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionAttached {
-                attachment: crate::app::KernelSessionService::new(app).attach(
-                    crate::attachment::AttachRequest::new(
-                        request.session_id,
-                        request.client_id,
-                        request.capability_level,
-                    ),
-                )?,
+                attachment: app.attach(crate::attachment::AttachRequest::new(
+                    request.session_id,
+                    request.client_id,
+                    request.capability_level,
+                ))?,
             })
         })
         .await
@@ -432,8 +581,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionDetached {
-                attachment: crate::app::KernelSessionService::new(app)
-                    .detach(&request.attachment_id)?,
+                attachment: app.detach(&request.attachment_id)?,
             })
         })
         .await
@@ -448,8 +596,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::AgentFocused {
-                agent: crate::app::KernelSessionService::new(app)
-                    .focus_agent(&request.session_id, &request.agent_id)?,
+                agent: app.focus_agent(&request.session_id, &request.agent_id)?,
             })
         })
         .await
@@ -464,8 +611,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::AgentFocusCycled {
-                agent: crate::app::KernelSessionService::new(app)
-                    .cycle_agent_focus(&request.session_id)?,
+                agent: app.cycle_agent_focus(&request.session_id)?,
             })
         })
         .await
@@ -479,11 +625,7 @@ impl SessionRuntimeStore {
         Option<SessionProjectionAction>,
     ) {
         self.with_session_projection_action(|app| {
-            crate::app::KernelSessionService::new(app).resize_terminal(
-                &request.session_id,
-                request.cols,
-                request.rows,
-            )?;
+            app.resize_terminal(&request.session_id, request.cols, request.rows)?;
             Ok(LocalDaemonResponse::TerminalResized {
                 session_id: request.session_id,
                 cols: request.cols,
@@ -504,9 +646,7 @@ impl SessionRuntimeStore {
             let _ =
                 app.ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
             Ok(LocalDaemonResponse::RuntimeNotices {
-                notices: app
-                    .terminal()
-                    .drain_notice_records(&request.session_id, &request.attachment_id),
+                notices: app.drain_notice_records(&request.session_id, &request.attachment_id),
             })
         })
         .await
@@ -521,13 +661,13 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             let session_id = request.session_id.clone();
-            let config = crate::app::KernelSessionService::new(app).update_session_config(
+            let config = app.update_session_config(
                 &request.session_id,
                 &request.attachment_id,
                 request.values,
                 request.requires_idle,
             )?;
-            let session = app.local_api_session_snapshot(&session_id)?;
+            let session = app.session_snapshot(&session_id)?;
             Ok(LocalDaemonResponse::SessionConfigUpdated { config, session })
         })
         .await
@@ -542,8 +682,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionAliased {
-                session: crate::app::KernelSessionService::new(app)
-                    .alias_session(&request.session_id, request.alias)?,
+                session: app.alias_session(&request.session_id, request.alias)?,
             })
         })
         .await
@@ -584,7 +723,7 @@ impl SessionRuntimeStore {
                 create_request
             };
             let agent = app.spawn_agent(create_request)?;
-            let _ = app.local_api_session_snapshot(agent.session_id())?;
+            let _ = app.session_snapshot(agent.session_id())?;
             Ok(LocalDaemonResponse::AgentSpawned { agent })
         })
         .await
@@ -599,7 +738,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             let agent = app.destroy_agent(&request.agent_id)?;
-            let _ = app.local_api_session_snapshot(agent.session_id())?;
+            let _ = app.session_snapshot(agent.session_id())?;
             Ok(LocalDaemonResponse::AgentDestroyed { agent })
         })
         .await
@@ -614,8 +753,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionEnded {
-                session: crate::app::KernelSessionService::new(app)
-                    .end_session(&request.session_id)?,
+                session: app.end_session(&request.session_id)?,
             })
         })
         .await
@@ -630,7 +768,7 @@ impl SessionRuntimeStore {
     ) {
         self.with_session_projection_action(|app| {
             Ok(LocalDaemonResponse::SessionDeleted {
-                session: crate::app::KernelSessionService::new(app)
+                session: app
                     .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())?,
             })
         })
