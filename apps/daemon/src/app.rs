@@ -11,7 +11,7 @@ mod kernel_agent;
 mod kernel_session;
 mod prompt_lifecycle;
 mod prompt_state_owner;
-mod provider_output;
+pub(crate) mod provider_output;
 mod provider_runtime;
 mod session_runtime;
 mod terminal_fanout;
