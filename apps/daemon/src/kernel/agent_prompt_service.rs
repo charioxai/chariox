@@ -60,9 +60,7 @@ impl AgentPromptCommandService {
         &self,
         prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptSubmission, DaemonError> {
-        self.state
-            .with_agent_prompt_mut(|prompt| prompt.submit_prepared_prompt(prepared))
-            .await
+        self.state.submit_prepared_prompt(prepared).await
     }
 
     pub(crate) async fn cancel_agent_prompt(
@@ -72,9 +70,7 @@ impl AgentPromptCommandService {
         attachment_id: &str,
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
-            .with_agent_prompt_mut(|prompt| {
-                prompt.cancel_agent_prompt(session_id, target_agent_id, attachment_id)
-            })
+            .cancel_agent_prompt(session_id, target_agent_id, attachment_id)
             .await
     }
 
@@ -85,13 +81,7 @@ impl AgentPromptCommandService {
         next_queued_prompt: Option<PromptQueueItem>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.state
-            .with_agent_prompt_mut(|prompt| {
-                prompt.complete_agent_prompt(
-                    session_id,
-                    target_agent_id,
-                    next_queued_prompt.as_ref(),
-                )
-            })
+            .complete_agent_prompt(session_id, target_agent_id, next_queued_prompt.as_ref())
             .await
     }
 

@@ -97,36 +97,294 @@ impl CompatibilityRuntimeState {
         .await
     }
 
-    pub(crate) async fn with_session_mut<R>(
+    pub(crate) async fn resolve_session_ref_id(
         &self,
-        operation: impl FnOnce(&mut SessionRuntimeCompatibilityContext<'_>) -> R,
-    ) -> R {
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<String, DaemonError> {
         self.with_app_mut(|app| {
-            let mut context = SessionRuntimeCompatibilityContext::new(
-                app,
-                self.owned
-                    .as_ref()
-                    .map(|owned| owned.terminal_stream.clone()),
-            );
-            operation(&mut context)
+            crate::app::KernelSessionService::new(app)
+                .resolve_session_ref_id(session_ref, workspace_id)
         })
         .await
     }
 
-    pub(crate) async fn with_agent_prompt_mut<R>(
+    pub(crate) async fn attachment_session_id(
         &self,
-        operation: impl FnOnce(&mut AgentPromptCompatibilityContext<'_>) -> R,
-    ) -> R {
+        attachment_id: &str,
+    ) -> Result<String, DaemonError> {
         self.with_app_mut(|app| {
-            let mut context = AgentPromptCompatibilityContext::new(
-                app,
-                self.owned
-                    .as_ref()
-                    .map(|owned| owned.provider_run_projection.clone()),
-            );
-            operation(&mut context)
+            crate::app::KernelSessionService::new(app).attachment_session_id(attachment_id)
         })
         .await
+    }
+
+    pub(crate) async fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).session_snapshot(session_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_session_response(
+        &self,
+        request: crate::session::CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).create_session_response(request)
+        })
+        .await
+    }
+
+    pub(crate) async fn attach(
+        &self,
+        request: crate::attachment::AttachRequest,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).attach(request))
+            .await
+    }
+
+    pub(crate) async fn detach(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).detach(attachment_id))
+            .await
+    }
+
+    pub(crate) async fn focus_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).focus_agent(session_id, agent_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn cycle_agent_focus(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).cycle_agent_focus(session_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn resize_terminal(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).resize_terminal(session_id, cols, rows)
+        })
+        .await
+    }
+
+    pub(crate) async fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| {
+            let _ = crate::app::KernelSessionService::new(app)
+                .ensure_attachment_in_session(session_id, attachment_id)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn drain_notice_records(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
+        if let Some(owned) = &self.owned {
+            return owned
+                .terminal_stream
+                .drain_notice_records(session_id, attachment_id);
+        }
+        self.with_app_mut(|app| {
+            app.terminal()
+                .drain_notice_records(session_id, attachment_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn update_session_config(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        values: std::collections::BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<crate::session::SessionConfigState, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).update_session_config(
+                session_id,
+                attachment_id,
+                values,
+                requires_idle,
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn alias_session(
+        &self,
+        session_id: &str,
+        alias: String,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).alias_session(session_id, alias)
+        })
+        .await
+    }
+
+    pub(crate) async fn spawn_agent(
+        &self,
+        request: crate::agent::CreateAgentRequest,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).spawn_agent(request))
+            .await
+    }
+
+    pub(crate) async fn destroy_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).destroy_agent(agent_id))
+            .await
+    }
+
+    pub(crate) async fn end_session(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).end_session(session_id))
+            .await
+    }
+
+    pub(crate) async fn delete_session_ref(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app).delete_session_ref(session_ref, workspace_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn submit_prepared_prompt(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelAgentService::new(app).submit_prepared_prompt_for_kernel(prepared)
+        })
+        .await
+    }
+
+    pub(crate) async fn cancel_agent_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        self.with_app_mut(|app| {
+            crate::app::KernelAgentService::new(app).cancel_agent_prompt_for_kernel(
+                session_id,
+                target_agent_id,
+                attachment_id,
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_agent_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let projected_provider_run_id = self
+            .owned
+            .as_ref()
+            .and_then(|owned| {
+                owned
+                    .provider_run_projection
+                    .get_for_agent(session_id, target_agent_id)
+            })
+            .map(|run| run.id().to_string());
+        self.with_app_mut(|app| {
+            let provider_run_id = projected_provider_run_id.or_else(|| {
+                app.providers()
+                    .get_run_for_agent(session_id, target_agent_id)
+                    .map(|run| run.id().to_string())
+            });
+            crate::app::KernelAgentService::new(app).complete_active_prompt_for_kernel(
+                session_id,
+                target_agent_id,
+                provider_run_id.as_deref(),
+                next_queued_prompt,
+            )
+        })
+        .await
+    }
+
+    async fn enqueue_prompt_dispatch(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| app.enqueue_kernel_prompt_dispatch(dispatch))
+            .await
+    }
+
+    async fn fail_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| app.fail_kernel_prompt_dispatch(dispatch, error))
+            .await
+    }
+
+    async fn finish_remote_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        result: Result<String, DaemonError>,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| app.finish_kernel_remote_prompt_dispatch(dispatch, result))
+            .await
+    }
+
+    async fn enqueue_prompt_abort(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| app.enqueue_kernel_prompt_abort(dispatch))
+            .await
+    }
+
+    async fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        self.with_app_mut(|app| app.structured_prompt_io_in_flight(provider_run_id))
+            .await
+    }
+
+    async fn fail_prompt_abort(
+        &self,
+        dispatch: crate::app::KernelPromptAbortDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        self.with_app_mut(|app| app.fail_kernel_prompt_abort(dispatch, error))
+            .await
     }
 
     pub(crate) fn spawn_prompt_dispatch(
@@ -139,13 +397,9 @@ impl CompatibilityRuntimeState {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            state
-                .with_agent_prompt_mut(|prompt| {
-                    if let Err(error) = prompt.enqueue_prompt_dispatch(&dispatch) {
-                        let _ = prompt.fail_prompt_dispatch(dispatch, error);
-                    }
-                })
-                .await;
+            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            }
         });
     }
 
@@ -197,11 +451,7 @@ impl CompatibilityRuntimeState {
                 }
                 Err(error) => Err(error),
             };
-            state
-                .with_agent_prompt_mut(|prompt| {
-                    let _ = prompt.finish_remote_prompt_dispatch(dispatch, result);
-                })
-                .await;
+            let _ = state.finish_remote_prompt_dispatch(dispatch, result).await;
         });
     }
 
@@ -216,20 +466,20 @@ impl CompatibilityRuntimeState {
                 .acquire(&dispatch.provider_run_id)
                 .await;
             loop {
-                let outcome = state
-                    .with_agent_prompt_mut(|prompt| match prompt.enqueue_prompt_abort(&dispatch) {
-                        Ok(()) => PromptAbortDispatchOutcome::Done,
-                        Err(_)
-                            if prompt.structured_prompt_io_in_flight(&dispatch.provider_run_id) =>
-                        {
-                            PromptAbortDispatchOutcome::Retry
-                        }
-                        Err(error) => {
-                            let _ = prompt.fail_prompt_abort(dispatch.clone(), error);
-                            PromptAbortDispatchOutcome::Done
-                        }
-                    })
-                    .await;
+                let outcome = match state.enqueue_prompt_abort(&dispatch).await {
+                    Ok(()) => PromptAbortDispatchOutcome::Done,
+                    Err(_)
+                        if state
+                            .structured_prompt_io_in_flight(&dispatch.provider_run_id)
+                            .await =>
+                    {
+                        PromptAbortDispatchOutcome::Retry
+                    }
+                    Err(error) => {
+                        let _ = state.fail_prompt_abort(dispatch.clone(), error).await;
+                        PromptAbortDispatchOutcome::Done
+                    }
+                };
                 match outcome {
                     PromptAbortDispatchOutcome::Done => break,
                     PromptAbortDispatchOutcome::Retry => {
@@ -430,116 +680,6 @@ enum PromptAbortDispatchOutcome {
     Retry,
 }
 
-pub(crate) struct SessionRuntimeCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-    terminal_stream: Option<crate::terminal::TerminalStreamStore>,
-}
-
-pub(crate) struct AgentPromptCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-    provider_run_projection: Option<crate::kernel::projection::ProviderRunProjectionStore>,
-}
-
-impl<'a> AgentPromptCompatibilityContext<'a> {
-    fn new(
-        app: &'a mut DaemonApp,
-        provider_run_projection: Option<crate::kernel::projection::ProviderRunProjectionStore>,
-    ) -> Self {
-        Self {
-            app,
-            provider_run_projection,
-        }
-    }
-
-    pub(crate) fn submit_prepared_prompt(
-        &mut self,
-        prepared: crate::app::KernelPreparedPromptSubmission,
-    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        crate::app::KernelAgentService::new(self.app).submit_prepared_prompt_for_kernel(prepared)
-    }
-
-    pub(crate) fn cancel_agent_prompt(
-        &mut self,
-        session_id: &str,
-        target_agent_id: &str,
-        attachment_id: &str,
-    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        crate::app::KernelAgentService::new(self.app).cancel_agent_prompt_for_kernel(
-            session_id,
-            target_agent_id,
-            attachment_id,
-        )
-    }
-
-    pub(crate) fn complete_agent_prompt(
-        &mut self,
-        session_id: &str,
-        target_agent_id: &str,
-        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        let provider_run_id = self
-            .provider_run_projection
-            .as_ref()
-            .and_then(|projection| projection.get_for_agent(session_id, target_agent_id))
-            .map(|run| run.id().to_string())
-            .or_else(|| {
-                self.app
-                    .providers()
-                    .get_run_for_agent(session_id, target_agent_id)
-                    .map(|run| run.id().to_string())
-            });
-        crate::app::KernelAgentService::new(self.app).complete_active_prompt_for_kernel(
-            session_id,
-            target_agent_id,
-            provider_run_id.as_deref(),
-            next_queued_prompt,
-        )
-    }
-
-    pub(crate) fn enqueue_prompt_dispatch(
-        &mut self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> Result<(), DaemonError> {
-        self.app.enqueue_kernel_prompt_dispatch(dispatch)
-    }
-
-    pub(crate) fn fail_prompt_dispatch(
-        &mut self,
-        dispatch: crate::app::KernelPromptDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        self.app.fail_kernel_prompt_dispatch(dispatch, error)
-    }
-
-    pub(crate) fn finish_remote_prompt_dispatch(
-        &mut self,
-        dispatch: crate::app::KernelRemotePromptDispatch,
-        result: Result<String, DaemonError>,
-    ) -> Result<(), DaemonError> {
-        self.app
-            .finish_kernel_remote_prompt_dispatch(dispatch, result)
-    }
-
-    pub(crate) fn enqueue_prompt_abort(
-        &mut self,
-        dispatch: &crate::app::KernelPromptAbortDispatch,
-    ) -> Result<(), DaemonError> {
-        self.app.enqueue_kernel_prompt_abort(dispatch)
-    }
-
-    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        self.app.structured_prompt_io_in_flight(provider_run_id)
-    }
-
-    pub(crate) fn fail_prompt_abort(
-        &mut self,
-        dispatch: crate::app::KernelPromptAbortDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        self.app.fail_kernel_prompt_abort(dispatch, error)
-    }
-}
-
 pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) workspace_id: String,
     pub(crate) worktree_root: std::path::PathBuf,
@@ -579,161 +719,5 @@ fn workflow_response_session(
         | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
         _ => None,
-    }
-}
-
-impl<'a> SessionRuntimeCompatibilityContext<'a> {
-    fn new(
-        app: &'a mut DaemonApp,
-        terminal_stream: Option<crate::terminal::TerminalStreamStore>,
-    ) -> Self {
-        Self {
-            app,
-            terminal_stream,
-        }
-    }
-
-    pub(crate) fn resolve_session_ref_id(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<String, DaemonError> {
-        crate::app::KernelSessionService::new(self.app)
-            .resolve_session_ref_id(session_ref, workspace_id)
-    }
-
-    pub(crate) fn attachment_session_id(
-        &mut self,
-        attachment_id: &str,
-    ) -> Result<String, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).attachment_session_id(attachment_id)
-    }
-
-    pub(crate) fn session_snapshot(
-        &mut self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).session_snapshot(session_id)
-    }
-
-    pub(crate) fn create_session_response(
-        &mut self,
-        request: crate::session::CreateSessionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).create_session_response(request)
-    }
-
-    pub(crate) fn attach(
-        &mut self,
-        request: crate::attachment::AttachRequest,
-    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).attach(request)
-    }
-
-    pub(crate) fn detach(
-        &mut self,
-        attachment_id: &str,
-    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).detach(attachment_id)
-    }
-
-    pub(crate) fn focus_agent(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).focus_agent(session_id, agent_id)
-    }
-
-    pub(crate) fn cycle_agent_focus(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).cycle_agent_focus(session_id)
-    }
-
-    pub(crate) fn resize_terminal(
-        &mut self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), DaemonError> {
-        crate::app::KernelSessionService::new(self.app).resize_terminal(session_id, cols, rows)
-    }
-
-    pub(crate) fn ensure_attachment_in_session(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<(), DaemonError> {
-        let _ = crate::app::KernelSessionService::new(self.app)
-            .ensure_attachment_in_session(session_id, attachment_id)?;
-        Ok(())
-    }
-
-    pub(crate) fn drain_notice_records(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
-        if let Some(terminal_stream) = &self.terminal_stream {
-            return terminal_stream.drain_notice_records(session_id, attachment_id);
-        }
-        self.app
-            .terminal()
-            .drain_notice_records(session_id, attachment_id)
-    }
-
-    pub(crate) fn update_session_config(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        values: std::collections::BTreeMap<String, String>,
-        requires_idle: bool,
-    ) -> Result<crate::session::SessionConfigState, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).update_session_config(
-            session_id,
-            attachment_id,
-            values,
-            requires_idle,
-        )
-    }
-
-    pub(crate) fn alias_session(
-        &mut self,
-        session_id: &str,
-        alias: String,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).alias_session(session_id, alias)
-    }
-
-    pub(crate) fn spawn_agent(
-        &mut self,
-        request: crate::agent::CreateAgentRequest,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).spawn_agent(request)
-    }
-
-    pub(crate) fn destroy_agent(
-        &mut self,
-        agent_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).destroy_agent(agent_id)
-    }
-
-    pub(crate) fn end_session(
-        &mut self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app).end_session(session_id)
-    }
-
-    pub(crate) fn delete_session_ref(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionService::new(self.app)
-            .delete_session_ref(session_ref, workspace_id)
     }
 }
