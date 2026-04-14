@@ -307,12 +307,42 @@ impl ProviderRunLivenessState {
         provider_run_id: &str,
         process_running: Option<bool>,
     ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
-        app.providers.reconcile_run_liveness(
-            &mut app.sessions,
+        let reconciliation = app.providers.reconcile_run_liveness_provider_only(
             session_id,
             provider_run_id,
             process_running,
-        )
+        )?;
+        Self::sync_ended_provider_run_session_state(
+            app,
+            session_id,
+            provider_run_id,
+            &reconciliation,
+        )?;
+        Ok(reconciliation)
+    }
+
+    fn sync_ended_provider_run_session_state(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+        reconciliation: &ProviderRunLivenessReconciliation,
+    ) -> Result<(), DaemonError> {
+        if !matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::AlreadyEnded(_)
+                | ProviderRunLivenessReconciliation::NewlyEnded(_)
+        ) {
+            return Ok(());
+        }
+        if app
+            .sessions
+            .get_session(session_id)?
+            .active_provider_run_id()
+            == Some(provider_run_id)
+        {
+            app.sessions.set_active_provider_run(session_id, None)?;
+        }
+        Ok(())
     }
 }
 

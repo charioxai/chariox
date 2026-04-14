@@ -311,6 +311,25 @@ impl ProviderProcessService {
         run_id: &str,
         process_running: Option<bool>,
     ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
+        let reconciliation =
+            self.reconcile_run_liveness_provider_only(session_id, run_id, process_running)?;
+        if matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::AlreadyEnded(_)
+                | ProviderRunLivenessReconciliation::NewlyEnded(_)
+        ) && sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id)
+        {
+            sessions.set_active_provider_run(session_id, None)?;
+        }
+        Ok(reconciliation)
+    }
+
+    pub(crate) fn reconcile_run_liveness_provider_only(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+        process_running: Option<bool>,
+    ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
         let run_snapshot = self.get_run(run_id)?;
         if run_snapshot.session_id() != session_id {
             return Err(DaemonError::ProviderRunNotInSession {
@@ -320,9 +339,6 @@ impl ProviderProcessService {
         }
 
         if run_snapshot.state() == ProviderRunState::Ended {
-            if sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id) {
-                sessions.set_active_provider_run(session_id, None)?;
-            }
             self.clear_runtime(run_id);
             return Ok(ProviderRunLivenessReconciliation::AlreadyEnded(
                 run_snapshot,
@@ -347,7 +363,7 @@ impl ProviderProcessService {
             ));
         }
 
-        let ended = self.mark_run_ended(sessions, session_id, run_id)?;
+        let ended = self.mark_run_ended_provider_only(session_id, run_id)?;
         Ok(ProviderRunLivenessReconciliation::NewlyEnded(ended))
     }
 
@@ -732,15 +748,27 @@ impl ProviderProcessService {
             .get_session(session_id)?
             .active_provider_run_id()
             .map(str::to_owned);
-        let run_snapshot = self.get_run(run_id)?;
+        let run = self.mark_run_ended_provider_only(session_id, run_id)?;
 
+        if active_run_id.as_deref() == Some(run_id) {
+            sessions.set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(run)
+    }
+
+    pub(crate) fn mark_run_ended_provider_only(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run_snapshot = self.get_run(run_id)?;
         if run_snapshot.session_id() != session_id {
             return Err(DaemonError::ProviderRunNotInSession {
                 session_id: session_id.to_string(),
                 provider_run_id: run_id.to_string(),
             });
         }
-
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
             return Ok(run_snapshot);
@@ -750,9 +778,6 @@ impl ProviderProcessService {
         run.mark_ended();
         let run = run.clone();
 
-        if active_run_id.as_deref() == Some(run_id) {
-            sessions.set_active_provider_run(session_id, None)?;
-        }
         self.clear_runtime(run_id);
 
         Ok(run)
@@ -943,6 +968,41 @@ mod tests {
                 .expect("session should exist")
                 .active_provider_run_id(),
             None
+        );
+        assert_eq!(
+            providers
+                .get_run(run.id())
+                .expect("run should still exist")
+                .state(),
+            ProviderRunState::Ended
+        );
+    }
+
+    #[test]
+    fn provider_only_liveness_reconciliation_does_not_mutate_session_active_run() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let reconciliation = providers
+            .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
+            .expect("provider-only reconciliation should succeed");
+
+        assert!(matches!(
+            reconciliation,
+            ProviderRunLivenessReconciliation::NewlyEnded(_)
+        ));
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
         );
         assert_eq!(
             providers
