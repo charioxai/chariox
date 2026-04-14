@@ -249,6 +249,19 @@ type ApplyPatchInput = {
   patchText?: unknown
 }
 
+type CodexFileChange = {
+  path?: unknown
+  filePath?: unknown
+  kind?: unknown
+  type?: unknown
+  diff?: unknown
+  unified_diff?: unknown
+  unifiedDiff?: unknown
+  patch?: unknown
+  move_path?: unknown
+  movePath?: unknown
+}
+
 function formatTodoTranscriptUpdate(update: ToolTranscriptUpdate) {
   if (update.tool !== "todowrite") {
     return null
@@ -277,7 +290,22 @@ export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
   if (update.tool !== "apply_patch") {
     return []
   }
-  return parseApplyPatchText(readApplyPatchText(update.input))
+  const patchFiles = parseApplyPatchText(readApplyPatchText(update.input))
+  if (patchFiles.length > 0) {
+    return patchFiles
+  }
+
+  for (const source of [update.input, update.raw, update.output]) {
+    const files = readCodexFileChangeFiles(source)
+    if (files.length > 0) {
+      return files
+    }
+  }
+
+  const streamedPatchFiles = parseApplyPatchText(
+    [readApplyPatchText(update.raw), readApplyPatchText(update.output)].find((value) => value.trim()) ?? "",
+  )
+  return streamedPatchFiles
 }
 
 function formatApplyPatchTranscriptUpdate(update: ToolTranscriptUpdate) {
@@ -336,11 +364,160 @@ function isTodoItem(value: unknown): value is TodoItem {
 }
 
 function readApplyPatchText(input: unknown) {
+  if (typeof input === "string") {
+    return input.includes("*** Begin Patch") ? input : ""
+  }
   if (!input || typeof input !== "object") {
     return ""
   }
   const patchText = (input as ApplyPatchInput).patchText
   return typeof patchText === "string" ? patchText : ""
+}
+
+function readCodexFileChangeFiles(value: unknown): ApplyPatchFile[] {
+  const normalized = normalizeJsonLike(value)
+  const changes = readCodexFileChangeList(normalized)
+  if (!changes) {
+    return []
+  }
+
+  return changes
+    .map(readCodexFileChange)
+    .filter((file): file is ApplyPatchFile => Boolean(file))
+}
+
+function normalizeJsonLike(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value
+  }
+  const trimmed = value.trim()
+  if (!trimmed || (!trimmed.startsWith("[") && !trimmed.startsWith("{"))) {
+    return value
+  }
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
+function readCodexFileChangeList(value: unknown): CodexFileChange[] | null {
+  if (Array.isArray(value)) {
+    return value.filter(isObjectValue)
+  }
+  if (!isObjectValue(value)) {
+    return null
+  }
+  const changes = value.changes
+  if (Array.isArray(changes)) {
+    return changes.filter(isObjectValue)
+  }
+  if (isObjectValue(changes)) {
+    return Object.entries(changes).map(([path, change]) => (
+      isObjectValue(change) ? { path, ...change } : { path }
+    ))
+  }
+  return null
+}
+
+function readCodexFileChange(change: CodexFileChange): ApplyPatchFile | null {
+  const filePath = readString(change.path) ?? readString(change.filePath)
+  if (!filePath) {
+    return null
+  }
+  const movePath = readString(change.move_path) ?? readString(change.movePath)
+  const kind = normalizeFileChangeKind(readString(change.kind) ?? readString(change.type), movePath)
+  const diffText =
+    readString(change.diff)
+    ?? readString(change.unified_diff)
+    ?? readString(change.unifiedDiff)
+    ?? readString(change.patch)
+  return {
+    kind,
+    filePath: movePath ?? filePath,
+    title: codexFileChangeTitle(kind, filePath, movePath),
+    diff: kind === "delete" && !diffText
+      ? null
+      : buildCodexFileChangeDiff(filePath, movePath, kind, diffText ?? ""),
+  }
+}
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function isObjectValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function normalizeFileChangeKind(value: string | null, movePath: string | null): ApplyPatchFile["kind"] {
+  if (movePath) {
+    return "move"
+  }
+  switch (value?.toLowerCase()) {
+    case "add":
+    case "added":
+    case "create":
+    case "created":
+      return "add"
+    case "delete":
+    case "deleted":
+    case "remove":
+    case "removed":
+      return "delete"
+    case "move":
+    case "moved":
+    case "rename":
+    case "renamed":
+      return "move"
+    default:
+      return "update"
+  }
+}
+
+function codexFileChangeTitle(kind: ApplyPatchFile["kind"], filePath: string, movePath: string | null) {
+  switch (kind) {
+    case "add":
+      return `Created ${filePath}`
+    case "delete":
+      return `Deleted ${filePath}`
+    case "move":
+      return movePath ? `Moved ${filePath} -> ${movePath}` : `Moved ${filePath}`
+    case "update":
+      return `Patched ${filePath}`
+  }
+}
+
+function buildCodexFileChangeDiff(
+  filePath: string,
+  movePath: string | null,
+  kind: ApplyPatchFile["kind"],
+  diffText: string,
+) {
+  const trimmed = diffText.trimEnd()
+  if (trimmed.includes("diff --git")) {
+    return trimmed
+  }
+
+  const previous = normalizeDiffPath(filePath)
+  const next = normalizeDiffPath(movePath ?? filePath)
+  const header = [`diff --git a/${previous} b/${next}`]
+  if (kind === "add") {
+    header.push("new file mode 100644")
+    header.push("--- /dev/null")
+    header.push(`+++ b/${next}`)
+  } else if (kind === "delete") {
+    header.push(`--- a/${previous}`)
+    header.push("+++ /dev/null")
+  } else {
+    if (movePath) {
+      header.push(`rename from ${previous}`)
+      header.push(`rename to ${next}`)
+    }
+    header.push(`--- a/${previous}`)
+    header.push(`+++ b/${next}`)
+  }
+  return trimmed ? [...header, trimmed].join("\n") : header.join("\n")
 }
 
 function parseApplyPatchText(text: string) {

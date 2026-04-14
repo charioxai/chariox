@@ -532,6 +532,98 @@ test("readApplyPatchFiles normalizes absolute paths and bare hunk markers", () =
   )
 })
 
+test("readApplyPatchFiles renders Codex fileChange arrays with unified diffs", () => {
+  const files = readApplyPatchFiles({
+    id: "tool-codex-file-change",
+    tool: "apply_patch",
+    status: "completed",
+    raw: JSON.stringify([
+      {
+        path: "src/app.ts",
+        kind: "update",
+        diff: [
+          "@@ -1,2 +1,2 @@",
+          "-const oldValue = 1",
+          "+const newValue = 2",
+        ].join("\n"),
+      },
+      {
+        path: "src/new.ts",
+        kind: "add",
+        diff: [
+          "@@ -0,0 +1 @@",
+          "+export const value = 1",
+        ].join("\n"),
+      },
+    ]),
+  })
+
+  assert.deepEqual(files, [
+    {
+      kind: "update",
+      filePath: "src/app.ts",
+      title: "Patched src/app.ts",
+      diff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1,2 +1,2 @@",
+        "-const oldValue = 1",
+        "+const newValue = 2",
+      ].join("\n"),
+    },
+    {
+      kind: "add",
+      filePath: "src/new.ts",
+      title: "Created src/new.ts",
+      diff: [
+        "diff --git a/src/new.ts b/src/new.ts",
+        "new file mode 100644",
+        "--- /dev/null",
+        "+++ b/src/new.ts",
+        "@@ -0,0 +1 @@",
+        "+export const value = 1",
+      ].join("\n"),
+    },
+  ])
+})
+
+test("readApplyPatchFiles renders Codex patch_apply_end change maps", () => {
+  const files = readApplyPatchFiles({
+    id: "tool-codex-change-map",
+    tool: "apply_patch",
+    raw: JSON.stringify({
+      changes: {
+        "/Users/miguel/arroba/apps/cli/src/index.tsx": {
+          type: "update",
+          unified_diff: [
+            "@@ -1 +1 @@",
+            "-old()",
+            "+next()",
+          ].join("\n"),
+          move_path: null,
+        },
+      },
+    }),
+  })
+
+  assert.deepEqual(files, [
+    {
+      kind: "update",
+      filePath: "/Users/miguel/arroba/apps/cli/src/index.tsx",
+      title: "Patched /Users/miguel/arroba/apps/cli/src/index.tsx",
+      diff: [
+        "diff --git a/Users/miguel/arroba/apps/cli/src/index.tsx b/Users/miguel/arroba/apps/cli/src/index.tsx",
+        "--- a/Users/miguel/arroba/apps/cli/src/index.tsx",
+        "+++ b/Users/miguel/arroba/apps/cli/src/index.tsx",
+        "@@ -1 +1 @@",
+        "-old()",
+        "+next()",
+      ].join("\n"),
+    },
+  ])
+})
+
 test("formatToolTranscriptUpdate summarizes apply_patch changes", () => {
   assert.equal(
     formatToolTranscriptUpdate({
