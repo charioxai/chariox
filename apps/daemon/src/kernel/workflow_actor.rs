@@ -181,7 +181,7 @@ impl WorkflowRuntimeStore {
         ) -> Result<LocalDaemonResponse, DaemonError>,
     ) -> WorkflowStoreExecutionResult {
         self.state
-            .with_workflow_mut(|workflow| workflow.execute_service_operation(session_id, operation))
+            .execute_workflow_service_operation(session_id, operation)
             .await
     }
 

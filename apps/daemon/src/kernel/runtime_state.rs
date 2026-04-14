@@ -240,13 +240,31 @@ impl CompatibilityRuntimeState {
         });
     }
 
-    pub(crate) async fn with_workflow_mut<R>(
+    pub(crate) async fn execute_workflow_service_operation(
         &self,
-        operation: impl FnOnce(&mut WorkflowRuntimeCompatibilityContext<'_>) -> R,
-    ) -> R {
+        session_id: &str,
+        operation: impl FnOnce(
+            &mut crate::app::KernelWorkflowService<'_>,
+        ) -> Result<LocalDaemonResponse, DaemonError>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
         self.with_app_mut(|app| {
-            let mut context = WorkflowRuntimeCompatibilityContext::new(app);
-            operation(&mut context)
+            let result = {
+                let mut workflows = crate::app::KernelWorkflowService::new(app);
+                operation(&mut workflows)
+            };
+            let projected_session = if let Ok(response) = result.as_ref() {
+                workflow_response_session(response).or_else(|| {
+                    crate::app::KernelSessionReadService::new(app)
+                        .session_snapshot(session_id)
+                        .ok()
+                })
+            } else {
+                None
+            };
+            (result, projected_session)
         })
         .await
     }
@@ -288,40 +306,94 @@ impl CompatibilityRuntimeState {
         launch_request
     }
 
-    pub(crate) async fn with_provider_launch_mut<R>(
+    pub(crate) async fn finish_provider_launch(
         &self,
-        operation: impl FnOnce(&mut ProviderLaunchCompatibilityContext<'_>) -> R,
-    ) -> R {
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) {
         self.with_app_mut(|app| {
-            let mut context = ProviderLaunchCompatibilityContext::new(app);
-            operation(&mut context)
+            if let Err(error) = app.finish_provider_launch(started, binding) {
+                app.fail_provider_launch(started, &error);
+            }
+        })
+        .await;
+    }
+
+    pub(crate) async fn fail_provider_launch(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        error: &DaemonError,
+    ) {
+        self.with_app_mut(|app| app.fail_provider_launch(started, error))
+            .await;
+    }
+
+    pub(crate) async fn pump_terminal_output_with_snapshot(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<
+        (
+            Vec<crate::terminal::TerminalOutputRecord>,
+            Option<crate::session::RuntimeSession>,
+        ),
+        DaemonError,
+    > {
+        self.with_app_mut(|app| {
+            let records = crate::app::provider_output::pump_terminal_output_for_attachment(
+                app,
+                session_id,
+                attachment_id,
+            )?;
+            let session = crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(session_id)
+                .ok();
+            Ok((records, session))
         })
         .await
     }
 
-    pub(crate) async fn with_terminal_output_mut<R>(
+    pub(crate) async fn pump_active_provider_output_with_snapshot(
         &self,
-        operation: impl FnOnce(&mut TerminalOutputCompatibilityContext<'_>) -> R,
-    ) -> R {
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
         self.with_app_mut(|app| {
-            let mut context = TerminalOutputCompatibilityContext::new(app);
-            operation(&mut context)
+            let _ = crate::app::provider_output::ProviderOutputPump::new(app)
+                .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                })?;
+            Ok(crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(session_id)
+                .ok())
         })
         .await
     }
 
-    pub(crate) async fn with_capability_runtime<R>(
+    pub(crate) async fn capability_context(
         &self,
-        operation: impl FnOnce(&CapabilityRuntimeCompatibilityContext<'_>) -> R,
-    ) -> R {
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
         let app = self.app.lock().await;
-        let context = CapabilityRuntimeCompatibilityContext::new(
-            &app,
-            self.owned
+        let context = crate::app::KernelSessionReadService::new(&app).capability_context(
+            session_id,
+            attachment_id,
+            capability,
+        )?;
+        Ok(CapabilityRuntimeSnapshot {
+            workspace_id: context.workspace_id,
+            worktree_root: context.worktree_root,
+            workspace_coordinator: self
+                .owned
                 .as_ref()
-                .map(|owned| owned.workspace_coordinator.clone()),
-        );
-        operation(&context)
+                .map(|owned| owned.workspace_coordinator.clone())
+                .unwrap_or_else(|| app.workspace_coordinator()),
+        })
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
@@ -468,156 +540,10 @@ impl<'a> AgentPromptCompatibilityContext<'a> {
     }
 }
 
-pub(crate) struct WorkflowRuntimeCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-pub(crate) struct ProviderLaunchCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-pub(crate) struct TerminalOutputCompatibilityContext<'a> {
-    app: &'a mut DaemonApp,
-}
-
-pub(crate) struct CapabilityRuntimeCompatibilityContext<'a> {
-    app: &'a DaemonApp,
-    workspace_coordinator: Option<crate::kernel::workspace_coordinator::WorkspaceCoordinator>,
-}
-
 pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) workspace_id: String,
     pub(crate) worktree_root: std::path::PathBuf,
     pub(crate) workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
-}
-
-impl<'a> ProviderLaunchCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn finish_launch(
-        &mut self,
-        started: &crate::app::StartedProviderLaunch,
-        binding: Option<crate::provider::ProviderRuntimeBinding>,
-    ) {
-        if let Err(error) = self.app.finish_provider_launch(started, binding) {
-            self.app.fail_provider_launch(started, &error);
-        }
-    }
-
-    pub(crate) fn fail_launch(
-        &mut self,
-        started: &crate::app::StartedProviderLaunch,
-        error: &DaemonError,
-    ) {
-        self.app.fail_provider_launch(started, error);
-    }
-}
-
-impl<'a> CapabilityRuntimeCompatibilityContext<'a> {
-    fn new(
-        app: &'a DaemonApp,
-        workspace_coordinator: Option<crate::kernel::workspace_coordinator::WorkspaceCoordinator>,
-    ) -> Self {
-        Self {
-            app,
-            workspace_coordinator,
-        }
-    }
-
-    pub(crate) fn capability_context(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        capability: &'static str,
-    ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
-        let context = crate::app::KernelSessionReadService::new(self.app).capability_context(
-            session_id,
-            attachment_id,
-            capability,
-        )?;
-        Ok(CapabilityRuntimeSnapshot {
-            workspace_id: context.workspace_id,
-            worktree_root: context.worktree_root,
-            workspace_coordinator: self
-                .workspace_coordinator
-                .clone()
-                .unwrap_or_else(|| self.app.workspace_coordinator()),
-        })
-    }
-}
-
-impl<'a> TerminalOutputCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn pump_terminal_output(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        crate::app::provider_output::pump_terminal_output_for_attachment(
-            self.app,
-            session_id,
-            attachment_id,
-        )
-    }
-
-    pub(crate) fn pump_active_provider_output(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<(), DaemonError> {
-        let _ = crate::app::provider_output::ProviderOutputPump::new(self.app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            })?;
-        Ok(())
-    }
-
-    pub(crate) fn session_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
-    }
-}
-
-impl<'a> WorkflowRuntimeCompatibilityContext<'a> {
-    fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn execute_service_operation(
-        &mut self,
-        session_id: &str,
-        operation: impl FnOnce(
-            &mut crate::app::KernelWorkflowService<'_>,
-        ) -> Result<LocalDaemonResponse, DaemonError>,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<crate::session::RuntimeSession>,
-    ) {
-        let result = {
-            let mut workflows = crate::app::KernelWorkflowService::new(self.app);
-            operation(&mut workflows)
-        };
-        let projected_session = if let Ok(response) = result.as_ref() {
-            workflow_response_session(response).or_else(|| {
-                crate::app::KernelSessionReadService::new(self.app)
-                    .session_snapshot(session_id)
-                    .ok()
-            })
-        } else {
-            None
-        };
-        (result, projected_session)
-    }
 }
 
 fn workflow_response_session(

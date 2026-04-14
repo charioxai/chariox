@@ -119,11 +119,7 @@ impl TerminalOutputStore {
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let (records, session) = self
             .state
-            .with_terminal_output_mut(|terminal_output| {
-                let records = terminal_output.pump_terminal_output(session_id, attachment_id)?;
-                let session = terminal_output.session_snapshot(session_id).ok();
-                Ok((records, session))
-            })
+            .pump_terminal_output_with_snapshot(session_id, attachment_id)
             .await?;
         self.refresh_session_projection(session);
         Ok(records)
@@ -137,14 +133,11 @@ impl TerminalOutputStore {
     ) -> Result<(), DaemonError> {
         let session = self
             .state
-            .with_terminal_output_mut(|terminal_output| {
-                terminal_output.pump_active_provider_output(
-                    session_id,
-                    provider_run_id,
-                    recipient_attachment_ids,
-                )?;
-                Ok(terminal_output.session_snapshot(session_id).ok())
-            })
+            .pump_active_provider_output_with_snapshot(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+            )
             .await?;
         self.refresh_session_projection(session);
         Ok(())

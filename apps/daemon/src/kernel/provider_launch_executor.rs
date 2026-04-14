@@ -76,16 +76,10 @@ impl ProviderLaunchStore {
         started: &StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
-        self.state
-            .with_provider_launch_mut(|provider_launch| {
-                provider_launch.finish_launch(started, binding)
-            })
-            .await;
+        self.state.finish_provider_launch(started, binding).await;
     }
 
     async fn fail_launch(&self, started: &StartedProviderLaunch, error: &DaemonError) {
-        self.state
-            .with_provider_launch_mut(|provider_launch| provider_launch.fail_launch(started, error))
-            .await;
+        self.state.fail_provider_launch(started, error).await;
     }
 }

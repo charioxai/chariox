@@ -297,9 +297,7 @@ impl CapabilityRuntimeStore {
     ) -> Result<CapabilityContext, DaemonError> {
         let snapshot = self
             .state
-            .with_capability_runtime(|capability_runtime| {
-                capability_runtime.capability_context(session_id, attachment_id, capability)
-            })
+            .capability_context(session_id, attachment_id, capability)
             .await?;
         Ok(CapabilityContext {
             session_id: session_id.to_string(),
