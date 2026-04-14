@@ -798,27 +798,17 @@ impl DaemonApp {
 
         if let Some(provider_run_id) = provider_run_id {
             let recipient_attachment_ids = self.attachments.list_session_attachment_ids(session_id);
-            let _ =
-                self.pump_provider_output(session_id, &provider_run_id, recipient_attachment_ids)?;
+            let _ = provider_output::ProviderOutputPump::new(self).pump_provider_output(
+                provider_output::ProviderOutputPumpRequest {
+                    session_id,
+                    provider_run_id: &provider_run_id,
+                    recipient_attachment_ids,
+                },
+            )?;
         }
         Ok(self
             .terminal
             .drain_output_records(session_id, attachment_id))
-    }
-
-    pub fn pump_provider_output(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        provider_output::ProviderOutputPump::new(self).pump_provider_output(
-            provider_output::ProviderOutputPumpRequest {
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            },
-        )
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {
@@ -850,11 +840,13 @@ impl DaemonApp {
                 else {
                     continue;
                 };
-                if let Err(error) = self.pump_provider_output(
-                    session.id(),
-                    &provider_run_id,
-                    recipient_attachment_ids.clone(),
-                ) {
+                if let Err(error) = provider_output::ProviderOutputPump::new(self)
+                    .pump_provider_output(provider_output::ProviderOutputPumpRequest {
+                        session_id: session.id(),
+                        provider_run_id: &provider_run_id,
+                        recipient_attachment_ids: recipient_attachment_ids.clone(),
+                    })
+                {
                     crate::logging::warn_with_fields(
                         "daemon.app",
                         "background prompt pump failed",
@@ -1526,10 +1518,12 @@ impl DaemonApp {
             else {
                 continue;
             };
-            let _ = self.pump_provider_output(
-                &leased_agent.backing_session_id,
-                &provider_run_id,
-                vec![leased_agent.backing_attachment_id.clone()],
+            let _ = provider_output::ProviderOutputPump::new(self).pump_provider_output(
+                provider_output::ProviderOutputPumpRequest {
+                    session_id: &leased_agent.backing_session_id,
+                    provider_run_id: &provider_run_id,
+                    recipient_attachment_ids: vec![leased_agent.backing_attachment_id.clone()],
+                },
             )?;
             if let Some(event) =
                 self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?

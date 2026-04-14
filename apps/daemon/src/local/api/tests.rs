@@ -3,6 +3,7 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::attachment::ClientCapabilityLevel;
 use crate::provider::{ProviderPromptChunk, ProviderPromptSignalBatch};
 use crate::session::{
@@ -168,8 +169,12 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         );
 
     let recipient_attachment_ids = app.attachments().list_session_attachment_ids(session.id());
-    let requested_records = app
-        .pump_provider_output(session.id(), &requested_run_id, recipient_attachment_ids)
+    let requested_records = ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: session.id(),
+            provider_run_id: &requested_run_id,
+            recipient_attachment_ids,
+        })
         .expect("requested run pump should drain all finished structured jobs");
 
     assert!(
