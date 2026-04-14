@@ -16,7 +16,7 @@ use crate::terminal::TerminalStreamStore;
 
 #[derive(Clone)]
 pub(crate) struct TerminalOutputExecutor {
-    provider_output_runtime: ProviderOutputRuntimeBridge,
+    terminal_output_store: TerminalOutputStore,
     provider_runtime_lanes: ProviderRunOperationLanes,
     session_projection: SessionStateProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
@@ -24,7 +24,7 @@ pub(crate) struct TerminalOutputExecutor {
 }
 
 #[derive(Clone)]
-struct ProviderOutputRuntimeBridge {
+struct TerminalOutputStore {
     app: Arc<Mutex<DaemonApp>>,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -39,13 +39,10 @@ impl TerminalOutputExecutor {
         provider_run_projection: ProviderRunProjectionStore,
         terminal_stream: TerminalStreamStore,
     ) -> Self {
-        let provider_output_runtime = ProviderOutputRuntimeBridge::new(
-            app,
-            session_projection.clone(),
-            agent_runtime_projection,
-        );
+        let terminal_output_store =
+            TerminalOutputStore::new(app, session_projection.clone(), agent_runtime_projection);
         Self {
-            provider_output_runtime,
+            terminal_output_store,
             provider_runtime_lanes,
             session_projection,
             provider_run_projection,
@@ -59,7 +56,7 @@ impl TerminalOutputExecutor {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let Some(session) = self.session_projection.get(&request.session_id) else {
             let records = self
-                .provider_output_runtime
+                .terminal_output_store
                 .pump_terminal_output_with_compat_snapshot(
                     &request.session_id,
                     &request.attachment_id,
@@ -94,7 +91,7 @@ impl TerminalOutputExecutor {
 
         let recipient_attachment_ids = session.attachment_ids().iter().cloned().collect();
         let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-        self.provider_output_runtime
+        self.terminal_output_store
             .pump_active_provider_output(
                 &request.session_id,
                 &provider_run_id,
@@ -109,7 +106,7 @@ impl TerminalOutputExecutor {
     }
 }
 
-impl ProviderOutputRuntimeBridge {
+impl TerminalOutputStore {
     fn new(
         app: Arc<Mutex<DaemonApp>>,
         session_projection: SessionStateProjectionStore,
