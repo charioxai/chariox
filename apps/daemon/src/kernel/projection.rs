@@ -1222,7 +1222,8 @@ impl DaemonHealthProjection {
 
 #[cfg(test)]
 mod tests {
-    use crate::attachment::ClientCapabilityLevel;
+    use crate::agent::CreateAgentRequest;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::kernel::projection::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
@@ -1230,13 +1231,50 @@ mod tests {
         ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot, SessionSnapshotProjection,
         SessionStateProjectionStore, TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
-    use crate::local::{
-        AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SpawnAgentRequest, SubmitPromptRequest,
-    };
+    use crate::local::{LocalDaemonRequest, SubmitPromptRequest};
+    use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
     use crate::session::CreateSessionRequest;
     use crate::terminal::TerminalStreamHealthSnapshot;
     use crate::{DaemonApp, DaemonConfig};
+
+    fn launch_dev_stub_provider(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+    ) -> RuntimeProviderRun {
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session_id,
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent_id),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(provider_run.clone());
+        provider_run
+    }
+
+    fn submit_prompt(
+        app: &mut DaemonApp,
+        session_id: &str,
+        attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+    ) {
+        app.kernel_agents()
+            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+                target_agent_id: Some(agent_id.to_string()),
+                prompt: prompt.to_string(),
+                attachments: Vec::new(),
+            }))
+            .expect("prompt should submit");
+    }
 
     #[test]
     fn session_snapshot_projection_includes_metadata_and_agents() {
@@ -1380,47 +1418,28 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
-                AttachToSessionRequest {
-                    session_id: session_id.clone(),
-                    client_id: "cli-agent-runtime-projection".to_string(),
-                    capability_level: ClientCapabilityLevel::FullTerminal,
-                },
+        let attachment = app
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-agent-runtime-projection",
+                ClientCapabilityLevel::FullTerminal,
             ))
-            .expect("attach should succeed")
-        {
-            LocalDaemonResponse::SessionAttached { attachment } => attachment,
-            _ => panic!("unexpected local response"),
-        };
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(agent_id.clone()),
-            prompt: "first prompt".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("first prompt should start");
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(agent_id.clone()),
-            prompt: "queued prompt".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("second prompt should queue");
+            .expect("attach should succeed");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "first prompt",
+        );
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "queued prompt",
+        );
 
         let session = app
             .local_api_session_snapshot(&session_id)
@@ -1465,68 +1484,39 @@ mod tests {
             .expect("session should be created");
         let session_id = session.id().to_string();
         let first_agent_id = first_agent.id().to_string();
-        let second_agent_id = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session_id.clone(),
-                alias: Some("peer".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
+        let second_agent_id = app
+            .spawn_agent(CreateAgentRequest::new(&session_id, "claude-code").with_alias("peer"))
             .expect("second agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
-            _ => panic!("unexpected spawn response"),
-        };
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
-                AttachToSessionRequest {
-                    session_id: session_id.clone(),
-                    client_id: "cli-agent-runtime-one-agent-refresh".to_string(),
-                    capability_level: ClientCapabilityLevel::FullTerminal,
-                },
+            .id()
+            .to_string();
+        let attachment = app
+            .attach(AttachRequest::new(
+                &session_id,
+                "cli-agent-runtime-one-agent-refresh",
+                ClientCapabilityLevel::FullTerminal,
             ))
-            .expect("attach should succeed")
-        {
-            LocalDaemonResponse::SessionAttached { attachment } => attachment,
-            _ => panic!("unexpected local response"),
-        };
+            .expect("attach should succeed");
         for agent_id in [&first_agent_id, &second_agent_id] {
-            app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session_id.clone(),
-                    agent_id: Some(agent_id.clone()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider run should launch");
+            launch_dev_stub_provider(&mut app, &session_id, agent_id);
         }
 
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(first_agent_id.clone()),
-            prompt: "first active".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("first prompt should start");
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &first_agent_id,
+            "first active",
+        );
         let first_only_snapshot = app
             .local_api_session_snapshot(&session_id)
             .expect("first snapshot should load");
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(second_agent_id.clone()),
-            prompt: "second active".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("second prompt should start");
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &second_agent_id,
+            "second active",
+        );
         let both_snapshot = app
             .local_api_session_snapshot(&session_id)
             .expect("second snapshot should load");
@@ -1557,40 +1547,27 @@ mod tests {
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
         let attachment = app
-            .attach(crate::attachment::AttachRequest::new(
+            .attach(AttachRequest::new(
                 &session_id,
                 "cli-projection-invariant",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(agent_id.clone()),
-            prompt: "active prompt".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("first prompt should start");
-        app.handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-            session_id: session_id.clone(),
-            attachment_id: attachment.id().to_string(),
-            target_agent_id: Some(agent_id.clone()),
-            prompt: "queued prompt".to_string(),
-            attachments: Vec::new(),
-        }))
-        .expect("second prompt should queue");
+        launch_dev_stub_provider(&mut app, &session_id, &agent_id);
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "active prompt",
+        );
+        submit_prompt(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            &agent_id,
+            "queued prompt",
+        );
 
         let session = app
             .local_api_session_snapshot(&session_id)

@@ -582,15 +582,35 @@ mod tests {
     use crate::kernel::prompt_state::PromptStateOwner;
     use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::{
-        AttachToSessionRequest, CancelActivePromptRequest, LaunchProviderRunRequest,
-        LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
+        CancelActivePromptRequest, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
     };
-    use crate::provider::ProviderRunOperationLanes;
+    use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::session::{
         CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
     };
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
+
+    fn launch_dev_stub_provider(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+        model: &str,
+    ) {
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session_id,
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    model,
+                )
+                .with_agent_id(agent_id),
+            )
+            .expect("provider launch should succeed");
+        app.update_provider_run_projection(provider_run);
+    }
 
     #[tokio::test]
     async fn submit_agent_resolution_uses_single_agent_projection_without_app_lock() {
@@ -845,36 +865,14 @@ mod tests {
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
-                AttachToSessionRequest {
-                    session_id: session.id().to_string(),
-                    client_id: "cli-1".to_string(),
-                    capability_level: ClientCapabilityLevel::FullTerminal,
-                },
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
             ))
-            .expect("attach should succeed")
-        {
-            LocalDaemonResponse::SessionAttached { attachment } => attachment,
-            _ => panic!("unexpected local response"),
-        };
-        let _provider_run = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+            .expect("attach should succeed");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
 
         let response = app
             .kernel_agents()
@@ -910,36 +908,14 @@ mod tests {
         let (session, agent) = app
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        let attachment = match app
-            .handle_local_request(LocalDaemonRequest::AttachToSession(
-                AttachToSessionRequest {
-                    session_id: session.id().to_string(),
-                    client_id: "cli-1".to_string(),
-                    capability_level: ClientCapabilityLevel::FullTerminal,
-                },
+        let attachment = app
+            .attach(AttachRequest::new(
+                session.id(),
+                "cli-1",
+                ClientCapabilityLevel::FullTerminal,
             ))
-            .expect("attach should succeed")
-        {
-            LocalDaemonResponse::SessionAttached { attachment } => attachment,
-            _ => panic!("unexpected local response"),
-        };
-        let _provider_run = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+            .expect("attach should succeed");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
         app.kernel_agents()
             .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session.id().to_string(),

@@ -152,11 +152,10 @@ fn provider_run_agent_id(app: &DaemonApp, provider_run_id: &str) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attachment::ClientCapabilityLevel;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
-    use crate::local::{
-        LaunchProviderRunRequest, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
-    };
+    use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest};
+    use crate::provider::LaunchProviderRequest;
     use crate::session::CreateSessionRequest;
 
     #[test]
@@ -168,24 +167,25 @@ mod tests {
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
         let attachment = app
-            .attach(crate::attachment::AttachRequest::new(
+            .attach(AttachRequest::new(
                 &session_id,
                 "cli-flow-control-projection",
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        app.handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-            LaunchProviderRunRequest {
-                session_id: session_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                adapter_key: "dev-stub".to_string(),
-                provider: "claude-code".to_string(),
-                account_profile: "default".to_string(),
-                model: "sonnet".to_string(),
-                variant: None,
-            },
-        ))
-        .expect("provider run should launch");
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    &session_id,
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(&agent_id),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(provider_run);
         let provider_run_id = app
             .providers()
             .get_run_for_agent(&session_id, &agent_id)
@@ -193,7 +193,8 @@ mod tests {
             .id()
             .to_string();
         match app
-            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            .kernel_agents()
+            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session_id.clone(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: Some(agent_id.clone()),

@@ -1627,6 +1627,38 @@ mod tests {
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
     use std::collections::BTreeMap;
 
+    fn create_test_session(app: &mut DaemonApp, workspace: &str, worktree: &str) -> String {
+        app.create_session(CreateSessionRequest::new(workspace, worktree))
+            .expect("session should be created")
+            .0
+            .id()
+            .to_string()
+    }
+
+    fn create_test_session_with_alias(
+        app: &mut DaemonApp,
+        workspace: &str,
+        worktree: &str,
+        alias: &str,
+    ) -> (String, String) {
+        let (session, agent) = app
+            .create_session(CreateSessionRequest::new(workspace, worktree).with_alias(alias))
+            .expect("session should be created");
+        (session.id().to_string(), agent.id().to_string())
+    }
+
+    fn attach_test_client(
+        app: &mut DaemonApp,
+        session_id: &str,
+        client_id: &str,
+        capability_level: ClientCapabilityLevel,
+    ) -> String {
+        app.attach(AttachRequest::new(session_id, client_id, capability_level))
+            .expect("session should attach")
+            .id()
+            .to_string()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn daemon_connector_registers_with_relay() {
         let server = RelayServer::new(RelayConfig {
@@ -2776,15 +2808,7 @@ mod tests {
         ));
         let created_session_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
-                ))
-                .expect("session should be created");
-            match response {
-                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
         };
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -2956,31 +2980,16 @@ mod tests {
         ));
         let created_session_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
-                ))
-                .expect("session should be created");
-            match response {
-                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
         };
         let attachment_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::AttachToSession(
-                    AttachToSessionRequest {
-                        session_id: created_session_id.clone(),
-                        client_id: "relay-client".to_string(),
-                        capability_level: ClientCapabilityLevel::MessageTransport,
-                    },
-                ))
-                .expect("session should attach");
-            match response {
-                LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            attach_test_client(
+                &mut app,
+                &created_session_id,
+                "relay-client",
+                ClientCapabilityLevel::MessageTransport,
+            )
         };
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -3089,31 +3098,16 @@ mod tests {
         ));
         let created_session_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
-                ))
-                .expect("session should be created");
-            match response {
-                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
         };
         let attachment_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::AttachToSession(
-                    AttachToSessionRequest {
-                        session_id: created_session_id.clone(),
-                        client_id: "relay-client".to_string(),
-                        capability_level: ClientCapabilityLevel::MessageTransport,
-                    },
-                ))
-                .expect("session should attach");
-            match response {
-                LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            attach_test_client(
+                &mut app,
+                &created_session_id,
+                "relay-client",
+                ClientCapabilityLevel::MessageTransport,
+            )
         };
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -3266,34 +3260,16 @@ mod tests {
         ));
         let (created_session_id, default_agent_id) = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test")
-                        .with_alias("main"),
-                ))
-                .expect("session should be created");
-            match response {
-                LocalDaemonResponse::SessionCreated { session, agent } => {
-                    (session.id().to_string(), agent.id().to_string())
-                }
-                other => panic!("unexpected response: {other:?}"),
-            }
+            create_test_session_with_alias(&mut app, "workspace-relay-test", "worktree-relay-test", "main")
         };
         let attachment_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::AttachToSession(
-                    AttachToSessionRequest {
-                        session_id: created_session_id.clone(),
-                        client_id: "relay-client".to_string(),
-                        capability_level: ClientCapabilityLevel::MessageTransport,
-                    },
-                ))
-                .expect("session should attach");
-            match response {
-                LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            attach_test_client(
+                &mut app,
+                &created_session_id,
+                "relay-client",
+                ClientCapabilityLevel::MessageTransport,
+            )
         };
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -3444,15 +3420,7 @@ mod tests {
         ));
         let created_session_id = {
             let mut app = app.lock().await;
-            let response = app
-                .handle_local_request(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new("workspace-relay-test", "worktree-relay-test"),
-                ))
-                .expect("session should be created");
-            match response {
-                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
-                other => panic!("unexpected response: {other:?}"),
-            }
+            create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
         };
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

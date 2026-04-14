@@ -675,6 +675,7 @@ impl SessionActor {
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::session_actor::{
@@ -682,16 +683,39 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LaunchProviderRunRequest,
-        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
-        SpawnAgentRequest, SubmitPromptRequest, UpdateSessionConfigRequest,
+        AttachToSessionRequest, EndSessionRequest, FocusAgentRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest, SubmitPromptRequest,
+        UpdateSessionConfigRequest,
     };
+    use crate::provider::LaunchProviderRequest;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use crate::terminal::TerminalOutputKind;
     use crate::{DaemonApp, DaemonConfig, DaemonError};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
+
+    fn launch_dev_stub_provider(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+        model: &str,
+    ) -> crate::provider::RuntimeProviderRun {
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session_id,
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    model,
+                )
+                .with_agent_id(agent_id),
+            )
+            .expect("provider launch should succeed");
+        app.update_provider_run_projection(provider_run.clone());
+        provider_run
+    }
 
     #[test]
     fn session_response_projection_action_uses_response_session_and_removes_deleted_sessions() {
@@ -965,57 +989,17 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let default_run = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(default_agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "sonnet".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("default provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+        let default_run =
+            launch_dev_stub_provider(&mut app, session.id(), default_agent.id(), "sonnet");
 
-        let second_agent = match app
-            .handle_local_request(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-                session_id: session.id().to_string(),
-                alias: Some("agent-b".to_string()),
-                provider: "claude-code".to_string(),
-                model: None,
-                effort: None,
-                worktree_id: None,
-                machine_ref: None,
-            }))
-            .expect("second agent should spawn")
-        {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
-            _ => panic!("unexpected local response"),
-        };
+        let second_agent = app
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude-code").with_alias("agent-b"),
+            )
+            .expect("second agent should spawn");
 
-        let _second_run = match app
-            .handle_local_request(LocalDaemonRequest::LaunchProviderRun(
-                LaunchProviderRunRequest {
-                    session_id: session.id().to_string(),
-                    agent_id: Some(second_agent.id().to_string()),
-                    adapter_key: "dev-stub".to_string(),
-                    provider: "claude-code".to_string(),
-                    account_profile: "default".to_string(),
-                    model: "opus".to_string(),
-                    variant: None,
-                },
-            ))
-            .expect("second provider launch should succeed")
-        {
-            LocalDaemonResponse::ProviderRunLaunched { provider_run } => provider_run,
-            _ => panic!("unexpected local response"),
-        };
+        let _second_run =
+            launch_dev_stub_provider(&mut app, session.id(), second_agent.id(), "opus");
 
         app.kernel_sessions()
             .execute_request(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
@@ -1025,7 +1009,8 @@ mod tests {
             .expect("focus should succeed");
 
         let started = app
-            .handle_local_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            .kernel_agents()
+            .execute_request(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: None,
