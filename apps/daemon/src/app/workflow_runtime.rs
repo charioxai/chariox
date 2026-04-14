@@ -995,9 +995,18 @@ impl DaemonApp {
                 if run.state() == crate::provider::ProviderRunState::Ended {
                     continue;
                 }
-                let run = self
+                let outcome = self
                     .providers
-                    .terminate_run(&mut self.sessions, session_id, run.id())?;
+                    .terminate_run_provider_only(session_id, run.id())?;
+                let run = outcome.into_run();
+                if self
+                    .sessions
+                    .get_session(session_id)?
+                    .active_provider_run_id()
+                    == Some(run.id())
+                {
+                    self.sessions.set_active_provider_run(session_id, None)?;
+                }
                 let _ = ProviderProcessTracker::new(self).remove_run(run.id());
             }
         }

@@ -43,10 +43,17 @@ impl ProviderRunEndedOutcome {
     pub(crate) fn into_run(self) -> RuntimeProviderRun {
         self.run
     }
+}
 
-    pub(crate) fn already_ended(&self) -> bool {
-        self.already_ended
+fn sync_ended_run_session_pointer(
+    sessions: &mut SessionService,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), DaemonError> {
+    if sessions.get_session(session_id)?.active_provider_run_id() == Some(run_id) {
+        sessions.set_active_provider_run(session_id, None)?;
     }
+    Ok(())
 }
 
 impl ProviderProcessService {
@@ -92,7 +99,13 @@ impl ProviderProcessService {
                     self.clear_runtime(active_run_id);
                 }
                 ProviderRunState::Starting => {
-                    self.terminate_run(sessions, &request.session_id, active_run_id)?;
+                    let outcome =
+                        self.terminate_run_provider_only(&request.session_id, active_run_id)?;
+                    sync_ended_run_session_pointer(
+                        sessions,
+                        &request.session_id,
+                        outcome.run().id(),
+                    )?;
                 }
                 ProviderRunState::Running => {
                     self.park_run(sessions, &request.session_id, active_run_id)?;
@@ -246,16 +259,11 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
-    pub fn terminate_run(
+    pub(crate) fn terminate_run_provider_only(
         &mut self,
-        sessions: &mut SessionService,
         session_id: &str,
         run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let active_run_id = sessions
-            .get_session(session_id)?
-            .active_provider_run_id()
-            .map(str::to_owned);
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
         let run_snapshot = self.get_run(run_id)?;
 
         if run_snapshot.session_id() != session_id {
@@ -280,13 +288,13 @@ impl ProviderProcessService {
         run.mark_ended();
         let run = run.clone();
 
-        if active_run_id.as_deref() == Some(run_id) {
-            sessions.set_active_provider_run(session_id, None)?;
-        }
         self.run_actor_mailbox
             .spawn_terminate(run_id.to_string(), run.clone());
 
-        Ok(run)
+        Ok(ProviderRunEndedOutcome {
+            run,
+            already_ended: false,
+        })
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
@@ -461,7 +469,9 @@ impl ProviderProcessService {
         let mut terminated_runs = Vec::with_capacity(run_ids.len());
 
         for run_id in run_ids {
-            terminated_runs.push(self.terminate_run(sessions, session_id, &run_id)?);
+            let outcome = self.terminate_run_provider_only(session_id, &run_id)?;
+            sync_ended_run_session_pointer(sessions, session_id, outcome.run().id())?;
+            terminated_runs.push(outcome.into_run());
         }
 
         Ok(terminated_runs)
@@ -1040,7 +1050,7 @@ mod tests {
             .mark_run_ended_provider_only(session.id(), run.id())
             .expect("provider-only ending should succeed");
 
-        assert!(!outcome.already_ended());
+        assert!(!outcome.already_ended);
         assert_eq!(outcome.run().id(), run.id());
         assert_eq!(outcome.run().state(), ProviderRunState::Ended);
         assert_eq!(
@@ -1054,8 +1064,35 @@ mod tests {
         let outcome = providers
             .mark_run_ended_provider_only(session.id(), run.id())
             .expect("already-ended provider-only ending should succeed");
-        assert!(outcome.already_ended());
+        assert!(outcome.already_ended);
         assert_eq!(outcome.run().id(), run.id());
+    }
+
+    #[test]
+    fn provider_only_terminate_run_returns_outcome_without_session_mutation() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+        let run = providers
+            .launch_run(&mut sessions, launch_request(session.id(), "sonnet"))
+            .expect("provider run should launch");
+
+        let outcome = providers
+            .terminate_run_provider_only(session.id(), run.id())
+            .expect("provider-only termination should succeed");
+
+        assert!(!outcome.already_ended);
+        assert_eq!(outcome.run().id(), run.id());
+        assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+        assert_eq!(
+            sessions
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            Some(run.id())
+        );
     }
 
     #[test]

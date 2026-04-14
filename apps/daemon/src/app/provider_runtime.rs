@@ -120,12 +120,17 @@ impl<'a> ProviderProcessTracker<'a> {
                 if run.state() == ProviderRunState::Ended {
                     continue;
                 }
-                if let Ok(terminated_run) = self.app.providers.terminate_run(
-                    &mut self.app.sessions,
-                    run.session_id(),
-                    run.id(),
-                ) {
-                    self.app.update_provider_run_projection(terminated_run);
+                if let Ok(outcome) = self
+                    .app
+                    .providers
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                        self.app,
+                        run.session_id(),
+                        outcome.run().id(),
+                    )?;
+                    self.app.update_provider_run_projection(outcome.into_run());
                 }
                 let _ = self.remove_run(run.id());
             }
@@ -334,6 +339,14 @@ impl ProviderRunLivenessState {
         ) {
             return Ok(());
         }
+        Self::sync_ended_provider_run_session_pointer(app, session_id, provider_run_id)
+    }
+
+    fn sync_ended_provider_run_session_pointer(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
         if app
             .sessions
             .get_session(session_id)?
@@ -649,11 +662,16 @@ impl DaemonApp {
                         "error": error.to_string(),
                     }),
                 );
-                if let Ok(terminated_run) =
-                    self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
+                if let Ok(outcome) = self
+                    .providers
+                    .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    self.update_provider_run_projection(terminated_run);
+                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                        self,
+                        run.session_id(),
+                        outcome.run().id(),
+                    )?;
+                    self.update_provider_run_projection(outcome.into_run());
                 }
                 if let Some(previous_active_run_id) = previous_active_run_id.as_deref() {
                     match self.providers.resume_run(
@@ -746,12 +764,17 @@ impl DaemonApp {
         );
         let _ = ProviderProcessTracker::new(self).remove_run(started.run.id());
         self.providers.clear_runtime(started.run.id());
-        if let Ok(terminated_run) = self.providers.terminate_run(
-            &mut self.sessions,
-            started.run.session_id(),
-            started.run.id(),
-        ) {
-            self.update_provider_run_projection(terminated_run);
+        if let Ok(outcome) = self
+            .providers
+            .terminate_run_provider_only(started.run.session_id(), started.run.id())
+        {
+            ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                self,
+                started.run.session_id(),
+                outcome.run().id(),
+            )
+            .ok();
+            self.update_provider_run_projection(outcome.into_run());
         }
         if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
             if let Ok(resumed_run) = self.providers.resume_run(
@@ -876,11 +899,16 @@ impl DaemonApp {
         let run = self.providers.launch_run_detached(request)?;
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {
-                if let Ok(terminated_run) =
-                    self.providers
-                        .terminate_run(&mut self.sessions, run.session_id(), run.id())
+                if let Ok(outcome) = self
+                    .providers
+                    .terminate_run_provider_only(run.session_id(), run.id())
                 {
-                    self.update_provider_run_projection(terminated_run);
+                    ProviderRunLivenessState::sync_ended_provider_run_session_pointer(
+                        self,
+                        run.session_id(),
+                        outcome.run().id(),
+                    )?;
+                    self.update_provider_run_projection(outcome.into_run());
                 }
                 return Err(error);
             }
