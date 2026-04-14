@@ -47,7 +47,7 @@ use crate::provider::{
     ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
-use crate::session::{CreateSessionRequest, RuntimeSession, SessionConfigState, SessionService};
+use crate::session::{CreateSessionRequest, RuntimeSession, SessionService};
 use crate::terminal::{TerminalOutputKind, TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_client::RelayClientState;
@@ -190,14 +190,6 @@ impl DaemonApp {
 
     pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {
         self.providers.run_operation_lanes()
-    }
-
-    /// Create a new session with a default agent
-    pub fn create_session(
-        &mut self,
-        request: CreateSessionRequest,
-    ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
-        crate::app::KernelSessionService::new(self).create_session(request)
     }
 
     pub fn config(&self) -> &DaemonConfig {
@@ -407,65 +399,12 @@ impl DaemonApp {
         self.terminal.clone()
     }
 
-    /// Spawn a new agent in a session
-    pub fn spawn_agent(
-        &mut self,
-        request: crate::agent::CreateAgentRequest,
-    ) -> Result<AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self).spawn_agent(request)
-    }
-
-    /// Destroy an agent
-    pub fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self).destroy_agent(agent_id)
-    }
-
-    /// Focus a specific agent in a session
-    pub fn focus_agent(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        crate::app::KernelSessionService::new(self).focus_agent(session_id, agent_id)
-    }
-
-    /// Cycle focus to next agent in session
-    pub fn cycle_agent_focus(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Option<AgentInstance>, DaemonError> {
-        crate::app::KernelSessionService::new(self).cycle_agent_focus(session_id)
-    }
-
     pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {
         &self.terminal
     }
 
     pub fn pty(&self) -> &PtyManager {
         &self.pty
-    }
-
-    pub fn resolve_session_ref(
-        &self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<RuntimeSession, DaemonError> {
-        self.sessions.resolve_session_ref(session_ref, workspace_id)
-    }
-
-    pub fn update_session_config(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        values: BTreeMap<String, String>,
-        requires_idle: bool,
-    ) -> Result<SessionConfigState, DaemonError> {
-        crate::app::KernelSessionService::new(self).update_session_config(
-            session_id,
-            attachment_id,
-            values,
-            requires_idle,
-        )
     }
 
     pub fn pump_active_prompt_outputs(&mut self) {

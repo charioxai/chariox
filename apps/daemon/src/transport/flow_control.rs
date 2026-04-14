@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn prompt_settlement_action_uses_agent_runtime_projection_before_session_state() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();

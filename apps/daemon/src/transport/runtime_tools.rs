@@ -1003,7 +1003,7 @@ mod tests {
         agent_alias: &str,
         workflow_alias: &str,
     ) -> RuntimeWorkflowFixture {
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut *app)
             .create_session(CreateSessionRequest::new(workspace_id, worktree_id))
             .expect("session should exist");
         app.attach(AttachRequest::new(
@@ -1039,15 +1039,16 @@ mod tests {
         alias: &str,
         worktree_id: &str,
     ) -> String {
-        app.spawn_agent(
-            CreateAgentRequest::new(session_id, "dev-stub")
-                .with_alias(alias)
-                .with_model("test-model")
-                .with_worktree(worktree_id),
-        )
-        .expect("agent should spawn")
-        .id()
-        .to_string()
+        crate::app::KernelSessionService::new(&mut *app)
+            .spawn_agent(
+                CreateAgentRequest::new(session_id, "dev-stub")
+                    .with_alias(alias)
+                    .with_model("test-model")
+                    .with_worktree(worktree_id),
+            )
+            .expect("agent should spawn")
+            .id()
+            .to_string()
     }
 
     fn invoke_runtime_workflow(

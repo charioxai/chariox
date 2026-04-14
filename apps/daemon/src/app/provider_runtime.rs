@@ -1362,7 +1362,7 @@ mod tests {
     fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session create should succeed");
         let run = app
@@ -1410,7 +1410,7 @@ mod tests {
     fn provider_processes_do_not_teardown_when_session_is_attached() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session create should succeed");
         let _attachment = app
@@ -1461,7 +1461,7 @@ mod tests {
     fn ending_session_clears_tracked_provider_processes() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session create should succeed");
         let run = app

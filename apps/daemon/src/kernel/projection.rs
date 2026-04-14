@@ -1278,7 +1278,7 @@ mod tests {
     #[test]
     fn session_snapshot_projection_includes_metadata_and_agents() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
 
@@ -1412,7 +1412,7 @@ mod tests {
     #[test]
     fn agent_runtime_projection_reads_agent_prompt_state() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -1478,12 +1478,12 @@ mod tests {
     #[test]
     fn agent_runtime_projection_can_refresh_one_agent_without_stomping_peers() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, first_agent) = app
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
         let first_agent_id = first_agent.id().to_string();
-        let second_agent_id = app
+        let second_agent_id = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(CreateAgentRequest::new(&session_id, "claude-code").with_alias("peer"))
             .expect("second agent should spawn")
             .id()
@@ -1540,7 +1540,7 @@ mod tests {
     #[test]
     fn projection_invariant_health_reports_agent_runtime_drift() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -1605,13 +1605,13 @@ mod tests {
     #[test]
     fn workspace_coordination_snapshot_reports_worktree_collisions() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (first, _) = app
+        let (first, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
             .expect("first session should be created");
-        let (second, _) = app
+        let (second, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "shared-worktree"))
             .expect("second session should be created");
-        let (other_workspace, _) = app
+        let (other_workspace, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-2", "shared-worktree"))
             .expect("other workspace session should be created");
 

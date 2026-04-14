@@ -397,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn capability_executor_rejects_when_concurrency_limit_is_exhausted() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let attachment = app

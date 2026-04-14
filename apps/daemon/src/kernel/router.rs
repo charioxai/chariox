@@ -1673,7 +1673,8 @@ mod tests {
         alias: &str,
         provider: &str,
     ) -> crate::agent::AgentInstance {
-        app.spawn_agent(CreateAgentRequest::new(session_id, provider).with_alias(alias))
+        crate::app::KernelSessionService::new(app)
+            .spawn_agent(CreateAgentRequest::new(session_id, provider).with_alias(alias))
             .expect("agent should spawn")
     }
 
@@ -1740,7 +1741,7 @@ mod tests {
     #[tokio::test]
     async fn routes_interactive_commands_through_bounded_lane() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -1766,7 +1767,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_session_commands_when_bounded_lane_is_full() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -1847,7 +1848,7 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.session_history_read_delay_ms = 120;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -1953,7 +1954,7 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.provider_catalog_read_delay_ms = 120;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2076,7 +2077,7 @@ mod tests {
     #[tokio::test]
     async fn session_runtime_publishes_attach_and_focus_projection_without_router_snapshot() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, first_agent) = app
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2151,7 +2152,7 @@ mod tests {
     #[tokio::test]
     async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2267,7 +2268,7 @@ mod tests {
     #[tokio::test]
     async fn end_session_uses_session_lane_and_removes_lane_registration() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2579,7 +2580,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_focus_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2662,7 +2663,7 @@ mod tests {
     #[tokio::test]
     async fn daemon_health_projection_reports_session_and_agent_mailboxes() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -2924,7 +2925,7 @@ mod tests {
     #[tokio::test]
     async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3003,7 +3004,7 @@ mod tests {
     #[tokio::test]
     async fn agent_lane_is_removed_when_agent_is_destroyed() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3075,7 +3076,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_submit_uses_agent_lane_without_generic_interactive_lane() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3148,7 +3149,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_submit_uses_session_focus_projection_without_app_lock_for_routing() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3236,7 +3237,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_submit_uses_warmed_session_projection_without_app_lock_for_focus_fallback() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3334,7 +3335,7 @@ mod tests {
     #[tokio::test]
     async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3437,7 +3438,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_state_uses_projection_after_prompt_submit_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3507,7 +3508,7 @@ mod tests {
     #[tokio::test]
     async fn update_session_config_uses_session_runtime_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3585,7 +3586,7 @@ mod tests {
     #[tokio::test]
     async fn alias_session_uses_session_runtime_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3650,7 +3651,7 @@ mod tests {
     #[tokio::test]
     async fn poll_runtime_notices_routes_through_session_runtime() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3668,13 +3669,14 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("recipient attachment should attach");
-        app.update_session_config(
-            &session_id,
-            source.id(),
-            BTreeMap::from([("theme".to_string(), "compact".to_string())]),
-            false,
-        )
-        .expect("config update should create a notice");
+        crate::app::KernelSessionService::new(&mut app)
+            .update_session_config(
+                &session_id,
+                source.id(),
+                BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                false,
+            )
+            .expect("config update should create a notice");
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -3723,7 +3725,7 @@ mod tests {
     #[tokio::test]
     async fn resize_without_active_run_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3777,7 +3779,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_state_projection_tracks_prompt_completion_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3880,7 +3882,7 @@ mod tests {
     #[tokio::test]
     async fn session_snapshot_refresh_tracks_agent_runtime_projection() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -3959,7 +3961,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_complete_uses_agent_runtime_projection_when_session_projection_is_stale() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, default_agent) = app
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4060,7 +4062,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_state_projection_tracks_prompt_cancellation_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4171,7 +4173,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_cancel_uses_agent_runtime_projection_when_session_projection_is_stale() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, default_agent) = app
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4276,7 +4278,7 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.session_history_read_delay_ms = 25;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4349,7 +4351,7 @@ mod tests {
     #[tokio::test]
     async fn warmed_session_history_projection_tracks_appends_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4434,7 +4436,7 @@ mod tests {
     #[tokio::test]
     async fn get_provider_run_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4503,7 +4505,7 @@ mod tests {
     #[tokio::test]
     async fn get_provider_run_does_not_bypass_opencode_selection_sync_path() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let provider_run = RuntimeProviderRun::from_control_capability_inference(
@@ -4549,7 +4551,7 @@ mod tests {
         let mut config = DaemonConfig::for_tests();
         config.provider_runtime_init_delay_ms = 25;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4683,7 +4685,7 @@ mod tests {
     #[tokio::test]
     async fn settled_provider_launch_pending_state_uses_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (mut session, agent) = app
+        let (mut session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4747,7 +4749,7 @@ mod tests {
     #[tokio::test]
     async fn list_provider_processes_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4834,7 +4836,7 @@ mod tests {
     async fn provider_process_projection_stores_canonical_unfiltered_snapshot() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         for (idx, provider, model) in [(1, "claude-code", "sonnet"), (2, "codex", "gpt-5.4")] {
-            let (session, agent) = app
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new(
                     format!("workspace-{idx}"),
                     format!("worktree-{idx}"),
@@ -4891,7 +4893,7 @@ mod tests {
     #[tokio::test]
     async fn provider_process_projection_updates_after_teardown() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -4945,7 +4947,7 @@ mod tests {
     #[tokio::test]
     async fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5122,7 +5124,7 @@ mod tests {
     #[tokio::test]
     async fn list_sessions_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5175,7 +5177,7 @@ mod tests {
     #[tokio::test]
     async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5274,7 +5276,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_session_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5534,7 +5536,7 @@ mod tests {
     #[tokio::test]
     async fn missing_terminal_output_attachment_uses_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5596,7 +5598,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_output_without_active_run_drains_store_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5661,7 +5663,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5729,7 +5731,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_output_with_projected_inactive_run_drains_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();
@@ -5805,7 +5807,7 @@ mod tests {
     #[tokio::test]
     async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_id = session.id().to_string();

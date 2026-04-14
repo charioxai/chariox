@@ -243,7 +243,7 @@ mod tests {
     fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let attachment = app
@@ -324,7 +324,7 @@ mod tests {
     fn workflow_runs_flush_participating_agent_provider_runs_by_default() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
@@ -452,7 +452,7 @@ mod tests {
     fn launching_a_provider_run_persists_resume_state_back_to_the_agent() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
@@ -486,7 +486,7 @@ mod tests {
     fn prompt_submission_queues_and_notifies_other_attachments() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
@@ -551,12 +551,12 @@ mod tests {
     fn spawning_a_seventh_agent_in_one_session_succeeds() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
 
         for index in 0..6 {
-            let agent = app
+            let agent = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), "opencode")
                         .with_alias(format!("agent-{index}"))
@@ -573,7 +573,7 @@ mod tests {
     fn ended_sessions_reopen_on_attach_and_preserve_history() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let attachment = app
@@ -743,7 +743,7 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let config = app
+        let config = crate::app::KernelSessionService::new(&mut app)
             .update_session_config(
                 session.id(),
                 first.id(),

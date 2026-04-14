@@ -1629,7 +1629,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn create_test_session(app: &mut DaemonApp, workspace: &str, worktree: &str) -> String {
-        app.create_session(CreateSessionRequest::new(workspace, worktree))
+        crate::app::KernelSessionService::new(app)
+            .create_session(CreateSessionRequest::new(workspace, worktree))
             .expect("session should be created")
             .0
             .id()
@@ -1642,7 +1643,7 @@ mod tests {
         worktree: &str,
         alias: &str,
     ) -> (String, String) {
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(app)
             .create_session(CreateSessionRequest::new(workspace, worktree).with_alias(alias))
             .expect("session should be created");
         (session.id().to_string(), agent.id().to_string())
@@ -2010,7 +2011,7 @@ mod tests {
         ));
         let (home_session_id, home_agent_id) = {
             let mut app = app_a.lock().await;
-            let (session, agent) = app
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
             (session.id().to_string(), agent.id().to_string())
@@ -2207,7 +2208,7 @@ mod tests {
 
         let session_id = {
             let mut app = app_home.lock().await;
-            let (session, _) = app
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
             session.id().to_string()
@@ -2215,14 +2216,15 @@ mod tests {
 
         let remote_agent = {
             let mut app = app_home.lock().await;
-            app.spawn_agent(
-                CreateAgentRequest::new(&session_id, &provider)
-                    .with_alias("remote-reviewer")
-                    .with_model("default")
-                    .with_effort("medium")
-                    .with_machine("builder-west"),
-            )
-            .expect("remote agent should spawn")
+            crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    CreateAgentRequest::new(&session_id, &provider)
+                        .with_alias("remote-reviewer")
+                        .with_model("default")
+                        .with_effort("medium")
+                        .with_machine("builder-west"),
+                )
+                .expect("remote agent should spawn")
         };
 
         let remote_execution = remote_agent
@@ -2243,7 +2245,7 @@ mod tests {
 
         {
             let mut app = app_home.lock().await;
-            let destroyed = app
+            let destroyed = crate::app::KernelSessionService::new(&mut app)
                 .destroy_agent(remote_agent.id())
                 .expect("remote agent should destroy");
             assert_eq!(destroyed.id(), remote_agent.id());
@@ -2344,7 +2346,7 @@ mod tests {
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
 
         let (session_id, attachment_id) = {
-            let (session, _) = app_home
+            let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
             let attachment = app_home
@@ -2358,7 +2360,7 @@ mod tests {
         };
 
         let remote_agent_id = {
-            app_home
+            crate::app::KernelSessionService::new(&mut app_home)
                 .spawn_agent(
                     CreateAgentRequest::new(&session_id, &provider)
                         .with_alias("remote-reviewer")
@@ -2480,7 +2482,7 @@ mod tests {
         let mut app_home =
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
         let (session_id, attachment_id, remote_agent_id, remote_leased_agent_id) = {
-            let (session, _) = app_home
+            let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
             let attachment = app_home
@@ -2490,7 +2492,7 @@ mod tests {
                     ClientCapabilityLevel::InteractiveStructured,
                 ))
                 .expect("home attachment should attach");
-            let remote_agent = app_home
+            let remote_agent = crate::app::KernelSessionService::new(&mut app_home)
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), &provider)
                         .with_alias("remote-reviewer")
@@ -2640,7 +2642,7 @@ mod tests {
         let mut app_home =
             DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap");
         let (session_id, attachment_id) = {
-            let (session, _) = app_home
+            let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("home session should be created");
             let attachment = app_home
@@ -2652,7 +2654,7 @@ mod tests {
                 .expect("home attachment should attach");
             (session.id().to_string(), attachment.id().to_string())
         };
-        let remote_agent_id = app_home
+        let remote_agent_id = crate::app::KernelSessionService::new(&mut app_home)
             .spawn_agent(
                 CreateAgentRequest::new(&session_id, &provider)
                     .with_alias("remote-reviewer")
@@ -2701,7 +2703,7 @@ mod tests {
         ));
         let (session_id, agent_id, attachment_id, daemon_public_key) = {
             let mut app = app.lock().await;
-            let (session, agent) = app
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
                 .expect("session should be created");
             let attachment = app

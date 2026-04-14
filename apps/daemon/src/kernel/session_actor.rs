@@ -1194,7 +1194,7 @@ mod tests {
     #[test]
     fn session_response_projection_action_uses_response_session_and_removes_deleted_sessions() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_snapshot = crate::app::KernelSessionReadService::new(&app)
@@ -1348,7 +1348,7 @@ mod tests {
         ));
         let (session_id, terminal_stream) = {
             let mut app = app.lock().await;
-            let (session, _agent) = app
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new("workspace", "worktree"))
                 .expect("session should be created");
             let attachment = app
@@ -1429,7 +1429,7 @@ mod tests {
     #[test]
     fn handles_attach_through_session_actor_surface() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -1450,7 +1450,7 @@ mod tests {
     #[test]
     fn focus_does_not_disturb_multi_agent_provider_liveness() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, default_agent) = app
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let attachment = app
@@ -1464,7 +1464,7 @@ mod tests {
         let default_run =
             launch_dev_stub_provider(&mut app, session.id(), default_agent.id(), "sonnet");
 
-        let second_agent = app
+        let second_agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(CreateAgentRequest::new(session.id(), "claude-code").with_alias("agent-b"))
             .expect("second agent should spawn");
 

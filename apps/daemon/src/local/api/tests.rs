@@ -2492,7 +2492,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
 fn terminal_output_drain_survives_missing_focused_provider_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = app
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     let attachment = app
@@ -2794,7 +2794,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
 fn prompt_idle_fallback_completes_after_recorded_completion_without_response_text() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let (session, default_agent) = app
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     let attachment = app

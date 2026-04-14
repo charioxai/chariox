@@ -679,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn submit_agent_resolution_uses_single_agent_projection_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_snapshot = crate::app::KernelSessionReadService::new(&app)
@@ -713,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn active_prompt_resolution_uses_warmed_projection_for_no_active_prompt() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_snapshot = crate::app::KernelSessionReadService::new(&app)
@@ -751,7 +751,7 @@ mod tests {
     async fn active_prompt_resolution_uses_prompt_owner_without_app_lock_when_session_mirror_is_stale(
     ) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-owner-route",
                 "worktree-owner-route",
@@ -849,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn submit_agent_resolution_uses_session_projection_for_invalid_target_without_app_lock() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _agent) = app
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let session_snapshot = crate::app::KernelSessionReadService::new(&app)
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn handles_prompt_submit_through_agent_request_surface() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let attachment = app
@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn handles_prompt_cancel_through_agent_request_surface() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, agent) = app
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
         let attachment = app

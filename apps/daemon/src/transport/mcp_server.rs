@@ -371,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should exist");
         app.attach(AttachRequest::new(
@@ -380,7 +380,7 @@ mod tests {
             ClientCapabilityLevel::InteractiveStructured,
         ))
         .expect("attachment should attach");
-        let agent_id = app
+        let agent_id = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("agent-a")

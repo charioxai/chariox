@@ -1776,7 +1776,7 @@ mod tests {
         app: &mut DaemonApp,
         client_id: &str,
     ) -> (RuntimeSession, String) {
-        let (session, _default_agent) = app
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut *app)
             .create_session(CreateSessionRequest::new(
                 "workspace-scheduler",
                 "worktree-scheduler",
@@ -1788,7 +1788,7 @@ mod tests {
             ClientCapabilityLevel::InteractiveStructured,
         ))
         .expect("attachment should attach");
-        let agent_id = app
+        let agent_id = crate::app::KernelSessionService::new(&mut *app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_alias("agent-scheduler")

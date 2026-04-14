@@ -51,7 +51,8 @@ mod tests {
     fn prepared_remote_submit_returns_dispatch_without_relay_io() {
         let harness = LocalRouterTestHarness::new();
         let (session, agent) = harness.with_app_mut(|app| {
-            app.create_session(CreateSessionRequest::new("workspace", "worktree"))
+            crate::app::KernelSessionService::new(app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
                 .expect("session should be created")
         });
         let attachment = match harness
@@ -122,7 +123,8 @@ mod tests {
     fn completion_uses_prompt_owner_when_session_mirror_is_stale() {
         let harness = LocalRouterTestHarness::new();
         let (session, agent) = harness.with_app_mut(|app| {
-            app.create_session(CreateSessionRequest::new("workspace", "worktree"))
+            crate::app::KernelSessionService::new(app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
                 .expect("session should be created")
         });
         let attachment = match harness
