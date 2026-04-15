@@ -42,3 +42,13 @@ impl<'a> ProviderTerminalInput<'a> {
         self.app.pty.write_input(provider_run_id, bytes)
     }
 }
+
+impl DaemonApp {
+    pub(crate) fn write_provider_pty_input_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        self.pty.write_input(provider_run_id, bytes)
+    }
+}
