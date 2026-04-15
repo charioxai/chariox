@@ -1046,8 +1046,9 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        AliasSessionRequest, EndSessionRequest, LocalDaemonRequest, LocalDaemonResponse,
-        PollRuntimeNoticesRequest, ResizeTerminalRequest, UpdateSessionConfigRequest,
+        AliasSessionRequest, DestroyAgentRequest, EndSessionRequest, LocalDaemonRequest,
+        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
+        UpdateSessionConfigRequest,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -1397,6 +1398,87 @@ mod tests {
                 .filter(|projection| projection.session_id == session_id)
                 .is_some(),
             "spawn should refresh agent-runtime projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, agent_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias("destroy-me")
+                        .with_worktree("worktree"),
+                )
+                .expect("extra agent should be created");
+            assert_ne!(default_agent.id(), extra_agent.id());
+            (
+                session.id().to_string(),
+                extra_agent.id().to_string(),
+                app_locked.terminal_stream_store(),
+            )
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let agent_runtime_projection = AgentRuntimeProjectionStore::default();
+        let state = owned_runtime_state(&app).await;
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            state.clone(),
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            terminal_stream,
+        );
+        let session = state
+            .session_snapshot(&session_id)
+            .await
+            .expect("session snapshot should be available");
+        session_projection.update(session.clone());
+        agent_runtime_projection.update_session(&session);
+        assert!(
+            agent_runtime_projection.get(&agent_id).is_some(),
+            "agent projection should be warmed before destroy"
+        );
+
+        let request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+        });
+        let command =
+            KernelCommand::from_local_request("owned-local-agent-destroy", None, None, &request);
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned local agent destroy should not wait for the app lock")
+        .expect("agent destroy should succeed");
+
+        let LocalDaemonResponse::AgentDestroyed { agent } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(agent.id(), agent_id);
+        let projected = session_projection
+            .get(&session_id)
+            .expect("destroy should refresh session projection");
+        assert!(
+            projected
+                .agents()
+                .iter()
+                .all(|agent| agent.id() != agent_id),
+            "destroyed agent should be removed from session projection"
+        );
+        assert!(
+            agent_runtime_projection.get(&agent_id).is_none(),
+            "destroyed agent should be removed from agent-runtime projection"
         );
     }
 

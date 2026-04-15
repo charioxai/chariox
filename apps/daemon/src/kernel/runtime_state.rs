@@ -256,6 +256,11 @@ impl CompatibilityRuntimeOwnedState {
         self.agent_store.create_agent(request, &mut sessions)
     }
 
+    fn destroy_agent(&self, agent_id: &str) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let mut sessions = self.session_store.write();
+        self.agent_store.destroy_agent(agent_id, &mut sessions)
+    }
+
     fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -910,6 +915,12 @@ impl CompatibilityRuntimeState {
         &self,
         agent_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if let Some(owned) = &self.owned {
+            let agent = owned.agent_store.get_agent(agent_id)?;
+            if agent.remote_execution().is_none() {
+                return owned.destroy_agent(agent_id);
+            }
+        }
         self.with_app_mut(|app| crate::app::KernelSessionService::new(app).destroy_agent(agent_id))
             .await
     }

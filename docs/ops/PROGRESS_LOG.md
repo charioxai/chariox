@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-15
 
+### M4.5 local agent destroy ownership update
+
+- Moved local agent destroy onto the owned `CompatibilityRuntimeState` session and agent stores when the target agent is not remote-backed, preserving the compatibility fallback for remote execution lease/relay teardown.
+- Added a no-app-lock regression proving local destroy removes the agent from both session and agent-runtime projections while the compatibility app mutex is held.
+- Verified the slice with `cargo test` in `apps/daemon`: 334 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
 ### M4.5 local agent spawn ownership update
 
 - Moved local session-scoped agent spawn onto the owned `CompatibilityRuntimeState` session and agent stores when runtime-owned state is available, keeping remote machine spawn on the compatibility fallback because it still owns relay/lease side effects.
