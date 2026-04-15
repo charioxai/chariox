@@ -271,7 +271,8 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            let console = app.read_workflow_console_from_runtime(
+            let console = crate::app::workflow_runtime::read_workflow_console_from_runtime(
+                app,
                 &call.context.session_id,
                 workflow_run.workflow_id(),
             )?;
@@ -299,7 +300,8 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            let entry = app.write_workflow_console_from_runtime(
+            let entry = crate::app::workflow_runtime::write_workflow_console_from_runtime(
+                app,
                 &call.context.session_id,
                 workflow_run.workflow_id(),
                 &call.context.workflow_node_run_id,
@@ -320,7 +322,8 @@ pub fn dispatch_runtime_tool_call(
                 &call.context.session_id,
                 &call.context.workflow_run_ref,
             )?;
-            app.clear_workflow_console_from_runtime(
+            crate::app::workflow_runtime::clear_workflow_console_from_runtime(
+                app,
                 &call.context.session_id,
                 workflow_run.workflow_id(),
             )?;

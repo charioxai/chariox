@@ -132,38 +132,6 @@ impl DaemonApp {
         WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
     }
 
-    pub(crate) fn read_workflow_console_from_runtime(
-        &self,
-        session_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowConsole, DaemonError> {
-        WorkflowProgression::read_console(self, session_id, workflow_id)
-    }
-
-    pub(crate) fn write_workflow_console_from_runtime(
-        &mut self,
-        session_id: &str,
-        workflow_id: &str,
-        workflow_node_run_id: &str,
-        text: &str,
-    ) -> Result<WorkflowConsoleEntry, DaemonError> {
-        WorkflowProgression::write_console(
-            self,
-            session_id,
-            workflow_id,
-            workflow_node_run_id,
-            text,
-        )
-    }
-
-    pub(crate) fn clear_workflow_console_from_runtime(
-        &mut self,
-        session_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowConsole, DaemonError> {
-        WorkflowProgression::clear_console(self, session_id, workflow_id)
-    }
-
     pub fn invoke_workflow_endpoint_with_admission(
         &mut self,
         session_id: &str,
@@ -428,6 +396,32 @@ impl DaemonApp {
         }
         Ok(())
     }
+}
+
+pub(crate) fn read_workflow_console_from_runtime(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+) -> Result<WorkflowConsole, DaemonError> {
+    WorkflowProgression::read_console(app, session_id, workflow_id)
+}
+
+pub(crate) fn write_workflow_console_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+    workflow_node_run_id: &str,
+    text: &str,
+) -> Result<WorkflowConsoleEntry, DaemonError> {
+    WorkflowProgression::write_console(app, session_id, workflow_id, workflow_node_run_id, text)
+}
+
+pub(crate) fn clear_workflow_console_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+) -> Result<WorkflowConsole, DaemonError> {
+    WorkflowProgression::clear_console(app, session_id, workflow_id)
 }
 
 pub(crate) fn start_workflow_prompt_from_runtime(
