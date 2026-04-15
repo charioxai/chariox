@@ -501,6 +501,249 @@ impl CompatibilityRuntimeOwnedState {
                 started_next: None,
             },
             released_claim,
+            dispatch: None,
+        }))
+    }
+
+    fn submit_local_prepared_prompt(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let session_id = prepared.session_id.clone();
+        let attachment_id = prepared.prompt.source_attachment_id().to_string();
+        if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+            return Ok(None);
+        }
+        let _ = self.ensure_attachment_in_session(&session_id, &attachment_id)?;
+        let target_agent_id = prepared.prompt.target_agent_id().to_string();
+        let target_agent = self.agent_store.get_agent(&target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(&session_id)?;
+        if self.agent_store.get_session_agents(&session_id).len() != 1 {
+            return Ok(None);
+        }
+        let queued_while_active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &target_agent_id)
+            .is_some();
+        let provider_run_id = self
+            .provider_store
+            .get_run_for_agent(&session_id, &target_agent_id)
+            .map(|run| run.id().to_string());
+        if !queued_while_active && provider_run_id.is_none() {
+            return Ok(None);
+        }
+        if let Some(provider_run_id) = provider_run_id.as_deref() {
+            let provider_run = self.provider_store.get_run(provider_run_id)?;
+            if provider_run.provider() != "slow-structured" {
+                return Ok(None);
+            }
+        }
+        let provider_run_is_starting = provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
+            .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting);
+
+        self.append_user_prompt_history(
+            &session_id,
+            &attachment_id,
+            &target_agent_id,
+            prepared.prompt.prompt(),
+            prepared.prompt.attachments(),
+        )?;
+        let force_queue = prepared.force_queue || provider_run_is_starting;
+        let outcome = self.prompt_state_owner.submit_prepared_prompt(
+            &session,
+            prepared.prompt.clone(),
+            force_queue,
+        );
+        let outcome_agent_id = match &outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                prompt.target_agent_id().to_string()
+            }
+        };
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, &outcome_agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            &session_id,
+            &outcome_agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+
+        let mut dispatch = None;
+        match &outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => {
+                let provider_run_id =
+                    provider_run_id
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                            session_id: session_id.clone(),
+                        })?;
+                self.echo_prompt_to_other_attachments(
+                    &session_id,
+                    provider_run_id,
+                    prompt.source_attachment_id(),
+                    prompt.prompt(),
+                    prompt.attachments(),
+                );
+                if let Err(error) = self.acquire_provider_prompt_claim(
+                    &session_id,
+                    provider_run_id,
+                    &target_agent_id,
+                    Some(prompt.source_attachment_id()),
+                ) {
+                    let _ = self.cancel_active_prompt_only(&session_id, &target_agent_id);
+                    let _ = self.clear_prompt_activity(provider_run_id);
+                    return Err(error);
+                }
+                dispatch = Some(crate::app::KernelPromptDispatch {
+                    session_id: session_id.clone(),
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: target_agent_id.clone(),
+                    source_attachment_id: prompt.source_attachment_id().to_string(),
+                    prompt: prompt.prompt().to_string(),
+                    attachments: prompt.attachments().to_vec(),
+                });
+            }
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                let queue_depth = self
+                    .prompt_state_owner
+                    .queued_prompt_count_for_agent(&session, &target_agent_id);
+                if let Some(provider_run_id) = provider_run_id.as_deref() {
+                    self.echo_prompt_to_other_attachments(
+                        &session_id,
+                        provider_run_id,
+                        prompt.source_attachment_id(),
+                        prompt.prompt(),
+                        prompt.attachments(),
+                    );
+                }
+                self.record_notice(
+                    &session_id,
+                    provider_run_id.as_deref(),
+                    self.other_attachment_ids(&session_id, &attachment_id),
+                    format!(
+                        "A queued message from attachment `{}` was added to agent `{}` in session `{}` as `{}`. Queue depth is now {}.",
+                        attachment_id,
+                        target_agent_id,
+                        session_id,
+                        prompt.id(),
+                        queue_depth
+                    ),
+                );
+            }
+        }
+        let session = self.session_snapshot(&session_id)?;
+        Ok(Some(crate::app::KernelPromptSubmission {
+            outcome,
+            session,
+            dispatch,
+            remote_dispatch: None,
+        }))
+    }
+
+    fn complete_local_prompt_with_queued_advance(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        next_queued_prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        let target_agent = self.agent_store.get_agent(agent_id)?;
+        if target_agent.remote_execution().is_some()
+            || next_queued_prompt.workflow_run_id().is_some()
+            || crate::scheduler::runtime::is_workflow_prompt_attachment(
+                next_queued_prompt.source_attachment_id(),
+            )
+        {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if self.agent_store.get_session_agents(session_id).len() != 1 {
+            return Ok(None);
+        }
+        let _ = self
+            .ensure_attachment_in_session(session_id, next_queued_prompt.source_attachment_id())?;
+        let provider_run_id = provider_run_id
+            .map(str::to_string)
+            .or_else(|| {
+                self.provider_store
+                    .get_run_for_agent(session_id, agent_id)
+                    .map(|run| run.id().to_string())
+            })
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Ok(None);
+        }
+        if provider_run.provider() != "slow-structured" {
+            return Ok(None);
+        }
+        if !self
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            return Ok(None);
+        }
+        self.acquire_provider_prompt_claim(
+            session_id,
+            &provider_run_id,
+            agent_id,
+            Some(next_queued_prompt.source_attachment_id()),
+        )?;
+
+        let completed = self
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let started_next = self
+            .prompt_state_owner
+            .activate_next_queued_prompt(&session, agent_id, Some(next_queued_prompt.id()))?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "advance queued prompt",
+                message: format!(
+                    "expected queued prompt `{}` but no queued prompt was available",
+                    next_queued_prompt.id()
+                ),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
+            session_id.to_string(),
+            provider_run_id.clone(),
+            agent_id.to_string(),
+            &provider_run,
+            started_next.prompt(),
+            started_next.attachments(),
+        ) {
+            let _ = self.cancel_active_prompt_only(session_id, agent_id);
+            let _ = self.clear_prompt_activity(&provider_run_id);
+            return Err(error);
+        }
+        self.note_prompt_started(&provider_run_id);
+        let _ = self.session_snapshot(session_id)?;
+        Ok(Some(OwnedPromptCompletion {
+            completion: crate::session::PromptCompletion {
+                completed,
+                started_next: Some(started_next.clone()),
+            },
+            released_claim: false,
+            dispatch: None,
         }))
     }
 
@@ -516,6 +759,9 @@ impl CompatibilityRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
+        if self.agent_store.get_session_agents(session_id).len() != 1 {
+            return Ok(None);
+        }
         let active_prompt = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
@@ -548,6 +794,9 @@ impl CompatibilityRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
+        if provider_run.provider() != "slow-structured" {
+            return Ok(None);
+        }
         if !self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
@@ -672,6 +921,55 @@ impl CompatibilityRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
             });
+    }
+
+    fn acquire_provider_prompt_claim(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        attachment_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if self.prompt_workspace_claims.contains(provider_run_id) {
+            return Ok(());
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let workspace_id = session.workspace_id().to_string();
+        let worktree_id = self
+            .agent_store
+            .get_agent(agent_id)
+            .ok()
+            .and_then(|agent| agent.worktree_id().map(str::to_string))
+            .unwrap_or_else(|| session.worktree_id().to_string());
+        let claim = self.workspace_coordinator.acquire_provider_prompt_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            attachment_id.map(str::to_string),
+        )?;
+        self.prompt_workspace_claims
+            .insert(provider_run_id.to_string(), claim);
+        Ok(())
+    }
+
+    fn append_user_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        attachments: &[crate::session::PromptAttachment],
+    ) -> Result<(), DaemonError> {
+        let session = self.session_snapshot(session_id)?;
+        let entry = crate::history::SessionHistoryEntry::user_prompt(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
+        );
+        self.history_store.append(&session, &entry)?;
+        self.history_projection.append(entry);
+        Ok(())
     }
 
     fn echo_prompt_to_other_attachments(
@@ -860,6 +1158,7 @@ struct OwnedProviderRunExit {
 struct OwnedPromptCompletion {
     completion: crate::session::PromptCompletion,
     released_claim: bool,
+    dispatch: Option<crate::app::KernelPromptDispatch>,
 }
 
 impl CompatibilityRuntimeState {
@@ -1181,6 +1480,11 @@ impl CompatibilityRuntimeState {
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        if let Some(owned) = &self.owned {
+            if let Some(submission) = owned.submit_local_prepared_prompt(&prepared)? {
+                return Ok(submission);
+            }
+        }
         self.with_app_mut(|app| {
             crate::app::KernelAgentService::new(app).submit_prepared_prompt_for_kernel(prepared)
         })
@@ -1246,6 +1550,23 @@ impl CompatibilityRuntimeState {
                     }
                     return Ok(completion.completion);
                 }
+            }
+        } else if let (Some(owned), Some(next_queued_prompt)) = (&self.owned, next_queued_prompt) {
+            if let Some(completion) = owned.complete_local_prompt_with_queued_advance(
+                session_id,
+                target_agent_id,
+                owned_provider_run_id
+                    .as_ref()
+                    .and_then(|run_id| run_id.as_deref()),
+                next_queued_prompt,
+            )? {
+                let completion_result = completion.completion;
+                if let Some(dispatch) = completion.dispatch {
+                    if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                        let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                    }
+                }
+                return Ok(completion_result);
             }
         }
         self.with_app_mut(|app| {

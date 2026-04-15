@@ -632,6 +632,7 @@ mod tests {
     use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::{
         CancelActivePromptRequest, CompletePromptRequest, LocalDaemonRequest, LocalDaemonResponse,
+        SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::session::{
@@ -1010,6 +1011,214 @@ mod tests {
                 .map(|prompt| prompt.status()),
             Some(PromptStatus::Cancelling),
             "cancelling prompt should refresh agent-runtime projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-owned-advance",
+                "worktree-owned-advance",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owned-advance",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "slow-structured",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("structured provider should launch");
+        app.update_provider_run_projection(provider_run);
+        let first = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "first",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Started { prompt: first } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), first, false)
+            .expect("first prompt should submit")
+        else {
+            panic!("first prompt should start");
+        };
+        let second = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "second",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Queued { prompt: second } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), second, false)
+            .expect("second prompt should queue")
+        else {
+            panic!("second prompt should queue");
+        };
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should be available");
+        let session_projection = app.session_state_projection_store();
+        session_projection.update(session_snapshot.clone());
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            owned_runtime_state(&app).await,
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
+        );
+
+        let request = CompletePromptRequest {
+            session_id: session_id.clone(),
+        };
+        let local_request = LocalDaemonRequest::CompletePrompt(request.clone());
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "owned-local-prompt-advance",
+            None,
+            None,
+            &local_request,
+        );
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_complete(&command, request),
+        )
+        .await
+        .expect("owned queued advancement should not wait for the app lock")
+        .expect("prompt completion should succeed");
+
+        let LocalDaemonResponse::PromptCompleted { completion } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(completion.completed.id(), first.id());
+        assert_eq!(
+            completion.started_next.as_ref().map(|prompt| prompt.id()),
+            Some(second.id())
+        );
+        assert_eq!(
+            session_projection
+                .get(&session_id)
+                .and_then(|session| session.active_prompt_for_agent(&agent_id).cloned())
+                .map(|prompt| prompt.id().to_string()),
+            Some(second.id().to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-owned-submit",
+                "worktree-owned-submit",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owned-submit",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "slow-structured",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("structured provider should launch");
+        app.update_provider_run_projection(provider_run);
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should be available");
+        let session_projection = app.session_state_projection_store();
+        session_projection.update(session_snapshot.clone());
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            owned_runtime_state(&app).await,
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
+        );
+
+        let request = SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id,
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "owned submit".to_string(),
+            attachments: Vec::new(),
+        };
+        let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "owned-local-prompt-submit",
+            None,
+            None,
+            &local_request,
+        );
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_submit(&command, request),
+        )
+        .await
+        .expect("owned local prompt submit should not wait for the app lock")
+        .expect("prompt submit should succeed");
+
+        let LocalDaemonResponse::PromptSubmitted { outcome, session } = response else {
+            panic!("unexpected response");
+        };
+        let PromptSubmissionOutcome::Started { prompt } = outcome else {
+            panic!("prompt should start");
+        };
+        assert_eq!(prompt.target_agent_id(), agent_id);
+        assert_eq!(
+            session
+                .active_prompt_for_agent(&agent_id)
+                .map(|prompt| prompt.id()),
+            Some(prompt.id())
+        );
+        assert_eq!(
+            agent_runtime_projection
+                .get(&agent_id)
+                .and_then(|projection| projection.active_prompt)
+                .map(|prompt| prompt.id().to_string()),
+            Some(prompt.id().to_string())
         );
     }
 
