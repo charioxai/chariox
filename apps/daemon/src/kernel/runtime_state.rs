@@ -998,15 +998,12 @@ impl CompatibilityRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        let active = self
+        let _active = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        if active.workflow_run_id().is_some() {
-            return Ok(None);
-        }
 
         let completed = self
             .prompt_state_owner
@@ -1210,17 +1207,18 @@ impl CompatibilityRuntimeOwnedState {
         next_queued_prompt: &crate::session::PromptQueueItem,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let target_agent = self.agent_store.get_agent(agent_id)?;
-        if target_agent.remote_execution().is_some()
-            || next_queued_prompt.workflow_run_id().is_some()
-            || crate::scheduler::runtime::is_workflow_prompt_attachment(
-                next_queued_prompt.source_attachment_id(),
-            )
-        {
+        if target_agent.remote_execution().is_some() {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        let _ = self
-            .ensure_attachment_in_session(session_id, next_queued_prompt.source_attachment_id())?;
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(
+            next_queued_prompt.source_attachment_id(),
+        ) {
+            let _ = self.ensure_attachment_in_session(
+                session_id,
+                next_queued_prompt.source_attachment_id(),
+            )?;
+        }
         let provider_run_id = provider_run_id
             .map(str::to_string)
             .or_else(|| {
@@ -1329,9 +1327,6 @@ impl CompatibilityRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        if active_prompt.workflow_run_id().is_some() {
-            return Ok(None);
-        }
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             let session = self.session_snapshot(session_id)?;
             return Ok(Some(crate::app::KernelPromptCancellation {
@@ -1398,6 +1393,205 @@ impl CompatibilityRuntimeOwnedState {
                 source_attachment_id: attachment_id.to_string(),
             }),
         }))
+    }
+
+    fn submit_remote_prepared_prompt(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let session_id = prepared.session_id.clone();
+        let attachment_id = prepared.prompt.source_attachment_id().to_string();
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+            let _ = self.ensure_attachment_in_session(&session_id, &attachment_id)?;
+        }
+        let target_agent_id = prepared.prompt.target_agent_id().to_string();
+        let target_agent = self.agent_store.get_agent(&target_agent_id)?;
+        let Some(remote_execution) = target_agent.remote_execution().cloned() else {
+            return Ok(None);
+        };
+        self.append_user_prompt_history(
+            &session_id,
+            &attachment_id,
+            &target_agent_id,
+            prepared.prompt.prompt(),
+            prepared.prompt.attachments(),
+        )?;
+        let session = self.session_store.get_session(&session_id)?;
+        let outcome = self.prompt_state_owner.submit_prepared_prompt(
+            &session,
+            prepared.prompt.clone(),
+            prepared.force_queue,
+        );
+        let outcome_agent_id = match &outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                prompt.target_agent_id().to_string()
+            }
+        };
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, &outcome_agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            &session_id,
+            &outcome_agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        let remote_dispatch =
+            if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+                Some(crate::app::KernelRemotePromptDispatch {
+                    session_id: session_id.clone(),
+                    agent_id: target_agent_id,
+                    worker_kernel_id: remote_execution.worker_kernel_id,
+                    leased_agent_id: remote_execution.leased_agent_id,
+                    source_attachment_id: prompt.source_attachment_id().to_string(),
+                    prompt: prompt.prompt().to_string(),
+                    attachments: prompt.attachments().to_vec(),
+                    workflow_context: None,
+                })
+            } else {
+                None
+            };
+        let session = self.session_snapshot(&session_id)?;
+        Ok(Some(crate::app::KernelPromptSubmission {
+            outcome,
+            session,
+            dispatch: None,
+            remote_dispatch,
+        }))
+    }
+
+    fn complete_remote_prompt_owner(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        remote_provider_run_id: &str,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let completed = self
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        let recipient_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        self.record_assistant_message_completion(
+            session_id,
+            remote_provider_run_id,
+            recipient_attachment_ids,
+            &format!("prompt-complete:{}", completed.id()),
+            crate::session::unix_epoch_ms(),
+        );
+        let started_next = if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+            .is_none()
+        {
+            if let Some(expected_next) = next_queued_prompt {
+                let session = self.session_store.get_session(session_id)?;
+                let active = self.prompt_state_owner.activate_next_queued_prompt(
+                    &session,
+                    agent_id,
+                    Some(expected_next.id()),
+                )?;
+                let (active_prompt, queued_prompts) =
+                    self.prompt_state_owner.state_parts(&session, agent_id);
+                self.session_store.mirror_agent_prompt_state(
+                    session_id,
+                    agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                active
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let _ = self.session_snapshot(session_id)?;
+        Ok(crate::session::PromptCompletion {
+            completed,
+            started_next,
+        })
+    }
+
+    fn begin_remote_prompt_cancellation(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let session = self.session_store.get_session(session_id)?;
+        let active_prompt = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            let session = self.session_snapshot(session_id)?;
+            return Ok(crate::app::KernelPromptCancellation {
+                cancellation: crate::session::PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                session,
+                dispatch: None,
+            });
+        }
+        let prompt = self
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, target_agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            target_agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        let worker_kernel_id = self
+            .agent_store
+            .get_agent(target_agent_id)?
+            .remote_execution()
+            .map(|remote| remote.worker_kernel_id.clone())
+            .unwrap_or_else(|| "remote".to_string());
+        self.record_notice(
+            session_id,
+            None,
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{attachment_id}` requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                prompt.id(),
+                worker_kernel_id
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+        Ok(crate::app::KernelPromptCancellation {
+            cancellation: crate::session::PromptCancellation {
+                prompt,
+                started_next: None,
+            },
+            session,
+            dispatch: None,
+        })
     }
 
     fn other_attachment_ids(&self, session_id: &str, attachment_id: &str) -> Vec<String> {
@@ -2082,12 +2276,100 @@ impl CompatibilityRuntimeState {
         prepared: crate::app::KernelPreparedPromptSubmission,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         if let Some(owned) = &self.owned {
-            if let Some(submission) = owned.submit_local_prepared_prompt(&prepared)? {
+            if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
+                self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                    .await?;
                 return Ok(submission);
             }
+            if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {
+                self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                    .await?;
+                return Ok(submission);
+            }
+            let session_id = prepared.session_id.clone();
+            let target_agent_id = prepared.prompt.target_agent_id().to_string();
+            let attachment_id = prepared.prompt.source_attachment_id().to_string();
+            let has_active = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(
+                    &owned.session_store.get_session(&session_id)?,
+                    &target_agent_id,
+                )
+                .is_some();
+            let has_run = owned
+                .provider_store
+                .get_run_for_agent(&session_id, &target_agent_id)
+                .is_some();
+            if !has_active && !has_run {
+                let ensure_result =
+                    if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+                        self.with_app_mut(|app| {
+                            crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+                                app,
+                                &session_id,
+                                &target_agent_id,
+                            )
+                        })
+                        .await
+                    } else {
+                        self.with_app_mut(|app| {
+                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
+                        })
+                        .await
+                    };
+                ensure_result?;
+                if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
+                    self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                        .await?;
+                    return Ok(submission);
+                }
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "submit prepared prompt",
+                message:
+                    "owned prompt runtime could not admit prompt without app-backed agent service"
+                        .to_string(),
+            });
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "submit prepared prompt",
+            message: "owned prompt runtime is not available".to_string(),
+        })
+    }
+
+    async fn finish_owned_prompt_submission_workflow_start(
+        &self,
+        submission: &mut crate::app::KernelPromptSubmission,
+    ) -> Result<(), DaemonError> {
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome
+        else {
+            return Ok(());
+        };
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(prompt.source_attachment_id())
+        {
+            return Ok(());
+        }
+        let session_id = submission.session.id().to_string();
+        let prompt = prompt.clone();
+        if let Some(remote_dispatch) = submission.remote_dispatch.as_mut() {
+            remote_dispatch.workflow_context = Some(
+                self.with_app_mut(|app| {
+                    crate::app::RemoteWorkflowTurnContextResolver::new(app)
+                        .remote_workflow_turn_context_for_prompt(
+                            &session_id,
+                            prompt.target_agent_id(),
+                            &prompt,
+                        )
+                })
+                .await?,
+            );
         }
         self.with_app_mut(|app| {
-            crate::app::KernelAgentService::new(app).submit_prepared_prompt_for_kernel(prepared)
+            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                app,
+                &session_id,
+                &prompt,
+            )
         })
         .await
     }
@@ -2099,20 +2381,68 @@ impl CompatibilityRuntimeState {
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         if let Some(owned) = &self.owned {
+            if owned
+                .agent_store
+                .get_agent(target_agent_id)?
+                .remote_execution()
+                .is_some()
+            {
+                let remote_execution = owned
+                    .agent_store
+                    .get_agent(target_agent_id)?
+                    .remote_execution()
+                    .cloned()
+                    .expect("remote execution checked above");
+                match self
+                    .with_app_mut(|app| {
+                        app.block_on_relay_future(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                app.config(),
+                                ClientTarget {
+                                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::CancelLeasedPrompt {
+                                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .await?
+                {
+                    RelayPeerResponse::LeasedPromptCancelled { .. } => {
+                        return owned.begin_remote_prompt_cancellation(
+                            session_id,
+                            target_agent_id,
+                            attachment_id,
+                        );
+                    }
+                    other => {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "cancel remote prompt",
+                            message: format!(
+                                "unexpected remote prompt cancellation response: {other:?}"
+                            ),
+                        });
+                    }
+                }
+            }
             if let Some(cancellation) =
                 owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
             {
                 return Ok(cancellation);
             }
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel prompt",
+                message:
+                    "owned prompt runtime could not cancel prompt without app-backed agent service"
+                        .to_string(),
+            });
         }
-        self.with_app_mut(|app| {
-            crate::app::KernelAgentService::new(app).cancel_agent_prompt_for_kernel(
-                session_id,
-                target_agent_id,
-                attachment_id,
-            )
+        Err(DaemonError::LocalTransport {
+            operation: "cancel prompt",
+            message: "owned prompt runtime is not available".to_string(),
         })
-        .await
     }
 
     pub(crate) async fn complete_agent_prompt(
@@ -2132,6 +2462,108 @@ impl CompatibilityRuntimeState {
                 })
                 .map(|run| run.id().to_string())
         });
+        if let Some(owned) = &self.owned {
+            if let Some(remote_execution) = owned
+                .agent_store
+                .get_agent(target_agent_id)?
+                .remote_execution()
+                .cloned()
+            {
+                let remote_provider_run_id = match self
+                    .with_app_mut(|app| {
+                        app.block_on_relay_future(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                app.config(),
+                                ClientTarget {
+                                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::CompleteLeasedPrompt {
+                                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .await?
+                {
+                    RelayPeerResponse::LeasedPromptCompleted {
+                        provider_run_id, ..
+                    } => provider_run_id
+                        .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
+                    other => {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: format!(
+                                "unexpected remote prompt completion response: {other:?}"
+                            ),
+                        });
+                    }
+                };
+                let completion = owned.complete_remote_prompt_owner(
+                    session_id,
+                    target_agent_id,
+                    &remote_provider_run_id,
+                    next_queued_prompt,
+                )?;
+                if let Some(started_next) = completion.started_next.as_ref() {
+                    let attachments = self
+                        .with_app_mut(|app| {
+                            app.serialize_remote_prompt_attachments(started_next.attachments())
+                        })
+                        .await?;
+                    let workflow_context =
+                        if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                            started_next.source_attachment_id(),
+                        ) {
+                            Some(
+                                self.with_app_mut(|app| {
+                                    crate::app::RemoteWorkflowTurnContextResolver::new(app)
+                                        .remote_workflow_turn_context_for_prompt(
+                                            session_id,
+                                            target_agent_id,
+                                            started_next,
+                                        )
+                                })
+                                .await?,
+                            )
+                        } else {
+                            None
+                        };
+                    let submit_result = self
+                        .with_app_mut(|app| {
+                            app.block_on_relay_future(
+                                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                    app.config(),
+                                    ClientTarget {
+                                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                                        daemon_alias: None,
+                                    },
+                                    RelayPeerRequest::SubmitLeasedPrompt {
+                                        leased_agent_id: remote_execution.leased_agent_id.clone(),
+                                        prompt: started_next.prompt().to_string(),
+                                        attachments,
+                                        workflow_context,
+                                    },
+                                ),
+                            )
+                        })
+                        .await?;
+                    if let RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id, ..
+                    } = submit_result
+                    {
+                        owned.echo_prompt_to_other_attachments(
+                            session_id,
+                            &provider_run_id,
+                            started_next.source_attachment_id(),
+                            started_next.prompt(),
+                            started_next.attachments(),
+                        );
+                    }
+                }
+                return Ok(completion);
+            }
+        }
         if next_queued_prompt.is_none() {
             if let Some(owned) = &self.owned {
                 if let Some(completion) = owned.complete_local_prompt_without_advance(
@@ -2141,6 +2573,20 @@ impl CompatibilityRuntimeState {
                         .as_ref()
                         .and_then(|run_id| run_id.as_deref()),
                 )? {
+                    if completion.completion.completed.workflow_run_id().is_some() {
+                        self.with_app_mut(|app| {
+                            crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+                                app,
+                                session_id,
+                                &completion.completion.completed,
+                                owned_provider_run_id
+                                    .as_ref()
+                                    .and_then(|run_id| run_id.as_deref()),
+                            )
+                        })
+                        .await?;
+                        let _ = owned.session_snapshot(session_id)?;
+                    }
                     if completion.released_claim {
                         self.with_app_mut(|app| {
                             crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(
@@ -2162,6 +2608,34 @@ impl CompatibilityRuntimeState {
                 next_queued_prompt,
             )? {
                 let completion_result = completion.completion;
+                if completion_result.completed.workflow_run_id().is_some() {
+                    self.with_app_mut(|app| {
+                        crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+                            app,
+                            session_id,
+                            &completion_result.completed,
+                            owned_provider_run_id
+                                .as_ref()
+                                .and_then(|run_id| run_id.as_deref()),
+                        )
+                    })
+                    .await?;
+                    let _ = owned.session_snapshot(session_id)?;
+                }
+                if let Some(started_next) = completion_result.started_next.as_ref() {
+                    if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                        started_next.source_attachment_id(),
+                    ) {
+                        self.with_app_mut(|app| {
+                            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                                app,
+                                session_id,
+                                started_next,
+                            )
+                        })
+                        .await?;
+                    }
+                }
                 if let Some(dispatch) = completion.dispatch {
                     if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
                         let _ = self.fail_prompt_dispatch(dispatch, error).await;
@@ -2170,20 +2644,12 @@ impl CompatibilityRuntimeState {
                 return Ok(completion_result);
             }
         }
-        self.with_app_mut(|app| {
-            let provider_run_id = owned_provider_run_id.unwrap_or_else(|| {
-                app.providers()
-                    .get_run_for_agent(session_id, target_agent_id)
-                    .map(|run| run.id().to_string())
-            });
-            crate::app::KernelAgentService::new(app).complete_active_prompt_for_kernel(
-                session_id,
-                target_agent_id,
-                provider_run_id.as_deref(),
-                next_queued_prompt,
-            )
+        Err(DaemonError::LocalTransport {
+            operation: "complete prompt",
+            message:
+                "owned prompt runtime could not complete prompt without app-backed agent service"
+                    .to_string(),
         })
-        .await
     }
 
     async fn reconcile_provider_run_exit(

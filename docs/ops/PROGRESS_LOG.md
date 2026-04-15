@@ -528,3 +528,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Broadened the point-3 owned prompt path beyond the earlier single-agent structured case: local multi-agent prompt submit, PTY prompt submit, PTY cancellation acknowledgement, and queued prompt advancement now mutate prompt owner/session mirrors through owned runtime state.
 - Added an explicit prompt-abort dispatch source attachment so PTY cancellation can acknowledge immediately and send `Ctrl-C` through the side-effect port asynchronously.
 - Started point 4 by moving provider post-launch queued prompt advancement out of `DaemonApp::advance_next_queued_prompt`; provider launch completion now activates the next prompt and builds dispatch from owned runtime state.
+
+### M4.5 prompt ownership closure update
+
+- Closed point 3 by removing the production `CompatibilityRuntimeState` fallbacks to `KernelAgentService` prompt submit/cancel/complete methods.
+- Moved remote prompt submit/cancel/complete owner mutation into owned runtime state while keeping relay I/O as an explicit side-effect port.
+- Restored workflow prompt start/completion handoffs after owned prompt mutation and refreshed owned session projections so workflow run reads observe completed/downstream state.
