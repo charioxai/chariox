@@ -2,7 +2,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::app::StartedProviderLaunch;
 use crate::error::DaemonError;
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::local::{LaunchProviderRunRequest, LocalDaemonResponse};
 use crate::provider::ProviderProcessService;
 
@@ -13,11 +13,11 @@ pub(crate) struct ProviderLaunchCommandExecutor {
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
 }
 
 impl ProviderLaunchCommandExecutor {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self {
             store: ProviderLaunchStore::new(state),
         }
@@ -60,7 +60,7 @@ impl ProviderLaunchCommandExecutor {
 }
 
 impl ProviderLaunchStore {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
 

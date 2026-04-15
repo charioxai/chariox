@@ -19,8 +19,8 @@ pub(crate) mod workflow_runtime;
 
 pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
-    KernelPromptCancellation, KernelPromptDispatch, KernelPromptDispatchRuntime,
-    KernelPromptSubmission, KernelRemotePromptDispatch,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
+    KernelRemotePromptDispatch,
 };
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
@@ -58,8 +58,8 @@ pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{
     generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
-    ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary, ProviderRunLivenessRuntime,
-    ProviderRunReadService, StartedProviderLaunch,
+    ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary, ProviderRunReadService,
+    StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 

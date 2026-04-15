@@ -190,22 +190,6 @@ pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) source_attachment_id: String,
 }
 
-pub(crate) struct KernelPromptDispatchRuntime<'a> {
-    app: &'a DaemonApp,
-}
-
-impl<'a> KernelPromptDispatchRuntime<'a> {
-    pub(crate) fn new(app: &'a DaemonApp) -> Self {
-        Self { app }
-    }
-
-    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        self.app
-            .providers
-            .structured_prompt_io_in_flight(provider_run_id)
-    }
-}
-
 impl DaemonApp {
     #[doc(hidden)]
     pub fn submit_prompt(
@@ -397,33 +381,6 @@ impl DaemonApp {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub(crate) fn enqueue_kernel_prompt_abort(
-        &mut self,
-        dispatch: &KernelPromptAbortDispatch,
-    ) -> Result<(), DaemonError> {
-        self.reap_structured_prompt_jobs();
-        self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
-        self.providers.enqueue_structured_prompt_abort(
-            dispatch.session_id.clone(),
-            dispatch.provider_run_id.clone(),
-        )
-    }
-
-    pub(crate) fn fail_kernel_prompt_abort(
-        &mut self,
-        dispatch: KernelPromptAbortDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        self.record_notice(
-            &dispatch.session_id,
-            Some(&dispatch.provider_run_id),
-            self.attachments
-                .list_session_attachment_ids(&dispatch.session_id),
-            format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
-        );
-        Err(error)
     }
 
     pub(crate) fn reap_structured_prompt_jobs(&mut self) {

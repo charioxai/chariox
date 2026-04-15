@@ -12,7 +12,7 @@ use crate::capability::{
     StoreTransferredFileRequest,
 };
 use crate::error::DaemonError;
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use serde::{Deserialize, Serialize};
 
@@ -281,11 +281,11 @@ impl CapabilityContext {
 
 #[derive(Clone)]
 pub(crate) struct CapabilityRuntimeStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
 }
 
 impl CapabilityRuntimeStore {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
 
@@ -365,14 +365,14 @@ mod tests {
     };
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::error::DaemonError;
-    use crate::kernel::runtime_state::CompatibilityRuntimeState;
+    use crate::kernel::runtime_state::KernelRuntimeState;
     use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let app_locked = app.lock().await;
-        CompatibilityRuntimeState::new_with_owned_state(
+        KernelRuntimeState::new_with_owned_state(
             Arc::clone(app),
             app_locked.config_projection_store(),
             app_locked.session_state_store(),

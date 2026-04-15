@@ -3,27 +3,24 @@ use crate::app::{
     KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::provider::ProviderRunOperationLanes;
 use crate::session::{PromptCompletion, PromptQueueItem};
 
 #[derive(Clone)]
 pub(crate) struct AgentPromptCommandService {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
 #[derive(Clone)]
 struct AgentPromptDispatchContext {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
     provider_runtime_lanes: ProviderRunOperationLanes,
 }
 
 impl AgentPromptDispatchContext {
-    fn new(
-        state: CompatibilityRuntimeState,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) -> Self {
+    fn new(state: KernelRuntimeState, provider_runtime_lanes: ProviderRunOperationLanes) -> Self {
         Self {
             state,
             provider_runtime_lanes,
@@ -47,7 +44,7 @@ impl AgentPromptDispatchContext {
 
 impl AgentPromptCommandService {
     pub(crate) fn new(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
     ) -> Self {
         Self {

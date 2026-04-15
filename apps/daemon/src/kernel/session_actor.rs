@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::local::{
     AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
     DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
@@ -69,7 +69,7 @@ pub(crate) struct SessionRuntime {
 
 impl SessionRuntime {
     pub(crate) fn with_queue_limit_and_focus_projection(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         queue_limit: usize,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
@@ -339,11 +339,11 @@ impl SessionRuntime {
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntimeStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
 }
 
 impl SessionRuntimeStore {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
 
@@ -1040,7 +1040,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::command::KernelCommand;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::kernel::runtime_state::CompatibilityRuntimeState;
+    use crate::kernel::runtime_state::KernelRuntimeState;
     use crate::kernel::session_actor::{
         projected_config_update_absence_response, session_response_projection_action,
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
@@ -1075,9 +1075,9 @@ mod tests {
         provider_run
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let app_locked = app.lock().await;
-        CompatibilityRuntimeState::new_with_owned_state(
+        KernelRuntimeState::new_with_owned_state(
             Arc::clone(app),
             app_locked.config_projection_store(),
             app_locked.session_state_store(),

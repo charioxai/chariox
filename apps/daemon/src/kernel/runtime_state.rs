@@ -17,13 +17,13 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
 #[derive(Clone)]
-pub(crate) struct CompatibilityRuntimeState {
+pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
-    owned: Option<CompatibilityRuntimeOwnedState>,
+    owned: KernelRuntimeOwnedState,
 }
 
 #[derive(Clone)]
-pub(crate) struct CompatibilityRuntimeOwnedState {
+pub(crate) struct KernelRuntimeOwnedState {
     config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -43,7 +43,7 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
 
-impl CompatibilityRuntimeOwnedState {
+impl KernelRuntimeOwnedState {
     fn session_snapshot(
         &self,
         session_id: &str,
@@ -4513,7 +4513,7 @@ struct OwnedPromptCancellation {
     dispatch: Option<crate::app::KernelPromptDispatch>,
 }
 
-impl CompatibilityRuntimeState {
+impl KernelRuntimeState {
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
@@ -4536,7 +4536,7 @@ impl CompatibilityRuntimeState {
     ) -> Self {
         Self {
             app,
-            owned: Some(CompatibilityRuntimeOwnedState {
+            owned: KernelRuntimeOwnedState {
                 config_projection,
                 session_store,
                 agent_store,
@@ -4554,18 +4554,15 @@ impl CompatibilityRuntimeState {
                 structured_output_records,
                 terminal_stream,
                 workspace_coordinator,
-            }),
+            },
         }
     }
 
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {
-        if let Some(owned) = &self.owned {
-            return owned.config_projection.snapshot();
-        }
-        self.with_app_mut(|app| app.config().clone()).await
+        self.owned.config_projection.snapshot()
     }
 
-    async fn with_app_mut<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
+    async fn with_app_side_effect<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
         let mut app = self.app.lock().await;
         operation(&mut app)
     }
@@ -4574,30 +4571,19 @@ impl CompatibilityRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        if let Some(owned) = &self.owned {
-            let session = owned.session_store.get_session(session_id)?;
-            return Ok(owned.prompt_state_owner.active_prompt_agent_id(&session));
-        }
-        self.with_app_mut(|app| app.prompt_owner_active_prompt_agent_id(session_id))
-            .await
+        let session = self.owned.session_store.get_session(session_id)?;
+        Ok(self
+            .owned
+            .prompt_state_owner
+            .active_prompt_agent_id(&session))
     }
 
     pub(crate) async fn focused_agent_id(
         &self,
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
-        if let Some(owned) = &self.owned {
-            let session = owned.session_store.get_session(session_id)?;
-            return Ok(session.focused_agent_id().map(str::to_string));
-        }
-        self.with_app_mut(|app| {
-            Ok(app
-                .sessions()
-                .get_session(session_id)?
-                .focused_agent_id()
-                .map(str::to_string))
-        })
-        .await
+        let session = self.owned.session_store.get_session(session_id)?;
+        Ok(session.focused_agent_id().map(str::to_string))
     }
 
     pub(crate) async fn resolve_session_ref_id(
@@ -4605,84 +4591,53 @@ impl CompatibilityRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return Ok(owned
-                .session_store
-                .read()
-                .resolve_session_ref(session_ref, workspace_id)?
-                .id()
-                .to_string());
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app)
-                .resolve_session_ref_id(session_ref, workspace_id)
-        })
-        .await
+        Ok(self
+            .owned
+            .session_store
+            .read()
+            .resolve_session_ref(session_ref, workspace_id)?
+            .id()
+            .to_string())
     }
 
     pub(crate) async fn attachment_session_id(
         &self,
         attachment_id: &str,
     ) -> Result<String, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return Ok(owned
-                .attachment_store
-                .get_attachment(attachment_id)?
-                .session_id()
-                .to_string());
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).attachment_session_id(attachment_id)
-        })
-        .await
+        Ok(self
+            .owned
+            .attachment_store
+            .get_attachment(attachment_id)?
+            .session_id()
+            .to_string())
     }
 
     pub(crate) async fn session_snapshot(
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.session_snapshot(session_id);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).session_snapshot(session_id)
-        })
-        .await
+        self.owned.session_snapshot(session_id)
     }
 
     pub(crate) async fn create_session_response(
         &self,
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.create_session_response(request);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).create_session_response(request)
-        })
-        .await
+        self.owned.create_session_response(request)
     }
 
     pub(crate) async fn attach(
         &self,
         request: crate::attachment::AttachRequest,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.attach(request);
-        }
-        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).attach(request))
-            .await
+        self.owned.attach(request)
     }
 
     pub(crate) async fn detach(
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.detach(attachment_id);
-        }
-        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).detach(attachment_id))
-            .await
+        self.owned.detach(attachment_id)
     }
 
     pub(crate) async fn focus_agent(
@@ -4690,26 +4645,14 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.focus_agent(session_id, agent_id);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).focus_agent(session_id, agent_id)
-        })
-        .await
+        self.owned.focus_agent(session_id, agent_id)
     }
 
     pub(crate) async fn cycle_agent_focus(
         &self,
         session_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.cycle_agent_focus(session_id);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).cycle_agent_focus(session_id)
-        })
-        .await
+        self.owned.cycle_agent_focus(session_id)
     }
 
     pub(crate) async fn resize_terminal(
@@ -4718,17 +4661,11 @@ impl CompatibilityRuntimeState {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
-            if let Some(provider_run_id) = owned.resize_terminal(session_id)? {
-                self.with_app_mut(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
-                    .await?;
-            }
-            return Ok(());
+        if let Some(provider_run_id) = self.owned.resize_terminal(session_id)? {
+            self.with_app_side_effect(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
+                .await?;
         }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).resize_terminal(session_id, cols, rows)
-        })
-        .await
+        Ok(())
     }
 
     pub(crate) async fn ensure_attachment_in_session(
@@ -4736,16 +4673,10 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
-            let _ = owned.ensure_attachment_in_session(session_id, attachment_id)?;
-            return Ok(());
-        }
-        self.with_app_mut(|app| {
-            let _ = crate::app::KernelSessionService::new(app)
-                .ensure_attachment_in_session(session_id, attachment_id)?;
-            Ok(())
-        })
-        .await
+        let _ = self
+            .owned
+            .ensure_attachment_in_session(session_id, attachment_id)?;
+        Ok(())
     }
 
     pub(crate) async fn drain_notice_records(
@@ -4753,16 +4684,9 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
-        if let Some(owned) = &self.owned {
-            return owned
-                .terminal_stream
-                .drain_notice_records(session_id, attachment_id);
-        }
-        self.with_app_mut(|app| {
-            app.terminal()
-                .drain_notice_records(session_id, attachment_id)
-        })
-        .await
+        self.owned
+            .terminal_stream
+            .drain_notice_records(session_id, attachment_id)
     }
 
     pub(crate) async fn update_session_config(
@@ -4772,18 +4696,8 @@ impl CompatibilityRuntimeState {
         values: std::collections::BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.update_session_config(session_id, attachment_id, values, requires_idle);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).update_session_config(
-                session_id,
-                attachment_id,
-                values,
-                requires_idle,
-            )
-        })
-        .await
+        self.owned
+            .update_session_config(session_id, attachment_id, values, requires_idle)
     }
 
     pub(crate) async fn alias_session(
@@ -4791,13 +4705,7 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         alias: String,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.alias_session(session_id, alias);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).alias_session(session_id, alias)
-        })
-        .await
+        self.owned.alias_session(session_id, alias)
     }
 
     pub(crate) async fn spawn_agent(
@@ -4805,48 +4713,44 @@ impl CompatibilityRuntimeState {
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if request.machine_ref.is_none() {
-            if let Some(owned) = &self.owned {
-                return owned.spawn_agent(request);
-            }
+            return self.owned.spawn_agent(request);
         }
-        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).spawn_agent(request))
-            .await
+        self.with_app_side_effect(|app| {
+            crate::app::KernelSessionService::new(app).spawn_agent(request)
+        })
+        .await
     }
 
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        if let Some(owned) = &self.owned {
-            let agent = owned.agent_store.get_agent(agent_id)?;
-            if agent.remote_execution().is_none() {
-                return owned.destroy_agent(agent_id);
-            }
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_none() {
+            return self.owned.destroy_agent(agent_id);
         }
-        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).destroy_agent(agent_id))
-            .await
+        self.with_app_side_effect(|app| {
+            crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
+        })
+        .await
     }
 
     pub(crate) async fn end_session(
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        if let Some(owned) = &self.owned {
-            let (session, terminated_run_ids) = owned.end_session(session_id)?;
-            for provider_run_id in terminated_run_ids {
-                let (_, process_key) = self
-                    .with_app_mut(|app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&provider_run_id)
-                    })
-                    .await
-                    .unwrap_or((false, None));
-                owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-            }
-            return Ok(session);
+        let owned = &self.owned;
+        let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        for provider_run_id in terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        self.with_app_mut(|app| crate::app::KernelSessionService::new(app).end_session(session_id))
-            .await
+        Ok(session)
     }
 
     pub(crate) async fn delete_session_ref(
@@ -4854,32 +4758,26 @@ impl CompatibilityRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        if let Some(owned) = &self.owned {
-            let (session, terminated_run_ids) =
-                owned.delete_session_ref(session_ref, workspace_id)?;
-            for provider_run_id in terminated_run_ids {
-                let (_, process_key) = self
-                    .with_app_mut(|app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&provider_run_id)
-                    })
-                    .await
-                    .unwrap_or((false, None));
-                owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-            }
-            return Ok(session);
+        let owned = &self.owned;
+        let (session, terminated_run_ids) = owned.delete_session_ref(session_ref, workspace_id)?;
+        for provider_run_id in terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        self.with_app_mut(|app| {
-            crate::app::KernelSessionService::new(app).delete_session_ref(session_ref, workspace_id)
-        })
-        .await
+        Ok(session)
     }
 
     pub(crate) async fn submit_prepared_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
@@ -4908,7 +4806,7 @@ impl CompatibilityRuntimeState {
                 if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
                     owned.workflow_ensure_provider_run(&session_id, &target_agent_id)?;
                 } else {
-                    self.with_app_mut(|app| {
+                    self.with_app_side_effect(|app| {
                         app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
                     })
                     .await?;
@@ -4919,17 +4817,13 @@ impl CompatibilityRuntimeState {
                     return Ok(submission);
                 }
             }
-            return Err(DaemonError::LocalTransport {
+            Err(DaemonError::LocalTransport {
                 operation: "submit prepared prompt",
                 message:
-                    "owned prompt runtime could not admit prompt without app-backed agent service"
+                    "owned prompt runtime could not admit prompt without side-effect completion"
                         .to_string(),
-            });
+            })
         }
-        Err(DaemonError::LocalTransport {
-            operation: "submit prepared prompt",
-            message: "owned prompt runtime is not available".to_string(),
-        })
     }
 
     async fn finish_owned_prompt_submission_workflow_start(
@@ -4948,7 +4842,7 @@ impl CompatibilityRuntimeState {
         let prompt = prompt.clone();
         if let Some(remote_dispatch) = submission.remote_dispatch.as_mut() {
             remote_dispatch.workflow_context = Some(
-                self.with_app_mut(|app| {
+                self.with_app_side_effect(|app| {
                     crate::app::RemoteWorkflowTurnContextResolver::new(app)
                         .remote_workflow_turn_context_for_prompt(
                             &session_id,
@@ -4959,10 +4853,7 @@ impl CompatibilityRuntimeState {
                 .await?,
             );
         }
-        if let Some(owned) = &self.owned {
-            return owned.workflow_start_prompt(&session_id, &prompt);
-        }
-        Ok(())
+        self.owned.workflow_start_prompt(&session_id, &prompt)
     }
 
     pub(crate) async fn cancel_agent_prompt(
@@ -4971,7 +4862,8 @@ impl CompatibilityRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             if owned
                 .agent_store
                 .get_agent(target_agent_id)?
@@ -4985,7 +4877,7 @@ impl CompatibilityRuntimeState {
                     .cloned()
                     .expect("remote execution checked above");
                 match self
-                    .with_app_mut(|app| {
+                    .with_app_side_effect(|app| {
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
                                 app.config(),
@@ -5023,17 +4915,13 @@ impl CompatibilityRuntimeState {
             {
                 return Ok(cancellation);
             }
-            return Err(DaemonError::LocalTransport {
+            Err(DaemonError::LocalTransport {
                 operation: "cancel prompt",
                 message:
-                    "owned prompt runtime could not cancel prompt without app-backed agent service"
+                    "owned prompt runtime could not cancel prompt without side-effect completion"
                         .to_string(),
-            });
+            })
         }
-        Err(DaemonError::LocalTransport {
-            operation: "cancel prompt",
-            message: "owned prompt runtime is not available".to_string(),
-        })
     }
 
     pub(crate) async fn complete_agent_prompt(
@@ -5042,18 +4930,17 @@ impl CompatibilityRuntimeState {
         target_agent_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        let owned_provider_run_id = self.owned.as_ref().map(|owned| {
-            owned
-                .provider_run_projection
-                .get_for_agent(session_id, target_agent_id)
-                .or_else(|| {
-                    owned
-                        .provider_store
-                        .get_run_for_agent(session_id, target_agent_id)
-                })
-                .map(|run| run.id().to_string())
-        });
-        if let Some(owned) = &self.owned {
+        let owned = &self.owned;
+        let owned_provider_run_id = owned
+            .provider_run_projection
+            .get_for_agent(session_id, target_agent_id)
+            .or_else(|| {
+                owned
+                    .provider_store
+                    .get_run_for_agent(session_id, target_agent_id)
+            })
+            .map(|run| run.id().to_string());
+        {
             if let Some(remote_execution) = owned
                 .agent_store
                 .get_agent(target_agent_id)?
@@ -5061,7 +4948,7 @@ impl CompatibilityRuntimeState {
                 .cloned()
             {
                 let remote_provider_run_id = match self
-                    .with_app_mut(|app| {
+                    .with_app_side_effect(|app| {
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
                                 app.config(),
@@ -5098,7 +4985,7 @@ impl CompatibilityRuntimeState {
                 )?;
                 if let Some(started_next) = completion.started_next.as_ref() {
                     let attachments = self
-                        .with_app_mut(|app| {
+                        .with_app_side_effect(|app| {
                             app.serialize_remote_prompt_attachments(started_next.attachments())
                         })
                         .await?;
@@ -5107,7 +4994,7 @@ impl CompatibilityRuntimeState {
                             started_next.source_attachment_id(),
                         ) {
                             Some(
-                                self.with_app_mut(|app| {
+                                self.with_app_side_effect(|app| {
                                     crate::app::RemoteWorkflowTurnContextResolver::new(app)
                                         .remote_workflow_turn_context_for_prompt(
                                             session_id,
@@ -5121,7 +5008,7 @@ impl CompatibilityRuntimeState {
                             None
                         };
                     let submit_result = self
-                        .with_app_mut(|app| {
+                        .with_app_side_effect(|app| {
                             app.block_on_relay_future(
                                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
                                     app.config(),
@@ -5156,21 +5043,18 @@ impl CompatibilityRuntimeState {
             }
         }
         if next_queued_prompt.is_none() {
-            if let Some(owned) = &self.owned {
+            {
+                let owned = &self.owned;
                 if let Some(completion) = owned.complete_local_prompt_without_advance(
                     session_id,
                     target_agent_id,
-                    owned_provider_run_id
-                        .as_ref()
-                        .and_then(|run_id| run_id.as_deref()),
+                    owned_provider_run_id.as_deref(),
                 )? {
                     if completion.completion.completed.workflow_run_id().is_some() {
                         let dispatches = owned.workflow_complete_prompt(
                             session_id,
                             &completion.completion.completed,
-                            owned_provider_run_id
-                                .as_ref()
-                                .and_then(|run_id| run_id.as_deref()),
+                            owned_provider_run_id.as_deref(),
                         )?;
                         for dispatch in dispatches {
                             if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
@@ -5200,13 +5084,11 @@ impl CompatibilityRuntimeState {
                     return Ok(completion.completion);
                 }
             }
-        } else if let (Some(owned), Some(next_queued_prompt)) = (&self.owned, next_queued_prompt) {
+        } else if let Some(next_queued_prompt) = next_queued_prompt {
             if let Some(completion) = owned.complete_local_prompt_with_queued_advance(
                 session_id,
                 target_agent_id,
-                owned_provider_run_id
-                    .as_ref()
-                    .and_then(|run_id| run_id.as_deref()),
+                owned_provider_run_id.as_deref(),
                 next_queued_prompt,
             )? {
                 let completion_result = completion.completion;
@@ -5214,9 +5096,7 @@ impl CompatibilityRuntimeState {
                     let dispatches = owned.workflow_complete_prompt(
                         session_id,
                         &completion_result.completed,
-                        owned_provider_run_id
-                            .as_ref()
-                            .and_then(|run_id| run_id.as_deref()),
+                        owned_provider_run_id.as_deref(),
                     )?;
                     for dispatch in dispatches {
                         if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
@@ -5242,7 +5122,7 @@ impl CompatibilityRuntimeState {
         Err(DaemonError::LocalTransport {
             operation: "complete prompt",
             message:
-                "owned prompt runtime could not complete prompt without app-backed agent service"
+                "owned prompt runtime could not complete prompt without side-effect completion"
                     .to_string(),
         })
     }
@@ -5252,14 +5132,7 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        let Some(owned) = &self.owned else {
-            return self
-                .with_app_mut(|app| {
-                    crate::app::ProviderRunLivenessRuntime::new(app)
-                        .reconcile_provider_run_exit(session_id, provider_run_id)
-                })
-                .await;
-        };
+        let owned = &self.owned;
 
         if let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
             session_id,
@@ -5267,7 +5140,7 @@ impl CompatibilityRuntimeState {
             None,
         )? {
             let (_, process_key) = self
-                .with_app_mut(|app| {
+                .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
                 })
                 .await
@@ -5277,7 +5150,7 @@ impl CompatibilityRuntimeState {
         }
 
         let process_running = self
-            .with_app_mut(|app| {
+            .with_app_side_effect(|app| {
                 crate::app::ProviderLaunchProcessRuntime::new(app).poll_running(provider_run_id)
             })
             .await?;
@@ -5290,7 +5163,7 @@ impl CompatibilityRuntimeState {
             return Ok(false);
         };
         let (_, process_key) = self
-            .with_app_mut(|app| {
+            .with_app_side_effect(|app| {
                 crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
             })
             .await
@@ -5332,7 +5205,8 @@ impl CompatibilityRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let has_managed_process = owned
                 .provider_process_tracking
                 .read()
@@ -5343,18 +5217,15 @@ impl CompatibilityRuntimeState {
                     .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                     .await?;
             }
-            return self
-                .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
-                .await;
+            self.enqueue_prompt_dispatch_after_liveness(dispatch, owned)
+                .await
         }
-        self.with_app_mut(|app| app.enqueue_kernel_prompt_dispatch(dispatch))
-            .await
     }
 
     async fn enqueue_prompt_dispatch_after_liveness(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
-        owned: &CompatibilityRuntimeOwnedState,
+        owned: &KernelRuntimeOwnedState,
     ) -> Result<(), DaemonError> {
         owned.echo_prompt_to_other_attachments(
             &dispatch.session_id,
@@ -5413,7 +5284,7 @@ impl CompatibilityRuntimeState {
             owned.note_prompt_started(&dispatch.provider_run_id);
             return Ok(());
         }
-        self.with_app_mut(|app| {
+        self.with_app_side_effect(|app| {
             app.write_provider_pty_input_for_runtime(
                 &dispatch.provider_run_id,
                 dispatch.prompt.as_bytes(),
@@ -5429,7 +5300,8 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let _ = owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
             let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
             let _ = owned.session_snapshot(&dispatch.session_id);
@@ -5459,10 +5331,8 @@ impl CompatibilityRuntimeState {
                     }
                 }
             }
-            return Err(error);
+            Err(error)
         }
-        self.with_app_mut(|app| app.fail_kernel_prompt_dispatch(dispatch, error))
-            .await
     }
 
     async fn finish_remote_prompt_dispatch(
@@ -5470,7 +5340,8 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             match result {
                 Ok(remote_provider_run_id) => {
                     owned.echo_prompt_to_other_attachments(
@@ -5480,7 +5351,7 @@ impl CompatibilityRuntimeState {
                         &dispatch.prompt,
                         &dispatch.attachments,
                     );
-                    return Ok(());
+                    Ok(())
                 }
                 Err(error) => {
                     let _ =
@@ -5495,19 +5366,18 @@ impl CompatibilityRuntimeState {
                         recipients,
                         format!("Remote prompt dispatch failed after acknowledgement: {error}"),
                     );
-                    return Err(error);
+                    Err(error)
                 }
             }
         }
-        self.with_app_mut(|app| app.finish_kernel_remote_prompt_dispatch(dispatch, result))
-            .await
     }
 
     async fn enqueue_prompt_abort(
         &self,
         dispatch: &crate::app::KernelPromptAbortDispatch,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             owned.reap_structured_prompt_jobs();
             self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
@@ -5535,27 +5405,21 @@ impl CompatibilityRuntimeState {
                 &dispatch.source_attachment_id,
                 b"\x03",
             );
-            self.with_app_mut(|app| {
+            self.with_app_side_effect(|app| {
                 app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
             })
             .await?;
-            return Ok(());
+            Ok(())
         }
-        self.with_app_mut(|app| app.enqueue_kernel_prompt_abort(dispatch))
-            .await
     }
 
     async fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        if let Some(owned) = &self.owned {
-            return owned
+        {
+            let owned = &self.owned;
+            owned
                 .provider_store
-                .structured_prompt_io_in_flight(provider_run_id);
-        }
-        self.with_app_mut(|app| {
-            crate::app::KernelPromptDispatchRuntime::new(app)
                 .structured_prompt_io_in_flight(provider_run_id)
-        })
-        .await
+        }
     }
 
     async fn fail_prompt_abort(
@@ -5563,7 +5427,8 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelPromptAbortDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);
@@ -5573,10 +5438,8 @@ impl CompatibilityRuntimeState {
                 recipients,
                 format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
             );
-            return Err(error);
+            Err(error)
         }
-        self.with_app_mut(|app| app.fail_kernel_prompt_abort(dispatch, error))
-            .await
     }
 
     pub(crate) fn spawn_prompt_dispatch(
@@ -5689,15 +5552,7 @@ impl CompatibilityRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        let Some(owned) = &self.owned else {
-            return (
-                Err(DaemonError::LocalTransport {
-                    operation: "execute workflow request",
-                    message: "owned workflow runtime is not available".to_string(),
-                }),
-                None,
-            );
-        };
+        let owned = &self.owned;
 
         match request {
             LocalDaemonRequest::CreateWorkflow(request) => {
@@ -6006,7 +5861,8 @@ impl CompatibilityRuntimeState {
         request: crate::local::LaunchProviderRunRequest,
     ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
         let launch_request = self.launch_provider_request_from_owned_state(request);
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let config = owned.config_projection.snapshot();
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
@@ -6038,7 +5894,7 @@ impl CompatibilityRuntimeState {
                 }),
             );
             if let Err(error) = self
-                .with_app_mut(|app| {
+                .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
                 })
                 .await
@@ -6098,15 +5954,8 @@ impl CompatibilityRuntimeState {
                 return Err(error);
             }
             owned.provider_run_projection.update(run);
-            return Ok((started, config.provider_runtime_init_delay_ms));
+            Ok((started, config.provider_runtime_init_delay_ms))
         }
-        self.with_app_mut(|app| {
-            Ok((
-                app.start_provider_launch(launch_request)?,
-                app.config().provider_runtime_init_delay_ms,
-            ))
-        })
-        .await
     }
 
     fn launch_provider_request_from_owned_state(
@@ -6122,19 +5971,17 @@ impl CompatibilityRuntimeState {
         )
         .with_variant(request.variant);
         if let Some(agent_id) = request.agent_id.clone().or_else(|| {
-            self.owned.as_ref().and_then(|owned| {
-                owned
-                    .session_store
-                    .get_session(&request.session_id)
-                    .ok()
-                    .and_then(|session| session.focused_agent_id().map(str::to_string))
-                    .or_else(|| {
-                        owned
-                            .agent_store
-                            .get_focused_agent(&request.session_id)
-                            .map(|agent| agent.id().to_string())
-                    })
-            })
+            self.owned
+                .session_store
+                .get_session(&request.session_id)
+                .ok()
+                .and_then(|session| session.focused_agent_id().map(str::to_string))
+                .or_else(|| {
+                    self.owned
+                        .agent_store
+                        .get_focused_agent(&request.session_id)
+                        .map(|agent| agent.id().to_string())
+                })
         }) {
             launch_request = launch_request.with_agent_id(agent_id);
         }
@@ -6146,7 +5993,8 @@ impl CompatibilityRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let result = owned.finish_provider_launch_success(started, binding);
             match result {
                 Ok(run) => {
@@ -6174,14 +6022,7 @@ impl CompatibilityRuntimeState {
                     self.fail_provider_launch(started, &error).await;
                 }
             }
-            return;
         }
-        self.with_app_mut(|app| {
-            if let Err(error) = app.finish_provider_launch(started, binding) {
-                app.fail_provider_launch(started, &error);
-            }
-        })
-        .await;
     }
 
     pub(crate) async fn fail_provider_launch(
@@ -6189,7 +6030,8 @@ impl CompatibilityRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             crate::logging::error_with_fields(
                 "daemon.app",
                 "provider runtime initialization failed",
@@ -6213,7 +6055,7 @@ impl CompatibilityRuntimeState {
                 ),
             );
             let (_, process_key) = self
-                .with_app_mut(|app| {
+                .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(started.run.id())
                 })
                 .await
@@ -6237,10 +6079,7 @@ impl CompatibilityRuntimeState {
                 );
             }
             let _ = owned.session_snapshot(started.run.session_id());
-            return;
         }
-        self.with_app_mut(|app| app.fail_provider_launch(started, error))
-            .await;
     }
 
     async fn settle_owned_provider_prompt(
@@ -6250,12 +6089,7 @@ impl CompatibilityRuntimeState {
         prompt_completed: bool,
         force: bool,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
-        let Some(owned) = &self.owned else {
-            return Ok(crate::app::ProviderRunExitSessionSummary {
-                had_active_prompt: false,
-                started_next_prompt: false,
-            });
-        };
+        let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let agent_id = provider_run
             .agent_instance_id()
@@ -6430,20 +6264,7 @@ impl CompatibilityRuntimeState {
         recipient_attachment_ids: Vec<String>,
         initial_liveness_already_checked: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        let Some(owned) = &self.owned else {
-            return self
-                .with_app_mut(|app| {
-                    crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
-                        crate::app::provider_output::ProviderOutputPumpRequest {
-                            session_id,
-                            provider_run_id,
-                            recipient_attachment_ids,
-                            initial_liveness_already_checked,
-                        },
-                    )
-                })
-                .await;
-        };
+        let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
         if !initial_liveness_already_checked
             && self
@@ -6474,7 +6295,7 @@ impl CompatibilityRuntimeState {
         }
 
         let chunks = match self
-            .with_app_mut(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
+            .with_app_side_effect(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
             .await
         {
             Ok(chunks) => chunks,
@@ -6520,16 +6341,16 @@ impl CompatibilityRuntimeState {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        let Some(owned) = &self.owned else {
-            return Ok(Vec::new());
-        };
+        let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Parked {
             return Ok(Vec::new());
         }
         if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
             if let Err(error) = self
-                .with_app_mut(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
+                .with_app_side_effect(|app| {
+                    app.drain_provider_pty_output_for_runtime(provider_run_id)
+                })
                 .await
             {
                 if self
@@ -6636,9 +6457,7 @@ impl CompatibilityRuntimeState {
         recipient_attachment_ids: Vec<String>,
         poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        let Some(owned) = &self.owned else {
-            return Ok(Vec::new());
-        };
+        let owned = &self.owned;
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
@@ -6720,50 +6539,31 @@ impl CompatibilityRuntimeState {
         ),
         DaemonError,
     > {
-        let records = if let Some(owned) = &self.owned {
-            owned.reap_structured_prompt_jobs();
-            owned.ensure_attachment_in_session(session_id, attachment_id)?;
-            let provider_run_id = owned
-                .session_store
-                .get_session(session_id)?
-                .active_provider_run_id()
-                .map(str::to_string);
-            if let Some(provider_run_id) = provider_run_id {
-                let recipient_attachment_ids = owned
-                    .attachment_store
-                    .list_session_attachment_ids(session_id);
-                let _ = self
-                    .pump_owned_provider_output(
-                        session_id,
-                        &provider_run_id,
-                        recipient_attachment_ids,
-                        false,
-                    )
-                    .await?;
-            }
-            owned
-                .terminal_stream
-                .drain_output_records(session_id, attachment_id)
-        } else {
-            self.with_app_mut(|app| {
-                crate::app::provider_output::pump_terminal_output_for_attachment(
-                    app,
+        let owned = &self.owned;
+        owned.reap_structured_prompt_jobs();
+        owned.ensure_attachment_in_session(session_id, attachment_id)?;
+        let provider_run_id = owned
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
+        if let Some(provider_run_id) = provider_run_id {
+            let recipient_attachment_ids = owned
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            let _ = self
+                .pump_owned_provider_output(
                     session_id,
-                    attachment_id,
+                    &provider_run_id,
+                    recipient_attachment_ids,
+                    false,
                 )
-            })
-            .await?
-        };
-        let session = if let Some(owned) = &self.owned {
-            owned.session_snapshot(session_id).ok()
-        } else {
-            self.with_app_mut(|app| {
-                crate::app::KernelSessionReadService::new(app)
-                    .session_snapshot(session_id)
-                    .ok()
-            })
-            .await
-        };
+                .await?;
+        }
+        let records = owned
+            .terminal_stream
+            .drain_output_records(session_id, attachment_id);
+        let session = owned.session_snapshot(session_id).ok();
         Ok((records, session))
     }
 
@@ -6773,41 +6573,15 @@ impl CompatibilityRuntimeState {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
-        if self.owned.is_some() {
-            let _ = self
-                .pump_owned_provider_output(
-                    session_id,
-                    provider_run_id,
-                    recipient_attachment_ids,
-                    false,
-                )
-                .await?;
-        } else if !self
-            .reconcile_provider_run_exit(session_id, provider_run_id)
-            .await?
-        {
-            self.with_app_mut(|app| {
-                crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
-                    crate::app::provider_output::ProviderOutputPumpRequest {
-                        session_id,
-                        provider_run_id,
-                        recipient_attachment_ids,
-                        initial_liveness_already_checked: true,
-                    },
-                )
-            })
+        let _ = self
+            .pump_owned_provider_output(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+                false,
+            )
             .await?;
-        }
-        let session = if let Some(owned) = &self.owned {
-            owned.session_snapshot(session_id).ok()
-        } else {
-            self.with_app_mut(|app| {
-                crate::app::KernelSessionReadService::new(app)
-                    .session_snapshot(session_id)
-                    .ok()
-            })
-            .await
-        };
+        let session = self.owned.session_snapshot(session_id).ok();
         Ok(session)
     }
 
@@ -6817,24 +6591,8 @@ impl CompatibilityRuntimeState {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
-        if let Some(owned) = &self.owned {
-            return owned.capability_context(session_id, attachment_id, capability);
-        }
-        let app = self.app.lock().await;
-        let context = crate::app::KernelSessionReadService::new(&app).capability_context(
-            session_id,
-            attachment_id,
-            capability,
-        )?;
-        Ok(CapabilityRuntimeSnapshot {
-            workspace_id: context.workspace_id,
-            worktree_root: context.worktree_root,
-            workspace_coordinator: self
-                .owned
-                .as_ref()
-                .map(|owned| owned.workspace_coordinator.clone())
-                .unwrap_or_else(|| app.workspace_coordinator()),
-        })
+        self.owned
+            .capability_context(session_id, attachment_id, capability)
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
@@ -6843,7 +6601,8 @@ impl CompatibilityRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let canonical_tool_name = tool_name.strip_prefix("arroba_").unwrap_or(tool_name);
             let provider_runs = owned
                 .provider_store
@@ -6896,18 +6655,12 @@ impl CompatibilityRuntimeState {
                 workflow_node_run_id,
                 None,
             )?;
-            return owned.dispatch_workflow_runtime_tool_call(
+            owned.dispatch_workflow_runtime_tool_call(
                 canonical_tool_name.to_string(),
                 arguments,
                 context,
-            );
-        }
-        self.with_app_mut(|app| {
-            crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
-                app, auth_token, tool_name, arguments,
             )
-        })
-        .await
+        }
     }
 
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
@@ -6916,21 +6669,16 @@ impl CompatibilityRuntimeState {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        if let Some(owned) = &self.owned {
+        {
+            let owned = &self.owned;
             let context = owned.workflow_tool_context(
                 context.home_session_id,
                 context.workflow_run_id,
                 context.workflow_node_run_id,
                 Some(context.delivery_token),
             )?;
-            return owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context);
+            owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context)
         }
-        self.with_app_mut(|app| {
-            crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
-                app, context, tool_name, arguments,
-            )
-        })
-        .await
     }
 }
 

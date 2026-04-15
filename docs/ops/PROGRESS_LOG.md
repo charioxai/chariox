@@ -570,3 +570,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Started point 7 as deletion, not quarantine: removed the test-only no-owned `CompatibilityRuntimeState::new` constructor and moved the remaining actor/executor regressions onto owned runtime-state construction so the old generic fallback can no longer be instantiated by tests.
 - Tightened the owned workflow claim lifecycle by blocking entry-node dispatch on workspace-claim conflicts, releasing workflow-node claims on completion/cancellation/validation-stop, and retrying blocked workflow work after either provider-prompt or workflow-node claim release.
 - Verified the deletion slice with the full daemon lib suite plus runtime, WebSocket, and relay transport integration suites.
+
+### M4.5 runtime fallback deletion closure
+
+- Closed point 7 for production command/runtime ownership by replacing `CompatibilityRuntimeState` with mandatory `KernelRuntimeState`/`KernelRuntimeOwnedState`; runtime construction no longer carries optional owned state or a no-owned compatibility fallback.
+- Deleted the unreachable app-backed runtime fallback branches for session reads/mutations, prompt dispatch/abort cleanup, provider launch mutation, terminal-output pumping, capability authorization, and workflow runtime-tool dispatch. Remaining `DaemonApp` access is limited to named side-effect ports for PTY/process/relay operations and remote-agent lifecycle.
+- Removed the obsolete app-backed prompt-dispatch runtime helper and kept the legacy relay helper test-only, leaving `DaemonApp` as bootstrap/composition plus explicit side-effect services rather than the command mutation owner.

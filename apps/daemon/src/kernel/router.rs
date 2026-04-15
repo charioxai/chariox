@@ -21,7 +21,7 @@ use crate::kernel::projection::{
 };
 use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::provider_launch_executor::ProviderLaunchCommandExecutor;
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::kernel::session_actor::{FocusedAgentProjection, SessionActor, SessionRuntime};
 use crate::kernel::terminal_output_executor::TerminalOutputExecutor;
 use crate::kernel::workflow_actor::{is_workflow_command, WorkflowRuntime};
@@ -50,7 +50,7 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
     app: Arc<Mutex<DaemonApp>>,
-    runtime_state: CompatibilityRuntimeState,
+    runtime_state: KernelRuntimeState,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
     workflow_runtime: WorkflowRuntime,
@@ -122,7 +122,7 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
-        let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
+        let runtime_state = KernelRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
             session_store.clone(),
@@ -248,7 +248,7 @@ impl CommandRouter {
             prompt_state_owner,
             prompt_id_allocator,
         ) = router_projection_stores(&app);
-        let runtime_state = CompatibilityRuntimeState::new_with_owned_state(
+        let runtime_state = KernelRuntimeState::new_with_owned_state(
             Arc::clone(&app),
             config_projection.clone(),
             session_store.clone(),

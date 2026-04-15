@@ -11,7 +11,7 @@ use crate::kernel::projection::{
     SessionStateProjectionStore,
 };
 use crate::kernel::prompt_state::PromptStateOwner;
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::kernel::session_actor::FocusedAgentProjection;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
@@ -201,7 +201,7 @@ pub(crate) struct AgentRuntime {
 
 impl AgentRuntime {
     pub(crate) fn new(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
         focus_projection: FocusedAgentProjection,
         session_projection: SessionStateProjectionStore,
@@ -523,11 +523,11 @@ impl AgentRuntime {
 
 #[derive(Clone)]
 pub(crate) struct AgentRuntimeStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
 }
 
 impl AgentRuntimeStore {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
 
@@ -629,7 +629,7 @@ mod tests {
     use crate::kernel::agent_actor::AgentRuntime;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::prompt_state::PromptStateOwner;
-    use crate::kernel::runtime_state::CompatibilityRuntimeState;
+    use crate::kernel::runtime_state::KernelRuntimeState;
     use crate::kernel::session_actor::FocusedAgentProjection;
     use crate::local::{
         CancelActivePromptRequest, CompletePromptRequest, LocalDaemonRequest, LocalDaemonResponse,
@@ -657,9 +657,9 @@ mod tests {
         app.update_provider_run_projection(provider_run);
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let app_locked = app.lock().await;
-        CompatibilityRuntimeState::new_with_owned_state(
+        KernelRuntimeState::new_with_owned_state(
             Arc::clone(app),
             app_locked.config_projection_store(),
             app_locked.session_state_store(),

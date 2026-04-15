@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
 };
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::local::{LocalDaemonResponse, PumpTerminalOutputRequest};
 use crate::provider::{ProviderRunOperationLanes, ProviderRunState};
 use crate::terminal::TerminalStreamStore;
@@ -18,14 +18,14 @@ pub(crate) struct TerminalOutputExecutor {
 
 #[derive(Clone)]
 struct TerminalOutputStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
 }
 
 impl TerminalOutputExecutor {
     pub(crate) fn new(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         provider_runtime_lanes: ProviderRunOperationLanes,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -101,7 +101,7 @@ impl TerminalOutputExecutor {
 
 impl TerminalOutputStore {
     fn new(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {

@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::kernel::projection::{
     ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
 };
-use crate::kernel::runtime_state::CompatibilityRuntimeState;
+use crate::kernel::runtime_state::KernelRuntimeState;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 
 pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
@@ -31,7 +31,7 @@ pub(crate) struct WorkflowRuntime {
 
 impl WorkflowRuntime {
     pub(crate) fn new(
-        state: CompatibilityRuntimeState,
+        state: KernelRuntimeState,
         session_projection: SessionStateProjectionStore,
         agent_runtime_projection: AgentRuntimeProjectionStore,
     ) -> Self {
@@ -145,7 +145,7 @@ impl WorkflowRuntime {
 
 #[derive(Clone)]
 pub(crate) struct WorkflowRuntimeStore {
-    state: CompatibilityRuntimeState,
+    state: KernelRuntimeState,
 }
 
 type WorkflowStoreExecutionResult = (
@@ -154,7 +154,7 @@ type WorkflowStoreExecutionResult = (
 );
 
 impl WorkflowRuntimeStore {
-    pub(crate) fn new(state: CompatibilityRuntimeState) -> Self {
+    pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }
 
@@ -281,14 +281,14 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
-    use crate::kernel::runtime_state::CompatibilityRuntimeState;
+    use crate::kernel::runtime_state::KernelRuntimeState;
     use crate::kernel::workflow_actor::WorkflowRuntime;
     use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let app_locked = app.lock().await;
-        CompatibilityRuntimeState::new_with_owned_state(
+        KernelRuntimeState::new_with_owned_state(
             Arc::clone(app),
             app_locked.config_projection_store(),
             app_locked.session_state_store(),
