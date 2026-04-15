@@ -17,7 +17,7 @@ pub(crate) struct StructuredOutputRecordStore {
 }
 
 impl StructuredOutputRecordStore {
-    fn take(&self, provider_run_id: &str) -> Vec<TerminalOutputRecord> {
+    pub(crate) fn take(&self, provider_run_id: &str) -> Vec<TerminalOutputRecord> {
         self.records
             .lock()
             .expect("structured output record store poisoned")
@@ -25,7 +25,7 @@ impl StructuredOutputRecordStore {
             .unwrap_or_default()
     }
 
-    fn append(&self, provider_run_id: String, records: Vec<TerminalOutputRecord>) {
+    pub(crate) fn append(&self, provider_run_id: String, records: Vec<TerminalOutputRecord>) {
         if records.is_empty() {
             return;
         }
@@ -154,6 +154,8 @@ impl<'a> ProviderOutputPump<'a> {
 
 struct ProviderOutputPumpContext<'a> {
     app: &'a mut DaemonApp,
+    provider_store: ProviderProcessServiceStore,
+    pending_structured_output_records: StructuredOutputRecordStore,
 }
 
 struct ProviderOutputRecipientResolver<'a> {
@@ -279,7 +281,11 @@ impl ProviderOutputFanout {
 
 impl<'a> ProviderOutputPumpContext<'a> {
     fn new(app: &'a mut DaemonApp) -> Self {
-        Self { app }
+        Self {
+            provider_store: app.providers.clone(),
+            pending_structured_output_records: app.pending_structured_output_records.clone(),
+            app,
+        }
     }
 
     fn reap_structured_prompt_jobs(&mut self) {
@@ -299,13 +305,18 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        crate::app::ProviderRunReadService::new(self.app)
-            .ensure_provider_run_in_session(session_id, provider_run_id)
+        let provider_run = self.provider_store.get_run(provider_run_id)?;
+        if provider_run.session_id() != session_id {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.to_string(),
+            });
+        }
+        Ok(provider_run)
     }
 
     fn run_uses_structured_prompt_io(&self, provider_run: &RuntimeProviderRun) -> bool {
-        self.app
-            .providers
+        self.provider_store
             .run_uses_structured_prompt_io(provider_run)
     }
 
@@ -315,8 +326,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        let provider_run = crate::app::ProviderRunReadService::new(self.app)
-            .ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         // Parked runs should not be polled for output.
         if provider_run.state() == ProviderRunState::Parked {
             return Ok(Vec::new());
@@ -331,17 +341,13 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 }
             }
         }
-        let mut records = self
-            .app
-            .pending_structured_output_records
-            .take(provider_run_id);
+        let mut records = self.pending_structured_output_records.take(provider_run_id);
         records.extend(self.drain_finished_structured_output_jobs_for_run(
             session_id,
             provider_run_id,
             recipient_attachment_ids.clone(),
         )?);
-        self.app
-            .providers
+        self.provider_store
             .enqueue_structured_output_poll(provider_run_id)?;
         Ok(records)
     }
@@ -354,8 +360,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         let mut requested_records = Vec::new();
         for finished in self
-            .app
-            .providers
+            .provider_store
             .drain_finished_structured_output_poll_jobs()
         {
             let provider_run_id = finished.provider_run_id.clone();
@@ -370,8 +375,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             requested_provider_run_id,
                         )
                     } else {
-                        self.app
-                            .providers
+                        self.provider_store
                             .get_run(&provider_run_id)
                             .and_then(|run| {
                                 let session_id = run.session_id().to_string();
@@ -407,7 +411,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     }
                 }
             };
-            let provider_run = match self.app.providers.get_run(&provider_run_id) {
+            let provider_run = match self.provider_store.get_run(&provider_run_id) {
                 Ok(run) => run,
                 Err(_) => continue,
             };
@@ -426,8 +430,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             if is_requested_run {
                 requested_records.extend(records);
             } else {
-                self.app
-                    .pending_structured_output_records
+                self.pending_structured_output_records
                     .append(provider_run_id, records);
             }
         }
@@ -441,11 +444,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
         recipient_attachment_ids: Vec<String>,
         poll_result: ProviderPromptSignalBatch,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        self.app
-            .providers
+        self.provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
-        let provider_run = crate::app::ProviderRunReadService::new(self.app)
-            .ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         self.app
             .update_provider_run_projection(provider_run.clone());
         for notice in &poll_result.notices {
