@@ -6,6 +6,7 @@ use crate::agent::AgentServiceStore;
 use crate::app::{DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore};
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
+use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::local::LocalDaemonResponse;
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::session::SessionStateStore;
@@ -27,6 +28,8 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     provider_store: ProviderProcessServiceStore,
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
+    history_store: SessionHistoryStore,
+    history_projection: crate::kernel::projection::SessionHistoryProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
     prompt_activity: PromptActivityStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -410,6 +413,57 @@ impl CompatibilityRuntimeOwnedState {
         }
         Ok(provider_run)
     }
+
+    fn record_notice(
+        &self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        let agent_id = provider_run_id.and_then(|run_id| {
+            self.provider_store
+                .get_run(run_id)
+                .ok()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        self.terminal_stream.record_notice(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+            message.clone(),
+        );
+        let session = match self.session_store.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping history append because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        let entry =
+            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id.as_deref(), message);
+        if let Err(error) = self.history_store.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        } else {
+            self.history_projection.append(entry);
+        }
+    }
 }
 
 impl CompatibilityRuntimeState {
@@ -427,6 +481,8 @@ impl CompatibilityRuntimeState {
         provider_store: ProviderProcessServiceStore,
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
+        history_store: SessionHistoryStore,
+        history_projection: crate::kernel::projection::SessionHistoryProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
         prompt_activity: PromptActivityStore,
         prompt_workspace_claims: PromptWorkspaceClaimStore,
@@ -443,6 +499,8 @@ impl CompatibilityRuntimeState {
                 provider_store,
                 session_projection,
                 provider_run_projection,
+                history_store,
+                history_projection,
                 prompt_state_owner,
                 prompt_activity,
                 prompt_workspace_claims,
@@ -848,18 +906,16 @@ impl CompatibilityRuntimeState {
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);
-            self.with_app_mut(|app| {
-                app.record_notice(
-                    &dispatch.session_id,
-                    Some(&dispatch.provider_run_id),
-                    recipients,
-                    format!("Prompt dispatch failed after acknowledgement: {error}"),
-                );
-                if released_claim {
-                    app.retry_blocked_workflow_claims_from_runtime();
-                }
-            })
-            .await;
+            owned.record_notice(
+                &dispatch.session_id,
+                Some(&dispatch.provider_run_id),
+                recipients,
+                format!("Prompt dispatch failed after acknowledgement: {error}"),
+            );
+            if released_claim {
+                self.with_app_mut(|app| app.retry_blocked_workflow_claims_from_runtime())
+                    .await;
+            }
             return Err(error);
         }
         self.with_app_mut(|app| app.fail_kernel_prompt_dispatch(dispatch, error))
@@ -890,15 +946,12 @@ impl CompatibilityRuntimeState {
                     let recipients = owned
                         .attachment_store
                         .list_session_attachment_ids(&dispatch.session_id);
-                    self.with_app_mut(|app| {
-                        app.record_notice(
-                            &dispatch.session_id,
-                            None,
-                            recipients,
-                            format!("Remote prompt dispatch failed after acknowledgement: {error}"),
-                        );
-                    })
-                    .await;
+                    owned.record_notice(
+                        &dispatch.session_id,
+                        None,
+                        recipients,
+                        format!("Remote prompt dispatch failed after acknowledgement: {error}"),
+                    );
                     return Err(error);
                 }
             }
@@ -955,15 +1008,12 @@ impl CompatibilityRuntimeState {
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);
-            self.with_app_mut(|app| {
-                app.record_notice(
-                    &dispatch.session_id,
-                    Some(&dispatch.provider_run_id),
-                    recipients,
-                    format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
-                );
-            })
-            .await;
+            owned.record_notice(
+                &dispatch.session_id,
+                Some(&dispatch.provider_run_id),
+                recipients,
+                format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+            );
             return Err(error);
         }
         self.with_app_mut(|app| app.fail_kernel_prompt_abort(dispatch, error))
