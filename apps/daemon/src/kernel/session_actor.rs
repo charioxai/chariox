@@ -1036,6 +1036,7 @@ impl SessionActor {
 mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::kernel::command::KernelCommand;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
     use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::kernel::session_actor::{
@@ -1068,6 +1069,28 @@ mod tests {
             .expect("provider launch should succeed");
         app.update_provider_run_projection(provider_run.clone());
         provider_run
+    }
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+        let app_locked = app.lock().await;
+        CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workspace_coordinator(),
+        )
     }
 
     #[test]
@@ -1142,6 +1165,126 @@ mod tests {
             !runtime.has_lane("missing-session").await,
             "missing direct session should be rejected before creating a session lane"
         );
+    }
+
+    #[tokio::test]
+    async fn create_session_uses_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let session_projection = SessionStateProjectionStore::default();
+        let agent_runtime_projection = AgentRuntimeProjectionStore::default();
+        let terminal_stream = {
+            let app_locked = app.lock().await;
+            app_locked.terminal_stream_store()
+        };
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "owned-workspace",
+            "owned-worktree",
+        ));
+        let command =
+            KernelCommand::from_local_request("owned-session-create", None, None, &request);
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned create-session path should not wait for the app lock")
+        .expect("session creation should succeed");
+
+        let LocalDaemonResponse::SessionCreated { session, agent } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(session.workspace_id(), "owned-workspace");
+        assert_eq!(agent.session_id(), session.id());
+        assert_eq!(session.focused_agent_id(), Some(agent.id()));
+        assert!(session_projection.get(session.id()).is_some());
+        assert!(
+            agent_runtime_projection
+                .get(agent.id())
+                .filter(|projection| projection.session_id == session.id())
+                .is_some(),
+            "session runtime should publish agent-runtime projection from the owned create response"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_session_config_uses_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, attachment_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let attachment = crate::app::KernelSessionService::new(&mut app_locked)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "config-client",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            (
+                session.id().to_string(),
+                attachment.id().to_string(),
+                app_locked.terminal_stream_store(),
+            )
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+            session_id: session_id.clone(),
+            attachment_id,
+            values: [("mode".to_string(), "owned".to_string())].into(),
+            requires_idle: false,
+        });
+        let command =
+            KernelCommand::from_local_request("owned-session-config", None, None, &request);
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned config-update path should not wait for the app lock")
+        .expect("config update should succeed");
+
+        let LocalDaemonResponse::SessionConfigUpdated { config, session } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(session.id(), session_id);
+        assert_eq!(
+            config.values().get("mode").map(String::as_str),
+            Some("owned")
+        );
+        assert_eq!(
+            session
+                .config_state()
+                .values()
+                .get("mode")
+                .map(String::as_str),
+            Some("owned")
+        );
+        assert!(session_projection.get(&session_id).is_some());
     }
 
     #[tokio::test]

@@ -157,6 +157,8 @@ impl<'a> KernelSessionService<'a> {
         let mut sessions = session_store.write();
         let agent = self.app.agents.create_agent(agent_request, &mut sessions)?;
         drop(sessions);
+        let session =
+            SessionStateReader::new(self.app.session_state_store()).get_session(session.id())?;
 
         crate::logging::info_with_fields(
             "daemon.session",

@@ -11,7 +11,7 @@ use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::local::LocalDaemonResponse;
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
-use crate::session::SessionStateStore;
+use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
@@ -177,6 +177,65 @@ impl CompatibilityRuntimeOwnedState {
             ));
         }
         Ok(request)
+    }
+
+    fn create_session_response(
+        &self,
+        request: crate::session::CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut session =
+            SessionStateOwner::new(self.session_store.clone()).create_session(request)?;
+        let agent_request = crate::agent::CreateAgentRequest::new(session.id(), "default")
+            .with_worktree(session.worktree_id());
+        let mut sessions = self.session_store.write();
+        let agent = self
+            .agent_store
+            .create_agent(agent_request, &mut sessions)?;
+        drop(sessions);
+        session = self.session_store.get_session(session.id())?;
+        let agents = self.agent_store.get_session_agents(session.id());
+        session.set_agents(agents);
+        self.project_session_runtime_view(&mut session);
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+    }
+
+    fn update_session_config(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        values: std::collections::BTreeMap<String, String>,
+        requires_idle: bool,
+    ) -> Result<crate::session::SessionConfigState, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let (_session, config) = SessionStateOwner::new(self.session_store.clone()).update_config(
+            session_id,
+            attachment_id,
+            values,
+            requires_idle,
+        )?;
+        let recipient_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter(|id| id != attachment_id)
+            .collect::<Vec<_>>();
+        if !recipient_attachment_ids.is_empty() {
+            let active_provider_run_id = self
+                .session_store
+                .get_session(session_id)?
+                .active_provider_run_id()
+                .map(str::to_string);
+            self.record_notice(
+                session_id,
+                active_provider_run_id.as_deref(),
+                recipient_attachment_ids,
+                format!(
+                    "Attachment `{attachment_id}` updated configuration for session `{session_id}`."
+                ),
+            );
+        }
+        Ok(config)
     }
 
     fn start_provider_launch(
@@ -689,6 +748,9 @@ impl CompatibilityRuntimeState {
         &self,
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.create_session_response(request);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).create_session_response(request)
         })
@@ -785,6 +847,9 @@ impl CompatibilityRuntimeState {
         values: std::collections::BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.update_session_config(session_id, attachment_id, values, requires_idle);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).update_session_config(
                 session_id,
