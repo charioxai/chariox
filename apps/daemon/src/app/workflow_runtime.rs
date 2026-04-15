@@ -128,10 +128,6 @@ pub enum WorkflowLaunchOutcome {
 }
 
 impl DaemonApp {
-    pub(crate) fn is_workflow_prompt_source(&self, attachment_id: &str) -> bool {
-        WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
-    }
-
     pub fn invoke_workflow_endpoint_with_admission(
         &mut self,
         session_id: &str,
@@ -253,63 +249,6 @@ impl DaemonApp {
         }
     }
 
-    pub fn pump_workflow_watchdogs(&mut self) {
-        let plans = match self
-            .sessions_mut()
-            .collect_due_workflow_watchdog_invocations(unix_epoch_ms())
-        {
-            Ok(plans) => plans,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.app",
-                    "workflow watchdog collection failed",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                return;
-            }
-        };
-        for plan in plans {
-            match self.invoke_watchdog_workflow_launch(plan) {
-                Ok(()) => {}
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.app",
-                        "workflow watchdog invoke failed",
-                        serde_json::json!({ "error": error.to_string() }),
-                    );
-                }
-            }
-        }
-    }
-
-    fn invoke_watchdog_workflow_launch(
-        &mut self,
-        plan: WorkflowWatchdogTickPlan,
-    ) -> Result<(), DaemonError> {
-        match self.invoke_queued_workflow_launch(
-            &plan.session_id,
-            QueuedWorkflowLaunch::new(
-                format!("watchdog-launch-{}", plan.watchdog_id),
-                plan.workflow_id.clone(),
-                plan.endpoint_id.clone(),
-                Some(plan.invocation_prompt.clone()),
-                QueuedWorkflowLaunchSource::Watchdog,
-                Some(plan.watchdog_id.clone()),
-            ),
-        ) {
-            Ok(WorkflowLaunchOutcome::Started { .. }) => Ok(()),
-            Ok(WorkflowLaunchOutcome::Queued { .. }) => Ok(()),
-            Err(error) => {
-                let _ = self.sessions_mut().mark_workflow_watchdog_failed(
-                    &plan.session_id,
-                    &plan.watchdog_id,
-                    error.to_string(),
-                );
-                Err(error)
-            }
-        }
-    }
-
     fn invoke_queued_workflow_launch(
         &mut self,
         session_id: &str,
@@ -395,6 +334,67 @@ impl DaemonApp {
             }
         }
         Ok(())
+    }
+}
+
+pub(crate) fn is_workflow_prompt_source(attachment_id: &str) -> bool {
+    WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
+}
+
+pub(crate) fn pump_workflow_watchdogs(app: &mut DaemonApp) {
+    let plans = match app
+        .sessions_mut()
+        .collect_due_workflow_watchdog_invocations(unix_epoch_ms())
+    {
+        Ok(plans) => plans,
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.app",
+                "workflow watchdog collection failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            return;
+        }
+    };
+    for plan in plans {
+        match invoke_watchdog_workflow_launch(app, plan) {
+            Ok(()) => {}
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.app",
+                    "workflow watchdog invoke failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+    }
+}
+
+fn invoke_watchdog_workflow_launch(
+    app: &mut DaemonApp,
+    plan: WorkflowWatchdogTickPlan,
+) -> Result<(), DaemonError> {
+    match app.invoke_queued_workflow_launch(
+        &plan.session_id,
+        QueuedWorkflowLaunch::new(
+            format!("watchdog-launch-{}", plan.watchdog_id),
+            plan.workflow_id.clone(),
+            plan.endpoint_id.clone(),
+            Some(plan.invocation_prompt.clone()),
+            QueuedWorkflowLaunchSource::Watchdog,
+            Some(plan.watchdog_id.clone()),
+        ),
+    ) {
+        Ok(WorkflowLaunchOutcome::Started { .. }) => Ok(()),
+        Ok(WorkflowLaunchOutcome::Queued { .. }) => Ok(()),
+        Err(error) => {
+            let _ = app.sessions_mut().mark_workflow_watchdog_failed(
+                &plan.session_id,
+                &plan.watchdog_id,
+                error.to_string(),
+            );
+            Err(error)
+        }
     }
 }
 

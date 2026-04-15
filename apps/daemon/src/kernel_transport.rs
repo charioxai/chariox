@@ -318,7 +318,7 @@ where
             {
                 let mut app = pump_app.lock().await;
                 crate::app::provider_output::pump_active_prompt_outputs(&mut app);
-                app.pump_workflow_watchdogs();
+                crate::app::workflow_runtime::pump_workflow_watchdogs(&mut app);
             }
             sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
         }

@@ -2386,7 +2386,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     harness.with_app_mut(|app| {
         pump_active_prompt_outputs(app);
-        app.pump_workflow_watchdogs();
+        crate::app::workflow_runtime::pump_workflow_watchdogs(app);
     });
     harness.with_app(|app| {
         let session_state = app
