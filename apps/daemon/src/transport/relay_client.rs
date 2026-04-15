@@ -837,7 +837,7 @@ async fn emit_leased_projection_event(
     )
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub async fn send_peer_request_via_relay(
     app: &Arc<Mutex<DaemonApp>>,
     state: &Arc<RwLock<RelayClientState>>,
