@@ -18,7 +18,20 @@ The current primary CLI path uses the kernel WebSocket transport. The first M4.5
 
 The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue, and the session runtime publishes a focused-agent projection used by agent routing once focus is warm. Agent lifecycle responses that change focus refresh the same projection. The router also has the first projection stores for warmed `GetSessionState`, `ListSessions`, successful `ResolveSession`, `GetSessionHistory`, `GetProviderRun`, `ListProviderProcesses`, and `GetProviderCatalog` reads; list responses hydrate per-session state entries; and prompt lifecycle mutations now publish session snapshots into the shared session projection.
 
-Important caveat: the implementation still has a compatibility `DaemonApp`, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
+Important caveat: the implementation still has a transitional `DaemonApp` quarantine, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
+
+## Direct-Cutover Direction
+
+As of 2026-04-15, do not spend additional M4.5 work preserving the old facade as a long-lived compatibility layer. The next slices should replace compatibility-backed ports with runtime-owned services and delete the old app-backed surface in the same slice whenever tests prove the owner path covers the behavior.
+
+Rules:
+
+- no new request-shaped facade methods on `DaemonApp`
+- no new compatibility mirrors unless they are wire-format projections with a named deletion path
+- no new app-lock fallback for a hot path after an owned store can answer the same question
+- no broad "keep compatibility working" slice; every slice must move one runtime owner to the new system and remove the matching old app helper
+- `DaemonApp` is allowed as a bootstrap/shutdown/test composition shell while the cutover is in progress, but not as the command-state owner
+- final I/O coordination is still a later slice, but the current coarse `WorkspaceCoordinator` must continue to guard visible file-writing/provider/workflow dispatch work while runtime ownership is being cut over
 
 Current event replay is a bounded in-memory recent-event buffer. It supports reconnect-friendly local behavior, but it is not yet a durable event log.
 
@@ -26,7 +39,7 @@ Current multi-agent reliability work has already established one important invar
 
 ## Implementation Status
 
-Status as of 2026-04-13:
+Status as of 2026-04-15:
 
 - Landed: `KernelCommand` and `KernelEvent` envelopes with command ids, causation/correlation metadata, and priority classification.
 - Landed: `EventLog` service with daemon-local event ids, stream sequence ids, bounded replay windows, and explicit replay-gap reporting.
@@ -114,7 +127,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed the app-level `kernel_workflows()` helper. `WorkflowRuntimeStore` now constructs `KernelWorkflowService` directly at its explicit workflow store boundary, so workflow command execution no longer re-enters a facade-shaped `DaemonApp` method.
 - Landed: Phase 8 removed the app-level `kernel_agents()` and `kernel_sessions()` helper facades. Session, agent, prompt, projection, flow-control, and test paths now construct the owning kernel service directly at their explicit boundary instead of re-entering service selection through `DaemonApp`.
 - Landed: Phase 8 introduced `SessionRuntimeContext` as the narrow app-backed dependency boundary for `SessionRuntimeStore`. Session lane execution now consumes explicit session, attachment, terminal-notice, projection-snapshot, and agent lifecycle ports instead of calling broad `DaemonApp` APIs throughout the store body.
-- Landed: Phase 8 moved session runtime reference/attachment lookup and session-scoped agent spawn/destroy through `KernelSessionService` ports. The app-level spawn/destroy methods now delegate to the session service, concentrating local/remote agent lifecycle behavior in the session ownership boundary while preserving compatibility callers.
+- Landed: Phase 8 moved session runtime reference/attachment lookup and session-scoped agent spawn/destroy through `KernelSessionService` ports. The app-level spawn/destroy methods now delegate to the session service, concentrating local/remote agent lifecycle behavior in the session ownership boundary while old callers still existed.
 - Landed: Phase 8 introduced `KernelSessionReadService` for cold session/list/resolve/state/agent-list responses. Router cold paths and later production/test session snapshot consumers now call the read service directly; the old app-level session snapshot and projection-publish helper shims have been removed.
 - Landed: Phase 8 introduced `AgentRuntimeContext` and `AgentPromptCommandContext` as narrow app-backed dependency boundaries for agent lane routing and prompt command execution. Agent runtime store reads now consume explicit active-prompt/focus ports, and prompt submit/cancel/complete execution is isolated behind a prompt-command context.
 - Landed: Phase 8 moved prompt dispatch/remote-dispatch/abort side effects out of app-level spawn helpers and behind `AgentPromptDispatchContext`. The context still uses compatibility-backed app mutation for enqueue/failure/finalization, but agent prompt side effects now enter through the prompt service boundary instead of `DaemonApp::spawn_kernel_*` helper facades.
@@ -293,44 +306,44 @@ Status as of 2026-04-13:
 - Landed: Phase 8 removed the app-level assistant-message completion fanout helper by routing prompt-command completions directly through the terminal/provider stores at the owning command seam.
 - Landed: Phase 8 trimmed unused transport prompt facade methods and removed the obsolete production session-mirror direct-cancel mutation path; the remaining mirror corruption path is test-only. Workflow dispatch failure cleanup now uses the prompt owner directly and clears prompt activity through the flow-control seam.
 
-Still open:
+Current closure status:
 
-- move remaining `KernelSessionService` side-effect collaborators out from behind `SessionRuntimeStore` into runtime-owned service handles; pure session, agent, and attachment state now have shared owner stores, but history/projection/session cleanup side effects still need the same treatment; provider launch/service, provider process tracking, provider catalog cache, prompt activity, and prompt workspace claims now have shared stores
-- finish moving the remaining prompt side effects out of the compatibility app lock now that provider writes/enqueues, user history append, and remote relay prompt dispatch are off the agent-mailbox acknowledgement path; claim storage and compatibility mirroring still need ownership boundaries
-- broaden actor-owned projections beyond focused-agent routing and warmed session/list/history/provider-run/process/prompt-state/provider-catalog snapshots so remaining provider/read models can be served without compatibility-store reads on the hot path
-- remove remaining actor-worker mutation paths that require `Arc<Mutex<DaemonApp>>` as the compatibility mirror
-- keep the current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope while actor/projection ownership is completed; deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination are intentionally deferred to the final I/O-coordination slice
+- Closed: the seven production ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now route production command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
+- Remaining M4.5 cleanup: purge now-unused app-backed helper surfaces, test-only compatibility helpers, stale docs references, and dead-code warnings left behind by the direct cutover. This cleanup belongs to M4.5 and should happen before marking the milestone fully complete.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope through the cleanup. Deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination remain deferred to the final I/O-coordination slice.
 
-## A+ Completion Plan
+## Cutover Completion Plan
 
-The A+ bar is not only green tests. The kernel runtime should have single ownership for mutable state, projection-first reads, explicit overload behavior, and enough health signal to debug stalls without reading code.
+The bar is not more compatibility with cleaner names. The kernel runtime should have single ownership for mutable state, projection-first reads, explicit overload behavior, and enough health signal to debug stalls without reading code.
 
 Order of work:
 
-1. Stabilize the current branch: keep daemon tests green, remove duplicate prompt-state components, and make provider actor enqueue failure observable and retryable.
-2. Finish prompt ownership: `PromptStateOwner` now owns active/queued prompt lifecycle mutation, is shared with `AgentRuntime`, mirrors into `PromptRuntimeState`, and local provider writes/enqueues, prompt history appends, and remote relay prompt dispatch run after acknowledgement through spawned side-effect paths; next remove the remaining hot app-lock access around claim storage and compatibility mirroring side effects.
-3. Finish session ownership: move remaining lifecycle, attachment, config, alias, focus, resize, end, and delete state behind `SessionRuntime`; session deletion now cleans terminal stream buffers from the runtime boundary, and must continue consolidating agent lanes, workflow lanes, provider runs, claims, and projections through one ordered path.
-4. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
-5. Harden workflow runtime: move workflow progression, blocked-claim retry, node completion, watchdogs, and queued launches out of direct compatibility mutation paths and behind workflow-owned lanes.
-6. Harden provider and terminal runtime: ensure provider I/O does not hold hot app locks, give structured submit/abort/output-poll jobs explicit lifecycle states, and bound notice/completion buffers with health counters alongside output buffers.
-7. Remove hot `DaemonApp` dependencies: audit every remaining `Arc<Mutex<DaemonApp>>` request path, classify it as bootstrap, compatibility, or hot-path blocker, and move blockers behind actors/projections.
-8. Lock docs and invariants: keep README, architecture, roadmap, protocol, task board, and progress log aligned after each slice; enforce the implementation-invariants checklist for ownership, projection refresh, cleanup, overload behavior, health, and tests in [IMPLEMENTATION_INVARIANTS.md](/Users/miguel/arroba/docs/ops/IMPLEMENTATION_INVARIANTS.md).
-9. Return to final I/O coordination last: decide sandbox/overlay/coordinator-owned patch semantics, same-session behavior, file/port resource scopes, and transactional rebase/repair workflows only after actor/projection ownership is stable.
+1. **Done.** Lock the current direct-cutover baseline: keep daemon tests green, keep `handle_local_request`/generic request facades deleted, and reject any new request-shaped `DaemonApp` helper during review.
+2. **Done.** Cut over session ownership: make `SessionRuntime` own create/attach/detach/focus/cycle/resize/config/alias/spawn/destroy/end/delete through owned stores and explicit side-effect ports, then delete the matching `KernelSessionService<&mut DaemonApp>` mutation paths.
+3. **Done.** Cut over prompt ownership: move submit/cancel/complete mirror mutation, settlement, queue advancement, provider-claim cleanup, and failure cleanup into `AgentRuntime`/prompt-owned services, then delete the matching `KernelAgentService<&mut DaemonApp>` prompt paths.
+4. **Done.** Cut over provider process/output ownership: move PTY spawn/remove/poll/drain, structured-job reaping, active-output pumping, provider-output prompt settlement, and post-launch queue advancement behind provider/process/output runtimes, then delete the app-backed provider-output and launch-process mutation paths.
+5. **Done.** Cut over workflow and runtime tools: make workflow command mutation, queued launch progression, watchdog pumping, blocked-claim retry, and MCP runtime tools enter workflow-owned commands instead of `&mut DaemonApp` service calls.
+6. **Done.** Cut over transport and relay state: move subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, and encrypted peer prompt settlement behind owned transport/relay runtimes.
+7. **Done.** Delete the compatibility quarantine: remove production `CompatibilityRuntimeState::with_app_mut`, remove `Arc<Mutex<DaemonApp>>` from command/runtime constructors, and leave `DaemonApp` as bootstrap/shutdown/test composition only.
+8. Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
+9. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
+10. Return to final I/O coordination last: decide sandbox/overlay/coordinator-owned patch semantics, same-session behavior, file/port resource scopes, and transactional rebase/repair workflows only after actor/projection ownership is stable.
 
 ### Current Hot-Path Lock Audit
 
-Status as of 2026-04-13:
+Status as of 2026-04-15:
 
-The remaining `Arc<Mutex<DaemonApp>>` use falls into these buckets:
+Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>` fallback ports. Remaining app access is limited to bootstrap/shutdown/test composition and explicit side-effect ports that the dead-code cleanup will either keep named or delete if unused.
 
 | Area | Current use | M4.5 treatment |
 |------|-------------|----------------|
-| `kernel/router.rs` | no generic local compatibility fallback remains, and production router code no longer calls `DaemonApp::handle_local_request`; named cold session/list/resolve/state/agent-list, OpenCode provider-run sync, provider process, auth/logout, and capability branches still touch `DaemonApp`; provider launch now has an explicit executor seam but still uses app-backed stores internally until their stores move behind runtime-owned services | keep these cold/compatibility branches explicit and bounded; migrate them one service at a time instead of reintroducing catch-all fallback |
-| `kernel/session_actor.rs` | per-session mailboxes serialize requests but still execute lifecycle/focus/resize mutations through compatibility app state | next ownership slice: make `SessionRuntime` own normal session UI/lifecycle state and mirror compatibility snapshots |
-| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete and share `PromptStateOwner` for active-owner and queue-front decisions; local provider dispatch, history append, and remote relay submit are now deferred side effects, while claim storage and mirror publication still enter `KernelAgentService` through compatibility app state | next ownership slice: split the remaining claim/mirror side effects so the app lock is not needed for normal owner-backed routing and admission |
-| `kernel_transport.rs` and `transport/relay_client.rs` | bootstrapping, relay/presence/config lookups, encrypted request decrypt/encrypt, peer lease helpers, and subscription helpers still read app state; relay-client daemon/workflow requests plus local and forwarded runtime MCP tool calls now route through `CommandRouter` | keep relay as transport-owned background work; move registration/subscription/peer helper state behind `RelayRuntime` after session/agent ownership |
-| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, runtime tools, and preserved turn state still operate over shared app/session state, but the HTTP MCP transport no longer calls this state directly | introduce a workflow actor boundary after prompt ownership; do not broaden I/O coordination yet |
-| `kernel/capability_executor.rs` | capability jobs use app state for session/attachment context and write-claim coordination | acceptable only because jobs are bounded/background; final arbitrary I/O enforcement is deferred |
+| `kernel/router.rs` | no generic local compatibility fallback remains, production router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | keep router independence locked; delete stale app-helper references during the M4.5 dead-code purge |
+| `kernel/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | remove unused app-backed session helper surfaces exposed by the cutover |
+| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | remove unused app-backed prompt helper surfaces exposed by the cutover |
+| provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of production app fallback ports | delete stale provider-output and launch helper surfaces that are no longer production paths |
+| `kernel_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | keep side-effect ports explicit and purge old relay helper debt |
+| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued launch state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | remove stale app workflow/runtime-tool helpers left behind by ownership cutover |
+| `kernel/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims, but arbitrary shell commands are not yet under final I/O enforcement | keep bounded/background behavior for M4.5; final arbitrary I/O enforcement is deferred |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
 
@@ -356,21 +369,23 @@ Work the retirement in this order:
    - Named cold compatibility branches remain explicit while moving them behind service-owned stores one at a time.
    - Exit check: `rg "handle_local_request\\(" apps/daemon/src/kernel/router.rs` returns no matches, and every production router arm is explicit.
 
-3. Move actor workers off the compatibility mutation container.
-   - Replace `Arc<Mutex<DaemonApp>>` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` workers with injected service handles and runtime-owned stores.
-   - Keep compatibility mirrors only as read/projection bridges while each service migrates.
-   - Exit check: actor workers no longer call `DaemonApp::handle_session_request`, `DaemonApp::handle_agent_request`, or `DaemonApp::handle_workflow_request` for normal command mutation.
+3. Move actor workers off the compatibility mutation container by direct replacement. **Done for production paths.**
+   - Replace `CompatibilityRuntimeState::with_app_mut` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` with injected service handles and runtime-owned stores.
+   - Delete the corresponding app-backed mutation path in the same slice. Do not keep a second compatibility path after the owner path is covered by tests.
+   - Exit check: actor workers do not use `Arc<Mutex<DaemonApp>>`, `CompatibilityRuntimeState::with_app_mut`, or app-backed `Kernel*Service<&mut DaemonApp>` paths for normal command mutation.
 
-4. Split runtime-owned services out of `DaemonApp`.
-   - Extract session, agent, prompt, provider, terminal, workflow, relay, capability-context, history, and projection ownership into explicit runtime services.
+4. Split runtime-owned services out of `DaemonApp` by deletion, not preservation. **Done for production paths.**
+   - Extract session, agent, prompt, provider process/output, terminal, workflow, relay, capability-context, history, and projection ownership into explicit runtime services.
    - Make `DaemonApp` bootstrap those services instead of owning mutable command state directly.
-   - Exit check: remaining `Arc<Mutex<DaemonApp>>` uses are bootstrap/shutdown only, not command admission or command mutation.
+   - Exit check: remaining `Arc<Mutex<DaemonApp>>` uses are bootstrap/shutdown/tests only, not command admission, command mutation, projection refresh, provider output, workflow progression, or runtime tools.
 
-5. Retire remaining facade-shaped compatibility handlers.
+5. Delete remaining facade-shaped compatibility handlers. **Done for production paths; dead-code purge remains.**
    - The catch-all local request dispatcher is gone; what remains is narrower handler debt where router/runtime branches still use app-backed stores or app-level provider/session/capability helpers.
-   - Move each remaining `handle_*_request` helper either behind its owning service/runtime or rename it to a service-owned operation once it no longer represents a facade boundary.
+   - Move each remaining helper behind its owning service/runtime and remove the old app helper name once there is a single authority for that mutation.
    - Run the full daemon suite plus multi-agent and workflow live drills before declaring the compatibility-facade milestone complete.
-   - Exit check: `rg "handle_.*_request|handle_local_request" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows only service-owned handlers with a single authority for each mutation path, and `handle_local_request` has zero matches.
+   - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows no production command/runtime ownership path through the app facade.
+
+Remaining M4.5 work after the seven production ownership points is cleanup, not ownership cutover: delete unused app-backed helper methods, remove test-only compatibility surfaces that no longer buy coverage, refresh this plan and operational invariants after the purge, and keep the final I/O-coordination work out of scope until M4.5 is clean.
 
 ## Non-Goals
 

@@ -8,7 +8,8 @@ This checklist is the merge gate for M4.5 runtime slices before the final I/O-co
 - Mutable session lifecycle changes enter through `KernelSessionService` or the `SessionRuntime` mailbox path. Public session creation, attach, detach, focus, cycle, resize, config, alias, end, and delete must not add new direct request-handler mutation paths.
 - Workflow progression enters through workflow runtime methods or scheduler-owned dispatch paths. New workflow state transitions must not bypass workflow lane admission.
 - Provider-run structured submit, abort, output polling, selection sync, and teardown must remain behind provider runtime lanes or provider-run actor methods.
-- `DaemonApp` may remain a compatibility/bootstrap mirror during M4.5, but new hot-path behavior must declare whether it is actor-owned, projection-owned, or compatibility-only.
+- `DaemonApp` may remain bootstrap/shutdown/test composition during M4.5, but it must not gain new command-state ownership. New hot-path behavior must declare whether it is actor-owned or projection-owned; "compatibility-only" is allowed only for an explicitly named deletion step in the current cutover slice.
+- A cutover slice that adds an owned runtime path must delete the matching app-backed helper before merging. Do not preserve a second compatibility path after the owner path is covered by tests.
 
 ## Projection Refresh
 
@@ -44,4 +45,4 @@ This checklist is the merge gate for M4.5 runtime slices before the final I/O-co
 - Projection-first reads need tests that hold the compatibility app lock and assert the warmed path still completes.
 - Cleanup paths need tests for both normal success and failure/cancellation paths when claims, lanes, projections, or provider state are involved.
 - Queue/overload behavior needs tests that fill the relevant lane and assert the command is either admitted through the correct mailbox or rejected with an explicit overload error.
-- Documentation updates must land in the same slice as behavior changes, including `TASKS.md` and `PROGRESS_LOG.md`.
+- Documentation updates must land in the same slice as behavior changes, including `TASKS.md` and `PROGRESS_LOG.md`, and must state whether the slice deletes an app-backed compatibility path or leaves one named blocker behind.

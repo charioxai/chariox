@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-15
 
+### M4.5 production ownership closure status
+
+- Closed the seven production ownership points: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now route production command/runtime behavior through owned runtime ports.
+- Kept the dead-code purge inside M4.5 instead of moving it out of the milestone. Remaining cleanup is to delete now-unused app-backed helper surfaces, prune test-only compatibility helpers that no longer cover production behavior, refresh status docs, and rerun the daemon suites.
+- Recommendation: do the M4.5 dead-code purge next, then use a final docs/invariants pass to mark M4.5 complete before returning to final I/O coordination.
+
 ### M4.5 prompt ownership hard-center update
 
 - Moved the single-agent slow-structured local prompt submit path onto owned `CompatibilityRuntimeState` stores, including user history append, prompt-owner submit/mirror mutation, queued notice emission, prompt echo, provider prompt claim acquisition, and dispatch preparation without waiting on the compatibility app mutex.
@@ -50,6 +56,13 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Restored the daemon integration suite after direct facade retirement by routing the stale test-facing session, prompt, terminal, provider-output, and structured-runtime-state helpers through the explicit `KernelSessionService`, `KernelAgentService`, provider-output pump, provider terminal-input, and provider-run actor boundaries instead of the deleted generic local request dispatcher.
 - Verified the slice with `cargo test` in `apps/daemon`: 329 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
+### M4.5 direct-cutover direction
+
+- Updated the M4.5 plan to stop treating compatibility preservation as ongoing work. The next slices should replace app-backed runtime ports with owned services and delete the old helper path in the same slice once tests cover the owner path.
+- Current code has moved more state and side effects behind owned seams: provider launch state, prompt dispatch/abort enqueue paths, structured prompt I/O reads, provider-output fanout/history writes, prompt-activity updates, workflow prompt progression, workflow console helpers, watchdog pumping, and blocked-claim retry now enter explicit runtime boundaries.
+- The remaining M4.5 blockers are still the app-lock ports inside `CompatibilityRuntimeState`: session lifecycle/config/alias/agent mutations, prompt submit/cancel/complete settlement and queue advancement, provider PTY spawn/remove/poll/drain and provider-output prompt settlement, workflow service mutation/runtime tools, transport subscription/replay snapshots, and relay peer/lease state.
+- Final I/O coordination remains separate. Keep coarse `WorkspaceCoordinator` claims active during the direct cutover, then design file-level claims, port claims, shell/harness sandboxing, coordinator-owned patch application, and transactional rebase/repair after the actor/projection runtime no longer depends on hot `DaemonApp` paths.
 
 ## 2026-04-12
 
