@@ -370,6 +370,30 @@ mod tests {
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+        let app_locked = app.lock().await;
+        CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_idle_timeout(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
+
     #[tokio::test]
     async fn capability_executor_rejects_when_concurrency_limit_is_exhausted() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -387,7 +411,7 @@ mod tests {
         let health = CapabilityExecutorHealthStore::new(0);
 
         let response = execute_capability_request(
-            &CapabilityRuntimeStore::new(CompatibilityRuntimeState::new(app)),
+            &CapabilityRuntimeStore::new(owned_runtime_state(&app).await),
             health.clone(),
             LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
                 session_id: session.id().to_string(),

@@ -1871,6 +1871,20 @@ impl CompatibilityRuntimeOwnedState {
         self.prompt_workspace_claims.remove(provider_run_id)
     }
 
+    fn release_workflow_node_workspace_claim(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> bool {
+        let owner = format!("{workflow_run_id}:{workflow_node_run_id}");
+        self.prompt_workspace_claims.remove_matching(|claim| {
+            claim.session_id == session_id
+                && claim.attachment_id.as_deref() == Some(owner.as_str())
+                && claim.operation == "workflow_node_dispatch"
+        }) > 0
+    }
+
     fn note_prompt_started(&self, provider_run_id: &str) {
         self.prompt_activity.write().insert(
             provider_run_id.to_string(),
@@ -3019,13 +3033,39 @@ impl CompatibilityRuntimeOwnedState {
             None,
         )?;
         let provider_run_id = self.workflow_ensure_provider_run(session_id, node_run.agent_id())?;
-        self.acquire_workflow_node_workspace_claim(
+        match self.acquire_workflow_node_workspace_claim(
             session_id,
             &provider_run_id,
             node_run.agent_id(),
             workflow_run.id(),
             node_run.id(),
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                let _ = self
+                    .session_store
+                    .write()
+                    .block_workflow_node_on_workspace_claim(
+                        session_id,
+                        workflow_run.id(),
+                        node_run.id(),
+                    );
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow run `{}` blocked node `{}` on a workspace claim: {error}",
+                        workflow_run.id(),
+                        node_run.node_id()
+                    ),
+                );
+                let _ = self.session_snapshot(session_id)?;
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        }
         let _ = self
             .session_store
             .write()
@@ -3194,6 +3234,11 @@ impl CompatibilityRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         )?;
+        let _ = self.release_workflow_node_workspace_claim(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
         self.workflow_record_failure(
             session_id,
             workflow_run_id,
@@ -3264,6 +3309,11 @@ impl CompatibilityRuntimeOwnedState {
                     workflow_run_id,
                     workflow_node_run_id,
                 )?;
+                let _ = self.release_workflow_node_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
                 self.record_notice(
                     session_id,
                     None,
@@ -3351,9 +3401,14 @@ impl CompatibilityRuntimeOwnedState {
             .as_deref()
             .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
             .unwrap_or(false);
+        let released_workflow_claim = self.release_workflow_node_workspace_claim(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
         let mut dispatches =
             self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
-        if released_claim {
+        if released_claim || released_workflow_claim {
             dispatches.extend(self.workflow_retry_blocked_claims());
         }
         let state_suffix = match update.workflow_run.status() {
@@ -4459,11 +4514,6 @@ struct OwnedPromptCancellation {
 }
 
 impl CompatibilityRuntimeState {
-    #[cfg(test)]
-    pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
-        Self { app, owned: None }
-    }
-
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::kernel::projection::DaemonConfigProjectionStore,

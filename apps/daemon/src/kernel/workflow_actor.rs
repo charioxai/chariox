@@ -286,6 +286,30 @@ mod tests {
     use crate::local::{CreateWorkflowRequest, LocalDaemonRequest};
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+        let app_locked = app.lock().await;
+        CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_idle_timeout(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
+
     #[tokio::test]
     async fn workflow_lane_resolution_rejects_warmed_missing_session_without_app_lock() {
         let app = Arc::new(Mutex::new(
@@ -294,7 +318,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = WorkflowRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             session_projection,
             AgentRuntimeProjectionStore::default(),
         );

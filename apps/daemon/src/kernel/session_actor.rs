@@ -1136,7 +1136,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             1,
             FocusedAgentProjection::default(),
             session_projection,
@@ -1791,7 +1791,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             1,
             FocusedAgentProjection::default(),
             session_projection,
@@ -1880,7 +1880,7 @@ mod tests {
         );
 
         let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             1,
             FocusedAgentProjection::default(),
             SessionStateProjectionStore::default(),

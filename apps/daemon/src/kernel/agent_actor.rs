@@ -694,7 +694,7 @@ mod tests {
         agent_runtime_projection.update_session(&session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             SessionStateProjectionStore::default(),
@@ -728,7 +728,7 @@ mod tests {
         session_projection.update(session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -796,7 +796,7 @@ mod tests {
         let prompt_state_owner = app.prompt_state_owner();
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -1396,7 +1396,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -1435,7 +1435,7 @@ mod tests {
         session_projection.update(session_snapshot);
         let app = Arc::new(Mutex::new(app));
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,
@@ -1473,7 +1473,7 @@ mod tests {
         let session_projection = SessionStateProjectionStore::default();
         session_projection.update_list(Vec::new());
         let runtime = AgentRuntime::new(
-            CompatibilityRuntimeState::new(Arc::clone(&app)),
+            owned_runtime_state(&app).await,
             ProviderRunOperationLanes::default(),
             FocusedAgentProjection::default(),
             session_projection,

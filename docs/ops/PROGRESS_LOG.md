@@ -564,3 +564,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed point 6 for the production relay transport path by routing relay registration/config/key reads, subscription authorization/watch snapshots, peer lease commands, leased prompt settlement, and remote projection events through `CommandRouter` relay/runtime ports instead of direct relay-client `DaemonApp` state access.
 - Kept connector bootstrap and the unused relay test helper as the only direct `relay_client.rs` app-lock reads; production daemon/workflow relay requests, runtime MCP forwarding, subscription replay, and peer prompt handling now enter the router/runtime boundary.
 - Hardened workflow cancellation cleanup by releasing session workflow-dispatch workspace claims when a run is cancelled, preventing subsequent queued or manual workflow launches from inheriting stale claim conflicts.
+
+### M4.5 compatibility deletion update
+
+- Started point 7 as deletion, not quarantine: removed the test-only no-owned `CompatibilityRuntimeState::new` constructor and moved the remaining actor/executor regressions onto owned runtime-state construction so the old generic fallback can no longer be instantiated by tests.
+- Tightened the owned workflow claim lifecycle by blocking entry-node dispatch on workspace-claim conflicts, releasing workflow-node claims on completion/cancellation/validation-stop, and retrying blocked workflow work after either provider-prompt or workflow-node claim release.
+- Verified the deletion slice with the full daemon lib suite plus runtime, WebSocket, and relay transport integration suites.
