@@ -148,8 +148,8 @@ import {
   hydrateTranscriptEntries,
   markDeferredHistoryEntries,
 } from "./transcript-history.js"
+import { buildPaneGridModel, type PaneGridTone } from "./response-pane-grid.js"
 import {
-  computeSharedPaneBorderEdges,
   responsePaneRowSlots,
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
@@ -607,6 +607,13 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   let transcriptScrollbox: ScrollBoxRenderable | undefined
   let responseLayoutBox: BoxRenderable | undefined
   const responseRowBoxes: Array<BoxRenderable | undefined> = []
+  const paneGridBorderRows: Array<BoxRenderable | undefined> = []
+  let paneGridBottomBorderRow: BoxRenderable | undefined
+  const paneGridHorizontalSegments: Array<Array<BoxRenderable | undefined>> = []
+  const paneGridBottomHorizontalSegments: Array<BoxRenderable | undefined> = []
+  const paneGridJunctionTexts: Array<Array<TextRenderable | undefined>> = []
+  const paneGridBottomJunctionTexts: Array<TextRenderable | undefined> = []
+  const paneGridVerticalSegments: Array<Array<BoxRenderable | undefined>> = []
   let responsePrimaryPane: BoxRenderable | undefined
   const responseAuxiliaryPanes: Array<BoxRenderable | undefined> = []
   const responseAuxiliaryScrollboxes: Array<ScrollBoxRenderable | undefined> = []
@@ -3481,17 +3488,23 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     const visibleAgents = responseVisibleAgents()
     const paneRows = responsePaneRows()
     const showWorkflowScreen = workflowScreenActive()
+    const paneGrid = buildPaneGridModel({
+      paneRows,
+      visibleAgents,
+      focusedAgentId: focusedAgentId(),
+      split,
+      showWorkflowScreen,
+    })
 
     responseLayoutBox.flexDirection = "column"
     responseLayoutBox.gap = 0
+
+    const borderColor = (tone: PaneGridTone) => tone === "focused" ? theme.primary : theme.borderSubtle
 
     const layoutPane = (
       pane: BoxRenderable | undefined,
       footerBox: BoxRenderable | undefined,
       scrollbox: ScrollBoxRenderable | undefined,
-      agent: AgentInstance | null,
-      rowVisibleCount: number,
-      borderEdges: Array<"left" | "top" | "right" | "bottom">,
       focused: boolean,
       visible: boolean,
       showFooter: boolean,
@@ -3504,17 +3517,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       pane.flexDirection = "column"
       pane.flexGrow = visible ? 1 : 0
       pane.flexBasis = visible ? 0 : 0
-      if (!visible) {
-        pane.width = 0
-      }
-      pane.minWidth = visible && split && rowVisibleCount > 1 ? 0 : null
+      pane.width = visible ? "auto" : 0
+      pane.minWidth = visible && split ? 0 : null
       pane.maxWidth = null
       pane.paddingLeft = 0
       pane.paddingRight = 0
       pane.paddingTop = 0
       pane.paddingBottom = 0
-      pane.border = visible ? borderEdges : false
-      pane.borderColor = split && focused ? theme.primary : theme.borderSubtle
+      pane.border = false
+      pane.borderColor = theme.borderSubtle
       pane.backgroundColor = visible && split
         ? transcriptSurfacePalette(resolveTranscriptSurfaceTone(true, focused)).panel
         : defaultBackground
@@ -3527,62 +3538,150 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       footerBox?.requestRender?.()
     }
 
-    paneRows.forEach((rowSlots, rowIndex) => {
+    const applyBorderRowBox = (box: BoxRenderable | undefined, visible: boolean) => {
+      if (!box) {
+        return
+      }
+      box.visible = visible
+      box.height = visible ? 1 : 0
+      box.minHeight = visible ? 1 : 0
+      box.flexGrow = 0
+      box.flexShrink = 0
+      box.flexDirection = "row"
+      box.gap = 0
+      box.requestRender?.()
+    }
+
+    const applyHorizontalSegment = (
+      segmentBox: BoxRenderable | undefined,
+      visible: boolean,
+      tone: PaneGridTone,
+    ) => {
+      if (!segmentBox) {
+        return
+      }
+      segmentBox.visible = visible
+      segmentBox.height = 1
+      segmentBox.minHeight = 1
+      segmentBox.flexGrow = visible ? 1 : 0
+      segmentBox.flexBasis = 0
+      segmentBox.border = visible ? ["top"] : false
+      segmentBox.borderColor = borderColor(tone)
+      segmentBox.requestRender?.()
+    }
+
+    const applyVerticalSegment = (
+      segmentBox: BoxRenderable | undefined,
+      visible: boolean,
+      tone: PaneGridTone,
+    ) => {
+      if (!segmentBox) {
+        return
+      }
+      segmentBox.visible = visible
+      segmentBox.width = visible ? 1 : 0
+      segmentBox.minWidth = visible ? 1 : 0
+      segmentBox.flexGrow = 0
+      segmentBox.flexShrink = 0
+      segmentBox.border = visible ? ["left"] : false
+      segmentBox.borderColor = borderColor(tone)
+      segmentBox.requestRender?.()
+    }
+
+    const applyJunctionText = (
+      text: TextRenderable | undefined,
+      visible: boolean,
+      char: string,
+      tone: PaneGridTone,
+    ) => {
+      setTextRenderable(text, visible ? char : "", borderColor(tone))
+    }
+
+    paneGrid.rows.forEach((gridRow, rowIndex) => {
       const rowBox = responseRowBoxes[rowIndex]
       if (!rowBox) {
         return
       }
-      const paneVisible = (paneIndex: number) => (
-        paneIndex === 0
-          ? true
-          : !showWorkflowScreen && split && Boolean(visibleAgents[paneIndex])
-      )
-      const visibleRowSlots = rowSlots.filter(paneVisible)
-      const rowVisibleCount = visibleRowSlots.length
-      const panePositionByIndex = new Map(visibleRowSlots.map((paneIndex, position) => [paneIndex, position]))
-      const focusedPaneIndex = visibleAgents.findIndex((agent) => agent.id === focusedAgentId())
-      const nextVisibleRowSlots = (paneRows[rowIndex + 1] ?? []).filter(paneVisible)
-      const rowBelowVisible = nextVisibleRowSlots.length > 0
-      const rowBelowFocused = focusedPaneIndex !== -1 && nextVisibleRowSlots.includes(focusedPaneIndex)
-      rowBox.visible = rowIndex === 0 || (split && rowVisibleCount > 0)
+      const borderRow = paneGrid.borderRows[rowIndex]
+      if (borderRow) {
+        applyBorderRowBox(paneGridBorderRows[rowIndex], borderRow.visible)
+        borderRow.horizontals.forEach((segment, segmentIndex) => {
+          applyHorizontalSegment(
+            paneGridHorizontalSegments[rowIndex]?.[segmentIndex],
+            segment.visible,
+            segment.tone,
+          )
+        })
+        borderRow.junctions.forEach((junction, junctionIndex) => {
+          applyJunctionText(
+            paneGridJunctionTexts[rowIndex]?.[junctionIndex],
+            junction.visible,
+            junction.char,
+            junction.tone,
+          )
+        })
+      }
+
+      rowBox.visible = rowIndex === 0 || gridRow.visible
       rowBox.flexDirection = "row"
       rowBox.gap = 0
       rowBox.flexGrow = rowBox.visible ? 1 : 0
       rowBox.flexBasis = 0
+      rowBox.border = false
       rowBox.requestRender?.()
 
-      for (const paneIndex of rowSlots) {
-        const agent = visibleAgents[paneIndex] ?? null
-        const focused = agent?.id === focusedAgentId()
-        const panePosition = panePositionByIndex.get(paneIndex) ?? 0
-        const leftNeighborPaneIndex = visibleRowSlots[panePosition - 1]
-        const borderEdges = computeSharedPaneBorderEdges({
-          rowIndex,
-          panePosition,
-          rowVisibleCount,
-          focused: Boolean(focused),
-          leftNeighborFocused: focusedPaneIndex !== -1 && leftNeighborPaneIndex === focusedPaneIndex,
-          rowBelowVisible,
-          rowBelowFocused,
-        })
-        if (paneIndex === 0) {
+      gridRow.verticals.forEach((segment, segmentIndex) => {
+        applyVerticalSegment(
+          paneGridVerticalSegments[rowIndex]?.[segmentIndex],
+          segment.visible,
+          segment.tone,
+        )
+      })
+
+      for (const slot of gridRow.slots) {
+        if (slot.paneIndex === 0) {
           layoutPane(
             primaryPane,
             responsePrimaryFooterBox,
             transcriptScrollbox,
-            agent,
-            rowVisibleCount,
-            borderEdges,
-            Boolean(focused),
+            slot.focused,
             true,
             !showWorkflowScreen,
             theme.backgroundPanel,
           )
           if (historyLoadingBox) {
             historyLoadingBox.backgroundColor = primaryPane.backgroundColor
-            historyLoadingBox.borderColor = split && focused ? theme.primary : theme.borderSubtle
+            historyLoadingBox.borderColor = split && slot.focused ? theme.primary : theme.borderSubtle
             historyLoadingBox.requestRender?.()
           }
+          continue
+        }
+        const auxiliaryIndex = slot.paneIndex - 1
+        layoutPane(
+          responseAuxiliaryPanes[auxiliaryIndex],
+          responseAuxiliaryFooterBoxes[auxiliaryIndex],
+          responseAuxiliaryScrollboxes[auxiliaryIndex],
+          slot.focused,
+          true,
+          Boolean(slot.agentId),
+          theme.backgroundElement,
+        )
+      }
+
+      for (const paneIndex of paneRows[rowIndex] ?? []) {
+        if (gridRow.slots.some((slot) => slot.paneIndex === paneIndex)) {
+          continue
+        }
+        if (paneIndex === 0) {
+          layoutPane(
+            primaryPane,
+            responsePrimaryFooterBox,
+            transcriptScrollbox,
+            false,
+            false,
+            false,
+            theme.backgroundPanel,
+          )
           continue
         }
         const auxiliaryIndex = paneIndex - 1
@@ -3590,16 +3689,33 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
           responseAuxiliaryPanes[auxiliaryIndex],
           responseAuxiliaryFooterBoxes[auxiliaryIndex],
           responseAuxiliaryScrollboxes[auxiliaryIndex],
-          agent,
-          rowVisibleCount,
-          borderEdges,
-          Boolean(focused),
-          !showWorkflowScreen && split && Boolean(agent),
-          Boolean(agent),
+          false,
+          false,
+          false,
           theme.backgroundElement,
         )
       }
     })
+
+    const bottomBorderRow = paneGrid.borderRows[paneGrid.rows.length]
+    if (bottomBorderRow) {
+      applyBorderRowBox(paneGridBottomBorderRow, bottomBorderRow.visible)
+      bottomBorderRow.horizontals.forEach((segment, segmentIndex) => {
+        applyHorizontalSegment(
+          paneGridBottomHorizontalSegments[segmentIndex],
+          segment.visible,
+          segment.tone,
+        )
+      })
+      bottomBorderRow.junctions.forEach((junction, junctionIndex) => {
+        applyJunctionText(
+          paneGridBottomJunctionTexts[junctionIndex],
+          junction.visible,
+          junction.char,
+          junction.tone,
+        )
+      })
+    }
 
     renderSplitPaneFooters()
 
@@ -6568,6 +6684,37 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       }}
       onResponseRowBoxRef={(index, value) => {
         responseRowBoxes[index] = value
+        applyResponseLayout()
+      }}
+      onPaneGridBorderRowRef={(index, value) => {
+        paneGridBorderRows[index] = value
+        applyResponseLayout()
+      }}
+      onPaneGridBottomBorderRowRef={(value) => {
+        paneGridBottomBorderRow = value
+        applyResponseLayout()
+      }}
+      onPaneGridHorizontalSegmentRef={(rowIndex, segmentIndex, value) => {
+        paneGridHorizontalSegments[rowIndex] ??= []
+        paneGridHorizontalSegments[rowIndex][segmentIndex] = value
+        applyResponseLayout()
+      }}
+      onPaneGridBottomHorizontalSegmentRef={(segmentIndex, value) => {
+        paneGridBottomHorizontalSegments[segmentIndex] = value
+        applyResponseLayout()
+      }}
+      onPaneGridJunctionTextRef={(rowIndex, junctionIndex, value) => {
+        paneGridJunctionTexts[rowIndex] ??= []
+        paneGridJunctionTexts[rowIndex][junctionIndex] = value
+        applyResponseLayout()
+      }}
+      onPaneGridBottomJunctionTextRef={(junctionIndex, value) => {
+        paneGridBottomJunctionTexts[junctionIndex] = value
+        applyResponseLayout()
+      }}
+      onPaneGridVerticalSegmentRef={(rowIndex, segmentIndex, value) => {
+        paneGridVerticalSegments[rowIndex] ??= []
+        paneGridVerticalSegments[rowIndex][segmentIndex] = value
         applyResponseLayout()
       }}
       onResponsePrimaryPaneRef={(value) => {

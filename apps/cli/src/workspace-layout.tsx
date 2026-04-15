@@ -1,7 +1,7 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
 import { For } from "solid-js"
 
-import { PromptBorderChars, theme } from "./theme.js"
+import { PaneGridBorderChars, PromptBorderChars, theme } from "./theme.js"
 
 type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
@@ -19,6 +19,13 @@ type WorkspaceLayoutProps = {
   onResponseSurfaceMouseUp: (event: any) => void
   onResponseLayoutBoxRef: RefHandler
   onResponseRowBoxRef: IndexedRefHandler
+  onPaneGridBorderRowRef: IndexedRefHandler
+  onPaneGridBottomBorderRowRef: RefHandler
+  onPaneGridHorizontalSegmentRef: (rowIndex: number, segmentIndex: number, value: any) => void
+  onPaneGridBottomHorizontalSegmentRef: (segmentIndex: number, value: any) => void
+  onPaneGridJunctionTextRef: (rowIndex: number, junctionIndex: number, value: any) => void
+  onPaneGridBottomJunctionTextRef: (junctionIndex: number, value: any) => void
+  onPaneGridVerticalSegmentRef: (rowIndex: number, segmentIndex: number, value: any) => void
   onResponsePrimaryPaneRef: RefHandler
   onHistoryLoadingBoxRef: RefHandler
   onTranscriptScrollboxRef: RefHandler
@@ -49,6 +56,161 @@ type WorkspaceLayoutProps = {
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
+  const renderPaneSlot = (paneIndex: number | undefined) => {
+    if (paneIndex === undefined) {
+      return null
+    }
+    return paneIndex === 0
+      ? (
+          <box
+            ref={props.onResponsePrimaryPaneRef}
+            flexGrow={1}
+            flexBasis={0}
+            flexDirection="column"
+            border={false}
+            borderColor={theme.borderSubtle}
+            backgroundColor={theme.backgroundPanel}
+          >
+            <box
+              ref={props.onHistoryLoadingBoxRef}
+              flexShrink={0}
+            />
+            <scrollbox
+              ref={props.onTranscriptScrollboxRef}
+              flexGrow={1}
+              stickyScroll={true}
+              stickyStart="bottom"
+              viewportOptions={{
+                paddingRight: 0,
+              }}
+              verticalScrollbarOptions={{
+                visible: true,
+                paddingLeft: 0,
+                trackOptions: {
+                  backgroundColor: theme.backgroundElement,
+                  foregroundColor: theme.border,
+                },
+              }}
+            />
+            <box
+              ref={props.onResponsePrimaryFooterBoxRef}
+              flexShrink={0}
+              flexDirection="row"
+              gap={0}
+              overflow="hidden"
+            />
+          </box>
+        )
+      : (
+          <box
+            ref={(value) => {
+              props.onResponseAuxiliaryPaneRef(paneIndex - 1, value)
+            }}
+            width={0}
+            flexGrow={0}
+            flexBasis={0}
+            flexShrink={0}
+            flexDirection="column"
+            border={false}
+            borderColor={theme.borderSubtle}
+            backgroundColor={theme.backgroundElement}
+            paddingLeft={0}
+            paddingRight={0}
+            paddingTop={0}
+            paddingBottom={0}
+            visible={false}
+          >
+            <scrollbox
+              ref={(value) => {
+                props.onResponseAuxiliaryScrollboxRef(paneIndex - 1, value)
+              }}
+              flexGrow={1}
+              stickyScroll={true}
+              stickyStart="bottom"
+              viewportOptions={{
+                paddingRight: 0,
+              }}
+              verticalScrollbarOptions={{
+                visible: true,
+                paddingLeft: 0,
+                trackOptions: {
+                  backgroundColor: theme.backgroundElement,
+                  foregroundColor: theme.border,
+                },
+              }}
+            />
+            <box
+              ref={(value) => {
+                props.onResponseAuxiliaryFooterBoxRef(paneIndex - 1, value)
+              }}
+              flexShrink={0}
+              flexDirection="row"
+              gap={0}
+              overflow="hidden"
+            />
+          </box>
+        )
+  }
+
+  const renderBorderRow = (
+    onRowRef: (value: any) => void,
+    onHorizontalRef: (segmentIndex: number, value: any) => void,
+    onJunctionRef: (junctionIndex: number, value: any) => void,
+  ) => (
+    <box
+      ref={onRowRef}
+      height={0}
+      minHeight={0}
+      flexGrow={0}
+      flexShrink={0}
+      flexDirection="row"
+      gap={0}
+      visible={false}
+    >
+      <text ref={(value) => onJunctionRef(0, value)} fg={theme.borderSubtle}>{" "}</text>
+      <box
+        ref={(value) => onHorizontalRef(0, value)}
+        height={1}
+        minHeight={1}
+        flexGrow={1}
+        flexBasis={0}
+        border={false}
+        borderColor={theme.borderSubtle}
+        customBorderChars={PaneGridBorderChars}
+        visible={false}
+      />
+      <text ref={(value) => onJunctionRef(1, value)} fg={theme.borderSubtle}>{" "}</text>
+      <box
+        ref={(value) => onHorizontalRef(1, value)}
+        height={1}
+        minHeight={1}
+        flexGrow={1}
+        flexBasis={0}
+        border={false}
+        borderColor={theme.borderSubtle}
+        customBorderChars={PaneGridBorderChars}
+        visible={false}
+      />
+      <text ref={(value) => onJunctionRef(2, value)} fg={theme.borderSubtle}>{" "}</text>
+    </box>
+  )
+
+  const renderVerticalSegment = (rowIndex: number, segmentIndex: number) => (
+    <box
+      ref={(value) => {
+        props.onPaneGridVerticalSegmentRef(rowIndex, segmentIndex, value)
+      }}
+      width={0}
+      minWidth={0}
+      flexGrow={0}
+      flexShrink={0}
+      border={false}
+      borderColor={theme.borderSubtle}
+      customBorderChars={PaneGridBorderChars}
+      visible={false}
+    />
+  )
+
   return (
     <box
       width={props.width}
@@ -70,108 +232,40 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         >
           <For each={props.responsePaneRows()}>
             {(rowSlots, rowIndex) => (
-              <box
-                ref={(value) => {
-                  props.onResponseRowBoxRef(rowIndex(), value)
-                }}
-                flexGrow={1}
-                flexDirection="row"
-                gap={0}
-              >
-                <For each={rowSlots}>
-                  {(paneIndex) => (
-                    paneIndex === 0
-                      ? (
-                          <box
-                            ref={props.onResponsePrimaryPaneRef}
-                            flexGrow={1}
-                            flexDirection="column"
-                            border={["left"]}
-                            borderColor={theme.borderSubtle}
-                            backgroundColor={theme.backgroundPanel}
-                          >
-                            <box
-                              ref={props.onHistoryLoadingBoxRef}
-                              flexShrink={0}
-                            />
-                            <scrollbox
-                              ref={props.onTranscriptScrollboxRef}
-                              flexGrow={1}
-                              stickyScroll={true}
-                              stickyStart="bottom"
-                              viewportOptions={{
-                                paddingRight: 0,
-                              }}
-                              verticalScrollbarOptions={{
-                                visible: true,
-                                paddingLeft: 0,
-                                trackOptions: {
-                                  backgroundColor: theme.backgroundElement,
-                                  foregroundColor: theme.border,
-                                },
-                              }}
-                            />
-                            <box
-                              ref={props.onResponsePrimaryFooterBoxRef}
-                              flexShrink={0}
-                              flexDirection="row"
-                              gap={0}
-                              overflow="hidden"
-                            />
-                          </box>
-                        )
-                      : (
-                          <box
-                            ref={(value) => {
-                              props.onResponseAuxiliaryPaneRef(paneIndex - 1, value)
-                            }}
-                            width={0}
-                            flexShrink={0}
-                            flexDirection="column"
-                            border={false}
-                            borderColor={theme.borderSubtle}
-                            backgroundColor={theme.backgroundElement}
-                            paddingLeft={0}
-                            paddingRight={0}
-                            paddingTop={0}
-                            paddingBottom={0}
-                            visible={false}
-                          >
-                            <scrollbox
-                              ref={(value) => {
-                                props.onResponseAuxiliaryScrollboxRef(paneIndex - 1, value)
-                              }}
-                              flexGrow={1}
-                              stickyScroll={true}
-                              stickyStart="bottom"
-                              viewportOptions={{
-                                paddingRight: 0,
-                              }}
-                              verticalScrollbarOptions={{
-                                visible: true,
-                                paddingLeft: 0,
-                                trackOptions: {
-                                  backgroundColor: theme.backgroundElement,
-                                  foregroundColor: theme.border,
-                                },
-                              }}
-                            />
-                            <box
-                              ref={(value) => {
-                                props.onResponseAuxiliaryFooterBoxRef(paneIndex - 1, value)
-                              }}
-                              flexShrink={0}
-                              flexDirection="row"
-                              gap={0}
-                              overflow="hidden"
-                            />
-                          </box>
-                        )
-                  )}
-                </For>
-              </box>
+              <>
+                {renderBorderRow(
+                  (value) => {
+                    props.onPaneGridBorderRowRef(rowIndex(), value)
+                  },
+                  (segmentIndex, value) => {
+                    props.onPaneGridHorizontalSegmentRef(rowIndex(), segmentIndex, value)
+                  },
+                  (junctionIndex, value) => {
+                    props.onPaneGridJunctionTextRef(rowIndex(), junctionIndex, value)
+                  },
+                )}
+                <box
+                  ref={(value) => {
+                    props.onResponseRowBoxRef(rowIndex(), value)
+                  }}
+                  flexGrow={1}
+                  flexDirection="row"
+                  gap={0}
+                >
+                  {renderVerticalSegment(rowIndex(), 0)}
+                  {renderPaneSlot(rowSlots[0])}
+                  {renderVerticalSegment(rowIndex(), 1)}
+                  {renderPaneSlot(rowSlots[1])}
+                  {renderVerticalSegment(rowIndex(), 2)}
+                </box>
+              </>
             )}
           </For>
+          {renderBorderRow(
+            props.onPaneGridBottomBorderRowRef,
+            props.onPaneGridBottomHorizontalSegmentRef,
+            props.onPaneGridBottomJunctionTextRef,
+          )}
         </box>
       </box>
 

@@ -57,6 +57,12 @@ export const SplitBorder = {
   },
 }
 
+export const PaneGridBorderChars = {
+  ...EmptyBorder,
+  vertical: "│",
+  horizontal: "─",
+}
+
 export const TranscriptSeparatorBorder = {
   customBorderChars: {
     ...EmptyBorder,
