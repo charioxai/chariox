@@ -1044,8 +1044,8 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        EndSessionRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
-        ResizeTerminalRequest, UpdateSessionConfigRequest,
+        AliasSessionRequest, EndSessionRequest, LocalDaemonRequest, LocalDaemonResponse,
+        PollRuntimeNoticesRequest, ResizeTerminalRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::LaunchProviderRequest;
     use crate::session::{CreateSessionRequest, PromptSubmissionOutcome};
@@ -1285,6 +1285,56 @@ mod tests {
             Some("owned")
         );
         assert!(session_projection.get(&session_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn alias_session_uses_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::AliasSession(AliasSessionRequest {
+            session_id: session_id.clone(),
+            alias: "owned-alias".to_string(),
+        });
+        let command =
+            KernelCommand::from_local_request("owned-session-alias", None, None, &request);
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned alias path should not wait for the app lock")
+        .expect("alias update should succeed");
+
+        let LocalDaemonResponse::SessionAliased { session } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(session.id(), session_id);
+        assert_eq!(session.alias(), Some("owned-alias"));
+        assert_eq!(
+            session_projection
+                .get(&session_id)
+                .and_then(|projected| projected.alias().map(str::to_string)),
+            Some("owned-alias".to_string())
+        );
     }
 
     #[tokio::test]

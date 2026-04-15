@@ -4,6 +4,11 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-15
 
+### M4.5 session alias ownership update
+
+- Moved session alias updates onto the owned `CompatibilityRuntimeState` session store when runtime-owned state is available, with a no-app-lock regression covering alias mutation and projection refresh while the compatibility app mutex is held.
+- Verified the slice with `cargo test` in `apps/daemon`: 332 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
 ### M4.5 session-runtime ownership update
 
 - Moved session create/default-agent bootstrap and session config updates onto the owned `CompatibilityRuntimeState` session, agent, attachment, terminal, history, and projection stores when runtime-owned state is available. These session-runtime paths no longer wait for the compatibility app lock in the normal router-owned configuration, with app-lock fallback kept only for no-owned-state legacy tests.

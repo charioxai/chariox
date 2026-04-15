@@ -238,6 +238,16 @@ impl CompatibilityRuntimeOwnedState {
         Ok(config)
     }
 
+    fn alias_session(
+        &self,
+        session_id: &str,
+        alias: String,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        SessionStateOwner::new(self.session_store.clone())
+            .assign_session_alias(session_id, alias)?;
+        self.session_snapshot(session_id)
+    }
+
     fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -866,6 +876,9 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         alias: String,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.alias_session(session_id, alias);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).alias_session(session_id, alias)
         })
