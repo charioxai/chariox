@@ -373,6 +373,9 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "arroba.edit_artifact"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.write_artifact"));
     }
 
     #[tokio::test]
@@ -602,6 +605,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
             "alpha\ngamma\n"
+        );
+
+        let write_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.write_artifact",
+                    "arguments": {
+                        "path": "created.txt",
+                        "content_text": "created through arroba\n"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("write request should succeed");
+        assert_eq!(write_response.status(), StatusCode::OK);
+        let write_body = write_response
+            .into_body()
+            .collect()
+            .await
+            .expect("write body should collect")
+            .to_bytes();
+        let write_value: Value = serde_json::from_slice(&write_body).expect("write body json");
+        assert_eq!(write_value["result"]["structuredContent"]["applied"], true);
+        assert_eq!(
+            std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
+            "created through arroba\n"
         );
     }
 

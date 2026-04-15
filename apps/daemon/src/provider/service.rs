@@ -856,12 +856,13 @@ impl ProviderProcessService {
                 ),
             });
         }
+        let prompt = managed_io_prompt(prompt, run);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,
             agent_id,
             run.clone(),
-            prompt.to_string(),
+            prompt,
             attachments.to_vec(),
         )
     }
@@ -1093,6 +1094,17 @@ impl ProviderProcessService {
                 .or_else(|| run.variant().map(str::to_string)),
         }
     }
+}
+
+fn managed_io_prompt(prompt: &str, run: &RuntimeProviderRun) -> String {
+    if !run.requires_managed_io() {
+        return prompt.to_string();
+    }
+    format!(
+        "{}\n\n{}",
+        "Arroba managed I/O is enabled for this provider session. Direct filesystem write tools are unavailable. To create or overwrite text files, use the runtime MCP tool `arroba.write_artifact` with a workspace-relative `path` and `content_text`. To modify existing text files, first use `arroba.read_artifact`, then use `arroba.edit_artifact` with the returned `snapshot_id`, `old_text` or `range`, and `new_text`. If a managed edit is rejected, reread the artifact, reconcile with current content, and retry through the Arroba tool.",
+        prompt
+    )
 }
 
 impl Default for ProviderProcessService {

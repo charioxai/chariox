@@ -1,10 +1,11 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::io::coordinator::{ArtifactEditCoordinator, ArtifactReadRequest, ArtifactWriteRequest};
 use crate::io::types::{
-    AgentEditIntent, ArtifactContent, ArtifactDomainKind, ArtifactEditError, ArtifactReadResult,
-    EditResult, WorkspaceIdentity,
+    AgentEditIntent, AgentEditOperation, ArtifactContent, ArtifactDomainKind, ArtifactEditError,
+    ArtifactReadResult, EditResult, WorkspaceIdentity,
 };
 
 #[derive(Debug, Clone)]
@@ -55,7 +56,15 @@ impl ManagedFileIo {
         request: ManagedFileWriteRequest,
     ) -> Result<EditResult, ArtifactEditError> {
         let full_path = resolve_workspace_path(&request.workspace_root, &request.intent.path)?;
-        let observed_content = read_content(&full_path, request.domain)?;
+        let allow_missing = matches!(
+            request.intent.operation,
+            AgentEditOperation::WriteArtifact { .. }
+        );
+        let observed_content = if allow_missing {
+            read_content_or_empty(&full_path, request.domain)?
+        } else {
+            read_content(&full_path, request.domain)?
+        };
         coordinator.read_artifact(ArtifactReadRequest {
             workspace_identity: request.workspace_identity.clone(),
             path: request.intent.path.clone(),
@@ -67,12 +76,30 @@ impl ManagedFileIo {
             workspace_identity: request.workspace_identity,
             intent: request.intent,
         })?;
-        let latest_content = read_content(&full_path, request.domain)?;
+        let latest_content = if allow_missing {
+            read_content_or_empty(&full_path, request.domain)?
+        } else {
+            read_content(&full_path, request.domain)?
+        };
         if latest_content != observed_content {
             return Err(ArtifactEditError::ExternalChangeDuringApply { path: full_path });
         }
         write_content(&full_path, &prepared.content)?;
         Ok(coordinator.commit_prepared_edit(prepared))
+    }
+}
+
+fn read_content_or_empty(
+    path: &Path,
+    domain: ArtifactDomainKind,
+) -> Result<ArtifactContent, ArtifactEditError> {
+    match fs::read(path) {
+        Ok(bytes) => content_from_bytes(path, domain, bytes),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(empty_content(domain)),
+        Err(error) => Err(ArtifactEditError::Filesystem {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
     }
 }
 
@@ -84,6 +111,14 @@ fn read_content(
         path: path.to_path_buf(),
         message: error.to_string(),
     })?;
+    content_from_bytes(path, domain, bytes)
+}
+
+fn content_from_bytes(
+    _path: &Path,
+    domain: ArtifactDomainKind,
+    bytes: Vec<u8>,
+) -> Result<ArtifactContent, ArtifactEditError> {
     match domain {
         ArtifactDomainKind::TextDocument | ArtifactDomainKind::StructuredDocument => {
             let text =
@@ -96,11 +131,26 @@ fn read_content(
     }
 }
 
+fn empty_content(domain: ArtifactDomainKind) -> ArtifactContent {
+    match domain {
+        ArtifactDomainKind::TextDocument | ArtifactDomainKind::StructuredDocument => {
+            ArtifactContent::Text(String::new())
+        }
+        ArtifactDomainKind::OpaqueBlob => ArtifactContent::Bytes(Vec::new()),
+    }
+}
+
 fn write_content(path: &Path, content: &ArtifactContent) -> Result<(), ArtifactEditError> {
     let bytes = match content {
         ArtifactContent::Text(text) => text.as_bytes().to_vec(),
         ArtifactContent::Bytes(bytes) => bytes.clone(),
     };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ArtifactEditError::Filesystem {
+            path: parent.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    }
     fs::write(path, bytes).map_err(|error| ArtifactEditError::Filesystem {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -283,5 +333,34 @@ mod tests {
             result,
             Err(ArtifactEditError::InvalidOperation { .. })
         ));
+    }
+
+    #[test]
+    fn managed_file_write_creates_new_text_file() {
+        let root = test_root("create");
+        let path = root.join("nested").join("created.txt");
+        let mut coordinator = ArtifactEditCoordinator::new();
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::TextDocument,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("nested/created.txt"),
+                    snapshot_id: None,
+                    operation: AgentEditOperation::WriteArtifact {
+                        content: ArtifactContent::Text("created through arroba\n".to_string()),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(result, EditResult::Applied { .. }));
+        assert_eq!(
+            fs::read_to_string(&path).expect("created file should read"),
+            "created through arroba\n"
+        );
     }
 }

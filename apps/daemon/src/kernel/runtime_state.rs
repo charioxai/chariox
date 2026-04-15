@@ -6794,6 +6794,7 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
             ) {
                 return self
                     .dispatch_managed_io_runtime_tool_call(
@@ -6939,6 +6940,39 @@ impl KernelRuntimeState {
                             path: PathBuf::from(args.path),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
                             operation,
+                        },
+                    },
+                );
+                Ok(managed_io_edit_result(result))
+            }
+            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedWriteArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_write_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_write_artifact",
+                        message: "managed write currently supports only text artifacts".to_string(),
+                    });
+                }
+                let result = crate::io::ManagedFileIo::apply_edit(
+                    &mut coordinator,
+                    crate::io::ManagedFileWriteRequest {
+                        workspace_identity,
+                        workspace_root,
+                        domain,
+                        intent: crate::io::AgentEditIntent {
+                            path: PathBuf::from(args.path),
+                            snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
+                            operation: crate::io::AgentEditOperation::WriteArtifact {
+                                content: crate::io::ArtifactContent::Text(args.content_text),
+                            },
                         },
                     },
                 );

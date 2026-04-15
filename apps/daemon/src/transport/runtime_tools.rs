@@ -15,6 +15,8 @@ pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
 pub const READ_ARTIFACT_TOOL: &str = "arroba.read_artifact";
 #[allow(dead_code)]
 pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
+#[allow(dead_code)]
+pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -90,6 +92,17 @@ pub struct ManagedEditArtifactArgs {
     pub domain: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedWriteArtifactArgs {
+    pub path: String,
+    pub content_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub workflow_output_json: String,
@@ -136,6 +149,24 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         },
                         "additionalProperties": false
                     },
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: WRITE_ARTIFACT_TOOL.to_string(),
+            description: "Create or overwrite a workspace-relative text artifact through Arroba managed I/O. Use this when creating a new file or replacing a whole file; use arroba.edit_artifact for smaller edits.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path", "content_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content_text": {"type": "string"},
+                    "snapshot_id": {"type": "string"},
                     "domain": {
                         "type": "string",
                         "enum": ["text"]
@@ -265,6 +296,7 @@ mod managed_io_tests {
         let specs = managed_io_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
     }
 
     #[test]
@@ -280,5 +312,17 @@ mod managed_io_tests {
         assert_eq!(args.path, "src/lib.rs");
         assert_eq!(args.old_text.as_deref(), Some("before"));
         assert_eq!(args.new_text, "after");
+    }
+
+    #[test]
+    fn managed_write_args_accept_text_content_shape() {
+        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs",
+            "content_text": "hello"
+        }))
+        .expect("managed write args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+        assert_eq!(args.content_text, "hello");
     }
 }

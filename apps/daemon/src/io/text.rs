@@ -71,9 +71,19 @@ impl TextDocumentDomain {
                     new_text: new_text.clone(),
                 })
             }
-            AgentEditOperation::WriteArtifact { .. } => Err(ArtifactEditError::InvalidOperation {
-                message: "raw artifact writes are not supported by the text domain yet".to_string(),
-            }),
+            AgentEditOperation::WriteArtifact { content } => {
+                let new_text =
+                    content
+                        .as_text()
+                        .ok_or_else(|| ArtifactEditError::UnsupportedDomain {
+                            domain: crate::io::types::ArtifactDomainKind::TextDocument,
+                        })?;
+                Ok(TextEditPlan {
+                    range: TextRange::new(0, base.len()),
+                    old_text: base.to_string(),
+                    new_text: new_text.to_string(),
+                })
+            }
         }
     }
 

@@ -303,8 +303,8 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: initial artifact identity, version, snapshot, workspace identity, edit intent, result, warning, and conflict types.
 - Landed: in-memory artifact edit coordinator foundation with managed reads, synchronous text edit application, stale non-overlap rebase, and overlap rejection.
 - Landed: filesystem-backed managed read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
-- Landed: runtime tool argument/schema definitions for managed artifact read/edit tools.
-- Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit tools backed by the provider run workspace root.
+- Landed: runtime tool argument/schema definitions for managed artifact read/edit/write tools.
+- Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit/write tools backed by the provider run workspace root.
 - Landed: provider launch contract for required managed-I/O writes.
 - Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
 - Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct file writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode.
