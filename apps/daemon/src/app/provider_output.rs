@@ -41,6 +41,7 @@ pub(crate) struct ProviderOutputPumpRequest<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) provider_run_id: &'a str,
     pub(crate) recipient_attachment_ids: Vec<String>,
+    pub(crate) initial_liveness_already_checked: bool,
 }
 
 pub(crate) fn pump_terminal_output_for_attachment(
@@ -64,6 +65,7 @@ pub(crate) fn pump_terminal_output_for_attachment(
             session_id,
             provider_run_id: &provider_run_id,
             recipient_attachment_ids,
+            initial_liveness_already_checked: false,
         })?;
     }
     Ok(app.terminal.drain_output_records(session_id, attachment_id))
@@ -85,9 +87,10 @@ impl<'a> ProviderOutputPump<'a> {
         request: ProviderOutputPumpRequest<'_>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         self.context.reap_structured_prompt_jobs();
-        if self
-            .context
-            .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
+        if !request.initial_liveness_already_checked
+            && self
+                .context
+                .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
         {
             return Ok(Vec::new());
         }

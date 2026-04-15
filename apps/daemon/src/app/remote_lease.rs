@@ -508,6 +508,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     session_id: &leased_agent.backing_session_id,
                     provider_run_id: &provider_run_id,
                     recipient_attachment_ids: vec![leased_agent.backing_attachment_id.clone()],
+                    initial_liveness_already_checked: false,
                 },
             )?;
             if let Some(event) =

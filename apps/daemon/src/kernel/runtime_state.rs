@@ -1585,16 +1585,22 @@ impl CompatibilityRuntimeState {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
-        self.with_app_mut(|app| {
-            crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
-                crate::app::provider_output::ProviderOutputPumpRequest {
-                    session_id,
-                    provider_run_id,
-                    recipient_attachment_ids,
-                },
-            )
-        })
-        .await?;
+        if !self
+            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .await?
+        {
+            self.with_app_mut(|app| {
+                crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
+                    crate::app::provider_output::ProviderOutputPumpRequest {
+                        session_id,
+                        provider_run_id,
+                        recipient_attachment_ids,
+                        initial_liveness_already_checked: true,
+                    },
+                )
+            })
+            .await?;
+        }
         let session = if let Some(owned) = &self.owned {
             owned.session_snapshot(session_id).ok()
         } else {

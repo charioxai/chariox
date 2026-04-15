@@ -559,6 +559,7 @@ impl DaemonApp {
                         session_id: session.id(),
                         provider_run_id: &provider_run_id,
                         recipient_attachment_ids: recipient_attachment_ids.clone(),
+                        initial_liveness_already_checked: false,
                     })
                 {
                     crate::logging::warn_with_fields(

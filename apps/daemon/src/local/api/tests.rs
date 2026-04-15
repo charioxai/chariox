@@ -172,6 +172,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
                 session_id: session.id(),
                 provider_run_id: &requested_run_id,
                 recipient_attachment_ids,
+                initial_liveness_already_checked: false,
             })
             .expect("requested run pump should drain all finished structured jobs");
         (background_run_id, requested_records)

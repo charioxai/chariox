@@ -104,6 +104,7 @@ impl TransportService {
             session_id,
             provider_run_id,
             recipient_attachment_ids,
+            initial_liveness_already_checked: false,
         })
     }
 
