@@ -447,6 +447,48 @@ impl CompatibilityRuntimeOwnedState {
         }
     }
 
+    fn reconcile_provider_run_liveness_provider_phase(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        process_running: Option<bool>,
+    ) -> Result<Option<OwnedProviderRunExit>, DaemonError> {
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
+        let reconciliation = self.provider_store.reconcile_run_liveness_provider_only(
+            session_id,
+            provider_run_id,
+            process_running,
+        )?;
+        match reconciliation {
+            crate::provider::ProviderRunLivenessReconciliation::AlreadyEnded(run) => {
+                self.clear_active_provider_run_session_pointer(session_id, provider_run_id)?;
+                self.provider_run_projection.update(run.clone());
+                Ok(Some(OwnedProviderRunExit {
+                    ended_run: run,
+                    agent_id,
+                    already_ended: true,
+                }))
+            }
+            crate::provider::ProviderRunLivenessReconciliation::NewlyEnded(run) => {
+                self.clear_active_provider_run_session_pointer(session_id, provider_run_id)?;
+                self.provider_run_projection.update(run.clone());
+                Ok(Some(OwnedProviderRunExit {
+                    ended_run: run,
+                    agent_id,
+                    already_ended: false,
+                }))
+            }
+            crate::provider::ProviderRunLivenessReconciliation::ExternalEndpoint(_)
+            | crate::provider::ProviderRunLivenessReconciliation::StillRunning(_) => Ok(None),
+        }
+    }
+
     fn record_notice(
         &self,
         session_id: &str,
@@ -497,6 +539,12 @@ impl CompatibilityRuntimeOwnedState {
             self.history_projection.append(entry);
         }
     }
+}
+
+struct OwnedProviderRunExit {
+    ended_run: crate::provider::RuntimeProviderRun,
+    agent_id: String,
+    already_ended: bool,
 }
 
 impl CompatibilityRuntimeState {
@@ -853,18 +901,94 @@ impl CompatibilityRuntimeState {
         .await
     }
 
+    async fn reconcile_provider_run_exit(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(owned) = &self.owned else {
+            return self
+                .with_app_mut(|app| {
+                    crate::app::ProviderRunLivenessRuntime::new(app)
+                        .reconcile_provider_run_exit(session_id, provider_run_id)
+                })
+                .await;
+        };
+
+        if let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
+            session_id,
+            provider_run_id,
+            None,
+        )? {
+            let (_, process_key) = self
+                .with_app_mut(|app| app.remove_pty_process_for_run(provider_run_id))
+                .await
+                .unwrap_or((false, None));
+            owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+            return Ok(exit.already_ended);
+        }
+
+        let process_running = self
+            .with_app_mut(|app| app.poll_provider_pty_process_running_for_runtime(provider_run_id))
+            .await?;
+        let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
+            session_id,
+            provider_run_id,
+            Some(process_running),
+        )?
+        else {
+            return Ok(false);
+        };
+        let (_, process_key) = self
+            .with_app_mut(|app| app.remove_pty_process_for_run(provider_run_id))
+            .await
+            .unwrap_or((false, None));
+        owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+        if exit.already_ended {
+            return Ok(true);
+        }
+
+        let session_outcome = self
+            .with_app_mut(|app| {
+                app.settle_provider_run_exit_for_runtime(
+                    session_id,
+                    provider_run_id,
+                    &exit.agent_id,
+                )
+            })
+            .await?;
+        let recipients = owned
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        owned.record_notice(
+            session_id,
+            Some(provider_run_id),
+            recipients,
+            format!(
+                "Provider run `{}` for `{}` ended unexpectedly. {}",
+                provider_run_id,
+                exit.ended_run.provider(),
+                if session_outcome.had_active_prompt {
+                    if session_outcome.started_next_prompt {
+                        "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
+                    } else {
+                        "The active prompt was closed without starting the queued backlog."
+                    }
+                } else {
+                    "No active prompt was running."
+                }
+            ),
+        );
+        Ok(true)
+    }
+
     async fn enqueue_prompt_dispatch(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
         if let Some(owned) = &self.owned {
             let _ = self
-                .with_app_mut(|app| {
-                    crate::app::ProviderRunLivenessRuntime::new(app).reconcile_provider_run_exit(
-                        &dispatch.session_id,
-                        &dispatch.provider_run_id,
-                    )
-                })
+                .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
             owned.echo_prompt_to_other_attachments(
                 &dispatch.session_id,
@@ -1000,12 +1124,10 @@ impl CompatibilityRuntimeState {
         dispatch: &crate::app::KernelPromptAbortDispatch,
     ) -> Result<(), DaemonError> {
         if let Some(owned) = &self.owned {
-            self.with_app_mut(|app| {
-                app.reap_structured_prompt_jobs();
-                crate::app::ProviderRunLivenessRuntime::new(app)
-                    .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
-            })
-            .await?;
+            self.with_app_mut(|app| app.reap_structured_prompt_jobs())
+                .await;
+            self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
+                .await?;
             let provider_run = owned
                 .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
             if provider_run.state() != crate::provider::ProviderRunState::Running {

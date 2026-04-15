@@ -310,6 +310,12 @@ struct ProviderRunExitSessionOutcome {
     started_next_prompt: bool,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderRunExitSessionSummary {
+    pub(crate) had_active_prompt: bool,
+    pub(crate) started_next_prompt: bool,
+}
+
 struct ProviderRunLivenessProcesses;
 
 impl ProviderRunLivenessProcesses {
@@ -849,6 +855,33 @@ impl DaemonApp {
         let process_key = self.pty.process_key(provider_run_id).ok();
         let removed = self.pty.remove_process(provider_run_id)?;
         Ok((removed, process_key))
+    }
+
+    pub(crate) fn poll_provider_pty_process_running_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        ProviderRunLivenessProcesses::poll_process_running(self, provider_run_id)
+    }
+
+    pub(crate) fn settle_provider_run_exit_for_runtime(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+    ) -> Result<ProviderRunExitSessionSummary, DaemonError> {
+        let outcome = ProviderRunLivenessOutcome {
+            ended_run: self.providers.get_run(provider_run_id)?,
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.to_string(),
+            transition: ProviderRunLivenessTransition::UnexpectedExit,
+        };
+        let outcome = ProviderRunLivenessSessionEffects::apply_provider_exit(self, &outcome)?;
+        Ok(ProviderRunExitSessionSummary {
+            had_active_prompt: outcome.had_active_prompt,
+            started_next_prompt: outcome.started_next_prompt,
+        })
     }
 
     pub(crate) fn finish_provider_launch(
