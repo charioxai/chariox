@@ -673,7 +673,7 @@ test("formatToolTranscriptUpdate summarizes managed I/O diffs", () => {
   assert.equal(
     formatToolTranscriptUpdate({
       id: "tool-managed-1",
-      tool: "arroba.edit_artifact",
+      tool: "arroba.apply_patch",
       status: "completed",
       output,
     }),
@@ -686,7 +686,7 @@ test("formatToolTranscriptUpdate summarizes managed I/O diffs", () => {
 
   assert.deepEqual(readApplyPatchFiles({
     id: "tool-managed-1",
-    tool: "arroba.edit_artifact",
+    tool: "arroba.apply_patch",
     status: "completed",
     output,
   }), [

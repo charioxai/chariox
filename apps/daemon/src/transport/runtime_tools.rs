@@ -16,6 +16,8 @@ pub const READ_ARTIFACT_TOOL: &str = "arroba.read_artifact";
 #[allow(dead_code)]
 pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
 #[allow(dead_code)]
+pub const APPLY_PATCH_TOOL: &str = "arroba.apply_patch";
+#[allow(dead_code)]
 pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +105,14 @@ pub struct ManagedWriteArtifactArgs {
     pub domain: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedApplyPatchArgs {
+    pub patch_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub workflow_output_json: String,
@@ -149,6 +159,22 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         },
                         "additionalProperties": false
                     },
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: APPLY_PATCH_TOOL.to_string(),
+            description: "Apply an apply_patch-style text patch through Arroba managed I/O. Supports add and update hunks with exact old-text context. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["patch_text"],
+                "properties": {
+                    "patch_text": {"type": "string"},
                     "domain": {
                         "type": "string",
                         "enum": ["text"]
@@ -296,6 +322,7 @@ mod managed_io_tests {
         let specs = managed_io_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
         assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
     }
 
@@ -324,5 +351,17 @@ mod managed_io_tests {
 
         assert_eq!(args.path, "src/lib.rs");
         assert_eq!(args.content_text, "hello");
+    }
+
+    #[test]
+    fn managed_apply_patch_args_accept_patch_text_shape() {
+        let args = serde_json::from_value::<ManagedApplyPatchArgs>(serde_json::json!({
+            "patch_text": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch",
+            "domain": "text"
+        }))
+        .expect("managed apply patch args should parse");
+
+        assert!(args.patch_text.contains("*** Begin Patch"));
+        assert_eq!(args.domain.as_deref(), Some("text"));
     }
 }

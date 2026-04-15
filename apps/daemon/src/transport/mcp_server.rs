@@ -375,6 +375,9 @@ mod tests {
             .any(|tool| tool["name"] == "arroba.edit_artifact"));
         assert!(tools
             .iter()
+            .any(|tool| tool["name"] == "arroba.apply_patch"));
+        assert!(tools
+            .iter()
             .any(|tool| tool["name"] == "arroba.write_artifact"));
     }
 
@@ -617,6 +620,41 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
             "alpha\ngamma\n"
+        );
+
+        let patch_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.apply_patch",
+                    "arguments": {
+                        "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n@@\n alpha\n-gamma\n+delta\n*** End Patch"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("patch request should succeed");
+        assert_eq!(patch_response.status(), StatusCode::OK);
+        let patch_body = patch_response
+            .into_body()
+            .collect()
+            .await
+            .expect("patch body should collect")
+            .to_bytes();
+        let patch_value: Value = serde_json::from_slice(&patch_body).expect("patch body json");
+        assert_eq!(patch_value["result"]["structuredContent"]["applied"], true);
+        assert!(patch_value["result"]["structuredContent"]["change"]["diff"]
+            .as_str()
+            .expect("patch diff should be present")
+            .contains("+delta"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
+            "alpha\ndelta\n"
         );
 
         let write_response = handle_json_rpc_value(

@@ -135,14 +135,7 @@ impl KernelRuntimeOwnedState {
             .working_directory()
             .cloned()
             .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
-        let identity = crate::io::WorkspaceIdentity {
-            vcs_provider: None,
-            repo_id: None,
-            repo_url: None,
-            branch: None,
-            head_commit: None,
-            worktree_root_fingerprint: workspace_root.to_string_lossy().to_string(),
-        };
+        let identity = workspace_identity_for_root(&workspace_root);
         Ok((workspace_root, identity))
     }
 
@@ -6794,6 +6787,7 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::APPLY_PATCH_TOOL
                     | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
             ) {
                 return self
@@ -6957,6 +6951,32 @@ impl KernelRuntimeState {
                     },
                 ))
             }
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedApplyPatchArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_apply_patch",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_apply_patch",
+                        message: "managed apply_patch currently supports only text artifacts"
+                            .to_string(),
+                    });
+                }
+                let operations = parse_managed_apply_patch(&args.patch_text)?;
+                apply_managed_patch_operations(
+                    &mut coordinator,
+                    workspace_identity,
+                    workspace_root.clone(),
+                    domain,
+                    operations,
+                )
+            }
             crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::ManagedWriteArtifactArgs,
@@ -7069,6 +7089,18 @@ struct ManagedIoTextSnapshot {
     text: String,
 }
 
+enum ManagedPatchOperation {
+    Add {
+        path: PathBuf,
+        content: String,
+    },
+    Update {
+        path: PathBuf,
+        old_text: String,
+        new_text: String,
+    },
+}
+
 fn managed_io_edit_result(
     result: crate::io::EditResult,
     change: ManagedIoChangeContext,
@@ -7112,6 +7144,190 @@ fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
         result,
         crate::io::EditResult::Applied { .. } | crate::io::EditResult::AppliedWithWarning { .. }
     )
+}
+
+fn parse_managed_apply_patch(patch_text: &str) -> Result<Vec<ManagedPatchOperation>, DaemonError> {
+    let lines = patch_text.lines().collect::<Vec<_>>();
+    if lines.first().map(|line| line.trim()) != Some("*** Begin Patch")
+        || lines.last().map(|line| line.trim()) != Some("*** End Patch")
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_apply_patch",
+            message: "patch_text must use the apply_patch envelope".to_string(),
+        });
+    }
+    let mut operations = Vec::new();
+    let mut index = 1usize;
+    while index + 1 < lines.len() {
+        let line = lines[index];
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            index += 1;
+            let mut body = Vec::new();
+            while index < lines.len() && !lines[index].starts_with("*** ") {
+                let line = lines[index];
+                body.push(line.strip_prefix('+').unwrap_or(line).to_string());
+                index += 1;
+            }
+            operations.push(ManagedPatchOperation::Add {
+                path: PathBuf::from(path.trim()),
+                content: join_patch_lines(&body),
+            });
+            continue;
+        }
+        if line.starts_with("*** Delete File: ") || line.starts_with("*** Move to: ") {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_apply_patch",
+                message: "managed apply_patch currently supports add and update hunks; delete and move require dedicated managed operations".to_string(),
+            });
+        }
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            index += 1;
+            if index < lines.len() && lines[index].starts_with("*** Move to: ") {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_apply_patch",
+                    message: "managed apply_patch move hunks are not supported yet".to_string(),
+                });
+            }
+            let mut old_lines = Vec::new();
+            let mut new_lines = Vec::new();
+            while index < lines.len() && !lines[index].starts_with("*** ") {
+                let line = lines[index];
+                if line.starts_with("@@") || line.starts_with("\\") {
+                    index += 1;
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix('-') {
+                    old_lines.push(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix('+') {
+                    new_lines.push(rest.to_string());
+                } else {
+                    let rest = line.strip_prefix(' ').unwrap_or(line);
+                    old_lines.push(rest.to_string());
+                    new_lines.push(rest.to_string());
+                }
+                index += 1;
+            }
+            if old_lines.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_apply_patch",
+                    message: format!("update hunk for `{}` has no old text", path.trim()),
+                });
+            }
+            operations.push(ManagedPatchOperation::Update {
+                path: PathBuf::from(path.trim()),
+                old_text: join_patch_lines(&old_lines),
+                new_text: join_patch_lines(&new_lines),
+            });
+            continue;
+        }
+        if line.trim().is_empty() {
+            index += 1;
+            continue;
+        }
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_apply_patch",
+            message: format!("unsupported patch line `{line}`"),
+        });
+    }
+    if operations.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "runtime_tool_apply_patch",
+            message: "patch_text did not contain any supported file operations".to_string(),
+        });
+    }
+    Ok(operations)
+}
+
+fn join_patch_lines(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+fn apply_managed_patch_operations(
+    coordinator: &mut crate::io::ArtifactEditCoordinator,
+    workspace_identity: crate::io::WorkspaceIdentity,
+    workspace_root: PathBuf,
+    domain: crate::io::ArtifactDomainKind,
+    operations: Vec<ManagedPatchOperation>,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let mut changes = Vec::new();
+    for operation in operations {
+        let (path, edit_operation, allow_missing_before) = match operation {
+            ManagedPatchOperation::Add { path, content } => (
+                path,
+                crate::io::AgentEditOperation::WriteArtifact {
+                    content: crate::io::ArtifactContent::Text(content),
+                },
+                true,
+            ),
+            ManagedPatchOperation::Update {
+                path,
+                old_text,
+                new_text,
+            } => (
+                path,
+                crate::io::AgentEditOperation::ReplaceText { old_text, new_text },
+                false,
+            ),
+        };
+        let before = managed_io_text_for_diff(&workspace_root, &path, allow_missing_before);
+        let result = crate::io::ManagedFileIo::apply_edit(
+            coordinator,
+            crate::io::ManagedFileWriteRequest {
+                workspace_identity: workspace_identity.clone(),
+                workspace_root: workspace_root.clone(),
+                domain,
+                intent: crate::io::AgentEditIntent {
+                    path: path.clone(),
+                    snapshot_id: None,
+                    operation: edit_operation,
+                },
+            },
+        );
+        if !managed_io_result_applied(&result) {
+            let mut failed = managed_io_edit_result(
+                result,
+                ManagedIoChangeContext {
+                    path,
+                    before,
+                    after: None,
+                },
+            );
+            if !changes.is_empty() {
+                failed.payload["partial_applied"] = serde_json::Value::Bool(true);
+                failed.payload["changes"] = serde_json::Value::Array(changes);
+            }
+            return Ok(failed);
+        }
+        let after = managed_io_text_for_diff(&workspace_root, &path, true);
+        let mut change_payload = serde_json::json!({});
+        add_managed_io_change_payload(
+            &mut change_payload,
+            ManagedIoChangeContext {
+                path: path.clone(),
+                before,
+                after,
+            },
+        );
+        if let Some(change) = change_payload.get("change") {
+            changes.push(change.clone());
+        }
+    }
+    let mut payload = serde_json::json!({
+        "applied": true,
+        "changes": changes,
+    });
+    if changes.len() == 1 {
+        payload["change"] = changes[0].clone();
+        if let Some(path) = changes[0].get("path").cloned() {
+            payload["path"] = path;
+        }
+    }
+    Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
 }
 
 fn add_managed_io_change_payload(payload: &mut serde_json::Value, change: ManagedIoChangeContext) {
@@ -7158,12 +7374,7 @@ fn managed_io_unified_diff(
     lines.push(format!("+++ b/{normalized_path}"));
     let before_lines = diff_lines(&before.text);
     let after_lines = diff_lines(&after.text);
-    lines.push(format!(
-        "@@ -1,{} +1,{} @@",
-        before_lines.len(),
-        after_lines.len()
-    ));
-    lines.extend(managed_io_diff_body(&before_lines, &after_lines));
+    lines.extend(managed_io_diff_hunks(&before_lines, &after_lines));
     let mut text = lines.join("\n");
     let mut truncated = false;
     if text.len() > MANAGED_IO_MAX_DIFF_BYTES {
@@ -7183,32 +7394,114 @@ fn diff_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn managed_io_diff_body(before: &[&str], after: &[&str]) -> Vec<String> {
+#[derive(Clone, Copy)]
+enum ManagedIoDiffOp<'a> {
+    Context(&'a str),
+    Remove(&'a str),
+    Add(&'a str),
+}
+
+fn managed_io_diff_ops<'a>(
+    before: &'a [&'a str],
+    after: &'a [&'a str],
+) -> Vec<ManagedIoDiffOp<'a>> {
     let lcs = managed_io_lcs_table(before, after);
-    let mut body = Vec::new();
+    let mut ops = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
     while i < before.len() && j < after.len() {
         if before[i] == after[j] {
-            body.push(format!(" {}", before[i]));
+            ops.push(ManagedIoDiffOp::Context(before[i]));
             i += 1;
             j += 1;
         } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-            body.push(format!("-{}", before[i]));
+            ops.push(ManagedIoDiffOp::Remove(before[i]));
             i += 1;
         } else {
-            body.push(format!("+{}", after[j]));
+            ops.push(ManagedIoDiffOp::Add(after[j]));
             j += 1;
         }
     }
     while i < before.len() {
-        body.push(format!("-{}", before[i]));
+        ops.push(ManagedIoDiffOp::Remove(before[i]));
         i += 1;
     }
     while j < after.len() {
-        body.push(format!("+{}", after[j]));
+        ops.push(ManagedIoDiffOp::Add(after[j]));
         j += 1;
     }
-    body
+    ops
+}
+
+fn managed_io_diff_hunks(before: &[&str], after: &[&str]) -> Vec<String> {
+    const CONTEXT: usize = 3;
+    let ops = managed_io_diff_ops(before, after);
+    if !ops
+        .iter()
+        .any(|op| matches!(op, ManagedIoDiffOp::Remove(_) | ManagedIoDiffOp::Add(_)))
+    {
+        return vec![format!("@@ -1,{} +1,{} @@", before.len(), after.len())];
+    }
+
+    let mut old_positions = Vec::with_capacity(ops.len());
+    let mut new_positions = Vec::with_capacity(ops.len());
+    let (mut old_line, mut new_line) = (1usize, 1usize);
+    for op in &ops {
+        old_positions.push(old_line);
+        new_positions.push(new_line);
+        match op {
+            ManagedIoDiffOp::Context(_) => {
+                old_line += 1;
+                new_line += 1;
+            }
+            ManagedIoDiffOp::Remove(_) => old_line += 1,
+            ManagedIoDiffOp::Add(_) => new_line += 1,
+        }
+    }
+
+    let changed_indices = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, op)| {
+            matches!(op, ManagedIoDiffOp::Remove(_) | ManagedIoDiffOp::Add(_)).then_some(idx)
+        })
+        .collect::<Vec<_>>();
+    let mut groups = Vec::new();
+    for idx in changed_indices {
+        let start = idx.saturating_sub(CONTEXT);
+        let end = (idx + CONTEXT + 1).min(ops.len());
+        if let Some((_, current_end)) = groups.last_mut() {
+            if start <= *current_end {
+                *current_end = (*current_end).max(end);
+                continue;
+            }
+        }
+        groups.push((start, end));
+    }
+
+    let mut lines = Vec::new();
+    for (start, end) in groups {
+        let hunk_ops = &ops[start..end];
+        let old_start = old_positions[start];
+        let new_start = new_positions[start];
+        let old_count = hunk_ops
+            .iter()
+            .filter(|op| !matches!(op, ManagedIoDiffOp::Add(_)))
+            .count();
+        let new_count = hunk_ops
+            .iter()
+            .filter(|op| !matches!(op, ManagedIoDiffOp::Remove(_)))
+            .count();
+        lines.push(format!(
+            "@@ -{},{} +{},{} @@",
+            old_start, old_count, new_start, new_count
+        ));
+        lines.extend(hunk_ops.iter().map(|op| match op {
+            ManagedIoDiffOp::Context(line) => format!(" {line}"),
+            ManagedIoDiffOp::Remove(line) => format!("-{line}"),
+            ManagedIoDiffOp::Add(line) => format!("+{line}"),
+        }));
+    }
+    lines
 }
 
 fn managed_io_lcs_table(before: &[&str], after: &[&str]) -> Vec<Vec<usize>> {
@@ -7261,6 +7554,59 @@ fn managed_io_diff_workspace_path(workspace_root: &PathBuf, path: &PathBuf) -> O
         }
     }
     Some(workspace_root.join(relative))
+}
+
+fn workspace_identity_for_root(workspace_root: &PathBuf) -> crate::io::WorkspaceIdentity {
+    let fingerprint = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.clone())
+        .to_string_lossy()
+        .to_string();
+    let git_root = git_output(workspace_root, &["rev-parse", "--show-toplevel"]);
+    let Some(git_root) = git_root else {
+        return crate::io::WorkspaceIdentity::local(fingerprint);
+    };
+    let normalized_git_root = PathBuf::from(git_root.trim())
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(git_root.trim()))
+        .to_string_lossy()
+        .to_string();
+    crate::io::WorkspaceIdentity {
+        vcs_provider: Some("git".to_string()),
+        repo_id: None,
+        repo_url: git_output(workspace_root, &["config", "--get", "remote.origin.url"])
+            .and_then(|value| non_empty_owned(value.trim())),
+        branch: git_output(workspace_root, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .and_then(|value| non_empty_owned(value.trim()))
+            .map(|branch| {
+                if branch == "HEAD" {
+                    "detached".to_string()
+                } else {
+                    branch
+                }
+            }),
+        head_commit: git_output(workspace_root, &["rev-parse", "HEAD"])
+            .and_then(|value| non_empty_owned(value.trim())),
+        worktree_root_fingerprint: normalized_git_root,
+    }
+}
+
+fn git_output(workspace_root: &PathBuf, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn non_empty_owned(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.trim().to_string())
 }
 
 fn managed_io_warning_payload(warning: crate::io::ArtifactEditWarning) -> serde_json::Value {

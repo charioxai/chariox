@@ -409,6 +409,15 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
     if (!isObjectValue(normalized)) {
       continue
     }
+    const changes = normalized.changes
+    if (Array.isArray(changes)) {
+      const files = changes
+        .map(readManagedIoChange)
+        .filter((file): file is ApplyPatchFile => Boolean(file))
+      if (files.length > 0) {
+        return files
+      }
+    }
     const file = readManagedIoChange(normalized.change)
     if (file) {
       return [file]
@@ -419,7 +428,9 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
 }
 
 function isManagedIoTool(tool: unknown) {
-  return tool === "arroba.edit_artifact" || tool === "arroba.write_artifact"
+  return tool === "arroba.edit_artifact"
+    || tool === "arroba.apply_patch"
+    || tool === "arroba.write_artifact"
 }
 
 function readManagedIoChange(value: unknown): ApplyPatchFile | null {
