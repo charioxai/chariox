@@ -2827,7 +2827,7 @@ fn prompt_idle_fallback_completes_after_recorded_completion_without_response_tex
         .expect("prompt should start");
 
     crate::transport::flow_control::mark_prompt_completion_recorded(&mut app, run.id());
-    if let Some(state) = app.prompt_activity.get_mut(run.id()) {
+    if let Some(state) = app.prompt_activity.write().get_mut(run.id()) {
         state.last_output_at =
             Some(Instant::now() - app.prompt_idle_timeout - Duration::from_millis(1));
     } else {

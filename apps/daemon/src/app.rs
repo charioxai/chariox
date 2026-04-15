@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use tokio::runtime::{Handle, Runtime};
@@ -68,9 +68,8 @@ pub struct DaemonApp {
     pty: PtyManager,
     pub(crate) providers: ProviderProcessService,
     pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
-    pub(crate) tracked_provider_processes: BTreeMap<String, TrackedProviderProcess>,
-    pub(crate) tracked_provider_run_processes: BTreeMap<String, String>,
-    pub(crate) prompt_activity: BTreeMap<String, ActivePromptState>,
+    pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
+    pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
     pub(crate) prompt_idle_timeout: Duration,
     prompt_state_owner: PromptStateOwner,
@@ -101,6 +100,21 @@ pub(crate) struct ActivePromptState {
     pub(crate) completion_recorded: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PromptActivityStore {
+    inner: Arc<Mutex<BTreeMap<String, ActivePromptState>>>,
+}
+
+impl PromptActivityStore {
+    pub(crate) fn read(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
+        self.inner.lock().expect("prompt activity mutex poisoned")
+    }
+
+    pub(crate) fn write(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
+        self.inner.lock().expect("prompt activity mutex poisoned")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TrackedProviderProcess {
     pub(crate) process_id: String,
@@ -109,6 +123,36 @@ pub(crate) struct TrackedProviderProcess {
     pub(crate) process_label: String,
     pub(crate) started_at_ms: u64,
     pub(crate) owner_provider_run_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderProcessTrackingStore {
+    inner: Arc<Mutex<ProviderProcessTrackingState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderProcessTrackingState {
+    pub(crate) processes: BTreeMap<String, TrackedProviderProcess>,
+    pub(crate) run_processes: BTreeMap<String, String>,
+}
+
+impl ProviderProcessTrackingStore {
+    pub(crate) fn read(&self) -> MutexGuard<'_, ProviderProcessTrackingState> {
+        self.inner
+            .lock()
+            .expect("provider process tracking mutex poisoned")
+    }
+
+    pub(crate) fn write(&self) -> MutexGuard<'_, ProviderProcessTrackingState> {
+        self.inner
+            .lock()
+            .expect("provider process tracking mutex poisoned")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> ProviderProcessTrackingState {
+        self.read().clone()
+    }
 }
 
 impl DaemonApp {
@@ -151,9 +195,8 @@ impl DaemonApp {
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             provider_catalog_cache: None,
-            tracked_provider_processes: BTreeMap::new(),
-            tracked_provider_run_processes: BTreeMap::new(),
-            prompt_activity: BTreeMap::new(),
+            provider_process_tracking: ProviderProcessTrackingStore::default(),
+            prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: BTreeMap::new(),
             prompt_idle_timeout: prompt_idle_timeout(),
             prompt_state_owner: PromptStateOwner::default(),

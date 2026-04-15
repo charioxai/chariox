@@ -63,9 +63,9 @@ impl<'a> ProviderProcessTracker<'a> {
         let process_key = self.app.pty.process_key(run.id())?;
         let pid = self.app.pty.process_id(run.id())?;
         let process_id = format!("managed:{}:{}", run.provider(), process_key);
-        let entry = self
-            .app
-            .tracked_provider_processes
+        let mut tracking = self.app.provider_process_tracking.write();
+        let entry = tracking
+            .processes
             .entry(process_key.clone())
             .or_insert_with(|| TrackedProviderProcess {
                 process_id: process_id.clone(),
@@ -79,8 +79,8 @@ impl<'a> ProviderProcessTracker<'a> {
         if !entry.owner_provider_run_ids.iter().any(|id| id == run.id()) {
             entry.owner_provider_run_ids.push(run.id().to_string());
         }
-        self.app
-            .tracked_provider_run_processes
+        tracking
+            .run_processes
             .insert(run.id().to_string(), process_key);
         Ok(())
     }
@@ -88,7 +88,9 @@ impl<'a> ProviderProcessTracker<'a> {
     pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let process_key = self
             .app
-            .tracked_provider_run_processes
+            .provider_process_tracking
+            .read()
+            .run_processes
             .get(provider_run_id)
             .cloned()
             .or_else(|| self.app.pty.process_key(provider_run_id).ok());
@@ -96,20 +98,18 @@ impl<'a> ProviderProcessTracker<'a> {
         let Some(process_key) = process_key else {
             return Ok(removed);
         };
-        self.app
-            .tracked_provider_run_processes
-            .remove(provider_run_id);
-        let should_remove_entry =
-            if let Some(entry) = self.app.tracked_provider_processes.get_mut(&process_key) {
-                entry
-                    .owner_provider_run_ids
-                    .retain(|id| id != provider_run_id);
-                entry.owner_provider_run_ids.is_empty()
-            } else {
-                false
-            };
+        let mut tracking = self.app.provider_process_tracking.write();
+        tracking.run_processes.remove(provider_run_id);
+        let should_remove_entry = if let Some(entry) = tracking.processes.get_mut(&process_key) {
+            entry
+                .owner_provider_run_ids
+                .retain(|id| id != provider_run_id);
+            entry.owner_provider_run_ids.is_empty()
+        } else {
+            false
+        };
         if should_remove_entry {
-            self.app.tracked_provider_processes.remove(&process_key);
+            tracking.processes.remove(&process_key);
         }
         Ok(removed)
     }
@@ -134,7 +134,9 @@ impl<'a> ProviderProcessTracker<'a> {
         for process in &safe_processes {
             let run_ids: Vec<String> = self
                 .app
-                .tracked_provider_processes
+                .provider_process_tracking
+                .read()
+                .processes
                 .values()
                 .find(|tracked| tracked.process_id == process.process_id)
                 .map(|tracked| tracked.owner_provider_run_ids.clone())
@@ -169,7 +171,8 @@ impl<'a> ProviderProcessTracker<'a> {
 
     fn snapshot(app: &DaemonApp) -> Vec<ProviderProcessInfo> {
         let mut processes = Vec::new();
-        for tracked in app.tracked_provider_processes.values() {
+        let tracking = app.provider_process_tracking.read();
+        for tracked in tracking.processes.values() {
             let runs = tracked
                 .owner_provider_run_ids
                 .iter()
@@ -1385,8 +1388,11 @@ mod tests {
             processes[0].owner_provider_run_ids,
             vec![run.id().to_string()]
         );
-        assert_eq!(app.tracked_provider_processes.len(), 1);
-        assert_eq!(app.tracked_provider_run_processes.len(), 1);
+        assert_eq!(app.provider_process_tracking.snapshot().processes.len(), 1);
+        assert_eq!(
+            app.provider_process_tracking.snapshot().run_processes.len(),
+            1
+        );
         assert_eq!(
             processes[0].pid,
             app.pty
@@ -1402,8 +1408,16 @@ mod tests {
             .list_provider_processes(None)
             .expect("provider processes should relist")
             .is_empty());
-        assert!(app.tracked_provider_processes.is_empty());
-        assert!(app.tracked_provider_run_processes.is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .processes
+            .is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .is_empty());
     }
 
     #[test]
@@ -1475,7 +1489,9 @@ mod tests {
             .expect("provider launch should succeed");
 
         assert!(app
-            .tracked_provider_processes
+            .provider_process_tracking
+            .snapshot()
+            .processes
             .values()
             .any(|process| { process.owner_provider_run_ids == vec![run.id().to_string()] }));
 
@@ -1483,8 +1499,16 @@ mod tests {
             .end_session(session.id())
             .expect("session should end");
 
-        assert!(app.tracked_provider_processes.is_empty());
-        assert!(app.tracked_provider_run_processes.is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .processes
+            .is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .is_empty());
         assert!(app
             .list_provider_processes(None)
             .expect("provider processes should list")

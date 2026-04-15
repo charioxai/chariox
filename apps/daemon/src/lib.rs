@@ -125,7 +125,9 @@ mod tests {
 
         assert_eq!(app.sessions().active_session_count(), 1);
         assert!(app
-            .tracked_provider_processes
+            .provider_process_tracking
+            .snapshot()
+            .processes
             .values()
             .any(|process| process.owner_provider_run_ids == vec![run.id().to_string()]));
 
@@ -133,8 +135,16 @@ mod tests {
             .expect("shutdown cleanup should end sessions");
 
         assert_eq!(app.sessions().active_session_count(), 0);
-        assert!(app.tracked_provider_processes.is_empty());
-        assert!(app.tracked_provider_run_processes.is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .processes
+            .is_empty());
+        assert!(app
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .is_empty());
         assert!(app.attachments().get_attachment(attachment.id()).is_err());
     }
 
