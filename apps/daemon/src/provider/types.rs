@@ -209,8 +209,31 @@ pub struct LaunchProviderRequest {
     pub variant: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
+    )]
+    pub write_access_mode: ProviderWriteAccessMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_state: Option<ProviderResumeState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderWriteAccessMode {
+    #[default]
+    Unrestricted,
+    ManagedIoRequired,
+}
+
+impl ProviderWriteAccessMode {
+    pub fn is_unrestricted(&self) -> bool {
+        matches!(self, Self::Unrestricted)
+    }
+
+    pub fn requires_managed_io(&self) -> bool {
+        matches!(self, Self::ManagedIoRequired)
+    }
 }
 
 impl LaunchProviderRequest {
@@ -231,6 +254,7 @@ impl LaunchProviderRequest {
             variant: None,
             working_directory: None,
             runtime_mcp_binding: None,
+            write_access_mode: ProviderWriteAccessMode::Unrestricted,
             resume_state: None,
         }
     }
@@ -256,6 +280,15 @@ impl LaunchProviderRequest {
     pub fn with_runtime_mcp_binding(mut self, binding: RuntimeMcpBinding) -> Self {
         self.runtime_mcp_binding = Some(binding);
         self
+    }
+
+    pub fn with_managed_io_required(mut self) -> Self {
+        self.write_access_mode = ProviderWriteAccessMode::ManagedIoRequired;
+        self
+    }
+
+    pub fn requires_managed_io(&self) -> bool {
+        self.write_access_mode.requires_managed_io()
     }
 
     pub fn with_resume_state(mut self, resume_state: ProviderResumeState) -> Self {
@@ -750,6 +783,17 @@ mod tests {
         };
         let run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
         assert_eq!(run.provider_session_id(), Some("open-session-1"));
+    }
+
+    #[test]
+    fn launch_request_tracks_required_managed_io_mode() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default")
+                .with_managed_io_required();
+
+        assert!(request.requires_managed_io());
+        let json = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(json["write_access_mode"], "managed_io_required");
     }
 
     #[test]

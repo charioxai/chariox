@@ -48,6 +48,10 @@ pub fn plan_codex_launch(
 fn plan_codex_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    if request.is_some_and(LaunchProviderRequest::requires_managed_io) {
+        return Err(managed_io_unsupported_error());
+    }
+
     if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -200,6 +204,14 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
         pty_env: BTreeMap::new(),
         working_directory: None,
         structured_endpoint: Some(endpoint),
+    }
+}
+
+fn managed_io_unsupported_error() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "plan_codex_launch",
+        message: "Codex managed launch does not yet support required managed-I/O write enforcement"
+            .to_string(),
     }
 }
 
@@ -359,6 +371,19 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
+    }
+
+    #[test]
+    fn rejects_required_managed_io_until_write_enforcement_is_supported() {
+        let _guard = env_guard();
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
+                .with_managed_io_required();
+
+        let error = plan_codex_launch(Some(&request))
+            .expect_err("required managed I/O must fail until Codex write enforcement is wired");
+
+        assert!(error.to_string().contains("managed-I/O write enforcement"));
     }
 
     #[test]
