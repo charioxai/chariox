@@ -58,8 +58,8 @@ pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{
     generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
-    ProviderLaunchProcessRuntime, ProviderRunLivenessRuntime, ProviderRunReadService,
-    StartedProviderLaunch,
+    ProviderLaunchProcessRuntime, ProviderRunExitSessionSummary, ProviderRunLivenessRuntime,
+    ProviderRunReadService, StartedProviderLaunch,
 };
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
@@ -400,8 +400,18 @@ impl DaemonApp {
         self.prompt_activity.clone()
     }
 
+    pub(crate) fn prompt_idle_timeout(&self) -> Duration {
+        self.prompt_idle_timeout
+    }
+
     pub(crate) fn prompt_workspace_claim_store(&self) -> PromptWorkspaceClaimStore {
         self.prompt_workspace_claims.clone()
+    }
+
+    pub(crate) fn structured_output_record_store(
+        &self,
+    ) -> provider_output::StructuredOutputRecordStore {
+        self.pending_structured_output_records.clone()
     }
 
     pub(crate) fn workspace_coordinator(&self) -> WorkspaceCoordinator {

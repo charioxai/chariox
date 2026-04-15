@@ -868,26 +868,6 @@ impl DaemonApp {
         Ok(started)
     }
 
-    pub(crate) fn settle_provider_run_exit_for_runtime(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        agent_id: &str,
-    ) -> Result<ProviderRunExitSessionSummary, DaemonError> {
-        let outcome = ProviderRunLivenessOutcome {
-            ended_run: self.providers.get_run(provider_run_id)?,
-            session_id: session_id.to_string(),
-            provider_run_id: provider_run_id.to_string(),
-            agent_id: agent_id.to_string(),
-            transition: ProviderRunLivenessTransition::UnexpectedExit,
-        };
-        let outcome = ProviderRunLivenessSessionEffects::apply_provider_exit(self, &outcome)?;
-        Ok(ProviderRunExitSessionSummary {
-            had_active_prompt: outcome.had_active_prompt,
-            started_next_prompt: outcome.started_next_prompt,
-        })
-    }
-
     pub(crate) fn finish_provider_launch(
         &mut self,
         started: &StartedProviderLaunch,

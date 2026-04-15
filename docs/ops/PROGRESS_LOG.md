@@ -534,3 +534,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed point 3 by removing the production `CompatibilityRuntimeState` fallbacks to `KernelAgentService` prompt submit/cancel/complete methods.
 - Moved remote prompt submit/cancel/complete owner mutation into owned runtime state while keeping relay I/O as an explicit side-effect port.
 - Restored workflow prompt start/completion handoffs after owned prompt mutation and refreshed owned session projections so workflow run reads observe completed/downstream state.
+
+### M4.5 provider output ownership update
+
+- Completed point 4 for production runtime paths by moving active provider-output pumping, structured output batch application, structured prompt job reaping, prompt activity settlement, and provider-exit prompt cleanup onto owned runtime stores.
+- Removed the app-level provider-exit prompt settlement helper; provider liveness now closes/cancels owned prompts and advances queued work without routing through `DaemonApp` prompt lifecycle helpers.
+- Kept remaining PTY spawn/poll/drain/write calls as narrow process I/O side-effect ports while provider run state, output fanout/history, prompt claims, and projections are owned by runtime state.

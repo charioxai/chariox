@@ -673,7 +673,9 @@ mod tests {
             app_locked.session_history_projection_store(),
             app_locked.prompt_state_owner(),
             app_locked.prompt_activity_store(),
+            app_locked.prompt_idle_timeout(),
             app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
             app_locked.terminal_stream_store(),
             app_locked.workspace_coordinator(),
         )

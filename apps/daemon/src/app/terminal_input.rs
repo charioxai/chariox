@@ -51,4 +51,11 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         self.pty.write_input(provider_run_id, bytes)
     }
+
+    pub(crate) fn drain_provider_pty_output_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Vec<crate::pty::PtyOutputChunk>, DaemonError> {
+        self.pty.drain_output(provider_run_id)
+    }
 }

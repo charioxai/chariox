@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -36,7 +36,9 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     history_projection: crate::kernel::projection::SessionHistoryProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
     prompt_activity: PromptActivityStore,
+    prompt_idle_timeout: Duration,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
+    structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
@@ -1309,6 +1311,124 @@ impl CompatibilityRuntimeOwnedState {
         }))
     }
 
+    fn finalize_local_prompt_cancellation_with_queued_advance(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .finalize_active_prompt_cancellation(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        });
+        let released_claim = provider_run_id
+            .as_deref()
+            .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
+            .unwrap_or(false);
+        let started_next = if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+            .is_none()
+        {
+            let next_prompt = self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
+            if let (Some(provider_run_id), Some(next_prompt)) =
+                (provider_run_id.as_deref(), next_prompt.as_ref())
+            {
+                let provider_run =
+                    self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+                if provider_run.state() == crate::provider::ProviderRunState::Running {
+                    self.acquire_provider_prompt_claim(
+                        session_id,
+                        provider_run_id,
+                        agent_id,
+                        Some(next_prompt.source_attachment_id()),
+                    )?;
+                    self.prompt_state_owner.activate_next_queued_prompt(
+                        &self.session_store.get_session(session_id)?,
+                        agent_id,
+                        Some(next_prompt.id()),
+                    )?
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&self.session_store.get_session(session_id)?, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        if started_next.is_none() {
+            self.sync_focused_provider_run_if_idle(session_id)?;
+        }
+        let dispatch = if let (Some(provider_run_id), Some(started_next)) =
+            (provider_run_id.as_deref(), started_next.as_ref())
+        {
+            let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+            if self
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
+            {
+                self.provider_store.enqueue_structured_prompt_submit(
+                    session_id.to_string(),
+                    provider_run_id.to_string(),
+                    agent_id.to_string(),
+                    &provider_run,
+                    started_next.prompt(),
+                    started_next.attachments(),
+                )?;
+                self.note_prompt_started(provider_run_id);
+                None
+            } else {
+                Some(crate::app::KernelPromptDispatch {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    source_attachment_id: started_next.source_attachment_id().to_string(),
+                    prompt: started_next.prompt().to_string(),
+                    attachments: started_next.attachments().to_vec(),
+                })
+            }
+        } else {
+            None
+        };
+        let _ = self.session_snapshot(session_id)?;
+        Ok(OwnedPromptCancellation {
+            cancellation: crate::session::PromptCancellation {
+                prompt,
+                started_next,
+            },
+            released_claim,
+            dispatch,
+        })
+    }
+
     fn cancel_local_prompt(
         &self,
         session_id: &str,
@@ -1639,6 +1759,113 @@ impl CompatibilityRuntimeOwnedState {
         );
     }
 
+    fn reap_structured_prompt_jobs(&self) {
+        self.provider_store
+            .apply_finished_provider_run_selection_sync_jobs();
+        for finished in self
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs()
+        {
+            if let Err(error) = finished.result {
+                let _ = self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
+                let _ = self.session_snapshot(&finished.session_id);
+                let recipients = self
+                    .attachment_store
+                    .list_session_attachment_ids(&finished.session_id);
+                self.record_notice(
+                    &finished.session_id,
+                    Some(&finished.provider_run_id),
+                    recipients,
+                    format!("Prompt dispatch failed after acknowledgement: {error}"),
+                );
+            }
+        }
+        for finished in self
+            .provider_store
+            .drain_finished_structured_prompt_abort_jobs()
+        {
+            if let Err(error) = finished.result {
+                let recipients = self
+                    .attachment_store
+                    .list_session_attachment_ids(&finished.session_id);
+                self.record_notice(
+                    &finished.session_id,
+                    Some(&finished.provider_run_id),
+                    recipients,
+                    format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+                );
+            }
+        }
+    }
+
+    fn fan_out_terminal_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        kind: crate::terminal::TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> crate::terminal::TerminalOutputRecord {
+        let agent_id = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        let record = self.terminal_stream.fan_out_output(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            kind.clone(),
+            merge_key.clone(),
+            recipient_attachment_ids,
+            bytes,
+        );
+        if kind != crate::terminal::TerminalOutputKind::PromptEcho {
+            self.append_history_entry(
+                session_id,
+                SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    agent_id.as_deref(),
+                    kind,
+                    merge_key,
+                    String::from_utf8_lossy(bytes).into_owned(),
+                ),
+            );
+        }
+        record
+    }
+
+    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let session = match self.session_store.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping provider-output history append because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.history_store.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append provider-output session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        } else {
+            self.history_projection.append(entry);
+        }
+    }
+
     fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
         self.prompt_activity.write().remove(provider_run_id);
         self.prompt_workspace_claims.remove(provider_run_id)
@@ -1655,6 +1882,19 @@ impl CompatibilityRuntimeOwnedState {
         );
     }
 
+    fn note_prompt_output(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.last_output_at = Some(Instant::now());
+        }
+    }
+
+    fn note_prompt_response_content(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.last_output_at = Some(Instant::now());
+            state.saw_response_content = true;
+        }
+    }
+
     fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
         self.prompt_activity
             .write()
@@ -1668,6 +1908,20 @@ impl CompatibilityRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
             });
+    }
+
+    fn prompt_should_settle(&self, provider_run_id: &str) -> bool {
+        self.prompt_activity
+            .read()
+            .get(provider_run_id)
+            .map(|state| {
+                (state.saw_response_content || state.completion_recorded)
+                    && state
+                        .last_output_at
+                        .map(|last_output_at| last_output_at.elapsed() >= self.prompt_idle_timeout)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
     }
 
     fn acquire_provider_prompt_claim(
@@ -1809,9 +2063,8 @@ impl CompatibilityRuntimeOwnedState {
         process_running: Option<bool>,
     ) -> Result<Option<OwnedProviderRunExit>, DaemonError> {
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        let agent_id = provider_run
+        let _ = provider_run
             .agent_instance_id()
-            .map(str::to_string)
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
@@ -1826,7 +2079,6 @@ impl CompatibilityRuntimeOwnedState {
                 self.provider_run_projection.update(run.clone());
                 Ok(Some(OwnedProviderRunExit {
                     ended_run: run,
-                    agent_id,
                     already_ended: true,
                 }))
             }
@@ -1835,7 +2087,6 @@ impl CompatibilityRuntimeOwnedState {
                 self.provider_run_projection.update(run.clone());
                 Ok(Some(OwnedProviderRunExit {
                     ended_run: run,
-                    agent_id,
                     already_ended: false,
                 }))
             }
@@ -1898,12 +2149,17 @@ impl CompatibilityRuntimeOwnedState {
 
 struct OwnedProviderRunExit {
     ended_run: crate::provider::RuntimeProviderRun,
-    agent_id: String,
     already_ended: bool,
 }
 
 struct OwnedPromptCompletion {
     completion: crate::session::PromptCompletion,
+    released_claim: bool,
+    dispatch: Option<crate::app::KernelPromptDispatch>,
+}
+
+struct OwnedPromptCancellation {
+    cancellation: crate::session::PromptCancellation,
     released_claim: bool,
     dispatch: Option<crate::app::KernelPromptDispatch>,
 }
@@ -1928,7 +2184,9 @@ impl CompatibilityRuntimeState {
         history_projection: crate::kernel::projection::SessionHistoryProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
         prompt_activity: PromptActivityStore,
+        prompt_idle_timeout: Duration,
         prompt_workspace_claims: PromptWorkspaceClaimStore,
+        structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
@@ -1947,7 +2205,9 @@ impl CompatibilityRuntimeState {
                 history_projection,
                 prompt_state_owner,
                 prompt_activity,
+                prompt_idle_timeout,
                 prompt_workspace_claims,
+                structured_output_records,
                 terminal_stream,
                 workspace_coordinator,
             }),
@@ -2706,13 +2966,7 @@ impl CompatibilityRuntimeState {
         }
 
         let session_outcome = self
-            .with_app_mut(|app| {
-                app.settle_provider_run_exit_for_runtime(
-                    session_id,
-                    provider_run_id,
-                    &exit.agent_id,
-                )
-            })
+            .settle_owned_provider_prompt(session_id, provider_run_id, false, true)
             .await?;
         let recipients = owned
             .attachment_store
@@ -2747,67 +3001,76 @@ impl CompatibilityRuntimeState {
             let _ = self
                 .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
-            owned.echo_prompt_to_other_attachments(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                &dispatch.prompt,
-                &dispatch.attachments,
-            );
-            let provider_run = owned
-                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
-            if provider_run.state() != crate::provider::ProviderRunState::Running {
-                return Err(DaemonError::InvalidProviderRunState {
-                    provider_run_id: dispatch.provider_run_id.clone(),
-                    state: provider_run.state(),
-                    operation: "submit prompt",
-                });
-            }
-            if owned
-                .provider_store
-                .run_uses_structured_prompt_io(&provider_run)
-            {
-                owned.note_prompt_started(&dispatch.provider_run_id);
-                return owned.provider_store.enqueue_structured_prompt_submit(
-                    dispatch.session_id.clone(),
-                    dispatch.provider_run_id.clone(),
-                    dispatch.agent_id.clone(),
-                    &provider_run,
-                    &dispatch.prompt,
-                    &dispatch.attachments,
-                );
-            }
-            if !crate::scheduler::runtime::is_workflow_prompt_attachment(
-                &dispatch.source_attachment_id,
-            ) {
-                let attachment = owned
-                    .attachment_store
-                    .get_attachment(&dispatch.source_attachment_id)?;
-                if attachment.session_id() != dispatch.session_id {
-                    return Err(DaemonError::AttachmentNotInSession {
-                        session_id: dispatch.session_id.clone(),
-                        attachment_id: dispatch.source_attachment_id.clone(),
-                    });
-                }
-            }
-            owned.terminal_stream.record_input(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                dispatch.prompt.as_bytes(),
-            );
-            self.with_app_mut(|app| {
-                app.write_provider_pty_input_for_runtime(
-                    &dispatch.provider_run_id,
-                    dispatch.prompt.as_bytes(),
-                )
-            })
-            .await?;
-            owned.note_prompt_started(&dispatch.provider_run_id);
-            return Ok(());
+            return self
+                .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
+                .await;
         }
         self.with_app_mut(|app| app.enqueue_kernel_prompt_dispatch(dispatch))
             .await
+    }
+
+    async fn enqueue_prompt_dispatch_after_liveness(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        owned: &CompatibilityRuntimeOwnedState,
+    ) -> Result<(), DaemonError> {
+        owned.echo_prompt_to_other_attachments(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.source_attachment_id,
+            &dispatch.prompt,
+            &dispatch.attachments,
+        );
+        let provider_run = owned
+            .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: dispatch.provider_run_id.clone(),
+                state: provider_run.state(),
+                operation: "submit prompt",
+            });
+        }
+        if owned
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            owned.note_prompt_started(&dispatch.provider_run_id);
+            return owned.provider_store.enqueue_structured_prompt_submit(
+                dispatch.session_id.clone(),
+                dispatch.provider_run_id.clone(),
+                dispatch.agent_id.clone(),
+                &provider_run,
+                &dispatch.prompt,
+                &dispatch.attachments,
+            );
+        }
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
+        {
+            let attachment = owned
+                .attachment_store
+                .get_attachment(&dispatch.source_attachment_id)?;
+            if attachment.session_id() != dispatch.session_id {
+                return Err(DaemonError::AttachmentNotInSession {
+                    session_id: dispatch.session_id.clone(),
+                    attachment_id: dispatch.source_attachment_id.clone(),
+                });
+            }
+        }
+        owned.terminal_stream.record_input(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.source_attachment_id,
+            dispatch.prompt.as_bytes(),
+        );
+        self.with_app_mut(|app| {
+            app.write_provider_pty_input_for_runtime(
+                &dispatch.provider_run_id,
+                dispatch.prompt.as_bytes(),
+            )
+        })
+        .await?;
+        owned.note_prompt_started(&dispatch.provider_run_id);
+        return Ok(());
     }
 
     async fn fail_prompt_dispatch(
@@ -2883,8 +3146,7 @@ impl CompatibilityRuntimeState {
         dispatch: &crate::app::KernelPromptAbortDispatch,
     ) -> Result<(), DaemonError> {
         if let Some(owned) = &self.owned {
-            self.with_app_mut(crate::app::provider_output::reap_structured_prompt_jobs)
-                .await;
+            owned.reap_structured_prompt_jobs();
             self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
             let provider_run = owned
@@ -3335,6 +3597,450 @@ impl CompatibilityRuntimeState {
             .await;
     }
 
+    async fn settle_owned_provider_prompt(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_completed: bool,
+        force: bool,
+    ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let Some(owned) = &self.owned else {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        };
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let agent_id = provider_run
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?;
+        let active_prompt = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
+        let Some(active_prompt) = active_prompt else {
+            let released_claim = owned.clear_prompt_activity(provider_run_id);
+            if released_claim {
+                self.with_app_mut(|app| {
+                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
+                })
+                .await;
+            }
+            let _ = owned.sync_focused_provider_run_if_idle(session_id);
+            let _ = owned.session_snapshot(session_id);
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        };
+
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    started_next_prompt: false,
+                });
+            }
+            let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+            )?;
+            self.with_app_mut(|app| {
+                crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+                    app,
+                    session_id,
+                    &cancellation.cancellation.prompt,
+                )
+            })
+            .await?;
+            if cancellation.released_claim {
+                self.with_app_mut(|app| {
+                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
+                })
+                .await;
+            }
+            if let Some(dispatch) = cancellation.dispatch {
+                if let Err(error) = self
+                    .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                    .await
+                {
+                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                }
+            }
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: cancellation.cancellation.started_next.is_some(),
+            });
+        }
+
+        if !force && !prompt_completed && !owned.prompt_should_settle(provider_run_id) {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
+        let provider_run_state = provider_run.state();
+        let next_queued_prompt = if provider_run_state == crate::provider::ProviderRunState::Running
+        {
+            owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
+        } else {
+            None
+        };
+        let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
+            owned.complete_local_prompt_with_queued_advance(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+                next_queued_prompt,
+            )?
+        } else {
+            owned.complete_local_prompt_without_advance(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+            )?
+        }
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "settle provider prompt",
+            message: "owned prompt runtime could not settle provider prompt".to_string(),
+        })?;
+        if completion.completion.completed.workflow_run_id().is_some() {
+            self.with_app_mut(|app| {
+                crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+                    app,
+                    session_id,
+                    &completion.completion.completed,
+                    Some(provider_run_id),
+                )
+            })
+            .await?;
+            let _ = owned.session_snapshot(session_id)?;
+        }
+        if let Some(started_next) = completion.completion.started_next.as_ref() {
+            if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                started_next.source_attachment_id(),
+            ) {
+                self.with_app_mut(|app| {
+                    crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                        app,
+                        session_id,
+                        started_next,
+                    )
+                })
+                .await?;
+            }
+        }
+        if completion.released_claim {
+            self.with_app_mut(|app| {
+                crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
+            })
+            .await;
+        }
+        if let Some(dispatch) = completion.dispatch {
+            if let Err(error) = self
+                .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                .await
+            {
+                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        }
+        Ok(crate::app::ProviderRunExitSessionSummary {
+            had_active_prompt: true,
+            started_next_prompt: completion.completion.started_next.is_some(),
+        })
+    }
+
+    async fn pump_owned_provider_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        initial_liveness_already_checked: bool,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let Some(owned) = &self.owned else {
+            return self
+                .with_app_mut(|app| {
+                    crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
+                        crate::app::provider_output::ProviderOutputPumpRequest {
+                            session_id,
+                            provider_run_id,
+                            recipient_attachment_ids,
+                            initial_liveness_already_checked,
+                        },
+                    )
+                })
+                .await;
+        };
+        owned.reap_structured_prompt_jobs();
+        if !initial_liveness_already_checked
+            && self
+                .reconcile_provider_run_exit(session_id, provider_run_id)
+                .await?
+        {
+            return Ok(Vec::new());
+        }
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if matches!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Ended | crate::provider::ProviderRunState::Parked
+        ) {
+            return Ok(Vec::new());
+        }
+
+        if owned
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            return self
+                .pump_owned_structured_provider_output(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                )
+                .await;
+        }
+
+        let chunks = match self
+            .with_app_mut(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
+            .await
+        {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                if self
+                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .await?
+                {
+                    return Ok(Vec::new());
+                }
+                return Err(error);
+            }
+        };
+        if !chunks.is_empty() {
+            owned.note_prompt_response_content(provider_run_id);
+        }
+        if !self
+            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .await?
+        {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false)
+                .await?;
+        }
+        Ok(chunks
+            .into_iter()
+            .map(|chunk| {
+                owned.fan_out_terminal_output(
+                    session_id,
+                    provider_run_id,
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    None,
+                    recipient_attachment_ids.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect())
+    }
+
+    async fn pump_owned_structured_provider_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let Some(owned) = &self.owned else {
+            return Ok(Vec::new());
+        };
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if provider_run.state() == crate::provider::ProviderRunState::Parked {
+            return Ok(Vec::new());
+        }
+        if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
+            if let Err(error) = self
+                .with_app_mut(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
+                .await
+            {
+                if self
+                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .await?
+                {
+                    return Ok(Vec::new());
+                }
+                if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
+                    return Err(error);
+                }
+            }
+        }
+        let mut records = owned.structured_output_records.take(provider_run_id);
+        for finished in owned
+            .provider_store
+            .drain_finished_structured_output_poll_jobs()
+        {
+            let finished_run_id = finished.provider_run_id.clone();
+            let is_requested_run = finished_run_id == provider_run_id;
+            let poll_result = match finished.result {
+                Ok(Some(poll_result)) => poll_result,
+                Ok(None) => continue,
+                Err(error) => {
+                    let reconcile_result = if is_requested_run {
+                        self.reconcile_provider_run_exit(session_id, provider_run_id)
+                            .await
+                    } else {
+                        match owned.provider_store.get_run(&finished_run_id) {
+                            Ok(run) => {
+                                self.reconcile_provider_run_exit(run.session_id(), &finished_run_id)
+                                    .await
+                            }
+                            Err(run_error) => Err(run_error),
+                        }
+                    };
+                    match reconcile_result {
+                        Ok(true) => continue,
+                        Ok(false) if is_requested_run => return Err(error),
+                        Ok(false) => {
+                            crate::logging::error_with_fields(
+                                "daemon.app",
+                                "background structured output poll failed",
+                                serde_json::json!({
+                                    "provider_run_id": finished_run_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
+                        Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
+                        Err(reconcile_error) => {
+                            crate::logging::error_with_fields(
+                                "daemon.app",
+                                "background structured output poll reconciliation failed",
+                                serde_json::json!({
+                                    "provider_run_id": finished_run_id,
+                                    "error": reconcile_error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+            let run = match owned.provider_store.get_run(&finished_run_id) {
+                Ok(run) => run,
+                Err(_) => continue,
+            };
+            let run_session_id = run.session_id().to_string();
+            let recipients = if is_requested_run {
+                recipient_attachment_ids.clone()
+            } else {
+                owned
+                    .attachment_store
+                    .list_session_attachment_ids(&run_session_id)
+            };
+            let applied = self
+                .apply_owned_structured_output_batch(
+                    &run_session_id,
+                    &finished_run_id,
+                    recipients,
+                    poll_result,
+                )
+                .await?;
+            if is_requested_run {
+                records.extend(applied);
+            } else {
+                owned
+                    .structured_output_records
+                    .append(finished_run_id, applied);
+            }
+        }
+        owned
+            .provider_store
+            .enqueue_structured_output_poll(provider_run_id)?;
+        Ok(records)
+    }
+
+    async fn apply_owned_structured_output_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let Some(owned) = &self.owned else {
+            return Ok(Vec::new());
+        };
+        owned
+            .provider_store
+            .apply_structured_output_metadata(provider_run_id, &poll_result)?;
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        owned.provider_run_projection.update(provider_run);
+        for notice in &poll_result.notices {
+            owned.record_notice(
+                session_id,
+                Some(provider_run_id),
+                recipient_attachment_ids.clone(),
+                notice.to_string(),
+            );
+        }
+        let saw_response_content = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                crate::terminal::TerminalOutputKind::ProviderOutput
+                    | crate::terminal::TerminalOutputKind::ProviderReasoning
+            )
+        });
+        let saw_runtime_activity = poll_result.chunks.iter().any(|chunk| {
+            matches!(
+                chunk.kind,
+                crate::terminal::TerminalOutputKind::ProviderOutput
+                    | crate::terminal::TerminalOutputKind::ProviderReasoning
+                    | crate::terminal::TerminalOutputKind::ProviderTool
+                    | crate::terminal::TerminalOutputKind::ProviderStatus
+            )
+        });
+        if saw_response_content {
+            owned.note_prompt_response_content(provider_run_id);
+        } else if saw_runtime_activity {
+            owned.note_prompt_output(provider_run_id);
+        }
+        for completion in &poll_result.completions {
+            owned.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
+        let prompt_completed = poll_result.prompt_completed;
+        let records = poll_result
+            .chunks
+            .into_iter()
+            .map(|chunk| {
+                owned.fan_out_terminal_output(
+                    session_id,
+                    provider_run_id,
+                    chunk.kind,
+                    chunk.merge_key,
+                    recipient_attachment_ids.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !self
+            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .await?
+        {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, prompt_completed, false)
+                .await?;
+        }
+        Ok(records)
+    }
+
     pub(crate) async fn pump_terminal_output_with_snapshot(
         &self,
         session_id: &str,
@@ -3346,15 +4052,40 @@ impl CompatibilityRuntimeState {
         ),
         DaemonError,
     > {
-        let records = self
-            .with_app_mut(|app| {
+        let records = if let Some(owned) = &self.owned {
+            owned.reap_structured_prompt_jobs();
+            owned.ensure_attachment_in_session(session_id, attachment_id)?;
+            let provider_run_id = owned
+                .session_store
+                .get_session(session_id)?
+                .active_provider_run_id()
+                .map(str::to_string);
+            if let Some(provider_run_id) = provider_run_id {
+                let recipient_attachment_ids = owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id);
+                let _ = self
+                    .pump_owned_provider_output(
+                        session_id,
+                        &provider_run_id,
+                        recipient_attachment_ids,
+                        false,
+                    )
+                    .await?;
+            }
+            owned
+                .terminal_stream
+                .drain_output_records(session_id, attachment_id)
+        } else {
+            self.with_app_mut(|app| {
                 crate::app::provider_output::pump_terminal_output_for_attachment(
                     app,
                     session_id,
                     attachment_id,
                 )
             })
-            .await?;
+            .await?
+        };
         let session = if let Some(owned) = &self.owned {
             owned.session_snapshot(session_id).ok()
         } else {
@@ -3374,7 +4105,16 @@ impl CompatibilityRuntimeState {
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
-        if !self
+        if self.owned.is_some() {
+            let _ = self
+                .pump_owned_provider_output(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids,
+                    false,
+                )
+                .await?;
+        } else if !self
             .reconcile_provider_run_exit(session_id, provider_run_id)
             .await?
         {
