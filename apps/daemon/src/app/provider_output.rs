@@ -53,7 +53,7 @@ pub(crate) fn pump_terminal_output_for_attachment(
     session_id: &str,
     attachment_id: &str,
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-    ProviderOutputStructuredPromptReaper::new(app).reap();
+    reap_structured_prompt_jobs(app);
     crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)?;
     let provider_run_id = app
@@ -75,8 +75,12 @@ pub(crate) fn pump_terminal_output_for_attachment(
     Ok(app.terminal.drain_output_records(session_id, attachment_id))
 }
 
-pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) {
+pub(crate) fn reap_structured_prompt_jobs(app: &mut DaemonApp) {
     ProviderOutputStructuredPromptReaper::new(app).reap();
+}
+
+pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) {
+    reap_structured_prompt_jobs(app);
     let sessions = app.sessions.list_sessions();
     for session in sessions {
         let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
@@ -426,7 +430,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     }
 
     fn reap_structured_prompt_jobs(&mut self) {
-        ProviderOutputStructuredPromptReaper::new(self.app).reap();
+        reap_structured_prompt_jobs(self.app);
     }
 
     fn reconcile_provider_run_exit(

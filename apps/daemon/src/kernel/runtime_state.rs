@@ -1124,7 +1124,7 @@ impl CompatibilityRuntimeState {
         dispatch: &crate::app::KernelPromptAbortDispatch,
     ) -> Result<(), DaemonError> {
         if let Some(owned) = &self.owned {
-            self.with_app_mut(|app| app.reap_structured_prompt_jobs())
+            self.with_app_mut(crate::app::provider_output::reap_structured_prompt_jobs)
                 .await;
             self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
                 .await?;
