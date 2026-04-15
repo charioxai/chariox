@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::Mutex;
 
@@ -503,6 +504,108 @@ impl CompatibilityRuntimeOwnedState {
         }))
     }
 
+    fn cancel_local_structured_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent = self.agent_store.get_agent(target_agent_id)?;
+        if target_agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let active_prompt = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active_prompt.workflow_run_id().is_some() {
+            return Ok(None);
+        }
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            let session = self.session_snapshot(session_id)?;
+            return Ok(Some(crate::app::KernelPromptCancellation {
+                cancellation: crate::session::PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                session,
+                dispatch: None,
+            }));
+        }
+
+        let provider_run = self
+            .provider_run_projection
+            .get_for_agent(session_id, target_agent_id)
+            .or_else(|| {
+                self.provider_store
+                    .get_run_for_agent(session_id, target_agent_id)
+            })
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
+        if !self
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            return Ok(None);
+        }
+
+        let prompt = self
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, target_agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            target_agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.note_prompt_settlement_requested(provider_run.id());
+        let recipients = self.other_attachment_ids(session_id, attachment_id);
+        self.record_notice(
+            session_id,
+            Some(provider_run.id()),
+            recipients,
+            format!(
+                "Attachment `{}` requested cancellation of active prompt `{}` on provider run `{}`.",
+                attachment_id,
+                prompt.id(),
+                provider_run.id()
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+
+        Ok(Some(crate::app::KernelPromptCancellation {
+            cancellation: crate::session::PromptCancellation {
+                prompt,
+                started_next: None,
+            },
+            session,
+            dispatch: Some(crate::app::KernelPromptAbortDispatch {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run.id().to_string(),
+            }),
+        }))
+    }
+
+    fn other_attachment_ids(&self, session_id: &str, attachment_id: &str) -> Vec<String> {
+        self.attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter(|id| id != attachment_id)
+            .collect()
+    }
+
     fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
             .read()
@@ -554,6 +657,21 @@ impl CompatibilityRuntimeOwnedState {
                 completion_recorded: false,
             },
         );
+    }
+
+    fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
+        self.prompt_activity
+            .write()
+            .entry(provider_run_id.to_string())
+            .and_modify(|state| {
+                state.last_output_at = Some(Instant::now());
+                state.saw_response_content = true;
+            })
+            .or_insert(crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: false,
+            });
     }
 
     fn echo_prompt_to_other_attachments(
@@ -1075,6 +1193,13 @@ impl CompatibilityRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        if let Some(owned) = &self.owned {
+            if let Some(cancellation) =
+                owned.cancel_local_structured_prompt(session_id, target_agent_id, attachment_id)?
+            {
+                return Ok(cancellation);
+            }
+        }
         self.with_app_mut(|app| {
             crate::app::KernelAgentService::new(app).cancel_agent_prompt_for_kernel(
                 session_id,

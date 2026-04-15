@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-15
 
+### M4.5 structured local prompt cancellation ownership update
+
+- Moved structured local prompt cancellation admission and prompt-owner mutation onto owned `CompatibilityRuntimeState` stores for non-remote, non-workflow prompts, including attachment validation, provider-run validation, cancelling-state mirroring, cancellation notices, prompt-activity settlement markers, structured abort dispatch creation, and projection refresh.
+- Kept PTY Ctrl-C cancellation, remote prompt cancellation, workflow-owned prompt cancellation, and abort dispatch execution side effects on existing compatibility/provider-runtime paths for follow-up slices.
+- Verified the slice with `cargo test` in `apps/daemon`: 336 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
 ### M4.5 simple local prompt completion ownership update
 
 - Moved the simple local prompt-completion path onto owned `CompatibilityRuntimeState` stores when there is no queued prompt to advance and the active prompt is not remote-backed or workflow-owned, including prompt-owner mutation, session prompt-state mirroring, completion notification recording, prompt-activity cleanup, and projection refresh.
