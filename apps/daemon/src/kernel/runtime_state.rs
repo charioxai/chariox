@@ -32,6 +32,87 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
 
+impl CompatibilityRuntimeOwnedState {
+    fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let mut session = self.session_store.get_session(session_id)?;
+        let agents = self.agent_store.get_session_agents(session_id);
+        session.set_agents(agents);
+        self.project_session_runtime_view(&mut session);
+        self.session_projection.update(session.clone());
+        Ok(session)
+    }
+
+    fn project_session_runtime_view(&self, session: &mut crate::session::RuntimeSession) {
+        if let Some(active_provider_run_id) = session.active_provider_run_id() {
+            if let Ok(active_run) = self.provider_store.get_run(active_provider_run_id) {
+                let active_run_agent_id = active_run.agent_instance_id();
+                let active_prompt_is_running = active_run_agent_id
+                    .and_then(|agent_id| {
+                        self.prompt_state_owner
+                            .active_prompt_for_agent_snapshot(session, agent_id)
+                    })
+                    .is_some();
+                if active_run.state() == crate::provider::ProviderRunState::Running
+                    && active_prompt_is_running
+                {
+                    return;
+                }
+            }
+        }
+
+        let projected_run_id = session.focused_agent_id().and_then(|agent_id| {
+            self.provider_store
+                .get_run_for_agent(session.id(), agent_id)
+                .map(|run| run.id().to_string())
+        });
+        session.set_active_provider_run(projected_run_id);
+    }
+
+    fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        let attachment = self.attachment_store.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        Ok(attachment)
+    }
+
+    fn capability_context(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        capability: &'static str,
+    ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !matches!(
+            attachment.capability_level(),
+            crate::attachment::ClientCapabilityLevel::FullTerminal
+                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+        ) {
+            return Err(DaemonError::AttachmentCapabilityDenied {
+                session_id: session_id.to_string(),
+                attachment_id: attachment.id().to_string(),
+                capability,
+            });
+        }
+        Ok(CapabilityRuntimeSnapshot {
+            workspace_id: session.workspace_id().to_string(),
+            worktree_root: std::path::PathBuf::from(session.worktree_id()),
+            workspace_coordinator: self.workspace_coordinator.clone(),
+        })
+    }
+}
+
 impl CompatibilityRuntimeState {
     #[cfg(test)]
     pub(crate) fn new(app: Arc<Mutex<DaemonApp>>) -> Self {
@@ -152,6 +233,9 @@ impl CompatibilityRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.session_snapshot(session_id);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).session_snapshot(session_id)
         })
@@ -222,6 +306,10 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<(), DaemonError> {
+        if let Some(owned) = &self.owned {
+            let _ = owned.ensure_attachment_in_session(session_id, attachment_id)?;
+            return Ok(());
+        }
         self.with_app_mut(|app| {
             let _ = crate::app::KernelSessionService::new(app)
                 .ensure_attachment_in_session(session_id, attachment_id)?;
@@ -672,6 +760,9 @@ impl CompatibilityRuntimeState {
         attachment_id: &str,
         capability: &'static str,
     ) -> Result<CapabilityRuntimeSnapshot, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.capability_context(session_id, attachment_id, capability);
+        }
         let app = self.app.lock().await;
         let context = crate::app::KernelSessionReadService::new(&app).capability_context(
             session_id,

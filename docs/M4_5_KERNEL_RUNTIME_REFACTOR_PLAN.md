@@ -267,6 +267,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 promoted agent and attachment services into cloneable shared service stores. `DaemonApp` now holds `AgentServiceStore` and `AttachmentServiceStore`, session lifecycle/remote lease paths mutate them through short scoped locks, and `CompatibilityRuntimeState` receives those handles for owned attachment lookup and provider-launch focused-agent fallback reads.
 - Landed: Phase 8 moved provider process tracking and prompt-activity state behind cloneable stores. Managed provider process/run ownership maps and active prompt activity records no longer live as bare `DaemonApp` maps, reducing provider launch/liveness/prompt-settlement extraction to injecting those stores through runtime boundaries.
 - Landed: Phase 8 promoted `ProviderProcessService` and provider catalog caching into cloneable stores. Provider run registry/runtime mailbox operations now sit behind `ProviderProcessServiceStore`, `CompatibilityRuntimeState` receives the provider store for structured prompt I/O checks, and provider catalog cache invalidation is no longer a bare mutable app field.
+- Landed: Phase 8 moved compatibility runtime session snapshots, attachment/session authorization, and capability context lookup onto the owned session/agent/attachment/provider/terminal/workspace stores. Capability execution and session-state refresh can now avoid the compatibility app lock for their read-side authorization and projection refresh paths.
 
 Still open:
 
