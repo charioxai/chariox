@@ -1160,8 +1160,11 @@ impl CompatibilityRuntimeState {
                 .provider_store
                 .structured_prompt_io_in_flight(provider_run_id);
         }
-        self.with_app_mut(|app| app.structured_prompt_io_in_flight(provider_run_id))
-            .await
+        self.with_app_mut(|app| {
+            crate::app::KernelPromptDispatchRuntime::new(app)
+                .structured_prompt_io_in_flight(provider_run_id)
+        })
+        .await
     }
 
     async fn fail_prompt_abort(

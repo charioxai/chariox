@@ -20,8 +20,8 @@ pub(crate) mod workflow_runtime;
 
 pub(crate) use prompt_lifecycle::{
     serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
-    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
-    KernelRemotePromptDispatch,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptDispatchRuntime,
+    KernelPromptSubmission, KernelRemotePromptDispatch,
 };
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};

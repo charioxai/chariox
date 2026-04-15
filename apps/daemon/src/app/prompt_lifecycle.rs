@@ -189,6 +189,22 @@ pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) provider_run_id: String,
 }
 
+pub(crate) struct KernelPromptDispatchRuntime<'a> {
+    app: &'a DaemonApp,
+}
+
+impl<'a> KernelPromptDispatchRuntime<'a> {
+    pub(crate) fn new(app: &'a DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        self.app
+            .providers
+            .structured_prompt_io_in_flight(provider_run_id)
+    }
+}
+
 impl DaemonApp {
     pub(crate) fn submit_prompt(
         &mut self,
@@ -405,11 +421,6 @@ impl DaemonApp {
             format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
         );
         Err(error)
-    }
-
-    pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        self.providers
-            .structured_prompt_io_in_flight(provider_run_id)
     }
 
     pub(crate) fn reap_structured_prompt_jobs(&mut self) {
