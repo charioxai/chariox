@@ -635,17 +635,19 @@ impl CompatibilityRuntimeState {
         target_agent_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        let projected_provider_run_id = self
-            .owned
-            .as_ref()
-            .and_then(|owned| {
-                owned
-                    .provider_run_projection
-                    .get_for_agent(session_id, target_agent_id)
-            })
-            .map(|run| run.id().to_string());
+        let owned_provider_run_id = self.owned.as_ref().map(|owned| {
+            owned
+                .provider_run_projection
+                .get_for_agent(session_id, target_agent_id)
+                .or_else(|| {
+                    owned
+                        .provider_store
+                        .get_run_for_agent(session_id, target_agent_id)
+                })
+                .map(|run| run.id().to_string())
+        });
         self.with_app_mut(|app| {
-            let provider_run_id = projected_provider_run_id.or_else(|| {
+            let provider_run_id = owned_provider_run_id.unwrap_or_else(|| {
                 app.providers()
                     .get_run_for_agent(session_id, target_agent_id)
                     .map(|run| run.id().to_string())

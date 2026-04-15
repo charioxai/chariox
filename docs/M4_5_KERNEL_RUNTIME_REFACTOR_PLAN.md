@@ -270,6 +270,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved compatibility runtime session snapshots, attachment/session authorization, and capability context lookup onto the owned session/agent/attachment/provider/terminal/workspace stores. Capability execution and session-state refresh can now avoid the compatibility app lock for their read-side authorization and projection refresh paths.
 - Landed: Phase 8 switched runtime post-effect session refreshes for workflow operations and terminal-output pumping to the owned session snapshot path. The remaining compatibility app lock calls in those paths now perform only the legacy mutation/pump effect, then release before refreshing session projections from owned stores.
 - Landed: Phase 8 moved provider launch activation, request shaping, runtime binding application, launch failure cleanup, previous-run resume, and provider-run/session/projection state updates onto owned runtime stores. The remaining compatibility app lock during launch is now limited to PTY process spawn/tracking, launch-failure notice emission/history append, and queued-prompt advancement.
+- Landed: Phase 8 moved prompt-completion provider-run fallback resolution to the owned provider run projection/store before entering the remaining prompt-completion compatibility mutation.
 
 Still open:
 
