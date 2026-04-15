@@ -56,7 +56,10 @@ pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
-pub(crate) use provider_runtime::{ProviderRunReadService, StartedProviderLaunch};
+pub(crate) use provider_runtime::{
+    generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch, ProviderRunReadService,
+    StartedProviderLaunch,
+};
 pub(crate) use remote_lease::RemoteLeaseRuntime;
 
 pub struct DaemonApp {

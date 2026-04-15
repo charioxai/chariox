@@ -17,7 +17,7 @@ use crate::session::PromptStatus;
 #[derive(Debug, Clone)]
 pub(crate) struct StartedProviderLaunch {
     pub(crate) run: RuntimeProviderRun,
-    previous_active_run_id: Option<String>,
+    pub(crate) previous_active_run_id: Option<String>,
 }
 
 pub(crate) struct ProviderRunReadService<'a> {
@@ -831,6 +831,24 @@ impl DaemonApp {
         Ok(started)
     }
 
+    pub(crate) fn spawn_provider_process_for_launch(
+        &mut self,
+        run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        if run.endpoint_mode() != AgentEndpointMode::Managed {
+            return Ok(());
+        }
+        self.pty.spawn_for_run(run)?;
+        ProviderProcessTracker::new(self).register_managed_run(run)
+    }
+
+    pub(crate) fn remove_provider_process_for_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        ProviderProcessTracker::new(self).remove_run(provider_run_id)
+    }
+
     pub(crate) fn finish_provider_launch(
         &mut self,
         started: &StartedProviderLaunch,
@@ -1225,7 +1243,7 @@ impl DaemonApp {
     }
 }
 
-fn sanitize_resume_state_for_launch(
+pub(crate) fn sanitize_resume_state_for_launch(
     request: &LaunchProviderRequest,
     agent: &AgentInstance,
 ) -> ProviderResumeState {
@@ -1248,7 +1266,7 @@ fn sanitize_resume_state_for_launch(
     }
 }
 
-fn generate_runtime_mcp_auth_token() -> String {
+pub(crate) fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
 }
 

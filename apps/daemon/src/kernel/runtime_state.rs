@@ -111,6 +111,211 @@ impl CompatibilityRuntimeOwnedState {
             workspace_coordinator: self.workspace_coordinator.clone(),
         })
     }
+
+    fn prepare_provider_launch_request(
+        &self,
+        mut request: crate::provider::LaunchProviderRequest,
+        runtime_mcp_url: String,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        if request.agent_id.is_none() {
+            request.agent_id = self
+                .session_store
+                .get_session(&request.session_id)?
+                .focused_agent_id()
+                .map(str::to_string)
+                .or_else(|| {
+                    self.agent_store
+                        .get_focused_agent(&request.session_id)
+                        .map(|agent| agent.id().to_string())
+                });
+        }
+        if request.resume_state.is_none() {
+            if let Some(agent_id) = request.agent_id.as_deref() {
+                if let Ok(agent) = self.agent_store.get_agent(agent_id) {
+                    let resume_state =
+                        crate::app::sanitize_resume_state_for_launch(&request, &agent);
+                    if !resume_state.is_empty() {
+                        request = request.with_resume_state(resume_state);
+                    }
+                }
+            }
+        }
+        if (request.adapter_key == "opencode" || request.adapter_key == "codex")
+            && request.working_directory.is_none()
+        {
+            let agent_worktree = request.agent_id.as_deref().and_then(|agent_id| {
+                self.agent_store
+                    .get_agent(agent_id)
+                    .ok()
+                    .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+            });
+            request.working_directory = Some(agent_worktree.unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    self.session_store
+                        .get_session(&request.session_id)
+                        .map(|session| session.worktree_id().to_string())
+                        .unwrap_or_default(),
+                )
+            }));
+        }
+        if request.runtime_mcp_binding.is_none() {
+            let shared_auth_token = self
+                .provider_store
+                .get_session_run_for_provider(&request.session_id, &request.provider)
+                .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string));
+            request = request.with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                runtime_mcp_url,
+                shared_auth_token.unwrap_or_else(crate::app::generate_runtime_mcp_auth_token),
+            ));
+        }
+        Ok(request)
+    }
+
+    fn start_provider_launch(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
+        let session_id = request.session_id.clone();
+        let previous_active_run_id = self
+            .session_store
+            .get_session(&session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
+
+        if let Some(active_run_id) = previous_active_run_id.as_deref() {
+            let active_run = self.provider_store.get_run(active_run_id)?;
+            match active_run.state() {
+                crate::provider::ProviderRunState::Ended => {
+                    self.session_store
+                        .set_active_provider_run(&session_id, None)?;
+                    self.provider_store.clear_runtime(active_run_id);
+                }
+                crate::provider::ProviderRunState::Starting => {
+                    let outcome = self
+                        .provider_store
+                        .terminate_run_provider_only(&session_id, active_run_id)?;
+                    self.clear_active_provider_run_session_pointer(
+                        &session_id,
+                        outcome.run().id(),
+                    )?;
+                    self.provider_run_projection.update(outcome.into_run());
+                }
+                crate::provider::ProviderRunState::Running => {
+                    let outcome = self
+                        .provider_store
+                        .park_run_provider_only(&session_id, active_run_id)?;
+                    self.clear_active_provider_run_session_pointer(
+                        &session_id,
+                        outcome.run().id(),
+                    )?;
+                    self.provider_run_projection.update(outcome.into_run());
+                }
+                crate::provider::ProviderRunState::Parked => {
+                    self.session_store
+                        .set_active_provider_run(&session_id, None)?;
+                }
+            }
+        }
+
+        let outcome = self.provider_store.start_run_provider_only(request)?;
+        self.session_store
+            .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
+        Ok(crate::app::StartedProviderLaunch {
+            run: outcome.into_run(),
+            previous_active_run_id,
+        })
+    }
+
+    fn resume_provider_run_for_session(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        let active_run_id = self
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_owned);
+
+        if let Some(active_run_id) = active_run_id.as_deref() {
+            if active_run_id != run_id {
+                let outcome = self
+                    .provider_store
+                    .park_run_provider_only(session_id, active_run_id)?;
+                self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+                self.provider_run_projection.update(outcome.into_run());
+            }
+        }
+
+        let outcome = self
+            .provider_store
+            .resume_run_provider_only(session_id, run_id)?;
+        self.session_store
+            .set_active_provider_run(session_id, Some(outcome.run().id().to_string()))?;
+        let run = outcome.into_run();
+        self.provider_run_projection.update(run.clone());
+        Ok(run)
+    }
+
+    fn clear_active_provider_run_session_pointer(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if self
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            == Some(provider_run_id)
+        {
+            self.session_store
+                .set_active_provider_run(session_id, None)?;
+        }
+        Ok(())
+    }
+
+    fn finish_provider_launch_success(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        if let Some(binding) = binding {
+            self.provider_store
+                .apply_runtime_binding(started.run.id(), binding)?;
+        }
+        let run = self.provider_store.mark_run_running(started.run.id())?;
+        self.session_store
+            .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
+        let _ = self.session_snapshot(run.session_id())?;
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "initializing provider runtime",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+            }),
+        );
+        crate::logging::info_with_fields(
+            "daemon.app",
+            "provider runtime initialized successfully",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "session_id": run.session_id(),
+            }),
+        );
+        let _ = self.provider_store.record_run_activity(run.id());
+        if let Some(agent_id) = run.agent_instance_id() {
+            let _ = self.agent_store.set_agent_runtime_profile(
+                agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                run.resume_state().clone(),
+            )?;
+        }
+        self.provider_run_projection.update(run.clone());
+        Ok(run)
+    }
 }
 
 impl CompatibilityRuntimeState {
@@ -651,6 +856,104 @@ impl CompatibilityRuntimeState {
         request: crate::local::LaunchProviderRunRequest,
     ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
         let launch_request = self.launch_provider_request_from_owned_state(request);
+        if let Some(owned) = &self.owned {
+            let config = owned.config_projection.snapshot();
+            let launch_request =
+                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "launching provider run",
+                serde_json::json!({
+                    "adapter_key": launch_request.adapter_key.clone(),
+                    "agent_id": launch_request.agent_id.clone(),
+                    "provider": launch_request.provider.clone(),
+                    "session_id": launch_request.session_id.clone(),
+                }),
+            );
+            let started = owned.start_provider_launch(launch_request)?;
+            let run = started.run.clone();
+            if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
+                    owned.provider_run_projection.update(previous_run);
+                }
+            }
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "prepared provider run endpoint metadata",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "endpoint_mode": run.endpoint_mode().to_string(),
+                    "session_id": run.session_id(),
+                    "provider": run.provider(),
+                }),
+            );
+            if let Err(error) = self
+                .with_app_mut(|app| app.spawn_provider_process_for_launch(&run))
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "PTY spawn failed for provider run",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                if let Ok(outcome) = owned
+                    .provider_store
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    let _ = owned.clear_active_provider_run_session_pointer(
+                        run.session_id(),
+                        outcome.run().id(),
+                    );
+                    owned.provider_run_projection.update(outcome.into_run());
+                }
+                if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                    let recipients = owned
+                        .attachment_store
+                        .list_session_attachment_ids(run.session_id());
+                    match owned
+                        .resume_provider_run_for_session(run.session_id(), previous_active_run_id)
+                    {
+                        Ok(resumed_run) => {
+                            self.with_app_mut(|app| {
+                                app.record_notice(
+                                    run.session_id(),
+                                    Some(resumed_run.id()),
+                                    recipients,
+                                    format!(
+                                        "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+                                        run.session_id(),
+                                        resumed_run.id()
+                                    ),
+                                );
+                            })
+                            .await;
+                        }
+                        Err(resume_error) => {
+                            self.with_app_mut(|app| {
+                                app.record_notice(
+                                    run.session_id(),
+                                    None,
+                                    recipients,
+                                    format!(
+                                        "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                        run.session_id(),
+                                        resume_error
+                                    ),
+                                );
+                            })
+                            .await;
+                        }
+                    }
+                }
+                return Err(error);
+            }
+            owned.provider_run_projection.update(run);
+            return Ok((started, config.provider_runtime_init_delay_ms));
+        }
         self.with_app_mut(|app| {
             Ok((
                 app.start_provider_launch(launch_request)?,
@@ -697,6 +1000,29 @@ impl CompatibilityRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
+        if let Some(owned) = &self.owned {
+            let result = owned.finish_provider_launch_success(started, binding);
+            match result {
+                Ok(run) => {
+                    if let Some(agent_id) = run.agent_instance_id() {
+                        if let Err(error) = self
+                            .with_app_mut(|app| {
+                                app.advance_next_queued_prompt(run.session_id(), agent_id)
+                            })
+                            .await
+                        {
+                            self.fail_provider_launch(started, &error).await;
+                            return;
+                        }
+                        let _ = owned.session_snapshot(run.session_id());
+                    }
+                }
+                Err(error) => {
+                    self.fail_provider_launch(started, &error).await;
+                }
+            }
+            return;
+        }
         self.with_app_mut(|app| {
             if let Err(error) = app.finish_provider_launch(started, binding) {
                 app.fail_provider_launch(started, &error);
@@ -710,6 +1036,53 @@ impl CompatibilityRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
+        if let Some(owned) = &self.owned {
+            crate::logging::error_with_fields(
+                "daemon.app",
+                "provider runtime initialization failed",
+                serde_json::json!({
+                    "provider_run_id": started.run.id(),
+                    "session_id": started.run.session_id(),
+                    "error": error.to_string(),
+                }),
+            );
+            let recipients = owned
+                .attachment_store
+                .list_session_attachment_ids(started.run.session_id());
+            self.with_app_mut(|app| {
+                app.record_notice(
+                    started.run.session_id(),
+                    Some(started.run.id()),
+                    recipients,
+                    format!(
+                        "Provider launch `{}` failed before it became ready: {}",
+                        started.run.id(),
+                        error
+                    ),
+                );
+                let _ = app.remove_provider_process_for_run(started.run.id());
+            })
+            .await;
+            owned.provider_store.clear_runtime(started.run.id());
+            if let Ok(outcome) = owned
+                .provider_store
+                .terminate_run_provider_only(started.run.session_id(), started.run.id())
+            {
+                let _ = owned.clear_active_provider_run_session_pointer(
+                    started.run.session_id(),
+                    outcome.run().id(),
+                );
+                owned.provider_run_projection.update(outcome.into_run());
+            }
+            if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                let _ = owned.resume_provider_run_for_session(
+                    started.run.session_id(),
+                    previous_active_run_id,
+                );
+            }
+            let _ = owned.session_snapshot(started.run.session_id());
+            return;
+        }
         self.with_app_mut(|app| app.fail_provider_launch(started, error))
             .await;
     }
