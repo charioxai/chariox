@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::stream::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::{connect, Message, WebSocket};
 
 use crate::error::DaemonError;
-use crate::provider::OpenCodeProviderCatalog;
+use crate::provider::{OpenCodeProviderCatalog, ProviderWriteAccessMode};
 
 use super::resolve_codex_executable;
 
@@ -209,10 +209,13 @@ impl CodexClient {
         next_request_id: &mut u64,
         cwd: Option<&str>,
         model: Option<&str>,
+        write_access_mode: ProviderWriteAccessMode,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
+        let (approval_policy, sandbox, sandbox_policy) = codex_permission_policy(write_access_mode);
         let mut params = json!({
-            "approvalPolicy": "never",
-            "sandbox": "danger-full-access",
+            "approvalPolicy": approval_policy,
+            "sandbox": sandbox,
+            "sandboxPolicy": sandbox_policy,
             "personality": "pragmatic",
             "ephemeral": true,
             "serviceName": "arroba",
@@ -234,15 +237,18 @@ impl CodexClient {
         cwd: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        write_access_mode: ProviderWriteAccessMode,
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
+        let (approval_policy, _sandbox, sandbox_policy) =
+            codex_permission_policy(write_access_mode);
         let mut params = json!({
             "threadId": thread_id,
             "input": input,
-            "approvalPolicy": "never",
+            "approvalPolicy": approval_policy,
             "personality": "pragmatic",
-            "sandboxPolicy": { "type": "dangerFullAccess" },
+            "sandboxPolicy": sandbox_policy,
             "summary": "detailed",
         });
         if let Some(cwd) = cwd {
@@ -486,6 +492,21 @@ impl CodexClient {
             provider_run_id: self.provider_run_id.clone(),
             operation,
             message,
+        }
+    }
+}
+
+fn codex_permission_policy(
+    write_access_mode: ProviderWriteAccessMode,
+) -> (&'static str, &'static str, Value) {
+    match write_access_mode {
+        ProviderWriteAccessMode::Unrestricted => (
+            "never",
+            "danger-full-access",
+            json!({ "type": "dangerFullAccess" }),
+        ),
+        ProviderWriteAccessMode::ManagedIoRequired => {
+            ("never", "read-only", json!({ "type": "readOnly" }))
         }
     }
 }
@@ -735,7 +756,19 @@ fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProviderCatalog
 mod tests {
     use serde_json::json;
 
-    use super::{parse_notification, CodexNotification, JsonRpcMessage};
+    use crate::provider::ProviderWriteAccessMode;
+
+    use super::{codex_permission_policy, parse_notification, CodexNotification, JsonRpcMessage};
+
+    #[test]
+    fn managed_io_permission_policy_uses_read_only_sandbox() {
+        let (approval_policy, sandbox, sandbox_policy) =
+            codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+
+        assert_eq!(approval_policy, "never");
+        assert_eq!(sandbox, "read-only");
+        assert_eq!(sandbox_policy, json!({ "type": "readOnly" }));
+    }
 
     #[test]
     fn parse_notification_recognizes_reasoning_and_tool_events() {

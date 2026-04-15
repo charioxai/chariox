@@ -305,8 +305,10 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: filesystem-backed managed read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
 - Landed: runtime tool argument/schema definitions for managed artifact read/edit tools.
 - Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit tools backed by the provider run workspace root.
-- Landed: provider launch contract for required managed-I/O writes; Codex/OpenCode now reject that mode until concrete write enforcement is wired.
-- Not landed yet: concrete Codex/OpenCode write-permission enforcement, filesystem watcher, and workspace identity change detection.
+- Landed: provider launch contract for required managed-I/O writes.
+- Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
+- Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct file writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode.
+- Not landed yet: filesystem watcher, workspace identity change detection, remote coordinated routing, unsupported-mode surfacing beyond provider launch/session planning, and broader artifact domains.
 
 ## Non-Goals
 

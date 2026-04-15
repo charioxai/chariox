@@ -48,10 +48,6 @@ pub fn plan_codex_launch(
 fn plan_codex_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if request.is_some_and(LaunchProviderRequest::requires_managed_io) {
-        return Err(managed_io_unsupported_error());
-    }
-
     if let Some(endpoint) = env::var_os(CODEX_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -204,14 +200,6 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
         pty_env: BTreeMap::new(),
         working_directory: None,
         structured_endpoint: Some(endpoint),
-    }
-}
-
-fn managed_io_unsupported_error() -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "plan_codex_launch",
-        message: "Codex managed launch does not yet support required managed-I/O write enforcement"
-            .to_string(),
     }
 }
 
@@ -374,16 +362,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_required_managed_io_until_write_enforcement_is_supported() {
+    fn plans_required_managed_io_launch() {
         let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-codex-resolve-test-{}-managed-io",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("ARROBA_CODEX_PORT", "43144");
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
                 .with_managed_io_required();
 
-        let error = plan_codex_launch(Some(&request))
-            .expect_err("required managed I/O must fail until Codex write enforcement is wired");
+        let launch = plan_codex_launch(Some(&request)).expect("managed I/O launch should resolve");
 
-        assert!(error.to_string().contains("managed-I/O write enforcement"));
+        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("ARROBA_CODEX_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_eq!(
+            launch.structured_endpoint.as_deref(),
+            Some("ws://127.0.0.1:43144")
+        );
     }
 
     #[test]

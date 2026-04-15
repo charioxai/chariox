@@ -50,10 +50,6 @@ pub fn plan_opencode_launch(
 fn plan_opencode_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if request.is_some_and(LaunchProviderRequest::requires_managed_io) {
-        return Err(managed_io_unsupported_error());
-    }
-
     if let Some(endpoint) = env::var_os(OPENCODE_ENDPOINT_OVERRIDE) {
         let endpoint = endpoint.to_string_lossy().trim().to_string();
         if !endpoint.is_empty() {
@@ -186,15 +182,6 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
         pty_env: BTreeMap::new(),
         working_directory: None,
         structured_endpoint: Some(endpoint),
-    }
-}
-
-fn managed_io_unsupported_error() -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "plan_opencode_launch",
-        message:
-            "OpenCode managed launch does not yet support required managed-I/O write enforcement"
-                .to_string(),
     }
 }
 
@@ -400,8 +387,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_required_managed_io_until_write_enforcement_is_supported() {
+    fn plans_required_managed_io_launch() {
         let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-opencode-resolve-test-{}-managed-io",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        let port = reserve_unused_port();
+        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
         let request = LaunchProviderRequest::new(
             "session-1",
             "opencode",
@@ -411,10 +406,18 @@ mod tests {
         )
         .with_managed_io_required();
 
-        let error = plan_opencode_launch(Some(&request))
-            .expect_err("required managed I/O must fail until OpenCode write enforcement is wired");
+        let launch =
+            plan_opencode_launch(Some(&request)).expect("managed I/O launch should resolve");
 
-        assert!(error.to_string().contains("managed-I/O write enforcement"));
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_eq!(
+            launch.structured_endpoint.as_deref(),
+            Some(format!("http://127.0.0.1:{port}").as_str())
+        );
     }
 
     #[test]

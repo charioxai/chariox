@@ -53,7 +53,13 @@ pub(crate) fn initialize_opencode_runtime(
 
     let selection = resolve_initial_selection(run, &client)?;
 
-    let session_id = match run.resume_state().opencode_session_id().map(str::to_string) {
+    let managed_io_permission = run
+        .requires_managed_io()
+        .then(opencode_managed_io_permission_rules);
+    let resumable_session_id = (!run.requires_managed_io())
+        .then(|| run.resume_state().opencode_session_id().map(str::to_string))
+        .flatten();
+    let session_id = match resumable_session_id {
         Some(session_id) if client.snapshot(&session_id).is_ok() => {
             crate::logging::info_with_fields(
                 "daemon.provider.opencode",
@@ -74,7 +80,7 @@ pub(crate) fn initialize_opencode_runtime(
                     "provider_session_id": previous_session_id,
                 }),
             );
-            let session_id = client.create_session()?;
+            let session_id = client.create_session(managed_io_permission.clone())?;
             crate::logging::info_with_fields(
                 "daemon.provider.opencode",
                 "created opencode session",
@@ -86,7 +92,7 @@ pub(crate) fn initialize_opencode_runtime(
             session_id
         }
         None => {
-            let session_id = client.create_session()?;
+            let session_id = client.create_session(managed_io_permission.clone())?;
             crate::logging::info_with_fields(
                 "daemon.provider.opencode",
                 "created opencode session",
@@ -115,6 +121,26 @@ pub(crate) fn initialize_opencode_runtime(
         selection,
         resume_state: ProviderResumeState::from_opencode_session_id(session_id),
     })
+}
+
+fn opencode_managed_io_permission_rules() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "permission": "edit",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "bash",
+            "pattern": "*",
+            "action": "deny"
+        },
+        {
+            "permission": "task",
+            "pattern": "*",
+            "action": "deny"
+        }
+    ])
 }
 
 pub(super) fn sync_opencode_run_selection_for_session(

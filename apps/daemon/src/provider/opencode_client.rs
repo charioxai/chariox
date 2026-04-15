@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
@@ -384,9 +384,13 @@ impl OpenCodeClient {
         self.health()
     }
 
-    pub fn create_session(&self) -> Result<String, DaemonError> {
+    pub fn create_session(&self, permission: Option<Value>) -> Result<String, DaemonError> {
+        let mut body = json!({});
+        if let Some(permission) = permission {
+            body["permission"] = permission;
+        }
         let created: OpenCodeSessionCreated =
-            self.send_json_request("POST", "/session", Some(&json!({})))?;
+            self.send_json_request("POST", "/session", Some(&body))?;
         Ok(created.id)
     }
 
@@ -1307,6 +1311,68 @@ mod tests {
         client
             .check_health()
             .expect("client should decode chunked JSON");
+        server.join().expect("server thread should join");
+    }
+
+    #[test]
+    fn create_session_sends_permission_rules() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should expose a local address")
+            .port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("read timeout should be set");
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let size = stream.read(&mut buf).expect("request should read");
+                request.extend_from_slice(&buf[..size]);
+                let request_text = String::from_utf8_lossy(&request);
+                let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .expect("request should include content length");
+                if body.len() >= content_length {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).into_owned();
+            assert!(request_text.starts_with("POST /session "));
+            assert!(request_text.contains("\"permission\""));
+            assert!(request_text.contains("\"edit\""));
+            assert!(request_text.contains("\"deny\""));
+            let body = r#"{"id":"session-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+        });
+
+        let client =
+            OpenCodeClient::new("provider-run-1", format!("http://127.0.0.1:{port}")).unwrap();
+        let session_id = client
+            .create_session(Some(serde_json::json!([
+                {
+                    "permission": "edit",
+                    "pattern": "*",
+                    "action": "deny"
+                }
+            ])))
+            .expect("session should be created");
+        assert_eq!(session_id, "session-1");
         server.join().expect("server thread should join");
     }
 

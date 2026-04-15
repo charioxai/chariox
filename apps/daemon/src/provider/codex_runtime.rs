@@ -141,7 +141,10 @@ pub fn initialize_codex_runtime(
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
-    let (thread_id, selection) = match run.resume_state().codex_thread_id().map(str::to_string) {
+    let resumable_thread_id = (!run.requires_managed_io())
+        .then(|| run.resume_state().codex_thread_id().map(str::to_string))
+        .flatten();
+    let (thread_id, selection) = match resumable_thread_id {
         Some(thread_id) => {
             crate::logging::info_with_fields(
                 "daemon.provider.codex",
@@ -165,6 +168,7 @@ pub fn initialize_codex_runtime(
                 &mut next_request_id,
                 cwd.as_deref(),
                 model.as_deref(),
+                run.write_access_mode(),
             )?;
             (
                 thread.thread.id,
@@ -211,6 +215,7 @@ pub fn submit_codex_prompt(
         cwd.as_deref(),
         model.as_deref(),
         effort.as_deref(),
+        run.write_access_mode(),
         input,
         &mut state.buffered_notifications,
     )?;

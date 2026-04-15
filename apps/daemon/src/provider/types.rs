@@ -345,6 +345,11 @@ pub struct RuntimeProviderRun {
     working_directory: Option<PathBuf>,
     structured_endpoint: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
+    )]
+    write_access_mode: ProviderWriteAccessMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     control_capabilities: Vec<ControlCapability>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
@@ -385,6 +390,7 @@ impl RuntimeProviderRun {
                 .runtime_mcp_binding
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
+            write_access_mode: request.write_access_mode,
             control_capabilities: default_control_capabilities(
                 &request.adapter_key,
                 launch_result.endpoint_mode,
@@ -434,6 +440,7 @@ impl RuntimeProviderRun {
             structured_endpoint: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
+            write_access_mode: ProviderWriteAccessMode::Unrestricted,
             control_capabilities: default_control_capabilities(
                 &adapter_key,
                 AgentEndpointMode::Managed,
@@ -530,6 +537,14 @@ impl RuntimeProviderRun {
     }
     pub fn runtime_mcp_auth_token(&self) -> Option<&str> {
         self.runtime_mcp_auth_token.as_deref()
+    }
+
+    pub fn write_access_mode(&self) -> ProviderWriteAccessMode {
+        self.write_access_mode
+    }
+
+    pub fn requires_managed_io(&self) -> bool {
+        self.write_access_mode.requires_managed_io()
     }
 
     pub fn resume_state(&self) -> &ProviderResumeState {
