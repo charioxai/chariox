@@ -196,6 +196,20 @@ impl<'a> ProviderOutputLiveness<'a> {
     }
 }
 
+struct ProviderOutputPtyDrain<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderOutputPtyDrain<'a> {
+    fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    fn drain_output(&mut self, provider_run_id: &str) -> Result<Vec<PtyOutputChunk>, DaemonError> {
+        self.app.pty.drain_output(provider_run_id)
+    }
+}
+
 struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
     session_store: SessionStateStore,
@@ -573,7 +587,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         &mut self,
         provider_run_id: &str,
     ) -> Result<Vec<PtyOutputChunk>, DaemonError> {
-        self.app.pty.drain_output(provider_run_id)
+        ProviderOutputPtyDrain::new(self.app).drain_output(provider_run_id)
     }
 
     fn recipient_attachment_ids_for_session(&self, session_id: &str) -> Vec<String> {
