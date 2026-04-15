@@ -73,7 +73,7 @@ pub struct DaemonApp {
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
     pub(crate) prompt_activity: PromptActivityStore,
-    prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
+    prompt_workspace_claims: PromptWorkspaceClaimStore,
     pub(crate) prompt_idle_timeout: Duration,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -115,6 +115,35 @@ impl PromptActivityStore {
 
     pub(crate) fn write(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
         self.inner.lock().expect("prompt activity mutex poisoned")
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PromptWorkspaceClaimStore {
+    inner: Arc<Mutex<BTreeMap<String, WorkspaceClaimGuard>>>,
+}
+
+impl PromptWorkspaceClaimStore {
+    pub(crate) fn contains(&self, provider_run_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("prompt workspace claim mutex poisoned")
+            .contains_key(provider_run_id)
+    }
+
+    pub(crate) fn insert(&self, provider_run_id: String, claim: WorkspaceClaimGuard) {
+        self.inner
+            .lock()
+            .expect("prompt workspace claim mutex poisoned")
+            .insert(provider_run_id, claim);
+    }
+
+    pub(crate) fn remove(&self, provider_run_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("prompt workspace claim mutex poisoned")
+            .remove(provider_run_id)
+            .is_some()
     }
 }
 
@@ -232,7 +261,7 @@ impl DaemonApp {
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             prompt_activity: PromptActivityStore::default(),
-            prompt_workspace_claims: BTreeMap::new(),
+            prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_idle_timeout: prompt_idle_timeout(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(SessionService::new(&config)),
@@ -362,6 +391,14 @@ impl DaemonApp {
         self.transport_health.clone()
     }
 
+    pub(crate) fn prompt_activity_store(&self) -> PromptActivityStore {
+        self.prompt_activity.clone()
+    }
+
+    pub(crate) fn prompt_workspace_claim_store(&self) -> PromptWorkspaceClaimStore {
+        self.prompt_workspace_claims.clone()
+    }
+
     pub(crate) fn workspace_coordinator(&self) -> WorkspaceCoordinator {
         self.workspace_coordinator.clone()
     }
@@ -373,7 +410,7 @@ impl DaemonApp {
         agent_id: &str,
         attachment_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        if self.prompt_workspace_claims.contains_key(provider_run_id) {
+        if self.prompt_workspace_claims.contains(provider_run_id) {
             return Ok(());
         }
         let session = self.sessions.get_session(session_id)?;
@@ -424,9 +461,7 @@ impl DaemonApp {
     }
 
     pub(crate) fn release_prompt_workspace_claim(&mut self, provider_run_id: &str) -> bool {
-        self.prompt_workspace_claims
-            .remove(provider_run_id)
-            .is_some()
+        self.prompt_workspace_claims.remove(provider_run_id)
     }
 
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {

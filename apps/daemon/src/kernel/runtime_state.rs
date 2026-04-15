@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::agent::AgentServiceStore;
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore};
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
@@ -28,6 +28,8 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
+    prompt_activity: PromptActivityStore,
+    prompt_workspace_claims: PromptWorkspaceClaimStore,
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
 }
@@ -316,6 +318,34 @@ impl CompatibilityRuntimeOwnedState {
         self.provider_run_projection.update(run.clone());
         Ok(run)
     }
+
+    fn cancel_active_prompt_only(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let cancelled = self
+            .prompt_state_owner
+            .cancel_active_prompt_only(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        Ok(cancelled)
+    }
+
+    fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
+        self.prompt_activity.write().remove(provider_run_id);
+        self.prompt_workspace_claims.remove(provider_run_id)
+    }
 }
 
 impl CompatibilityRuntimeState {
@@ -334,6 +364,8 @@ impl CompatibilityRuntimeState {
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
+        prompt_activity: PromptActivityStore,
+        prompt_workspace_claims: PromptWorkspaceClaimStore,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
@@ -348,6 +380,8 @@ impl CompatibilityRuntimeState {
                 session_projection,
                 provider_run_projection,
                 prompt_state_owner,
+                prompt_activity,
+                prompt_workspace_claims,
                 terminal_stream,
                 workspace_coordinator,
             }),
@@ -675,6 +709,27 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        if let Some(owned) = &self.owned {
+            let _ = owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
+            let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
+            let _ = owned.session_snapshot(&dispatch.session_id);
+            let recipients = owned
+                .attachment_store
+                .list_session_attachment_ids(&dispatch.session_id);
+            self.with_app_mut(|app| {
+                app.record_notice(
+                    &dispatch.session_id,
+                    Some(&dispatch.provider_run_id),
+                    recipients,
+                    format!("Prompt dispatch failed after acknowledgement: {error}"),
+                );
+                if released_claim {
+                    app.retry_blocked_workflow_claims_from_runtime();
+                }
+            })
+            .await;
+            return Err(error);
+        }
         self.with_app_mut(|app| app.fail_kernel_prompt_dispatch(dispatch, error))
             .await
     }
@@ -684,6 +739,41 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
+        if let Some(owned) = &self.owned {
+            match result {
+                Ok(remote_provider_run_id) => {
+                    self.with_app_mut(|app| {
+                        app.echo_prompt_to_other_attachments(
+                            &dispatch.session_id,
+                            &remote_provider_run_id,
+                            &dispatch.source_attachment_id,
+                            &dispatch.prompt,
+                            &dispatch.attachments,
+                        );
+                    })
+                    .await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _ =
+                        owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
+                    let _ = owned.session_snapshot(&dispatch.session_id);
+                    let recipients = owned
+                        .attachment_store
+                        .list_session_attachment_ids(&dispatch.session_id);
+                    self.with_app_mut(|app| {
+                        app.record_notice(
+                            &dispatch.session_id,
+                            None,
+                            recipients,
+                            format!("Remote prompt dispatch failed after acknowledgement: {error}"),
+                        );
+                    })
+                    .await;
+                    return Err(error);
+                }
+            }
+        }
         self.with_app_mut(|app| app.finish_kernel_remote_prompt_dispatch(dispatch, result))
             .await
     }
@@ -711,6 +801,21 @@ impl CompatibilityRuntimeState {
         dispatch: crate::app::KernelPromptAbortDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        if let Some(owned) = &self.owned {
+            let recipients = owned
+                .attachment_store
+                .list_session_attachment_ids(&dispatch.session_id);
+            self.with_app_mut(|app| {
+                app.record_notice(
+                    &dispatch.session_id,
+                    Some(&dispatch.provider_run_id),
+                    recipients,
+                    format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+                );
+            })
+            .await;
+            return Err(error);
+        }
         self.with_app_mut(|app| app.fail_kernel_prompt_abort(dispatch, error))
             .await
     }
