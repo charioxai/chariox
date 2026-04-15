@@ -2416,6 +2416,7 @@ impl RuntimeSession {
             .complete_active_prompt_only(agent_id, self.focused_agent_id.as_deref())
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn cancel_active_prompt_only(
         &mut self,
         agent_id: &str,

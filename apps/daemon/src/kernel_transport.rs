@@ -317,7 +317,8 @@ where
         loop {
             {
                 let mut app = pump_app.lock().await;
-                crate::transport::TransportService::pump_active_prompts(&mut app);
+                app.pump_active_prompt_outputs();
+                app.pump_workflow_watchdogs();
             }
             sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
         }

@@ -451,9 +451,7 @@ impl DaemonApp {
             .map(|prompt| prompt.target_agent_id())
             .is_some_and(|agent_id| workflow_agent_ids.contains(agent_id));
         if should_cancel_active_prompt {
-            let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
-                self, session_id,
-            )?;
+            let _ = self.cancel_active_prompt_for_runtime(session_id)?;
         }
         for agent_id in workflow_agent_ids {
             if let Some(run) = self.providers().get_run_for_agent(session_id, &agent_id) {

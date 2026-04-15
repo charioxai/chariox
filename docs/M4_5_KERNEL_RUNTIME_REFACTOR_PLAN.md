@@ -280,6 +280,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved structured provider-output notice fanout/history persistence onto the same store-backed provider-output terminal/history sink. Prompt settlement, assistant-completion recording, PTY drain, and remaining lifecycle side effects still use compatibility state until those seams are split.
 - Landed: Phase 8 moved provider-output prompt-activity updates and assistant-message completion fanout onto cloneable prompt-activity, provider, and terminal stores inside the provider-output seam. Prompt settlement and PTY drain still use compatibility state until those seams are split.
 - Landed: Phase 8 removed the app-level assistant-message completion fanout helper by routing prompt-command completions directly through the terminal/provider stores at the owning command seam.
+- Landed: Phase 8 trimmed unused transport prompt facade methods and removed the obsolete production session-mirror direct-cancel mutation path; the remaining mirror corruption path is test-only. Workflow dispatch failure cleanup now uses the prompt owner directly and clears prompt activity through the flow-control seam.
 
 Still open:
 

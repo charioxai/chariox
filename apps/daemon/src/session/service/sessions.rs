@@ -255,6 +255,7 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_active_prompt(
         &mut self,
         session_id: &str,

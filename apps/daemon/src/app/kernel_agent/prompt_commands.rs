@@ -1240,6 +1240,7 @@ impl<'a> KernelAgentService<'a> {
         Ok((session, next))
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_active_prompt(
         &mut self,
         session_id: &str,

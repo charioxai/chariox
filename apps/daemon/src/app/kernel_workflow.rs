@@ -67,9 +67,7 @@ impl<'a> KernelWorkflowContext<'a> {
     }
 
     fn cancel_active_prompt_for_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
-        let _ = crate::transport::TransportService::cancel_active_prompt_for_runtime(
-            self.app, session_id,
-        )?;
+        let _ = self.app.cancel_active_prompt_for_runtime(session_id)?;
         Ok(())
     }
 

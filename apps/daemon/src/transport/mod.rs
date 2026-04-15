@@ -1,10 +1,6 @@
-use crate::app::provider_output::{
-    pump_terminal_output_for_attachment, ProviderOutputPump, ProviderOutputPumpRequest,
-};
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::session::{PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem};
-use crate::terminal::TerminalOutputRecord;
+use crate::session::PromptQueueItem;
 use arroba_relay::protocol::ClientTarget;
 
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -21,93 +17,6 @@ pub(crate) mod runtime_tools;
 pub struct TransportService;
 
 impl TransportService {
-    pub fn schedule_direct_prompt(
-        app: &mut DaemonApp,
-        session_id: &str,
-        attachment_id: &str,
-        prompt: &str,
-        attachments: Vec<PromptAttachment>,
-    ) -> Result<crate::session::PromptSubmissionOutcome, DaemonError> {
-        app.submit_prompt(session_id, attachment_id, None, prompt, attachments)
-    }
-
-    pub fn schedule_direct_prompt_to_agent(
-        app: &mut DaemonApp,
-        session_id: &str,
-        attachment_id: &str,
-        target_agent_id: Option<&str>,
-        prompt: &str,
-        attachments: Vec<PromptAttachment>,
-    ) -> Result<crate::session::PromptSubmissionOutcome, DaemonError> {
-        app.submit_prompt(
-            session_id,
-            attachment_id,
-            target_agent_id,
-            prompt,
-            attachments,
-        )
-    }
-
-    pub fn complete_active_prompt(
-        app: &mut DaemonApp,
-        session_id: &str,
-    ) -> Result<PromptCompletion, DaemonError> {
-        let agent_id = app
-            .sessions()
-            .get_session(session_id)?
-            .active_prompt_agent_id()
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        let provider_run_id = app
-            .providers()
-            .get_run_for_agent(session_id, &agent_id)
-            .map(|run| run.id().to_string());
-        app.complete_active_prompt(session_id, &agent_id, provider_run_id.as_deref())
-    }
-
-    pub fn cancel_active_prompt(
-        app: &mut DaemonApp,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<PromptCancellation, DaemonError> {
-        app.cancel_active_prompt(session_id, attachment_id)
-    }
-
-    pub fn cancel_active_prompt_for_runtime(
-        app: &mut DaemonApp,
-        session_id: &str,
-    ) -> Result<PromptCancellation, DaemonError> {
-        app.cancel_active_prompt_for_runtime(session_id)
-    }
-
-    pub fn pump_active_prompts(app: &mut DaemonApp) {
-        app.pump_active_prompt_outputs();
-        app.pump_workflow_watchdogs();
-    }
-
-    pub fn pump_terminal_output(
-        app: &mut DaemonApp,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        pump_terminal_output_for_attachment(app, session_id, attachment_id)
-    }
-
-    pub fn pump_provider_output(
-        app: &mut DaemonApp,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
-        ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
-            session_id,
-            provider_run_id,
-            recipient_attachment_ids,
-            initial_liveness_already_checked: false,
-        })
-    }
-
     pub fn dispatch_workflow_prompt(
         app: &mut DaemonApp,
         session_id: &str,
@@ -175,26 +84,5 @@ impl TransportService {
                 session_id: session_id.to_string(),
             }),
         )
-    }
-
-    pub fn cancel_active_prompt_after_dispatch_failure(
-        app: &mut DaemonApp,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: Option<&str>,
-    ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        let cancel_result = {
-            app.sessions_mut()
-                .cancel_active_prompt(session_id, agent_id)
-        };
-        match cancel_result {
-            Ok((_, cancelled)) => {
-                if let Some(provider_run_id) = provider_run_id {
-                    flow_control::clear_prompt_activity(app, provider_run_id);
-                }
-                Ok(Some(cancelled))
-            }
-            Err(_) => Ok(None),
-        }
     }
 }

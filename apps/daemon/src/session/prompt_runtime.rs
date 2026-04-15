@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use super::types::PromptSubmissionOutcome;
-use super::types::{AgentPromptState, PromptQueueItem, PromptStatus, SchedulerState};
+use super::types::{AgentPromptState, PromptQueueItem, SchedulerState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::session) struct PromptRuntimeState {
@@ -101,12 +101,12 @@ impl PromptRuntimeState {
         let prompt_state = self.prompt_states.entry(agent_id).or_default();
         let outcome = if prompt_state.active_prompt.is_none() {
             let mut running = prompt;
-            running.set_status(PromptStatus::Running);
+            running.set_status(super::types::PromptStatus::Running);
             prompt_state.active_prompt = Some(running.clone());
             PromptSubmissionOutcome::Started { prompt: running }
         } else {
             let mut queued = prompt;
-            queued.set_status(PromptStatus::Queued);
+            queued.set_status(super::types::PromptStatus::Queued);
             prompt_state.queued_prompts.push_back(queued.clone());
             PromptSubmissionOutcome::Queued { prompt: queued }
         };
@@ -122,12 +122,13 @@ impl PromptRuntimeState {
     ) -> Option<PromptQueueItem> {
         let prompt_state = self.prompt_states.get_mut(agent_id)?;
         let mut completed = prompt_state.active_prompt.take()?;
-        completed.set_status(PromptStatus::Completed);
+        completed.set_status(super::types::PromptStatus::Completed);
         self.drop_empty_prompt_state(agent_id);
         self.refresh_after_mutation(focused_agent_id);
         Some(completed)
     }
 
+    #[cfg(test)]
     pub(in crate::session) fn cancel_active_prompt_only(
         &mut self,
         agent_id: &str,
@@ -135,7 +136,7 @@ impl PromptRuntimeState {
     ) -> Option<PromptQueueItem> {
         let prompt_state = self.prompt_states.get_mut(agent_id)?;
         let mut cancelled = prompt_state.active_prompt.take()?;
-        cancelled.set_status(PromptStatus::Cancelled);
+        cancelled.set_status(super::types::PromptStatus::Cancelled);
         self.drop_empty_prompt_state(agent_id);
         self.refresh_after_mutation(focused_agent_id);
         Some(cancelled)
@@ -216,7 +217,7 @@ impl PromptRuntimeState {
         focused_agent_id: Option<&str>,
     ) -> PromptQueueItem {
         let agent_id = prompt.target_agent_id().to_string();
-        prompt.set_status(PromptStatus::Running);
+        prompt.set_status(super::types::PromptStatus::Running);
         let prompt_state = self.prompt_states.entry(agent_id).or_default();
         prompt_state.active_prompt = Some(prompt.clone());
         self.refresh_after_mutation(focused_agent_id);

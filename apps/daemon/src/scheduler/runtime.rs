@@ -16,7 +16,6 @@ use crate::session::{
     WorkflowFailurePolicyMode, WorkflowMessage, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
 };
-use crate::transport::TransportService;
 
 const WORKFLOW_PROMPT_SOURCE_PREFIX: &str = "workflow-run:";
 const WORKFLOW_COMPLETION_SUMMARY_LIMIT: usize = 160;
@@ -426,7 +425,7 @@ fn handle_workflow_prompt_submission_outcome(
 ) -> Result<(), DaemonError> {
     match outcome {
         PromptSubmissionOutcome::Started { prompt } => {
-            if let Err(error) = TransportService::dispatch_workflow_prompt(
+            if let Err(error) = crate::transport::TransportService::dispatch_workflow_prompt(
                 app,
                 session_id,
                 target_agent_id,
@@ -443,17 +442,16 @@ fn handle_workflow_prompt_submission_outcome(
                         error.to_string(),
                     ),
                 );
-                if let Ok(Some(cancelled)) =
-                    TransportService::cancel_active_prompt_after_dispatch_failure(
-                        app,
-                        session_id,
-                        target_agent_id,
-                        app.providers()
-                            .get_run_for_agent(session_id, target_agent_id)
-                            .map(|run| run.id().to_string())
-                            .as_deref(),
-                    )
+                let provider_run_id = app
+                    .providers()
+                    .get_run_for_agent(session_id, target_agent_id)
+                    .map(|run| run.id().to_string());
+                if let Ok(cancelled) =
+                    app.prompt_owner_cancel_active_prompt_only(session_id, target_agent_id)
                 {
+                    if let Some(provider_run_id) = provider_run_id.as_deref() {
+                        crate::transport::flow_control::clear_prompt_activity(app, provider_run_id);
+                    }
                     let _ = on_workflow_prompt_cancelled(app, session_id, &cancelled);
                 }
                 return Err(error);

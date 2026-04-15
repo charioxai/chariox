@@ -353,6 +353,7 @@ impl DaemonApp {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_active_prompt(
         &mut self,
         session_id: &str,

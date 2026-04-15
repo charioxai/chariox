@@ -527,22 +527,18 @@ mod tests {
             ))
             .expect("provider run should launch");
 
-        let first_outcome = crate::transport::TransportService::schedule_direct_prompt(
-            &mut app,
-            session.id(),
-            first.id(),
-            "first prompt\n",
-            Vec::new(),
-        )
-        .expect("first prompt should start");
-        let second_outcome = crate::transport::TransportService::schedule_direct_prompt(
-            &mut app,
-            session.id(),
-            second.id(),
-            "second prompt\n",
-            Vec::new(),
-        )
-        .expect("second prompt should queue");
+        let first_outcome = app
+            .submit_prompt(session.id(), first.id(), None, "first prompt\n", Vec::new())
+            .expect("first prompt should start");
+        let second_outcome = app
+            .submit_prompt(
+                session.id(),
+                second.id(),
+                None,
+                "second prompt\n",
+                Vec::new(),
+            )
+            .expect("second prompt should queue");
 
         match first_outcome {
             PromptSubmissionOutcome::Started { .. } => {}
@@ -606,14 +602,15 @@ mod tests {
             ))
             .expect("provider run should launch");
 
-        let _ = crate::transport::TransportService::schedule_direct_prompt(
-            &mut app,
-            session.id(),
-            attachment.id(),
-            "restore me\n",
-            Vec::new(),
-        )
-        .expect("prompt should submit");
+        let _ = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                None,
+                "restore me\n",
+                Vec::new(),
+            )
+            .expect("prompt should submit");
         let _ = crate::app::KernelSessionService::new(&mut app)
             .end_session(session.id())
             .expect("session should end");

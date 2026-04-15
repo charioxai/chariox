@@ -12,7 +12,6 @@ use crate::session::{
     WorkflowOutputValidationPolicy, WorkflowTurnRuntimeState,
 };
 use crate::terminal::TerminalOutputKind;
-use crate::transport::TransportService;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 use arroba_relay::{protocol::DaemonRegistration, RelayConfig, RelayServer};
 
@@ -2383,7 +2382,10 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         "expected background agent output to continue while unfocused"
     );
 
-    harness.with_app_mut(|app| TransportService::pump_active_prompts(app));
+    harness.with_app_mut(|app| {
+        app.pump_active_prompt_outputs();
+        app.pump_workflow_watchdogs();
+    });
     harness.with_app(|app| {
         let session_state = app
             .sessions()
