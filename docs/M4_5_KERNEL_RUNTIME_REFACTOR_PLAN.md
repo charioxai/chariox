@@ -278,6 +278,7 @@ Status as of 2026-04-13:
 - Landed: Phase 8 moved provider-output fanout history/terminal writes onto cloneable terminal, session, provider, history, and history-projection stores inside the provider-output seam instead of calling the broad app-level history append helper. The pump still runs under the compatibility app boundary, but fanout persistence now has the same owned-store shape as terminal-output and history projections.
 - Landed: Phase 8 moved provider-output pump provider-run reads, structured-output poll enqueue/drain/metadata application, and pending structured-output record buffering onto cloneable provider/pending-record stores inside the provider-output seam. PTY drain, prompt settlement, and remaining lifecycle side effects still use compatibility state until those seams are split.
 - Landed: Phase 8 moved structured provider-output notice fanout/history persistence onto the same store-backed provider-output terminal/history sink. Prompt settlement, assistant-completion recording, PTY drain, and remaining lifecycle side effects still use compatibility state until those seams are split.
+- Landed: Phase 8 moved provider-output prompt-activity updates and assistant-message completion fanout onto cloneable prompt-activity, provider, and terminal stores inside the provider-output seam. Prompt settlement and PTY drain still use compatibility state until those seams are split.
 
 Still open:
 

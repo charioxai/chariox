@@ -22,19 +22,6 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
     );
 }
 
-pub(crate) fn note_prompt_output(app: &mut DaemonApp, provider_run_id: &str) {
-    if let Some(state) = app.prompt_activity.write().get_mut(provider_run_id) {
-        state.last_output_at = Some(Instant::now());
-    }
-}
-
-pub(crate) fn note_prompt_response_content(app: &mut DaemonApp, provider_run_id: &str) {
-    if let Some(state) = app.prompt_activity.write().get_mut(provider_run_id) {
-        state.last_output_at = Some(Instant::now());
-        state.saw_response_content = true;
-    }
-}
-
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
     app.prompt_activity.write().remove(provider_run_id);
     if app.release_prompt_workspace_claim(provider_run_id) {

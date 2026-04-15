@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use crate::app::DaemonApp;
+use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
 use crate::kernel::projection::SessionHistoryProjectionStore;
@@ -158,6 +159,7 @@ struct ProviderOutputPumpContext<'a> {
     app: &'a mut DaemonApp,
     provider_store: ProviderProcessServiceStore,
     pending_structured_output_records: StructuredOutputRecordStore,
+    prompt_activity: PromptActivityStore,
 }
 
 struct ProviderOutputRecipientResolver<'a> {
@@ -279,6 +281,29 @@ impl ProviderOutputFanout {
         record
     }
 
+    fn record_assistant_message_completion(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        let agent_id = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        self.terminal.record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+        );
+    }
+
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
@@ -314,6 +339,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Self {
             provider_store: app.providers.clone(),
             pending_structured_output_records: app.pending_structured_output_records.clone(),
+            prompt_activity: app.prompt_activity.clone(),
             app,
         }
     }
@@ -504,22 +530,19 @@ impl<'a> ProviderOutputPumpContext<'a> {
             )
         });
         if saw_response_content {
-            crate::transport::flow_control::note_prompt_response_content(self.app, provider_run_id);
+            self.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {
-            crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
+            self.note_prompt_output(provider_run_id);
         }
         for completion in &poll_result.completions {
-            self.app.record_assistant_message_completion(
+            terminal_sink.record_assistant_message_completion(
                 session_id,
                 provider_run_id,
                 recipient_attachment_ids.clone(),
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            crate::transport::flow_control::mark_prompt_completion_recorded(
-                self.app,
-                provider_run_id,
-            );
+            self.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
         let records = poll_result
@@ -583,8 +606,23 @@ impl<'a> ProviderOutputPumpContext<'a> {
         ProviderOutputRecipientResolver::new(self.app).session_attachment_ids(session_id)
     }
 
-    fn note_prompt_response_content(&mut self, provider_run_id: &str) {
-        crate::transport::flow_control::note_prompt_response_content(self.app, provider_run_id);
+    fn note_prompt_output(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.last_output_at = Some(Instant::now());
+        }
+    }
+
+    fn note_prompt_response_content(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.last_output_at = Some(Instant::now());
+            state.saw_response_content = true;
+        }
+    }
+
+    fn mark_prompt_completion_recorded(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.completion_recorded = true;
+        }
     }
 
     fn maybe_complete_active_prompt(
