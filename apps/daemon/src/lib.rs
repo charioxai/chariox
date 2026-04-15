@@ -1,6 +1,5 @@
 pub mod agent;
 pub mod app;
-pub mod artifact_io;
 pub mod attachment;
 pub mod capability;
 pub mod config;
@@ -8,6 +7,7 @@ pub(crate) mod env_lock;
 pub mod error;
 pub mod execution_lease;
 pub mod history;
+pub mod io;
 pub mod kernel;
 pub mod kernel_transport;
 pub mod local;

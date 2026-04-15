@@ -1,4 +1,4 @@
-use crate::artifact_io::types::{AgentEditOperation, ArtifactEditError, TextRange};
+use crate::io::types::{AgentEditOperation, ArtifactEditError, TextRange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TextEditPlan {
@@ -99,8 +99,8 @@ impl TextDocumentDomain {
         {
             return Err(ArtifactEditError::Conflict {
                 path: Default::default(),
-                base_version: crate::artifact_io::types::ArtifactVersion::initial(),
-                current_version: crate::artifact_io::types::ArtifactVersion::initial(),
+                base_version: crate::io::types::ArtifactVersion::initial(),
+                current_version: crate::io::types::ArtifactVersion::initial(),
                 requested_ranges: vec![plan.range],
                 changed_ranges: deltas.iter().map(|delta| delta.range).collect(),
                 message: "edit overlaps changes made since the base snapshot".to_string(),

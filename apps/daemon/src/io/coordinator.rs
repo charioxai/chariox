@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::artifact_io::text::{TextDocumentDomain, TextEditPlan};
-use crate::artifact_io::types::{
+use crate::io::text::{TextDocumentDomain, TextEditPlan};
+use crate::io::types::{
     AgentEditIntent, ArtifactContent, ArtifactDomainKind, ArtifactEditError, ArtifactEditWarning,
     ArtifactId, ArtifactReadResult, ArtifactSnapshotId, ArtifactVersion, EditResult,
     WorkspaceIdentity,
@@ -266,7 +266,7 @@ fn hash_content(content: &ArtifactContent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifact_io::types::{AgentEditOperation, TextRange};
+    use crate::io::types::{AgentEditOperation, TextRange};
 
     fn workspace() -> WorkspaceIdentity {
         WorkspaceIdentity::local("repo-a")
