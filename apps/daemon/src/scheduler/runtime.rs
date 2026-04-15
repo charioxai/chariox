@@ -306,7 +306,7 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) -> BTreeSet<String> {
 
     let mut affected_sessions = BTreeSet::new();
     for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt) in blocked {
-        if let Err(error) = dispatch_prepared_workflow_node_prompt(
+        if let Err(error) = retry_prepared_workflow_node_prompt_without_provider_dispatch(
             app,
             &session_id,
             &workflow_run_id,
@@ -327,6 +327,67 @@ pub fn retry_blocked_workflow_claims(app: &mut DaemonApp) -> BTreeSet<String> {
         affected_sessions.insert(session_id);
     }
     affected_sessions
+}
+
+fn retry_prepared_workflow_node_prompt_without_provider_dispatch(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    target_agent_id: &str,
+    node_id: &str,
+    prompt: &str,
+) -> Result<(), DaemonError> {
+    let provider_run_id = ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id)?;
+    match app.acquire_workflow_node_workspace_claim(
+        session_id,
+        &provider_run_id,
+        target_agent_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    ) {
+        Ok(()) => {
+            let _ = app
+                .sessions_mut()
+                .ready_workflow_node_after_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+        }
+        Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let outcome = submit_claimed_workflow_prompt(
+        app,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        target_agent_id,
+        prompt,
+    )?;
+    match outcome {
+        PromptSubmissionOutcome::Started { prompt } => {
+            app.sessions_mut().mark_workflow_turn_dispatched(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            on_workflow_prompt_started(app, session_id, &prompt)?;
+            crate::transport::flow_control::note_prompt_started(app, &provider_run_id);
+        }
+        PromptSubmissionOutcome::Queued { .. } => {
+            app.record_notice(
+                session_id,
+                None,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` queued node `{node_id}` behind the current active prompt."
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn resume_workflow_run(
@@ -577,6 +638,38 @@ pub fn ensure_workflow_provider_run_for_agent(
 ) -> Result<String, DaemonError> {
     match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
         Ok(provider_run_id) => {
+            let ended = app
+                .providers()
+                .get_run(&provider_run_id)
+                .ok()
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+            if ended {
+                let agent = app.agents().get_agent(agent_id)?;
+                let adapter_key = match agent.provider() {
+                    "default" => "opencode",
+                    value => value,
+                };
+                let provider = match agent.provider() {
+                    "default" => "opencode",
+                    value => value,
+                };
+                let mut request = LaunchProviderRequest::new(
+                    session_id,
+                    adapter_key,
+                    provider,
+                    "default",
+                    agent.model().unwrap_or("default"),
+                )
+                .with_agent_id(agent.id().to_string())
+                .with_variant(agent.effort().map(str::to_string));
+                if let Some(worktree_id) = agent.worktree_id() {
+                    request = request.with_working_directory(PathBuf::from(worktree_id));
+                }
+                let provider_run = app.launch_provider_detached(request)?;
+                app.sessions_mut()
+                    .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
+                return Ok(provider_run.id().to_string());
+            }
             app.sessions_mut()
                 .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
             Ok(provider_run_id)

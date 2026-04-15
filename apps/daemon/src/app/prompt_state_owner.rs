@@ -209,19 +209,6 @@ impl DaemonApp {
         Ok(removed)
     }
 
-    pub(crate) fn prompt_owner_remove_queued_prompts_by_workflow_run(
-        &mut self,
-        session_id: &str,
-        workflow_run_id: &str,
-    ) -> Result<usize, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
-        let removed = self
-            .prompt_state_owner
-            .remove_queued_prompts_by_workflow_run(&session, workflow_run_id);
-        self.mirror_prompt_owner_session_state(session_id)?;
-        Ok(removed)
-    }
-
     fn mirror_prompt_owner_agent_state(
         &mut self,
         session_id: &str,

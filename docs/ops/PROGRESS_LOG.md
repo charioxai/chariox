@@ -552,3 +552,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved owned workflow resume, workflow prompt start/cancel bookkeeping, workflow provider-run ensure, blocked workspace-claim retry, and local/forwarded workflow runtime-tool mutation into `CompatibilityRuntimeOwnedState` store operations.
 - Runtime MCP calls authenticated by provider tokens now resolve local workflow turns from owned provider/prompt/session state before recording ack, validation, output-submission, and console tool effects.
 - Kept workflow prompt completion scheduling on the existing scheduler renderer because that path still owns mailbox rendering, outgoing edge contracts, join-node readiness, and queued downstream prompt text fidelity; this is the remaining hard center of point 5 rather than point 6.
+
+### M4.5 workflow progression ownership closure update
+
+- Moved workflow prompt completion scheduling, invoke admission/start, cancel cleanup, queued-launch start, provider-run ensure, and blocked-claim retry behavior onto owned runtime-state operations for the production local workflow path.
+- Preserved workflow join-node readiness by preventing incomplete joins from being dispatched while still retrying the blocked sibling branch after workspace-claim release.
+- Left the old app workflow-runtime helpers only as compatibility/test-facing surfaces; router/workflow-lane invoke and cancel no longer use the app-backed workflow launch or cancellation helpers.
