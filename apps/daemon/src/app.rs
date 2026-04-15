@@ -383,11 +383,6 @@ impl DaemonApp {
         self.session_projection.update(session);
     }
 
-    pub(crate) fn remove_session_projection(&self, session_id: &str) {
-        self.session_projection.remove(session_id);
-        self.agent_runtime_projection.remove_session(session_id);
-    }
-
     pub(crate) fn session_history_projection_store(&self) -> SessionHistoryProjectionStore {
         self.history_projection.clone()
     }

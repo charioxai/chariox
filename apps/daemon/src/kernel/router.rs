@@ -3869,14 +3869,16 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("recipient attachment should attach");
-        crate::app::KernelSessionService::new(&mut app)
-            .update_session_config(
-                &session_id,
+        app.record_notice(
+            &session_id,
+            None,
+            vec![recipient.id().to_string()],
+            format!(
+                "Attachment `{}` updated configuration for session `{}`.",
                 source.id(),
-                BTreeMap::from([("theme".to_string(), "compact".to_string())]),
-                false,
-            )
-            .expect("config update should create a notice");
+                session_id
+            ),
+        );
 
         let app = Arc::new(Mutex::new(app));
         let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);

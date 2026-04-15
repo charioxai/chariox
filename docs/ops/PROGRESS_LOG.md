@@ -6,9 +6,9 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ### M4.5 production ownership closure status
 
-- Closed the seven production ownership points: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now route production command/runtime behavior through owned runtime ports.
-- Kept the dead-code purge inside M4.5 instead of moving it out of the milestone. Remaining cleanup is to delete now-unused app-backed helper surfaces, prune test-only compatibility helpers that no longer cover production behavior, refresh status docs, and rerun the daemon suites.
-- Recommendation: do the M4.5 dead-code purge next, then use a final docs/invariants pass to mark M4.5 complete before returning to final I/O coordination.
+- Closed the seven ownership points: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now route command/runtime behavior through owned runtime ports.
+- Completed the M4.5 dead-code purge by deleting now-unused app-backed session/projection/remote-lease/workflow-console helpers, the obsolete app-backed runtime-tool dispatcher and its tests, and stale test-only calls into compatibility helpers.
+- Verified with clean `cargo check`, daemon lib tests, runtime integration tests, kernel websocket integration tests, relay-client tests, and daemon bin tests. Recommendation: treat M4.5 ownership as closed and move next to final docs/invariant alignment before the final I/O-coordination slice.
 
 ### M4.5 prompt ownership hard-center update
 

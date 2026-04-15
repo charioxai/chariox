@@ -2,8 +2,8 @@ use crate::app::{provider_runtime::ProviderProcessTracker, DaemonApp};
 use crate::error::DaemonError;
 use crate::session::{
     unix_epoch_ms, PromptQueueItem, QueuedWorkflowLaunch, QueuedWorkflowLaunchSource,
-    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEndpointDefinition,
-    WorkflowLaunchAdmission, WorkflowRun, WorkflowWatchdogTickPlan,
+    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowLaunchAdmission, WorkflowRun,
+    WorkflowWatchdogTickPlan,
 };
 use std::collections::BTreeSet;
 
@@ -70,38 +70,6 @@ impl WorkflowProgression {
 
     fn retry_blocked_claims(app: &mut DaemonApp) -> BTreeSet<String> {
         crate::scheduler::runtime::retry_blocked_workflow_claims(app)
-    }
-
-    fn read_console(
-        app: &DaemonApp,
-        session_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowConsole, DaemonError> {
-        crate::scheduler::runtime::read_workflow_console(app, session_id, workflow_id)
-    }
-
-    fn write_console(
-        app: &mut DaemonApp,
-        session_id: &str,
-        workflow_id: &str,
-        workflow_node_run_id: &str,
-        text: &str,
-    ) -> Result<WorkflowConsoleEntry, DaemonError> {
-        crate::scheduler::runtime::write_workflow_console(
-            app,
-            session_id,
-            workflow_id,
-            workflow_node_run_id,
-            text,
-        )
-    }
-
-    fn clear_console(
-        app: &mut DaemonApp,
-        session_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowConsole, DaemonError> {
-        crate::scheduler::runtime::clear_workflow_console(app, session_id, workflow_id)
     }
 }
 
@@ -388,32 +356,6 @@ fn invoke_watchdog_workflow_launch(
             Err(error)
         }
     }
-}
-
-pub(crate) fn read_workflow_console_from_runtime(
-    app: &DaemonApp,
-    session_id: &str,
-    workflow_id: &str,
-) -> Result<WorkflowConsole, DaemonError> {
-    WorkflowProgression::read_console(app, session_id, workflow_id)
-}
-
-pub(crate) fn write_workflow_console_from_runtime(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_id: &str,
-    workflow_node_run_id: &str,
-    text: &str,
-) -> Result<WorkflowConsoleEntry, DaemonError> {
-    WorkflowProgression::write_console(app, session_id, workflow_id, workflow_node_run_id, text)
-}
-
-pub(crate) fn clear_workflow_console_from_runtime(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_id: &str,
-) -> Result<WorkflowConsole, DaemonError> {
-    WorkflowProgression::clear_console(app, session_id, workflow_id)
 }
 
 pub(crate) fn start_workflow_prompt_from_runtime(

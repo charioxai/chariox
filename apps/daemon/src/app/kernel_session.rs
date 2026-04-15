@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
-use crate::attachment::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
+use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::error::DaemonError;
 use crate::history::SessionHistoryEntry;
 use crate::local::{
@@ -11,18 +8,11 @@ use crate::local::{
 };
 use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::session::{
-    CreateSessionRequest, RuntimeSession, SessionConfigState, SessionStateOwner,
-    SessionStateReader, SessionStatus,
+    CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
 
 pub(crate) struct KernelSessionService<'a> {
     app: &'a mut DaemonApp,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CapabilityAuthorizationContext {
-    pub(crate) workspace_id: String,
-    pub(crate) worktree_root: PathBuf,
 }
 
 pub(crate) struct KernelSessionReadService<'a> {
@@ -57,31 +47,6 @@ impl<'a> KernelSessionReadService<'a> {
             });
         }
         Ok(attachment)
-    }
-
-    pub(crate) fn capability_context(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        capability: &'static str,
-    ) -> Result<CapabilityAuthorizationContext, DaemonError> {
-        let session =
-            SessionStateReader::new(self.app.session_state_store()).get_session(session_id)?;
-        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
-        if !matches!(
-            attachment.capability_level(),
-            ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
-        ) {
-            return Err(DaemonError::AttachmentCapabilityDenied {
-                session_id: session_id.to_string(),
-                attachment_id: attachment.id().to_string(),
-                capability,
-            });
-        }
-        Ok(CapabilityAuthorizationContext {
-            workspace_id: session.workspace_id().to_string(),
-            worktree_root: PathBuf::from(session.worktree_id()),
-        })
     }
 
     pub(crate) fn list_sessions_response(&self) -> Result<LocalDaemonResponse, DaemonError> {
@@ -171,111 +136,6 @@ impl<'a> KernelSessionService<'a> {
         );
 
         Ok((session, agent))
-    }
-
-    pub(crate) fn create_session_response(
-        &mut self,
-        request: CreateSessionRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (mut session, agent) = self.create_session(request)?;
-        let agents = self.app.agents().get_session_agents(session.id());
-        session.set_agents(agents);
-        crate::logging::info_with_fields(
-            "daemon.session",
-            "session created with default agent",
-            serde_json::json!({
-                "session_id": session.id(),
-                "session_alias": session.alias(),
-                "workspace_id": session.workspace_id(),
-                "worktree_id": session.worktree_id(),
-                "execution_mode": format!("{:?}", session.execution_mode()),
-                "agent_id": agent.id(),
-                "agent_ref": agent.agent_ref(),
-            }),
-        );
-        Ok(LocalDaemonResponse::SessionCreated { session, agent })
-    }
-
-    pub(crate) fn resolve_session_ref_id(
-        &self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<String, DaemonError> {
-        Ok(SessionStateReader::new(self.app.session_state_store())
-            .resolve_session_ref(session_ref, workspace_id)?
-            .id()
-            .to_string())
-    }
-
-    pub(crate) fn attachment_session_id(&self, attachment_id: &str) -> Result<String, DaemonError> {
-        Ok(self
-            .app
-            .attachments
-            .get_attachment(attachment_id)?
-            .session_id()
-            .to_string())
-    }
-
-    pub(crate) fn session_snapshot(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
-    }
-
-    pub(crate) fn ensure_attachment_in_session(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<RuntimeAttachment, DaemonError> {
-        let attachment = self.app.attachments.get_attachment(attachment_id)?;
-        if attachment.session_id() != session_id {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-        Ok(attachment)
-    }
-
-    pub(crate) fn alias_session(
-        &mut self,
-        session_id: &str,
-        alias: String,
-    ) -> Result<RuntimeSession, DaemonError> {
-        let _session = SessionStateOwner::new(self.app.session_state_store())
-            .assign_session_alias(session_id, alias)?;
-        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)
-    }
-
-    pub(crate) fn update_session_config(
-        &mut self,
-        session_id: &str,
-        attachment_id: &str,
-        values: BTreeMap<String, String>,
-        requires_idle: bool,
-    ) -> Result<SessionConfigState, DaemonError> {
-        KernelSessionReadService::new(self.app)
-            .ensure_attachment_in_session(session_id, attachment_id)?;
-        let (_session, config) = SessionStateOwner::new(self.app.session_state_store())
-            .update_config(session_id, attachment_id, values, requires_idle)?;
-
-        let recipient_attachment_ids = self.app.other_attachment_ids(session_id, attachment_id);
-        if !recipient_attachment_ids.is_empty() {
-            let active_provider_run_id = self
-                .app
-                .sessions()
-                .get_session(session_id)?
-                .active_provider_run_id()
-                .map(str::to_string);
-            self.app.record_notice(
-                session_id,
-                active_provider_run_id.as_deref(),
-                recipient_attachment_ids,
-                format!(
-                    "Attachment `{attachment_id}` updated configuration for session `{session_id}`."
-                ),
-            );
-        }
-
-        Ok(config)
     }
 
     pub(crate) fn attach(
@@ -550,31 +410,6 @@ impl<'a> KernelSessionService<'a> {
         Ok(ended)
     }
 
-    pub(crate) fn delete_session_ref(
-        &mut self,
-        session_ref: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<RuntimeSession, DaemonError> {
-        let session = SessionStateReader::new(self.app.session_state_store())
-            .resolve_session_ref(session_ref, workspace_id)?;
-        let session_id = session.id().to_string();
-        let ended = self.end_session(&session_id)?;
-        let mut deleted =
-            SessionStateOwner::new(self.app.session_state_store()).delete_session(ended.id())?;
-        deleted.set_agents(ended.agents().to_vec());
-        self.app.history_projection.remove(deleted.id());
-        self.app.remove_session_projection(deleted.id());
-        crate::logging::info_with_fields(
-            "daemon.session",
-            "session deleted",
-            serde_json::json!({
-                "session_id": deleted.id(),
-                "session_alias": deleted.alias(),
-            }),
-        );
-        Ok(deleted)
-    }
-
     pub(crate) fn focus_agent(
         &mut self,
         session_id: &str,
@@ -593,26 +428,6 @@ impl<'a> KernelSessionService<'a> {
         {
             self.app
                 .sync_active_provider_run_for_agent(session_id, agent_id)?;
-        }
-        Ok(agent)
-    }
-
-    pub(crate) fn cycle_agent_focus(
-        &mut self,
-        session_id: &str,
-    ) -> Result<Option<AgentInstance>, DaemonError> {
-        let session_store = self.app.session_state_store();
-        let mut sessions = session_store.write();
-        let agent = self.app.agents.cycle_focus(session_id, &mut sessions)?;
-        drop(sessions);
-        if let Some(focused) = agent.as_ref() {
-            if !self
-                .app
-                .should_defer_provider_run_sync_for_focus_change(session_id, focused.id())?
-            {
-                self.app
-                    .sync_active_provider_run_for_agent(session_id, focused.id())?;
-            }
         }
         Ok(agent)
     }

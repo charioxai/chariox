@@ -652,8 +652,13 @@ mod tests {
             )
             .expect("session should be created");
 
-        let deleted = crate::app::KernelSessionService::new(&mut app)
-            .delete_session_ref("main", Some("workspace-1"))
+        let resolved = app
+            .sessions()
+            .resolve_session_ref("main", Some("workspace-1"))
+            .expect("session ref should resolve");
+        let deleted = app
+            .session_state_store()
+            .delete_session(resolved.id())
             .expect("session should delete");
 
         assert_eq!(deleted.id(), session.id());
@@ -754,14 +759,24 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let config = crate::app::KernelSessionService::new(&mut app)
-            .update_session_config(
+        let (_session, config) = super::session::SessionStateOwner::new(app.session_state_store())
+            .update_config(
                 session.id(),
                 first.id(),
                 BTreeMap::from([("theme".to_string(), "compact".to_string())]),
                 false,
             )
             .expect("config update should succeed");
+        app.record_notice(
+            session.id(),
+            None,
+            vec![second.id().to_string()],
+            format!(
+                "Attachment `{}` updated configuration for session `{}`.",
+                first.id(),
+                session.id()
+            ),
+        );
 
         assert_eq!(config.version(), 1);
         assert_eq!(
@@ -856,16 +871,13 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "shell")
-            .expect("capability context should resolve");
         let result = crate::capability::ShellCommandService::new()
             .run(crate::capability::RunShellCommandRequest::new(
                 session.id(),
                 attachment.id(),
                 "/bin/sh",
                 vec!["-lc".to_string(), "printf shell-app".to_string()],
-                context.worktree_root,
+                std::path::PathBuf::from(session.worktree_id()),
                 None,
             ))
             .expect("shell capability should succeed");
@@ -904,37 +916,28 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let read_context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "directory_tree")
-            .expect("tree context should resolve");
         let tree = crate::capability::DirectoryTreeService::new()
             .read_tree(crate::capability::ReadDirectoryTreeRequest::new(
                 session.id(),
                 attachment.id(),
-                read_context.worktree_root.clone(),
+                std::path::PathBuf::from(session.worktree_id()),
                 None,
                 2,
             ))
             .expect("tree read should succeed");
-        let file_context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "file_read")
-            .expect("file context should resolve");
         let file = crate::capability::FileCapabilityService::new()
             .read_file(crate::capability::ReadFileRequest::new(
                 session.id(),
                 attachment.id(),
-                file_context.worktree_root,
+                std::path::PathBuf::from(session.worktree_id()),
                 worktree_root.join("src/lib.rs"),
             ))
             .expect("file read should succeed");
-        let edit_context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "file_edit")
-            .expect("edit context should resolve");
         let _claim = app
             .workspace_coordinator()
             .acquire_worktree_write_claim(
-                edit_context.workspace_id.clone(),
-                edit_context.worktree_root.display().to_string(),
+                session.workspace_id().to_string(),
+                session.worktree_id().to_string(),
                 session.id().to_string(),
                 Some(attachment.id().to_string()),
                 "file_edit",
@@ -944,19 +947,16 @@ mod tests {
             .edit_file(crate::capability::EditFileRequest::new(
                 session.id(),
                 attachment.id(),
-                edit_context.worktree_root,
+                std::path::PathBuf::from(session.worktree_id()),
                 worktree_root.join("src/lib.rs"),
                 "after".to_string(),
             ))
             .expect("file edit should succeed");
-        let git_context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "git_inspect")
-            .expect("git context should resolve");
         let git = crate::capability::GitCapabilityService::new()
             .inspect(crate::capability::InspectGitRequest::new(
                 session.id(),
                 attachment.id(),
-                git_context.worktree_root,
+                std::path::PathBuf::from(session.worktree_id()),
                 None,
             ))
             .expect("git inspect should succeed");
@@ -998,9 +998,6 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let _context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "screenshot")
-            .expect("screenshot context should resolve");
         let result = crate::capability::ScreenshotCapabilityService::new()
             .capture(crate::capability::CaptureScreenshotRequest::new(
                 session.id(),
@@ -1041,14 +1038,11 @@ mod tests {
             ))
             .expect("attachment should attach");
 
-        let context = crate::app::KernelSessionReadService::new(&app)
-            .capability_context(session.id(), attachment.id(), "transfer_store")
-            .expect("transfer context should resolve");
         let _claim = app
             .workspace_coordinator()
             .acquire_worktree_write_claim(
-                context.workspace_id.clone(),
-                context.worktree_root.display().to_string(),
+                session.workspace_id().to_string(),
+                session.worktree_id().to_string(),
                 session.id().to_string(),
                 Some(attachment.id().to_string()),
                 "transfer_store",
@@ -1058,7 +1052,7 @@ mod tests {
             .store_file(crate::capability::StoreTransferredFileRequest::new(
                 session.id(),
                 attachment.id(),
-                context.worktree_root,
+                std::path::PathBuf::from(session.worktree_id()),
                 DaemonApp::attachment_artifact_root(session.id(), attachment.id(), "transfers"),
                 source,
                 None,

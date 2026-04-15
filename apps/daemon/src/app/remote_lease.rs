@@ -244,13 +244,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok((provider_run_id, outcome))
     }
 
-    pub(crate) fn leased_workflow_turn_binding_for_provider_run(
-        &self,
-        provider_run_id: &str,
-    ) -> Option<LeasedWorkflowTurnBinding> {
-        self.app.leased_workflow_turns.get(provider_run_id).cloned()
-    }
-
     pub(crate) fn complete_leased_prompt(
         &mut self,
         leased_agent_id: &str,

@@ -46,7 +46,7 @@ Current implementation caveat:
 
 - the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the current split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
-- the M4.5 refactor is not complete yet: `DaemonApp` still exists as a compatibility facade, prompt state now has a kernel owner plus compatibility session mirrors, and session/workflow/provider state still needs to move fully behind actor/projection ownership before relay scale-out; router fallback is now explicit/exhaustive, but some named cold paths still lock the facade
+- the M4.5 ownership refactor is closed: the direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, runtime fallback deletion, and dead-code purge are complete; `DaemonApp` remains as bootstrap/composition scaffolding, not the command-state owner
 - current workspace claims are a bounded safety and scheduling layer, not the final I/O-conflict-control design; deeper file-level, port-level, sandbox, or transactional patch coordination is deferred until after actor/projection ownership is complete
 - generic agent transport is intentionally deferred for now; OpenCode continues to use its native local HTTP + SSE adapter path
 
@@ -84,7 +84,7 @@ Architecturally, the daemon is now better thought of as a node runtime:
 - it will eventually route both local and relay-attached members in the same session domain
 - it will eventually own workspace coordination to reduce edit/integration conflicts between top-level agents
 
-The primary CLI path now uses the kernel WebSocket event stream. The longer-term daemon implementation target is an actor/event/projection kernel: commands enter through a router, actors own mutation, ordered kernel events drive recovery and replay, and clients read projections. The current `DaemonApp` shape should be treated as a compatibility facade while that refactor lands, not as the long-term concurrency model.
+The primary CLI path now uses the kernel WebSocket event stream. The daemon implementation target is an actor/event/projection kernel: commands enter through a router, actors own mutation, ordered kernel events drive recovery and replay, and clients read projections. The current `DaemonApp` shape is bootstrap/composition scaffolding around those runtime owners, not the long-term command-state owner.
 
 The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
 

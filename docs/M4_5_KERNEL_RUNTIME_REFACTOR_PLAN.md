@@ -308,9 +308,9 @@ Status as of 2026-04-15:
 
 Current closure status:
 
-- Closed: the seven production ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now route production command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
-- Remaining M4.5 cleanup: purge now-unused app-backed helper surfaces, test-only compatibility helpers, stale docs references, and dead-code warnings left behind by the direct cutover. This cleanup belongs to M4.5 and should happen before marking the milestone fully complete.
-- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope through the cleanup. Deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination remain deferred to the final I/O-coordination slice.
+- Closed: the seven ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion all route command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
+- Closed: the M4.5 dead-code purge removed the now-unused app-backed helper surfaces, obsolete runtime-tool dispatcher, workflow console app wrappers, remote-lease helper, projection-removal helper, and stale test-only compatibility calls left behind by the direct cutover.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Deeper file-level scopes, port claims, sandbox enforcement, and transactional patch/rebase coordination remain deferred to the final I/O-coordination slice.
 
 ## Cutover Completion Plan
 
@@ -325,7 +325,7 @@ Order of work:
 5. **Done.** Cut over workflow and runtime tools: make workflow command mutation, queued launch progression, watchdog pumping, blocked-claim retry, and MCP runtime tools enter workflow-owned commands instead of `&mut DaemonApp` service calls.
 6. **Done.** Cut over transport and relay state: move subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, and encrypted peer prompt settlement behind owned transport/relay runtimes.
 7. **Done.** Delete the compatibility quarantine: remove production `CompatibilityRuntimeState::with_app_mut`, remove `Arc<Mutex<DaemonApp>>` from command/runtime constructors, and leave `DaemonApp` as bootstrap/shutdown/test composition only.
-8. Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
+8. **Done.** Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
 9. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
 10. Return to final I/O coordination last: decide sandbox/overlay/coordinator-owned patch semantics, same-session behavior, file/port resource scopes, and transactional rebase/repair workflows only after actor/projection ownership is stable.
 
@@ -337,12 +337,12 @@ Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>
 
 | Area | Current use | M4.5 treatment |
 |------|-------------|----------------|
-| `kernel/router.rs` | no generic local compatibility fallback remains, production router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | keep router independence locked; delete stale app-helper references during the M4.5 dead-code purge |
-| `kernel/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | remove unused app-backed session helper surfaces exposed by the cutover |
-| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | remove unused app-backed prompt helper surfaces exposed by the cutover |
-| provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of production app fallback ports | delete stale provider-output and launch helper surfaces that are no longer production paths |
-| `kernel_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | keep side-effect ports explicit and purge old relay helper debt |
-| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued launch state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | remove stale app workflow/runtime-tool helpers left behind by ownership cutover |
+| `kernel/router.rs` | no generic local compatibility fallback remains, router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | closed; keep router independence locked |
+| `kernel/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | closed; unused app-backed session helper surfaces were purged |
+| `kernel/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | closed |
+| provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
+| `kernel_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
+| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued launch state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
 | `kernel/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims, but arbitrary shell commands are not yet under final I/O enforcement | keep bounded/background behavior for M4.5; final arbitrary I/O enforcement is deferred |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
@@ -369,23 +369,23 @@ Work the retirement in this order:
    - Named cold compatibility branches remain explicit while moving them behind service-owned stores one at a time.
    - Exit check: `rg "handle_local_request\\(" apps/daemon/src/kernel/router.rs` returns no matches, and every production router arm is explicit.
 
-3. Move actor workers off the compatibility mutation container by direct replacement. **Done for production paths.**
+3. Move actor workers off the compatibility mutation container by direct replacement. **Done.**
    - Replace `CompatibilityRuntimeState::with_app_mut` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` with injected service handles and runtime-owned stores.
    - Delete the corresponding app-backed mutation path in the same slice. Do not keep a second compatibility path after the owner path is covered by tests.
    - Exit check: actor workers do not use `Arc<Mutex<DaemonApp>>`, `CompatibilityRuntimeState::with_app_mut`, or app-backed `Kernel*Service<&mut DaemonApp>` paths for normal command mutation.
 
-4. Split runtime-owned services out of `DaemonApp` by deletion, not preservation. **Done for production paths.**
+4. Split runtime-owned services out of `DaemonApp` by deletion, not preservation. **Done.**
    - Extract session, agent, prompt, provider process/output, terminal, workflow, relay, capability-context, history, and projection ownership into explicit runtime services.
    - Make `DaemonApp` bootstrap those services instead of owning mutable command state directly.
    - Exit check: remaining `Arc<Mutex<DaemonApp>>` uses are bootstrap/shutdown/tests only, not command admission, command mutation, projection refresh, provider output, workflow progression, or runtime tools.
 
-5. Delete remaining facade-shaped compatibility handlers. **Done for production paths; dead-code purge remains.**
+5. Delete remaining facade-shaped compatibility handlers. **Done.**
    - The catch-all local request dispatcher is gone; what remains is narrower handler debt where router/runtime branches still use app-backed stores or app-level provider/session/capability helpers.
    - Move each remaining helper behind its owning service/runtime and remove the old app helper name once there is a single authority for that mutation.
    - Run the full daemon suite plus multi-agent and workflow live drills before declaring the compatibility-facade milestone complete.
    - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/daemon/src/app.rs apps/daemon/src/local apps/daemon/src/kernel apps/daemon/src/scheduler apps/daemon/src/transport` shows no production command/runtime ownership path through the app facade.
 
-Remaining M4.5 work after the seven production ownership points is cleanup, not ownership cutover: delete unused app-backed helper methods, remove test-only compatibility surfaces that no longer buy coverage, refresh this plan and operational invariants after the purge, and keep the final I/O-coordination work out of scope until M4.5 is clean.
+The seven ownership points and the M4.5 dead-code purge are closed. Final I/O-coordination work remains out of scope for M4.5.
 
 ## Non-Goals
 

@@ -154,13 +154,6 @@ impl SessionStateOwner {
         self.store.write().end_session(session_id)
     }
 
-    pub(crate) fn delete_session(
-        &mut self,
-        session_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
-        self.store.write().delete_session(session_id)
-    }
-
     pub(crate) fn set_active_provider_run(
         &mut self,
         session_id: &str,
