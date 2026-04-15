@@ -72,14 +72,6 @@ impl WorkflowProgression {
         crate::scheduler::runtime::retry_blocked_workflow_claims(app)
     }
 
-    fn resume_run(
-        app: &mut DaemonApp,
-        session_id: &str,
-        workflow_run_ref: &str,
-    ) -> Result<WorkflowRun, DaemonError> {
-        crate::scheduler::runtime::resume_workflow_run(app, session_id, workflow_run_ref)
-    }
-
     fn read_console(
         app: &DaemonApp,
         session_id: &str,
@@ -455,14 +447,6 @@ pub(crate) fn ensure_workflow_provider_run_from_runtime(
     agent_id: &str,
 ) -> Result<String, DaemonError> {
     WorkflowProgression::ensure_provider_run(app, session_id, agent_id)
-}
-
-pub(crate) fn resume_workflow_run_from_runtime(
-    app: &mut DaemonApp,
-    session_id: &str,
-    workflow_run_ref: &str,
-) -> Result<WorkflowRun, DaemonError> {
-    WorkflowProgression::resume_run(app, session_id, workflow_run_ref)
 }
 
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {

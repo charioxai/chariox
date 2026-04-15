@@ -1953,6 +1953,37 @@ impl CompatibilityRuntimeOwnedState {
         Ok(())
     }
 
+    fn acquire_workflow_node_workspace_claim(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if self.prompt_workspace_claims.contains(provider_run_id) {
+            return Ok(());
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let workspace_id = session.workspace_id().to_string();
+        let worktree_id = self
+            .agent_store
+            .get_agent(agent_id)
+            .ok()
+            .and_then(|agent| agent.worktree_id().map(str::to_string))
+            .unwrap_or_else(|| session.worktree_id().to_string());
+        let claim = self.workspace_coordinator.acquire_worktree_write_claim(
+            workspace_id,
+            worktree_id,
+            session_id,
+            Some(format!("{workflow_run_id}:{workflow_node_run_id}")),
+            "workflow_node_dispatch",
+        )?;
+        self.prompt_workspace_claims
+            .insert(provider_run_id.to_string(), claim);
+        Ok(())
+    }
+
     fn append_user_prompt_history(
         &self,
         session_id: &str,
@@ -2754,6 +2785,1248 @@ impl CompatibilityRuntimeOwnedState {
             session,
         })
     }
+
+    fn workflow_start_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(());
+        };
+        let workflow_run = self.session_store.write().start_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        let recipients = self
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        let active_provider_run_id = self
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
+        self.record_notice(
+            session_id,
+            active_provider_run_id.as_deref(),
+            recipients,
+            format!(
+                "Workflow run `{}` started on agent `{}`.",
+                workflow_run.id(),
+                prompt.target_agent_id()
+            ),
+        );
+        let _ = self.session_snapshot(session_id)?;
+        Ok(())
+    }
+
+    fn workflow_ensure_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            if run.state() == crate::provider::ProviderRunState::Parked {
+                let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
+                self.session_store
+                    .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
+                return Ok(resumed.id().to_string());
+            }
+            self.session_store
+                .set_active_provider_run(session_id, Some(run.id().to_string()))?;
+            return Ok(run.id().to_string());
+        }
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let adapter_key = match agent.provider() {
+            "default" => "opencode",
+            value => value,
+        };
+        let provider = match agent.provider() {
+            "default" => "opencode",
+            value => value,
+        };
+        let mut request = crate::provider::LaunchProviderRequest::new(
+            session_id,
+            adapter_key,
+            provider,
+            "default",
+            agent.model().unwrap_or("default"),
+        )
+        .with_agent_id(agent.id().to_string())
+        .with_variant(agent.effort().map(str::to_string));
+        if let Some(worktree_id) = agent.worktree_id() {
+            request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
+        }
+        let run = self.provider_store.launch_run_detached(request)?;
+        self.session_store
+            .set_active_provider_run(session_id, Some(run.id().to_string()))?;
+        self.provider_run_projection.update(run.clone());
+        Ok(run.id().to_string())
+    }
+
+    fn workflow_cancel_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(());
+        };
+        let workflow_run = self.session_store.write().stop_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        self.workflow_record_failure(
+            session_id,
+            workflow_run_id,
+            &crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::RunStopped,
+                workflow_node_run_id,
+                Vec::new(),
+                "workflow node run was stopped before validated completion",
+            ),
+        );
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!("Workflow run `{}` was stopped.", workflow_run.id()),
+        );
+        self.workflow_maybe_start_next_queued_launch(session_id);
+        let _ = self.session_snapshot(session_id)?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn workflow_complete_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<Vec<crate::app::KernelPromptDispatch>, DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(Vec::new());
+        };
+        let completion_snapshot = self.workflow_completion_snapshot(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            provider_run_id,
+        );
+        let max_turns = self.workflow_max_turns(session_id);
+        let completion_result = self.session_store.write().complete_workflow_node_run(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            completion_snapshot.clone(),
+            max_turns,
+        );
+        let update = match completion_result {
+            Ok(update) => update,
+            Err(crate::error::DaemonError::WorkflowOutputValidationFailed {
+                edge_id,
+                message,
+                ..
+            }) => {
+                self.workflow_record_failure(
+                    session_id,
+                    workflow_run_id,
+                    &crate::session::WorkflowFailureEvent::new(
+                        crate::session::WorkflowFailureKind::OutputValidationFailed,
+                        workflow_node_run_id,
+                        vec![edge_id.clone()],
+                        message.clone(),
+                    ),
+                );
+                self.session_store.write().stop_workflow_node_run(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachment_store.list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
+                    ),
+                );
+                self.workflow_maybe_start_next_queued_launch(session_id);
+                let _ = self.session_snapshot(session_id)?;
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        };
+        for warning in &update.validation_warnings {
+            let failure = crate::session::WorkflowFailureEvent::new(
+                crate::session::classify_workflow_failure_kind(
+                    &completion_snapshot,
+                    &warning.message,
+                ),
+                workflow_node_run_id,
+                vec![warning.edge_id.clone()],
+                warning.message.clone(),
+            );
+            self.workflow_record_failure(session_id, workflow_run_id, &failure);
+            self.record_notice(
+                session_id,
+                None,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow output validation warning on edge `{}`: {}",
+                    warning.edge_id, warning.message
+                ),
+            );
+        }
+        if update.workflow_run.status() == crate::session::WorkflowRunStatus::Stopped
+            && update.workflow_run.final_output().is_none()
+            && update.workflow_run.failure_events().iter().all(|event| {
+                event.kind() != crate::session::WorkflowFailureKind::NodeTurnBudgetExhausted
+            })
+        {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::NodeTurnBudgetExhausted,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    "workflow run stopped after a node exhausted its turn budget",
+                ),
+            );
+        }
+        if update.workflow_run.final_output_valid() == Some(false) {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::WorkflowRunOutputValidationFailed,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    update
+                        .workflow_run
+                        .final_output_warning()
+                        .unwrap_or("workflow run output validation failed"),
+                ),
+            );
+        }
+        if update.validation_warnings.is_empty() {
+            let _ = self
+                .session_store
+                .write()
+                .mark_workflow_turn_validated_completed(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                )?;
+        }
+        let claim_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, prompt.target_agent_id())
+                .map(|run| run.id().to_string())
+        });
+        if let Some(provider_run_id) = claim_provider_run_id.as_deref() {
+            let _ = self.clear_prompt_activity(provider_run_id);
+        }
+        let dispatches =
+            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
+        let state_suffix = match update.workflow_run.status() {
+            crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+            crate::session::WorkflowRunStatus::Completing => "is completing",
+            crate::session::WorkflowRunStatus::Completed => "completed",
+            crate::session::WorkflowRunStatus::Stopped => "stopped",
+            _ => "updated",
+        };
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!(
+                "Workflow run `{}` {state_suffix}.",
+                update.workflow_run.id()
+            ),
+        );
+        if matches!(
+            update.workflow_run.status(),
+            crate::session::WorkflowRunStatus::Completed
+                | crate::session::WorkflowRunStatus::Failed
+                | crate::session::WorkflowRunStatus::Stopped
+        ) {
+            self.workflow_maybe_start_next_queued_launch(session_id);
+        }
+        let _ = self.session_snapshot(session_id)?;
+        Ok(dispatches)
+    }
+
+    #[allow(dead_code)]
+    fn workflow_completion_snapshot(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Option<crate::session::WorkflowCompletionSnapshot> {
+        let provider_run_id = provider_run_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let session = self.session_store.get_session(session_id).ok()?;
+        let history = match self.history_store.load(&session) {
+            Ok(history) => history,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.workflow",
+                    "failed to load session history for workflow completion snapshot",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "workflow_run_id": workflow_run_id,
+                        "workflow_node_run_id": workflow_node_run_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return None;
+            }
+        };
+        self.history_projection
+            .update_entries(session_id, history.clone());
+        crate::scheduler::runtime::build_workflow_completion_snapshot_from_history(
+            &session,
+            history,
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            provider_run_id,
+        )
+    }
+
+    #[allow(dead_code)]
+    fn workflow_max_turns(&self, session_id: &str) -> Option<usize> {
+        self.session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                session
+                    .config_state()
+                    .values()
+                    .get("workflow.max_turns")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+            })
+            .or(Some(
+                crate::session::DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+            ))
+    }
+
+    fn workflow_record_failure(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        failure: &crate::session::WorkflowFailureEvent,
+    ) {
+        let _ = self.session_store.write().record_workflow_failure_event(
+            session_id,
+            workflow_run_id,
+            failure.clone(),
+        );
+    }
+
+    #[allow(dead_code)]
+    fn workflow_control_mailbox_text(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        _workflow_node_run_id: &str,
+    ) -> Option<String> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()?;
+        let lines = workflow_run
+            .failure_events()
+            .iter()
+            .map(|failure| format!("- {:?}: {}", failure.kind(), failure.message()))
+            .collect::<Vec<_>>();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
+    #[allow(dead_code)]
+    fn workflow_outgoing_edge_contracts_text(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        node_id: &str,
+    ) -> String {
+        let Some(workflow) = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()
+            .and_then(|run| {
+                self.session_store
+                    .read()
+                    .resolve_workflow_ref(session_id, run.workflow_id())
+                    .ok()
+            })
+        else {
+            return String::new();
+        };
+        let lines = workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == node_id)
+            .map(|edge| {
+                let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
+                if let Some(schema_ref) = edge.output_schema_ref() {
+                    line.push_str(&format!(", output_schema_ref: {schema_ref}"));
+                }
+                if let Some(validation_policy) = edge.validation_policy() {
+                    line.push_str(&format!(", validation_policy: {validation_policy:?}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            String::new()
+        } else {
+            format!("Outgoing edge contracts:\n{}\n\n", lines.join("\n"))
+        }
+    }
+
+    #[allow(dead_code)]
+    fn workflow_prepare_dispatches(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        dispatches: &[crate::session::WorkflowDispatch],
+    ) -> Vec<crate::app::KernelPromptDispatch> {
+        let mut prepared = Vec::new();
+        for dispatch in dispatches {
+            self.record_notice(
+                session_id,
+                None,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` routed {} upstream message(s) to node `{}`.",
+                    dispatch.messages.len(),
+                    dispatch.node_run.node_id()
+                ),
+            );
+            let handoff_payloads_json =
+                serde_json::to_string(&dispatch.messages).unwrap_or_else(|_| "[]".to_string());
+            let control_mailbox = self.workflow_control_mailbox_text(
+                session_id,
+                workflow_run_id,
+                dispatch.node_run.id(),
+            );
+            let control_block = control_mailbox
+                .as_ref()
+                .map(|content| {
+                    format!(
+                        "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node.\n\n"
+                    )
+                })
+                .unwrap_or_default();
+            let outgoing_contracts = self.workflow_outgoing_edge_contracts_text(
+                session_id,
+                workflow_run_id,
+                dispatch.node_run.node_id(),
+            );
+            let prompt_text = format!(
+                "Workflow handoff payloads (JSON array):\n{handoff_payloads_json}\n\n{outgoing_contracts}{control_block}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"workflow-ack:{}\"}}\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{{\"summary\":\"human-facing summary\",\"output\":{{\"message\":\"explicit downstream output message\"}}}}\n",
+                dispatch.node_run.id()
+            );
+            let _ = self.session_store.write().prepare_workflow_turn(
+                session_id,
+                workflow_run_id,
+                dispatch.node_run.id(),
+                format!("workflow-ack:{}", dispatch.node_run.id()),
+                prompt_text.clone(),
+                control_mailbox,
+                Some(handoff_payloads_json),
+            );
+            let provider_run_id = match self
+                .workflow_ensure_provider_run(session_id, dispatch.node_run.agent_id())
+            {
+                Ok(provider_run_id) => provider_run_id,
+                Err(error) => {
+                    self.record_notice(
+                            session_id,
+                            None,
+                            self.attachment_store.list_session_attachment_ids(session_id),
+                            format!(
+                                "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
+                                dispatch.node_run.node_id(),
+                                error
+                            ),
+                        );
+                    continue;
+                }
+            };
+            match self.acquire_workflow_node_workspace_claim(
+                session_id,
+                &provider_run_id,
+                dispatch.node_run.agent_id(),
+                workflow_run_id,
+                dispatch.node_run.id(),
+            ) {
+                Ok(()) => {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .ready_workflow_node_after_workspace_claim(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                        );
+                }
+                Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .block_workflow_node_on_workspace_claim(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                        );
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` blocked node `{}` on a workspace claim: {error}",
+                            dispatch.node_run.node_id()
+                        ),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
+                            dispatch.node_run.node_id(),
+                            error
+                        ),
+                    );
+                    continue;
+                }
+            }
+            let prompt = crate::session::PromptQueueItem::new(
+                self.session_store.reserve_prompt_id(),
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run_id),
+                dispatch.node_run.agent_id(),
+                prompt_text,
+                crate::session::PromptStatus::Queued,
+            )
+            .with_workflow_context(workflow_run_id, dispatch.node_run.id());
+            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.to_string(),
+                prompt,
+                force_queue: false,
+            }) {
+                Ok(Some(mut submission)) => {
+                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
+                        &submission.outcome
+                    {
+                        let _ = self.session_store.write().mark_workflow_turn_dispatched(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                        );
+                        let _ = self.workflow_start_prompt(session_id, prompt);
+                    }
+                    if let Some(dispatch) = submission.dispatch.take() {
+                        prepared.push(dispatch);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
+                            dispatch.node_run.node_id(),
+                            error
+                        ),
+                    );
+                }
+            }
+        }
+        prepared
+    }
+
+    fn workflow_retry_blocked_claims(&self) -> Vec<crate::app::KernelPromptDispatch> {
+        let mut blocked = Vec::new();
+        for session in self.session_store.read().list_sessions() {
+            for workflow_run in session.workflow_runs() {
+                for node_run in workflow_run.node_runs() {
+                    if node_run.status()
+                        != crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+                    {
+                        continue;
+                    }
+                    let Some(prompt) = node_run
+                        .turn_envelope()
+                        .and_then(|envelope| envelope.rendered_prompt())
+                        .map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    blocked.push((
+                        session.id().to_string(),
+                        workflow_run.id().to_string(),
+                        node_run.id().to_string(),
+                        node_run.agent_id().to_string(),
+                        node_run.node_id().to_string(),
+                        prompt,
+                    ));
+                }
+            }
+        }
+        let mut dispatches = Vec::new();
+        for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt_text) in
+            blocked
+        {
+            let provider_run_id = match self.workflow_ensure_provider_run(&session_id, &agent_id) {
+                Ok(provider_run_id) => provider_run_id,
+                Err(error) => {
+                    self.record_notice(
+                        &session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(&session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not retry blocked node `{node_id}`: {error}"
+                        ),
+                    );
+                    continue;
+                }
+            };
+            match self.acquire_workflow_node_workspace_claim(
+                &session_id,
+                &provider_run_id,
+                &agent_id,
+                &workflow_run_id,
+                &workflow_node_run_id,
+            ) {
+                Ok(()) => {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .ready_workflow_node_after_workspace_claim(
+                            &session_id,
+                            &workflow_run_id,
+                            &workflow_node_run_id,
+                        );
+                }
+                Err(DaemonError::WorkspaceClaimConflict { .. }) => continue,
+                Err(error) => {
+                    self.record_notice(
+                        &session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(&session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not retry blocked node `{node_id}`: {error}"
+                        ),
+                    );
+                    continue;
+                }
+            }
+            let prompt = crate::session::PromptQueueItem::new(
+                self.session_store.reserve_prompt_id(),
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id),
+                agent_id,
+                prompt_text,
+                crate::session::PromptStatus::Queued,
+            )
+            .with_workflow_context(&workflow_run_id, &workflow_node_run_id);
+            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+            }) {
+                Ok(Some(mut submission)) => {
+                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
+                        &submission.outcome
+                    {
+                        let _ = self.session_store.write().mark_workflow_turn_dispatched(
+                            &session_id,
+                            &workflow_run_id,
+                            &workflow_node_run_id,
+                        );
+                        let _ = self.workflow_start_prompt(&session_id, prompt);
+                    }
+                    if let Some(dispatch) = submission.dispatch.take() {
+                        dispatches.push(dispatch);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.record_notice(
+                        &session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(&session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not retry blocked node `{node_id}`: {error}"
+                        ),
+                    );
+                }
+            }
+        }
+        dispatches
+    }
+
+    fn workflow_maybe_start_next_queued_launch(&self, session_id: &str) {
+        let queued_launch = match self
+            .session_store
+            .write()
+            .dequeue_next_workflow_launch(session_id)
+        {
+            Ok(Some(queued_launch)) => queued_launch,
+            Ok(None) => return,
+            Err(error) => {
+                self.record_notice(
+                    session_id,
+                    None,
+                    self.attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!("Failed to start queued workflow launch: {error}"),
+                );
+                return;
+            }
+        };
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!(
+                "Queued workflow launch `{}` is ready to start.",
+                queued_launch.id()
+            ),
+        );
+    }
+
+    fn workflow_resume_run(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<
+        (
+            crate::session::WorkflowRun,
+            Vec<crate::app::KernelPromptDispatch>,
+        ),
+        DaemonError,
+    > {
+        let workflow_run = self
+            .session_store
+            .write()
+            .resume_workflow_run(session_id, workflow_run_ref)?;
+        let resumable = workflow_run
+            .node_runs()
+            .iter()
+            .filter_map(|node_run| {
+                let prompt = node_run.turn_envelope()?.rendered_prompt()?.to_string();
+                Some((
+                    node_run.id().to_string(),
+                    node_run.agent_id().to_string(),
+                    prompt,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let mut dispatches = Vec::new();
+        for (workflow_node_run_id, agent_id, prompt_text) in resumable {
+            let prompt = crate::session::PromptQueueItem::new(
+                self.session_store.reserve_prompt_id(),
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+                agent_id,
+                prompt_text,
+                crate::session::PromptStatus::Queued,
+            )
+            .with_workflow_context(workflow_run.id(), workflow_node_run_id);
+            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.to_string(),
+                prompt,
+                force_queue: false,
+            }) {
+                Ok(Some(mut submission)) => {
+                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
+                        &submission.outcome
+                    {
+                        let _ = self.workflow_start_prompt(session_id, prompt);
+                    }
+                    if let Some(dispatch) = submission.dispatch.take() {
+                        dispatches.push(dispatch);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{}` could not resume node prompt: {}",
+                            workflow_run.id(),
+                            error
+                        ),
+                    );
+                }
+            }
+        }
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run.id())?;
+        Ok((workflow_run, dispatches))
+    }
+
+    fn dispatch_workflow_runtime_tool_call(
+        &self,
+        tool_name: String,
+        arguments: serde_json::Value,
+        context: crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let canonical_tool_name = tool_name
+            .strip_prefix("arroba_")
+            .unwrap_or(tool_name.as_str())
+            .to_string();
+        let arguments_json = serde_json::to_string(&arguments)
+            .unwrap_or_else(|_| String::from("<unserializable runtime tool arguments>"));
+        let result = match canonical_tool_name.as_str() {
+            crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::AckWorkflowTurnArgs,
+                >(arguments.clone())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_ack_workflow_turn",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let workflow_run_id = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?
+                    .id()
+                    .to_string();
+                let workflow_run = self.session_store.write().ack_workflow_turn(
+                    &context.session_id,
+                    &workflow_run_id,
+                    &context.workflow_node_run_id,
+                    &args.delivery_token,
+                )?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "workflow_run_id": workflow_run.id(),
+                        "workflow_node_run_id": context.workflow_node_run_id,
+                        "state": "acknowledged",
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ValidateWorkflowOutputArgs,
+                >(arguments.clone())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_validate_workflow_output",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                if !context.allowed_output_schema_refs.is_empty()
+                    && !context
+                        .allowed_output_schema_refs
+                        .iter()
+                        .any(|schema_ref| schema_ref == &args.output_schema_ref)
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_validate_workflow_output",
+                        message: format!(
+                            "schema ref `{}` is not allowed for workflow node run `{}`",
+                            args.output_schema_ref, context.workflow_node_run_id
+                        ),
+                    });
+                }
+                let warning = crate::transport::runtime_tools::validate_workflow_output_schema(
+                    &args.output_schema_ref,
+                    &args.output_json,
+                )
+                .err();
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "valid": warning.is_none(),
+                        "warning": warning,
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+            | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL =>
+            {
+                let is_final = canonical_tool_name
+                    == crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL;
+                if is_final && !context.can_complete_workflow_run {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_validate_and_submit_workflow_run_output",
+                        message:
+                            "current workflow node run is not allowed to complete the workflow run"
+                                .to_string(),
+                    });
+                }
+                if !is_final && !context.can_emit_intermediate_workflow_run_output {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_validate_and_submit_intermediate_workflow_run_output",
+                        message:
+                            "current workflow node run is not allowed to emit intermediate workflow run output"
+                                .to_string(),
+                    });
+                }
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ValidateAndSubmitWorkflowRunOutputArgs,
+                >(arguments.clone())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: if is_final {
+                        "runtime_tool_validate_and_submit_workflow_run_output"
+                    } else {
+                        "runtime_tool_validate_and_submit_intermediate_workflow_run_output"
+                    },
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let workflow_run_id = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?
+                    .id()
+                    .to_string();
+                let schema_ref = if is_final {
+                    context.workflow_run_output_schema_ref.as_deref()
+                } else {
+                    context.workflow_intermediate_output_schema_ref.as_deref()
+                };
+                let warning = schema_ref.and_then(|schema_ref| {
+                    crate::transport::runtime_tools::validate_workflow_output_schema(
+                        schema_ref,
+                        &args.workflow_output_json,
+                    )
+                    .err()
+                });
+                let output = crate::session::WorkflowOutputPayload::new(
+                    args.workflow_output_json,
+                    Vec::<crate::session::WorkflowArtifactRef>::new(),
+                );
+                let workflow_run = if is_final {
+                    self.session_store.write().submit_workflow_run_final_output(
+                        &context.session_id,
+                        &workflow_run_id,
+                        &context.workflow_node_run_id,
+                        output,
+                        warning.is_none(),
+                        warning.clone(),
+                    )?
+                } else {
+                    self.session_store.write().submit_workflow_run_intermediate_output(
+                        &context.session_id,
+                        &workflow_run_id,
+                        &context.workflow_node_run_id,
+                        output,
+                        warning.is_none(),
+                        warning.clone(),
+                    )?
+                };
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "submitted": true,
+                        "valid": warning.is_none(),
+                        "warning": warning,
+                        "workflow_run_id": workflow_run.id(),
+                        "workflow_node_run_id": context.workflow_node_run_id,
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::WORKFLOW_CONSOLE_READ_TOOL => {
+                let workflow_run = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+                let console = self
+                    .session_store
+                    .read()
+                    .read_workflow_console(&context.session_id, workflow_run.workflow_id())?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "workflow_id": console.workflow_id(),
+                        "entries": console.entries().iter().map(|entry| serde_json::json!({
+                            "timestamp_ms": entry.timestamp_ms(),
+                            "source_node_run_id": entry.source_node_run_id(),
+                            "source_agent_id": entry.source_agent_id(),
+                            "text": entry.text(),
+                        })).collect::<Vec<_>>(),
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::WORKFLOW_CONSOLE_WRITE_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::WorkflowConsoleWriteArgs,
+                >(arguments.clone())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_workflow_console_write",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let workflow_run = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+                let entry = self.session_store.write().append_workflow_console_entry(
+                    &context.session_id,
+                    workflow_run.workflow_id(),
+                    Some(context.workflow_node_run_id.clone()),
+                    self.workflow_node_agent_id(
+                        &context.session_id,
+                        &context.workflow_run_ref,
+                        &context.workflow_node_run_id,
+                    ),
+                    &args.text,
+                )?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "timestamp_ms": entry.timestamp_ms(),
+                        "source_node_run_id": entry.source_node_run_id(),
+                        "source_agent_id": entry.source_agent_id(),
+                        "text": entry.text(),
+                    }),
+                })
+            }
+            crate::transport::runtime_tools::WORKFLOW_CONSOLE_CLEAR_TOOL => {
+                let workflow_run = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+                let console = self
+                    .session_store
+                    .write()
+                    .clear_workflow_console(&context.session_id, workflow_run.workflow_id())?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "cleared": true,
+                        "workflow_id": console.workflow_id(),
+                    }),
+                })
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "dispatch_runtime_tool_call",
+                message: format!("unsupported runtime tool `{other}`"),
+            }),
+        };
+        let result_json = match &result {
+            Ok(result) => Some(
+                serde_json::to_string(&result.payload)
+                    .unwrap_or_else(|_| String::from("<unserializable runtime tool result>")),
+            ),
+            Err(error) => Some(serde_json::json!({"error": error.to_string()}).to_string()),
+        };
+        let ok = result.as_ref().map(|entry| entry.ok).unwrap_or(false);
+        let _ = self
+            .session_store
+            .write()
+            .record_workflow_runtime_tool_call(
+                &context.session_id,
+                &context.workflow_node_run_id,
+                crate::session::WorkflowRuntimeToolCallEvent::new(
+                    canonical_tool_name,
+                    arguments_json,
+                    result_json,
+                    ok,
+                ),
+            );
+        let _ = self.session_snapshot(&context.session_id);
+        result
+    }
+
+    fn workflow_node_agent_id(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+        workflow_node_run_id: &str,
+    ) -> Option<String> {
+        self.session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)
+            .ok()
+            .and_then(|workflow_run| {
+                workflow_run
+                    .node_runs()
+                    .iter()
+                    .find(|node_run| node_run.id() == workflow_node_run_id)
+                    .map(|node_run| node_run.agent_id().to_string())
+            })
+    }
+
+    fn workflow_tool_context(
+        &self,
+        session_id: String,
+        workflow_run_ref: String,
+        workflow_node_run_id: String,
+        delivery_token: Option<String>,
+    ) -> Result<crate::transport::runtime_tools::WorkflowRuntimeToolContext, DaemonError> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&session_id, &workflow_run_ref)?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&session_id, workflow_run.workflow_id())?;
+        let node_id = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .map(|node_run| node_run.node_id().to_string())
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                session_id: session_id.clone(),
+                workflow_id: workflow.id().to_string(),
+                reference: workflow_node_run_id.clone(),
+                message: "workflow node run was not found while resolving runtime tool scope",
+            })?;
+        let allowed_output_schema_refs = workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == node_id)
+            .filter_map(|edge| edge.output_schema_ref().map(str::to_string))
+            .collect();
+        let node = workflow.node(&node_id);
+        let can_complete_workflow_run = node.is_some_and(|node| node.can_complete_workflow_run());
+        let can_emit_intermediate_workflow_run_output =
+            node.is_some_and(|node| node.can_emit_intermediate_run_output());
+        let workflow_intermediate_output_schema_ref = node
+            .and_then(|node| node.intermediate_output_schema_ref())
+            .map(str::to_string)
+            .or_else(|| {
+                workflow
+                    .intermediate_output_schema_ref()
+                    .map(str::to_string)
+            });
+        Ok(
+            crate::transport::runtime_tools::WorkflowRuntimeToolContext {
+                session_id,
+                workflow_run_ref,
+                workflow_node_run_id,
+                delivery_token,
+                allowed_output_schema_refs,
+                workflow_run_output_schema_ref: workflow
+                    .run_output_schema_ref()
+                    .map(str::to_string),
+                workflow_intermediate_output_schema_ref,
+                can_complete_workflow_run,
+                can_emit_intermediate_workflow_run_output,
+            },
+        )
+    }
+
+    fn resolve_owned_authenticated_workflow_turn(
+        &self,
+        session_id: &str,
+        candidate_agent_ids: &[String],
+        delivery_token: Option<&str>,
+    ) -> Result<(String, String), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let agent_matches = |agent_id: &str| {
+            candidate_agent_ids.is_empty()
+                || candidate_agent_ids
+                    .iter()
+                    .any(|candidate| candidate == agent_id)
+        };
+        for agent_id in candidate_agent_ids {
+            if let Some(prompt) = self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+            {
+                let (Some(workflow_run_ref), Some(workflow_node_run_id)) =
+                    (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+                else {
+                    continue;
+                };
+                let matches_token = delivery_token.is_none_or(|requested| {
+                    session
+                        .workflow_runs()
+                        .iter()
+                        .find(|workflow_run| workflow_run.id() == workflow_run_ref)
+                        .and_then(|workflow_run| {
+                            workflow_run
+                                .node_runs()
+                                .iter()
+                                .find(|node_run| node_run.id() == workflow_node_run_id)
+                        })
+                        .and_then(|node_run| node_run.turn_envelope())
+                        .is_some_and(|envelope| envelope.delivery_token() == requested)
+                });
+                if matches_token {
+                    return Ok((
+                        workflow_run_ref.to_string(),
+                        workflow_node_run_id.to_string(),
+                    ));
+                }
+            }
+        }
+        let mut running_turns = session
+            .workflow_runs()
+            .iter()
+            .flat_map(|workflow_run| {
+                workflow_run.node_runs().iter().filter_map(|node_run| {
+                    let envelope = node_run.turn_envelope()?;
+                    if node_run.status() != crate::session::WorkflowNodeRunStatus::Running
+                        || !matches!(
+                            envelope.state(),
+                            crate::session::WorkflowTurnRuntimeState::Prepared
+                                | crate::session::WorkflowTurnRuntimeState::Dispatched
+                                | crate::session::WorkflowTurnRuntimeState::Acknowledged
+                        )
+                    {
+                        return None;
+                    }
+                    if !agent_matches(node_run.agent_id()) {
+                        return None;
+                    }
+                    if delivery_token
+                        .is_some_and(|requested| envelope.delivery_token() != requested)
+                    {
+                        return None;
+                    }
+                    Some((workflow_run.id().to_string(), node_run.id().to_string()))
+                })
+            })
+            .collect::<Vec<_>>();
+        match running_turns.len() {
+            1 => Ok(running_turns.remove(0)),
+            0 => Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: "no active workflow turn for authenticated provider run".to_string(),
+            }),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: "multiple workflow turns matched the authenticated provider run"
+                    .to_string(),
+            }),
+        }
+    }
 }
 
 struct OwnedProviderRunExit {
@@ -3170,23 +4443,14 @@ impl CompatibilityRuntimeState {
                 .get_run_for_agent(&session_id, &target_agent_id)
                 .is_some();
             if !has_active && !has_run {
-                let ensure_result =
-                    if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-                        self.with_app_mut(|app| {
-                            crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
-                                app,
-                                &session_id,
-                                &target_agent_id,
-                            )
-                        })
-                        .await
-                    } else {
-                        self.with_app_mut(|app| {
-                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                        })
-                        .await
-                    };
-                ensure_result?;
+                if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+                    owned.workflow_ensure_provider_run(&session_id, &target_agent_id)?;
+                } else {
+                    self.with_app_mut(|app| {
+                        app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
+                    })
+                    .await?;
+                };
                 if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
                     self.finish_owned_prompt_submission_workflow_start(&mut submission)
                         .await?;
@@ -3233,14 +4497,10 @@ impl CompatibilityRuntimeState {
                 .await?,
             );
         }
-        self.with_app_mut(|app| {
-            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                app,
-                &session_id,
-                &prompt,
-            )
-        })
-        .await
+        if let Some(owned) = &self.owned {
+            return owned.workflow_start_prompt(&session_id, &prompt);
+        }
+        Ok(())
     }
 
     pub(crate) async fn cancel_agent_prompt(
@@ -3457,12 +4717,21 @@ impl CompatibilityRuntimeState {
                         let _ = owned.session_snapshot(session_id)?;
                     }
                     if completion.released_claim {
-                        self.with_app_mut(|app| {
-                            crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(
-                                app,
-                            )
-                        })
-                        .await;
+                        for dispatch in owned.workflow_retry_blocked_claims() {
+                            if let Err(error) = self
+                                .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                                .await
+                            {
+                                owned.record_notice(
+                                    &dispatch.session_id,
+                                    Some(&dispatch.provider_run_id),
+                                    owned
+                                        .attachment_store
+                                        .list_session_attachment_ids(&dispatch.session_id),
+                                    format!("Blocked workflow retry dispatch failed: {error}"),
+                                );
+                            }
+                        }
                     }
                     return Ok(completion.completion);
                 }
@@ -3495,14 +4764,7 @@ impl CompatibilityRuntimeState {
                     if crate::scheduler::runtime::is_workflow_prompt_attachment(
                         started_next.source_attachment_id(),
                     ) {
-                        self.with_app_mut(|app| {
-                            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                                app,
-                                session_id,
-                                started_next,
-                            )
-                        })
-                        .await?;
+                        owned.workflow_start_prompt(session_id, started_next)?;
                     }
                 }
                 if let Some(dispatch) = completion.dispatch {
@@ -3607,9 +4869,16 @@ impl CompatibilityRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
         if let Some(owned) = &self.owned {
-            let _ = self
-                .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
-                .await?;
+            let has_managed_process = owned
+                .provider_process_tracking
+                .read()
+                .run_processes
+                .contains_key(&dispatch.provider_run_id);
+            if has_managed_process {
+                let _ = self
+                    .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
+                    .await?;
+            }
             return self
                 .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
                 .await;
@@ -3671,6 +4940,15 @@ impl CompatibilityRuntimeState {
             &dispatch.source_attachment_id,
             dispatch.prompt.as_bytes(),
         );
+        let has_managed_process = owned
+            .provider_process_tracking
+            .read()
+            .run_processes
+            .contains_key(&dispatch.provider_run_id);
+        if !has_managed_process {
+            owned.note_prompt_started(&dispatch.provider_run_id);
+            return Ok(());
+        }
         self.with_app_mut(|app| {
             app.write_provider_pty_input_for_runtime(
                 &dispatch.provider_run_id,
@@ -3701,10 +4979,21 @@ impl CompatibilityRuntimeState {
                 format!("Prompt dispatch failed after acknowledgement: {error}"),
             );
             if released_claim {
-                self.with_app_mut(|app| {
-                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
-                })
-                .await;
+                for dispatch in owned.workflow_retry_blocked_claims() {
+                    if let Err(error) = self
+                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                        .await
+                    {
+                        owned.record_notice(
+                            &dispatch.session_id,
+                            Some(&dispatch.provider_run_id),
+                            owned
+                                .attachment_store
+                                .list_session_attachment_ids(&dispatch.session_id),
+                            format!("Blocked workflow retry dispatch failed: {error}"),
+                        );
+                    }
+                }
             }
             return Err(error);
         }
@@ -4174,22 +5463,24 @@ impl CompatibilityRuntimeState {
             }
             LocalDaemonRequest::ResumeWorkflowRun(request) => {
                 let session_id = request.session_id.clone();
-                let result = self
-                    .with_app_mut(|app| {
-                        let workflow_run =
-                            crate::app::workflow_runtime::resume_workflow_run_from_runtime(
-                                app,
-                                &request.session_id,
-                                &request.workflow_run_ref,
-                            )?;
-                        let session = crate::app::KernelSessionReadService::new(app)
-                            .session_snapshot(&request.session_id)?;
-                        Ok(LocalDaemonResponse::WorkflowRunResumed {
-                            workflow_run,
-                            session,
+                let result = match owned
+                    .workflow_resume_run(&request.session_id, &request.workflow_run_ref)
+                {
+                    Ok((workflow_run, dispatches)) => {
+                        for dispatch in dispatches {
+                            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                            }
+                        }
+                        owned.workflow_session(&request.session_id).map(|session| {
+                            LocalDaemonResponse::WorkflowRunResumed {
+                                workflow_run,
+                                session,
+                            }
                         })
-                    })
-                    .await;
+                    }
+                    Err(error) => Err(error),
+                };
                 let session = result
                     .as_ref()
                     .ok()
@@ -4482,12 +5773,22 @@ impl CompatibilityRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
         let Some(active_prompt) = active_prompt else {
-            let released_claim = owned.clear_prompt_activity(provider_run_id);
-            if released_claim {
-                self.with_app_mut(|app| {
-                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
-                })
-                .await;
+            if owned.clear_prompt_activity(provider_run_id) {
+                for dispatch in owned.workflow_retry_blocked_claims() {
+                    if let Err(error) = self
+                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                        .await
+                    {
+                        owned.record_notice(
+                            &dispatch.session_id,
+                            Some(&dispatch.provider_run_id),
+                            owned
+                                .attachment_store
+                                .list_session_attachment_ids(&dispatch.session_id),
+                            format!("Blocked workflow retry dispatch failed: {error}"),
+                        );
+                    }
+                }
             }
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
@@ -4509,19 +5810,23 @@ impl CompatibilityRuntimeState {
                 &agent_id,
                 Some(provider_run_id),
             )?;
-            self.with_app_mut(|app| {
-                crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
-                    app,
-                    session_id,
-                    &cancellation.cancellation.prompt,
-                )
-            })
-            .await?;
+            owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
             if cancellation.released_claim {
-                self.with_app_mut(|app| {
-                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
-                })
-                .await;
+                for dispatch in owned.workflow_retry_blocked_claims() {
+                    if let Err(error) = self
+                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                        .await
+                    {
+                        owned.record_notice(
+                            &dispatch.session_id,
+                            Some(&dispatch.provider_run_id),
+                            owned
+                                .attachment_store
+                                .list_session_attachment_ids(&dispatch.session_id),
+                            format!("Blocked workflow retry dispatch failed: {error}"),
+                        );
+                    }
+                }
             }
             if let Some(dispatch) = cancellation.dispatch {
                 if let Err(error) = self
@@ -4586,21 +5891,18 @@ impl CompatibilityRuntimeState {
             if crate::scheduler::runtime::is_workflow_prompt_attachment(
                 started_next.source_attachment_id(),
             ) {
-                self.with_app_mut(|app| {
-                    crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                        app,
-                        session_id,
-                        started_next,
-                    )
-                })
-                .await?;
+                owned.workflow_start_prompt(session_id, started_next)?;
             }
         }
         if completion.released_claim {
-            self.with_app_mut(|app| {
-                crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
-            })
-            .await;
+            for dispatch in owned.workflow_retry_blocked_claims() {
+                if let Err(error) = self
+                    .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+                    .await
+                {
+                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                }
+            }
         }
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
@@ -5036,6 +6338,65 @@ impl CompatibilityRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if let Some(owned) = &self.owned {
+            let canonical_tool_name = tool_name.strip_prefix("arroba_").unwrap_or(tool_name);
+            let provider_runs = owned
+                .provider_store
+                .get_runs_by_runtime_mcp_auth_token(auth_token);
+            if provider_runs.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch_authenticated_runtime_tool_call",
+                    message: "invalid runtime MCP auth token".to_string(),
+                });
+            }
+            let requested_delivery_token = match canonical_tool_name {
+                crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
+                    serde_json::from_value::<crate::transport::runtime_tools::AckWorkflowTurnArgs>(
+                        arguments.clone(),
+                    )
+                    .ok()
+                    .map(|args| args.delivery_token)
+                }
+                crate::transport::runtime_tools::VALIDATE_WORKFLOW_OUTPUT_TOOL => {
+                    serde_json::from_value::<
+                        crate::transport::runtime_tools::ValidateWorkflowOutputArgs,
+                    >(arguments.clone())
+                    .ok()
+                    .and_then(|args| args.delivery_token)
+                }
+                crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+                | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL => {
+                    serde_json::from_value::<
+                        crate::transport::runtime_tools::ValidateAndSubmitWorkflowRunOutputArgs,
+                    >(arguments.clone())
+                    .ok()
+                    .and_then(|args| args.delivery_token)
+                }
+                _ => None,
+            };
+            let session_id = provider_runs[0].session_id().to_string();
+            let candidate_agent_ids = provider_runs
+                .iter()
+                .filter_map(|run| run.agent_instance_id().map(str::to_string))
+                .collect::<Vec<_>>();
+            let (workflow_run_ref, workflow_node_run_id) = owned
+                .resolve_owned_authenticated_workflow_turn(
+                    &session_id,
+                    &candidate_agent_ids,
+                    requested_delivery_token.as_deref(),
+                )?;
+            let context = owned.workflow_tool_context(
+                session_id,
+                workflow_run_ref,
+                workflow_node_run_id,
+                None,
+            )?;
+            return owned.dispatch_workflow_runtime_tool_call(
+                canonical_tool_name.to_string(),
+                arguments,
+                context,
+            );
+        }
         self.with_app_mut(|app| {
             crate::transport::runtime_tools::dispatch_authenticated_runtime_tool_call(
                 app, auth_token, tool_name, arguments,
@@ -5050,6 +6411,15 @@ impl CompatibilityRuntimeState {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if let Some(owned) = &self.owned {
+            let context = owned.workflow_tool_context(
+                context.home_session_id,
+                context.workflow_run_id,
+                context.workflow_node_run_id,
+                Some(context.delivery_token),
+            )?;
+            return owned.dispatch_workflow_runtime_tool_call(tool_name, arguments, context);
+        }
         self.with_app_mut(|app| {
             crate::transport::runtime_tools::dispatch_forwarded_workflow_runtime_tool_call(
                 app, context, tool_name, arguments,

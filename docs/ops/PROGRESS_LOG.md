@@ -546,3 +546,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Cut workflow command mutation over to the runtime-state owner: workflow definition, endpoint, graph, schema, launch-policy, watchdog, queued-launch, validation, and ack commands now mutate cloneable session/workflow stores directly from `CompatibilityRuntimeState`.
 - Deleted the transitional `KernelWorkflowService` module and removed `WorkflowRuntimeStore`'s per-method app-backed service delegation.
 - Kept invoke/cancel/resume workflow progression behind explicit runtime-state scheduler ports while the scheduler internals remain the remaining point-5 work before transport/relay cleanup.
+
+### M4.5 workflow runtime-tool ownership update
+
+- Moved owned workflow resume, workflow prompt start/cancel bookkeeping, workflow provider-run ensure, blocked workspace-claim retry, and local/forwarded workflow runtime-tool mutation into `CompatibilityRuntimeOwnedState` store operations.
+- Runtime MCP calls authenticated by provider tokens now resolve local workflow turns from owned provider/prompt/session state before recording ack, validation, output-submission, and console tool effects.
+- Kept workflow prompt completion scheduling on the existing scheduler renderer because that path still owns mailbox rendering, outgoing edge contracts, join-node readiness, and queued downstream prompt text fidelity; this is the remaining hard center of point 5 rather than point 6.

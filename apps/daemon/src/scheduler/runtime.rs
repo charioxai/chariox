@@ -7,14 +7,14 @@ use serde_json::Value;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::history::SessionHistoryEntryKind;
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::provider::{ControlOperation, LaunchProviderRequest, RuntimeProviderRun};
 use crate::session::{
-    PromptQueueItem, PromptSubmissionOutcome, WorkflowArtifactRef, WorkflowCompletionSnapshot,
-    WorkflowCompletionUpdate, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
-    WorkflowDispatch, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
-    WorkflowFailurePolicyMode, WorkflowMessage, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
+    PromptQueueItem, PromptSubmissionOutcome, RuntimeSession, WorkflowArtifactRef,
+    WorkflowCompletionSnapshot, WorkflowCompletionUpdate, WorkflowConsole, WorkflowConsoleEntry,
+    WorkflowDefinition, WorkflowDispatch, WorkflowFailureEvent, WorkflowFailureKind,
+    WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowMessage, WorkflowNodeRunStatus,
+    WorkflowOutputPayload, WorkflowOutputValidationPolicy, WorkflowRun, WorkflowRunStatus,
 };
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -1615,7 +1615,7 @@ fn build_workflow_completion_snapshot(
         );
         return None;
     };
-    let Some(node_run) = workflow_run
+    let Some(_node_run) = workflow_run
         .node_runs()
         .iter()
         .find(|node_run| node_run.id() == workflow_node_run_id)
@@ -1649,13 +1649,61 @@ fn build_workflow_completion_snapshot(
             return None;
         }
     };
+    build_workflow_completion_snapshot_from_history(
+        &session,
+        history,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        &provider_run_id,
+    )
+}
+
+pub(crate) fn build_workflow_completion_snapshot_from_history(
+    session: &RuntimeSession,
+    history: Vec<SessionHistoryEntry>,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+    provider_run_id: &str,
+) -> Option<WorkflowCompletionSnapshot> {
+    let Some(workflow_run) = session.workflow_run(workflow_run_id) else {
+        crate::logging::warn_with_fields(
+            "daemon.workflow",
+            "workflow run disappeared before completion snapshot could be built",
+            serde_json::json!({
+                "session_id": session_id,
+                "workflow_run_id": workflow_run_id,
+                "workflow_node_run_id": workflow_node_run_id,
+                "provider_run_id": provider_run_id,
+            }),
+        );
+        return None;
+    };
+    let Some(node_run) = workflow_run
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)
+    else {
+        crate::logging::warn_with_fields(
+            "daemon.workflow",
+            "workflow node run disappeared before completion snapshot could be built",
+            serde_json::json!({
+                "session_id": session_id,
+                "workflow_run_id": workflow_run_id,
+                "workflow_node_run_id": workflow_node_run_id,
+                "provider_run_id": provider_run_id,
+            }),
+        );
+        return None;
+    };
     let started_at_ms = node_run
         .started_at_ms()
         .unwrap_or_else(|| node_run.created_at_ms());
     let provider_output = history
         .into_iter()
         .filter(|entry| {
-            entry.provider_run_id.as_deref() == Some(provider_run_id.as_str())
+            entry.provider_run_id.as_deref() == Some(provider_run_id)
                 && entry.timestamp_ms >= started_at_ms
                 && entry.kind == SessionHistoryEntryKind::ProviderOutput
         })
