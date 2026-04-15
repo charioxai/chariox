@@ -3,11 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
-use crate::history::SessionHistoryEntry;
-use crate::provider::{AgentEndpointMode, ProviderRunState};
+use crate::history::{SessionHistoryEntry, SessionHistoryStore};
+use crate::kernel::projection::SessionHistoryProjectionStore;
+use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 use crate::pty::PtyOutputChunk;
-use crate::session::PromptStatus;
+use crate::session::{PromptStatus, SessionStateStore};
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore};
 
 #[derive(Clone, Default)]
@@ -188,15 +189,21 @@ impl<'a> ProviderOutputLiveness<'a> {
     }
 }
 
-struct ProviderOutputFanout<'a> {
-    app: &'a DaemonApp,
+struct ProviderOutputFanout {
+    provider_store: ProviderProcessServiceStore,
+    session_store: SessionStateStore,
+    history_store: SessionHistoryStore,
+    history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamStore,
 }
 
-impl<'a> ProviderOutputFanout<'a> {
-    fn new(app: &'a DaemonApp) -> Self {
+impl ProviderOutputFanout {
+    fn new(app: &DaemonApp) -> Self {
         Self {
-            app,
+            provider_store: app.providers.clone(),
+            session_store: app.sessions.clone(),
+            history_store: app.history_store(),
+            history_projection: app.session_history_projection_store(),
             terminal: app.terminal.clone(),
         }
     }
@@ -211,8 +218,7 @@ impl<'a> ProviderOutputFanout<'a> {
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let agent_id = self
-            .app
-            .providers
+            .provider_store
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
@@ -226,7 +232,7 @@ impl<'a> ProviderOutputFanout<'a> {
             bytes,
         );
         if kind != TerminalOutputKind::PromptEcho {
-            self.app.append_history_entry(
+            self.append_history_entry(
                 session_id,
                 SessionHistoryEntry::provider_output(
                     session_id,
@@ -239,6 +245,35 @@ impl<'a> ProviderOutputFanout<'a> {
             );
         }
         record
+    }
+
+    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let session = match self.session_store.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping provider-output history append because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.history_store.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append provider-output session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        } else {
+            self.history_projection.append(entry);
+        }
     }
 }
 
