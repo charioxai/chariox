@@ -874,16 +874,13 @@ impl CompatibilityRuntimeState {
         if let Some(owned) = &self.owned {
             match result {
                 Ok(remote_provider_run_id) => {
-                    self.with_app_mut(|app| {
-                        app.echo_prompt_to_other_attachments(
-                            &dispatch.session_id,
-                            &remote_provider_run_id,
-                            &dispatch.source_attachment_id,
-                            &dispatch.prompt,
-                            &dispatch.attachments,
-                        );
-                    })
-                    .await;
+                    owned.echo_prompt_to_other_attachments(
+                        &dispatch.session_id,
+                        &remote_provider_run_id,
+                        &dispatch.source_attachment_id,
+                        &dispatch.prompt,
+                        &dispatch.attachments,
+                    );
                     return Ok(());
                 }
                 Err(error) => {
