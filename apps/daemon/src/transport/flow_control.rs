@@ -1,9 +1,12 @@
 use std::time::Instant;
 
 use crate::app::{ActivePromptState, DaemonApp};
+#[cfg(test)]
 use crate::error::DaemonError;
+#[cfg(test)]
 use crate::session::{PromptQueueItem, PromptStatus};
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 enum PromptSettlementAction {
     Complete,
@@ -58,6 +61,7 @@ pub(crate) fn prompt_completion_recorded(app: &DaemonApp, provider_run_id: &str)
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 pub(crate) fn maybe_complete_active_prompt(
     app: &mut DaemonApp,
     session_id: &str,
@@ -98,6 +102,7 @@ pub(crate) fn maybe_complete_active_prompt(
     Ok(())
 }
 
+#[cfg(test)]
 fn prompt_settlement_action(
     app: &mut DaemonApp,
     session_id: &str,
@@ -113,6 +118,7 @@ fn prompt_settlement_action(
     Ok(PromptSettlementAction::Complete)
 }
 
+#[cfg(test)]
 fn active_prompt_for_settlement(
     app: &mut DaemonApp,
     session_id: &str,
@@ -129,6 +135,7 @@ fn active_prompt_for_settlement(
     app.prompt_owner_active_prompt_for_agent(session_id, agent_id)
 }
 
+#[cfg(test)]
 fn provider_run_agent_id(app: &DaemonApp, provider_run_id: &str) -> Result<String, DaemonError> {
     app.providers()
         .get_run(provider_run_id)?
@@ -148,6 +155,7 @@ mod tests {
     use crate::session::CreateSessionRequest;
 
     #[test]
+    #[cfg(test)]
     fn prompt_settlement_action_uses_agent_runtime_projection_before_session_state() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)

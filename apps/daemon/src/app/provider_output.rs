@@ -5,11 +5,11 @@ use std::time::Instant;
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::kernel::projection::SessionHistoryProjectionStore;
+use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionHistoryProjectionStore};
 use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 use crate::pty::PtyOutputChunk;
-use crate::session::{PromptStatus, SessionStateStore};
+use crate::session::{PromptQueueItem, PromptStatus, SessionStateStore};
 use crate::terminal::{
     RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
 };
@@ -160,6 +160,7 @@ struct ProviderOutputPumpContext<'a> {
     provider_store: ProviderProcessServiceStore,
     pending_structured_output_records: StructuredOutputRecordStore,
     prompt_activity: PromptActivityStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
 }
 
 struct ProviderOutputRecipientResolver<'a> {
@@ -340,6 +341,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             provider_store: app.providers.clone(),
             pending_structured_output_records: app.pending_structured_output_records.clone(),
             prompt_activity: app.prompt_activity.clone(),
+            agent_runtime_projection: app.agent_runtime_projection_store(),
             app,
         }
     }
@@ -563,35 +565,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         if exited {
             return Ok(records);
         }
-        let agent_id =
-            provider_run
-                .agent_instance_id()
-                .ok_or_else(|| DaemonError::AgentNotFound {
-                    agent_id: "provider run has no agent".to_string(),
-                })?;
-        let active_prompt_status = self
-            .app
-            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-            .map(|prompt| prompt.status());
-        if active_prompt_status == Some(PromptStatus::Cancelling) {
-            if prompt_completed {
-                let _ = self.app.finalize_active_prompt_cancellation(
-                    session_id,
-                    agent_id,
-                    Some(provider_run_id),
-                )?;
-            }
-        } else if prompt_completed && active_prompt_status.is_some() {
-            let _ = self
-                .app
-                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
-        } else if !prompt_completed && active_prompt_status == Some(PromptStatus::Cancelling) {
-            crate::transport::flow_control::maybe_complete_active_prompt(
-                self.app,
-                session_id,
-                provider_run_id,
-            )?;
-        }
+        self.settle_structured_prompt_completion(session_id, provider_run_id, prompt_completed)?;
         Ok(records)
     }
 
@@ -630,11 +604,117 @@ impl<'a> ProviderOutputPumpContext<'a> {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<(), DaemonError> {
-        crate::transport::flow_control::maybe_complete_active_prompt(
-            self.app,
-            session_id,
-            provider_run_id,
-        )
+        if !self.prompt_should_settle(provider_run_id) {
+            return Ok(());
+        }
+        self.settle_prompt_by_status(session_id, provider_run_id)
+    }
+
+    fn settle_structured_prompt_completion(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_completed: bool,
+    ) -> Result<(), DaemonError> {
+        let Some(active_prompt_status) = self
+            .active_prompt_for_settlement(session_id, provider_run_id)?
+            .map(|prompt| prompt.status())
+        else {
+            return Ok(());
+        };
+        if active_prompt_status == PromptStatus::Cancelling {
+            if prompt_completed {
+                let agent_id = self.provider_run_agent_id(provider_run_id)?;
+                let _ = self.app.finalize_active_prompt_cancellation(
+                    session_id,
+                    &agent_id,
+                    Some(provider_run_id),
+                )?;
+            } else {
+                self.maybe_complete_active_prompt(session_id, provider_run_id)?;
+            }
+        } else if prompt_completed {
+            let agent_id = self.provider_run_agent_id(provider_run_id)?;
+            let _ =
+                self.app
+                    .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        }
+        Ok(())
+    }
+
+    fn settle_prompt_by_status(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            self.clear_prompt_activity(provider_run_id);
+            return Ok(());
+        };
+        let agent_id = self.provider_run_agent_id(provider_run_id)?;
+        if prompt.status() == PromptStatus::Cancelling {
+            let _ = self.app.finalize_active_prompt_cancellation(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+            )?;
+        } else {
+            let _ =
+                self.app
+                    .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        }
+        Ok(())
+    }
+
+    fn prompt_should_settle(&self, provider_run_id: &str) -> bool {
+        self.prompt_activity
+            .read()
+            .get(provider_run_id)
+            .map(|state| {
+                (state.saw_response_content || state.completion_recorded)
+                    && state
+                        .last_output_at
+                        .map(|last_output_at| {
+                            last_output_at.elapsed() >= self.app.prompt_idle_timeout
+                        })
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    fn active_prompt_for_settlement(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let agent_id = self.provider_run_agent_id(provider_run_id)?;
+        if let Some(prompt) = self
+            .agent_runtime_projection
+            .get(&agent_id)
+            .filter(|projection| projection.session_id == session_id)
+            .and_then(|projection| projection.active_prompt)
+        {
+            return Ok(Some(prompt));
+        }
+        self.app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
+    }
+
+    fn provider_run_agent_id(&self, provider_run_id: &str) -> Result<String, DaemonError> {
+        self.provider_store
+            .get_run(provider_run_id)?
+            .agent_instance_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })
+    }
+
+    fn clear_prompt_activity(&mut self, provider_run_id: &str) {
+        self.prompt_activity.write().remove(provider_run_id);
+        if self.app.release_prompt_workspace_claim(provider_run_id) {
+            self.app.retry_blocked_workflow_claims_from_runtime();
+        }
     }
 
     fn fan_out_provider_output(
