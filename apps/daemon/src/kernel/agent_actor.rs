@@ -624,6 +624,7 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::time::{timeout, Duration};
 
+    use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::kernel::agent_actor::AgentRuntime;
     use crate::kernel::projection::{AgentRuntimeProjectionStore, SessionStateProjectionStore};
@@ -1220,6 +1221,169 @@ mod tests {
                 .map(|prompt| prompt.id().to_string()),
             Some(prompt.id().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-owned-submit-pty",
+                "worktree-owned-submit-pty",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("pty-agent")
+                    .with_worktree("worktree-owned-submit-pty"),
+            )
+            .expect("second agent should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owned-submit-pty",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should be available");
+        let session_projection = app.session_state_projection_store();
+        session_projection.update(session_snapshot.clone());
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            owned_runtime_state(&app).await,
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
+        );
+
+        let request = SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id,
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "owned pty submit".to_string(),
+            attachments: Vec::new(),
+        };
+        let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "owned-local-pty-prompt-submit",
+            None,
+            None,
+            &local_request,
+        );
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_submit(&command, request),
+        )
+        .await
+        .expect("owned multi-agent PTY prompt submit should not wait for the app lock")
+        .expect("prompt submit should succeed");
+
+        let LocalDaemonResponse::PromptSubmitted { outcome, session } = response else {
+            panic!("unexpected response");
+        };
+        let PromptSubmissionOutcome::Started { prompt } = outcome else {
+            panic!("prompt should start");
+        };
+        assert_eq!(prompt.target_agent_id(), agent_id);
+        assert_eq!(
+            session
+                .active_prompt_for_agent(&agent_id)
+                .map(|prompt| prompt.id()),
+            Some(prompt.id())
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_cancel_uses_owned_runtime_state_for_pty_prompt_without_app_lock() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-owned-cancel-pty",
+                "worktree-owned-cancel-pty",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owned-cancel-pty",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "owned pty cancel",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should submit through owner")
+        else {
+            panic!("first prompt should start");
+        };
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should be available");
+        let session_projection = app.session_state_projection_store();
+        session_projection.update(session_snapshot.clone());
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let session_id = session.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            owned_runtime_state(&app).await,
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection,
+            prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
+        );
+
+        let request = CancelActivePromptRequest {
+            session_id: session_id.clone(),
+            attachment_id,
+        };
+        let local_request = LocalDaemonRequest::CancelActivePrompt(request.clone());
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "owned-local-pty-prompt-cancel",
+            None,
+            None,
+            &local_request,
+        );
+        let app_guard = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_cancel(&command, request),
+        )
+        .await
+        .expect("owned PTY prompt cancellation should not wait for the app lock")
+        .expect("prompt cancellation should succeed");
+        drop(app_guard);
+
+        let LocalDaemonResponse::PromptCancelled { cancellation } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(cancellation.prompt.id(), prompt.id());
+        assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
     }
 
     #[tokio::test]

@@ -3173,18 +3173,13 @@ mod tests {
                 async move { prompt_router.dispatch(prompt_command, prompt_request).await },
             );
 
-        tokio::task::yield_now().await;
-        assert!(
-            !prompt_task.is_finished(),
-            "prompt should be admitted to the agent lane without using a generic interactive lane"
-        );
-
-        drop(app_guard);
-        let _ = first_task.await.expect("first focus should join");
-        let prompt_response = prompt_task
+        let prompt_response = timeout(Duration::from_millis(100), prompt_task)
             .await
+            .expect("owned prompt submit should not wait for the app lock")
             .expect("prompt task should join")
             .expect("prompt should submit");
+        drop(app_guard);
+        let _ = first_task.await.expect("first focus should join");
         match prompt_response {
             crate::local::LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {
@@ -3246,33 +3241,12 @@ mod tests {
                 async move { prompt_router.dispatch(prompt_command, prompt_request).await },
             );
 
-        let mut focused_agent_lane_created = false;
-        for _ in 0..50 {
-            let projection = router.daemon_health_projection(0).await;
-            if projection
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == focused_agent.id())
-            {
-                focused_agent_lane_created = true;
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            focused_agent_lane_created,
-            "prompt submit should resolve focused agent from the session projection before touching the app lock"
-        );
-        assert!(
-            !prompt_task.is_finished(),
-            "agent worker should still wait on the deliberately held app lock"
-        );
-
-        drop(app_guard);
-        let prompt_response = prompt_task
+        let prompt_response = timeout(Duration::from_millis(100), prompt_task)
             .await
+            .expect("owned prompt submit should not wait for the app lock")
             .expect("prompt task should join")
             .expect("prompt should submit");
+        drop(app_guard);
         match prompt_response {
             LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {
@@ -3344,33 +3318,12 @@ mod tests {
                 async move { prompt_router.dispatch(prompt_command, prompt_request).await },
             );
 
-        let mut agent_lane_created = false;
-        for _ in 0..50 {
-            let projection = router.daemon_health_projection(0).await;
-            if projection
-                .agent_command_lanes
-                .iter()
-                .any(|lane| lane.lane_id == agent_id)
-            {
-                agent_lane_created = true;
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            agent_lane_created,
-            "prompt submit should resolve focus from warmed session projection before touching the app lock"
-        );
-        assert!(
-            !prompt_task.is_finished(),
-            "agent worker should still wait on the deliberately held app lock"
-        );
-
-        drop(app_guard);
-        let prompt_response = prompt_task
+        let prompt_response = timeout(Duration::from_millis(100), prompt_task)
             .await
+            .expect("owned prompt submit should not wait for the app lock")
             .expect("prompt task should join")
             .expect("prompt should submit");
+        drop(app_guard);
         match prompt_response {
             LocalDaemonResponse::PromptSubmitted { outcome, .. } => match outcome {
                 PromptSubmissionOutcome::Started { prompt } => {

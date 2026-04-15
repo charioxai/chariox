@@ -762,6 +762,62 @@ impl CompatibilityRuntimeOwnedState {
         Ok(prompt)
     }
 
+    fn advance_next_queued_prompt_dispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(next_prompt) = self
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run_id.to_string(),
+                state: provider_run.state(),
+                operation: "advance queued prompt",
+            });
+        }
+        self.acquire_provider_prompt_claim(
+            session_id,
+            provider_run_id,
+            agent_id,
+            Some(next_prompt.source_attachment_id()),
+        )?;
+        let started_next = self
+            .prompt_state_owner
+            .activate_next_queued_prompt(&session, agent_id, Some(next_prompt.id()))?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "advance queued prompt",
+                message: format!(
+                    "expected queued prompt `{}` but no queued prompt was available",
+                    next_prompt.id()
+                ),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        let _ = self.session_snapshot(session_id)?;
+        Ok(Some(crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.to_string(),
+            source_attachment_id: started_next.source_attachment_id().to_string(),
+            prompt: started_next.prompt().to_string(),
+            attachments: started_next.attachments().to_vec(),
+        }))
+    }
+
     fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -1011,19 +1067,15 @@ impl CompatibilityRuntimeOwnedState {
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
-        if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-            return Ok(None);
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+            let _ = self.ensure_attachment_in_session(&session_id, &attachment_id)?;
         }
-        let _ = self.ensure_attachment_in_session(&session_id, &attachment_id)?;
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let target_agent = self.agent_store.get_agent(&target_agent_id)?;
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }
         let session = self.session_store.get_session(&session_id)?;
-        if self.agent_store.get_session_agents(&session_id).len() != 1 {
-            return Ok(None);
-        }
         let queued_while_active = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &target_agent_id)
@@ -1035,10 +1087,13 @@ impl CompatibilityRuntimeOwnedState {
         if !queued_while_active && provider_run_id.is_none() {
             return Ok(None);
         }
-        if let Some(provider_run_id) = provider_run_id.as_deref() {
-            let provider_run = self.provider_store.get_run(provider_run_id)?;
-            if provider_run.provider() != "slow-structured" {
-                return Ok(None);
+        if !queued_while_active {
+            if let Some(provider_run_id) = provider_run_id.as_deref() {
+                let provider_run =
+                    self.ensure_provider_run_in_session(&session_id, provider_run_id)?;
+                if provider_run.state() == crate::provider::ProviderRunState::Parked {
+                    let _ = self.resume_provider_run_for_session(&session_id, provider_run_id)?;
+                }
             }
         }
         let provider_run_is_starting = provider_run_id
@@ -1164,9 +1219,6 @@ impl CompatibilityRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if self.agent_store.get_session_agents(session_id).len() != 1 {
-            return Ok(None);
-        }
         let _ = self
             .ensure_attachment_in_session(session_id, next_queued_prompt.source_attachment_id())?;
         let provider_run_id = provider_run_id
@@ -1181,15 +1233,6 @@ impl CompatibilityRuntimeOwnedState {
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
-            return Ok(None);
-        }
-        if provider_run.provider() != "slow-structured" {
-            return Ok(None);
-        }
-        if !self
-            .provider_store
-            .run_uses_structured_prompt_io(&provider_run)
-        {
             return Ok(None);
         }
         self.acquire_provider_prompt_claim(
@@ -1223,19 +1266,33 @@ impl CompatibilityRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
-        if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
-            session_id.to_string(),
-            provider_run_id.clone(),
-            agent_id.to_string(),
-            &provider_run,
-            started_next.prompt(),
-            started_next.attachments(),
-        ) {
-            let _ = self.cancel_active_prompt_only(session_id, agent_id);
-            let _ = self.clear_prompt_activity(&provider_run_id);
-            return Err(error);
+        if self
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
+                session_id.to_string(),
+                provider_run_id.clone(),
+                agent_id.to_string(),
+                &provider_run,
+                started_next.prompt(),
+                started_next.attachments(),
+            ) {
+                let _ = self.cancel_active_prompt_only(session_id, agent_id);
+                let _ = self.clear_prompt_activity(&provider_run_id);
+                return Err(error);
+            }
+            self.note_prompt_started(&provider_run_id);
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(Some(OwnedPromptCompletion {
+                completion: crate::session::PromptCompletion {
+                    completed,
+                    started_next: Some(started_next),
+                },
+                released_claim: false,
+                dispatch: None,
+            }));
         }
-        self.note_prompt_started(&provider_run_id);
         let _ = self.session_snapshot(session_id)?;
         Ok(Some(OwnedPromptCompletion {
             completion: crate::session::PromptCompletion {
@@ -1243,11 +1300,18 @@ impl CompatibilityRuntimeOwnedState {
                 started_next: Some(started_next.clone()),
             },
             released_claim: false,
-            dispatch: None,
+            dispatch: Some(crate::app::KernelPromptDispatch {
+                session_id: session_id.to_string(),
+                provider_run_id,
+                agent_id: agent_id.to_string(),
+                source_attachment_id: started_next.source_attachment_id().to_string(),
+                prompt: started_next.prompt().to_string(),
+                attachments: started_next.attachments().to_vec(),
+            }),
         }))
     }
 
-    fn cancel_local_structured_prompt(
+    fn cancel_local_prompt(
         &self,
         session_id: &str,
         target_agent_id: &str,
@@ -1259,9 +1323,6 @@ impl CompatibilityRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if self.agent_store.get_session_agents(session_id).len() != 1 {
-            return Ok(None);
-        }
         let active_prompt = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
@@ -1294,15 +1355,6 @@ impl CompatibilityRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
-        if provider_run.provider() != "slow-structured" {
-            return Ok(None);
-        }
-        if !self
-            .provider_store
-            .run_uses_structured_prompt_io(&provider_run)
-        {
-            return Ok(None);
-        }
 
         let prompt = self
             .prompt_state_owner
@@ -1343,6 +1395,7 @@ impl CompatibilityRuntimeOwnedState {
             dispatch: Some(crate::app::KernelPromptAbortDispatch {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run.id().to_string(),
+                source_attachment_id: attachment_id.to_string(),
             }),
         }))
     }
@@ -2047,7 +2100,7 @@ impl CompatibilityRuntimeState {
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         if let Some(owned) = &self.owned {
             if let Some(cancellation) =
-                owned.cancel_local_structured_prompt(session_id, target_agent_id, attachment_id)?
+                owned.cancel_local_prompt(session_id, target_agent_id, attachment_id)?
             {
                 return Ok(cancellation);
             }
@@ -2377,10 +2430,26 @@ impl CompatibilityRuntimeState {
                     operation: "submit prompt",
                 });
             }
-            return owned.provider_store.enqueue_structured_prompt_abort(
-                dispatch.session_id.clone(),
-                dispatch.provider_run_id.clone(),
+            if owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
+            {
+                return owned.provider_store.enqueue_structured_prompt_abort(
+                    dispatch.session_id.clone(),
+                    dispatch.provider_run_id.clone(),
+                );
+            }
+            owned.terminal_stream.record_input(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.source_attachment_id,
+                b"\x03",
             );
+            self.with_app_mut(|app| {
+                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
+            })
+            .await?;
+            return Ok(());
         }
         self.with_app_mut(|app| app.enqueue_kernel_prompt_abort(dispatch))
             .await
@@ -2708,14 +2777,21 @@ impl CompatibilityRuntimeState {
             match result {
                 Ok(run) => {
                     if let Some(agent_id) = run.agent_instance_id() {
-                        if let Err(error) = self
-                            .with_app_mut(|app| {
-                                app.advance_next_queued_prompt(run.session_id(), agent_id)
-                            })
-                            .await
-                        {
-                            self.fail_provider_launch(started, &error).await;
-                            return;
+                        match owned.advance_next_queued_prompt_dispatch(
+                            run.session_id(),
+                            agent_id,
+                            run.id(),
+                        ) {
+                            Ok(Some(dispatch)) => {
+                                if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                self.fail_provider_launch(started, &error).await;
+                                return;
+                            }
                         }
                         let _ = owned.session_snapshot(run.session_id());
                     }

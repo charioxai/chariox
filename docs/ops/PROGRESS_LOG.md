@@ -522,3 +522,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Completed the point-2 cutover for the local session lifecycle: attach, detach, focus, cycle focus, resize validation, end, and delete now run through owned `SessionRuntime` state instead of `KernelSessionService<&mut DaemonApp>` mutation paths.
 - Kept resize and provider process teardown behind narrow app side-effect ports while owned stores perform session/provider validation, queue cleanup, prompt-owner cleanup, provider-run projection updates, and session projection cleanup.
 - Added no-app-lock regressions for attach/detach, focus/cycle, end/delete, resize validation, and router delete behavior.
+
+### M4.5 prompt ownership and provider advancement update
+
+- Broadened the point-3 owned prompt path beyond the earlier single-agent structured case: local multi-agent prompt submit, PTY prompt submit, PTY cancellation acknowledgement, and queued prompt advancement now mutate prompt owner/session mirrors through owned runtime state.
+- Added an explicit prompt-abort dispatch source attachment so PTY cancellation can acknowledge immediately and send `Ctrl-C` through the side-effect port asynchronously.
+- Started point 4 by moving provider post-launch queued prompt advancement out of `DaemonApp::advance_next_queued_prompt`; provider launch completion now activates the next prompt and builds dispatch from owned runtime state.

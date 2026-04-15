@@ -819,6 +819,7 @@ impl<'a> KernelAgentService<'a> {
                 Some(KernelPromptAbortDispatch {
                     session_id: session_id.clone(),
                     provider_run_id: provider_run_id.clone(),
+                    source_attachment_id: attachment_id.clone(),
                 })
             } else {
                 crate::app::terminal_input::ProviderTerminalInput::new(self.app)
