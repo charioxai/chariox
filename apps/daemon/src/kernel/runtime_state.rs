@@ -430,6 +430,116 @@ impl CompatibilityRuntimeOwnedState {
         Ok(cancelled)
     }
 
+    fn complete_local_prompt_without_advance(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        if active.workflow_run_id().is_some() {
+            return Ok(None);
+        }
+
+        let completed = self
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+
+        let completion_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string())
+        });
+        let completion_record_key = provider_run_id.unwrap_or(agent_id);
+        if !self.prompt_completion_recorded(completion_record_key) {
+            let provider_run_id = completion_provider_run_id
+                .as_deref()
+                .unwrap_or("provider-run-completed");
+            let recipient_attachment_ids = self
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids,
+                &format!("prompt-complete:{}", completed.id()),
+                crate::session::unix_epoch_ms(),
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
+        let released_claim = completion_provider_run_id
+            .as_deref()
+            .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
+            .unwrap_or(false);
+        let _ = self.session_snapshot(session_id)?;
+
+        Ok(Some(OwnedPromptCompletion {
+            completion: crate::session::PromptCompletion {
+                completed,
+                started_next: None,
+            },
+            released_claim,
+        }))
+    }
+
+    fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
+        self.prompt_activity
+            .read()
+            .get(provider_run_id)
+            .map(|state| state.completion_recorded)
+            .unwrap_or(false)
+    }
+
+    fn mark_prompt_completion_recorded(&self, provider_run_id: &str) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.completion_recorded = true;
+        }
+    }
+
+    fn record_assistant_message_completion(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        let agent_id = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        self.terminal_stream.record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+        );
+    }
+
     fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
         self.prompt_activity.write().remove(provider_run_id);
         self.prompt_workspace_claims.remove(provider_run_id)
@@ -627,6 +737,11 @@ struct OwnedProviderRunExit {
     ended_run: crate::provider::RuntimeProviderRun,
     agent_id: String,
     already_ended: bool,
+}
+
+struct OwnedPromptCompletion {
+    completion: crate::session::PromptCompletion,
+    released_claim: bool,
 }
 
 impl CompatibilityRuntimeState {
@@ -987,6 +1102,27 @@ impl CompatibilityRuntimeState {
                 })
                 .map(|run| run.id().to_string())
         });
+        if next_queued_prompt.is_none() {
+            if let Some(owned) = &self.owned {
+                if let Some(completion) = owned.complete_local_prompt_without_advance(
+                    session_id,
+                    target_agent_id,
+                    owned_provider_run_id
+                        .as_ref()
+                        .and_then(|run_id| run_id.as_deref()),
+                )? {
+                    if completion.released_claim {
+                        self.with_app_mut(|app| {
+                            crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(
+                                app,
+                            )
+                        })
+                        .await;
+                    }
+                    return Ok(completion.completion);
+                }
+            }
+        }
         self.with_app_mut(|app| {
             let provider_run_id = owned_provider_run_id.unwrap_or_else(|| {
                 app.providers()

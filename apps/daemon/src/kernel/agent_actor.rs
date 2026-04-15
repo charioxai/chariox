@@ -630,7 +630,7 @@ mod tests {
     use crate::kernel::prompt_state::PromptStateOwner;
     use crate::kernel::runtime_state::CompatibilityRuntimeState;
     use crate::kernel::session_actor::FocusedAgentProjection;
-    use crate::local::LocalDaemonResponse;
+    use crate::local::{CompletePromptRequest, LocalDaemonRequest, LocalDaemonResponse};
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::session::{
         CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
@@ -651,6 +651,28 @@ mod tests {
             )
             .expect("provider launch should succeed");
         app.update_provider_run_projection(provider_run);
+    }
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> CompatibilityRuntimeState {
+        let app_locked = app.lock().await;
+        CompatibilityRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workspace_coordinator(),
+        )
     }
 
     #[tokio::test]
@@ -787,6 +809,97 @@ mod tests {
         .expect("prompt owner should still know the active agent");
 
         assert_eq!(resolved, agent.id());
+    }
+
+    #[tokio::test]
+    async fn prompt_complete_uses_owned_runtime_state_without_app_lock_for_simple_local_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-owned-complete",
+                "worktree-owned-complete",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-owned-complete",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "owned complete",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should submit through owner")
+        else {
+            panic!("first prompt should start");
+        };
+        let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should be available");
+        let session_projection = app.session_state_projection_store();
+        session_projection.update(session_snapshot.clone());
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_session(&session_snapshot);
+        let prompt_state_owner = app.prompt_state_owner();
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = AgentRuntime::new(
+            owned_runtime_state(&app).await,
+            ProviderRunOperationLanes::default(),
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            prompt_state_owner,
+            crate::session::PromptIdAllocator::default(),
+        );
+
+        let request = CompletePromptRequest {
+            session_id: session_id.clone(),
+        };
+        let local_request = LocalDaemonRequest::CompletePrompt(request.clone());
+        let command = crate::kernel::command::KernelCommand::from_local_request(
+            "owned-local-prompt-complete",
+            None,
+            None,
+            &local_request,
+        );
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_prompt_complete(&command, request),
+        )
+        .await
+        .expect("owned local prompt completion should not wait for the app lock")
+        .expect("prompt completion should succeed");
+
+        let LocalDaemonResponse::PromptCompleted { completion } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(completion.completed.id(), prompt.id());
+        assert_eq!(completion.completed.status(), PromptStatus::Completed);
+        assert!(completion.started_next.is_none());
+        let projected = session_projection
+            .get(&session_id)
+            .expect("completion should refresh session projection");
+        assert!(
+            projected.active_prompt_for_agent(&agent_id).is_none(),
+            "completed prompt should be removed from session projection"
+        );
+        assert!(
+            agent_runtime_projection
+                .get(&agent_id)
+                .filter(|projection| projection.active_prompt.is_none())
+                .is_some(),
+            "completed prompt should be removed from agent-runtime projection"
+        );
     }
 
     #[tokio::test]
