@@ -996,6 +996,8 @@ fn session_id_for_projection_refresh(
         }
         Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
+        Ok(LocalDaemonResponse::AgentSpawned { agent })
+        | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
             Some(agent.session_id().to_string())
         }
@@ -1334,6 +1336,67 @@ mod tests {
                 .get(&session_id)
                 .and_then(|projected| projected.alias().map(str::to_string)),
             Some("owned-alias".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let agent_runtime_projection = AgentRuntimeProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            agent_runtime_projection.clone(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            session_id: session_id.clone(),
+            alias: Some("owned-agent".to_string()),
+            provider: "dev-stub".to_string(),
+            model: Some("default".to_string()),
+            effort: None,
+            worktree_id: Some("worktree".to_string()),
+            machine_ref: None,
+        });
+        let command =
+            KernelCommand::from_local_request("owned-local-agent-spawn", None, None, &request);
+        let _locked_app = app.lock().await;
+        let response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned local agent spawn should not wait for the app lock")
+        .expect("agent spawn should succeed");
+
+        let LocalDaemonResponse::AgentSpawned { agent } = response else {
+            panic!("unexpected response");
+        };
+        assert_eq!(agent.session_id(), session_id);
+        assert_eq!(agent.alias(), Some("owned-agent"));
+        let projected = session_projection
+            .get(&session_id)
+            .expect("spawn should refresh session projection");
+        assert_eq!(projected.focused_agent_id(), Some(agent.id()));
+        assert!(
+            agent_runtime_projection
+                .get(agent.id())
+                .filter(|projection| projection.session_id == session_id)
+                .is_some(),
+            "spawn should refresh agent-runtime projection"
         );
     }
 

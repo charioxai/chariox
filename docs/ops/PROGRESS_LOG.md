@@ -4,6 +4,12 @@ Chronological notes to preserve execution context between contributors/agents.
 
 ## 2026-04-15
 
+### M4.5 local agent spawn ownership update
+
+- Moved local session-scoped agent spawn onto the owned `CompatibilityRuntimeState` session and agent stores when runtime-owned state is available, keeping remote machine spawn on the compatibility fallback because it still owns relay/lease side effects.
+- Fixed session-runtime projection refresh for `AgentSpawned` and `AgentDestroyed` responses so session and agent-runtime projections update from agent lifecycle responses instead of depending on a separate compatibility snapshot path.
+- Verified the slice with `cargo test` in `apps/daemon`: 333 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
 ### M4.5 session alias ownership update
 
 - Moved session alias updates onto the owned `CompatibilityRuntimeState` session store when runtime-owned state is available, with a no-app-lock regression covering alias mutation and projection refresh while the compatibility app mutex is held.

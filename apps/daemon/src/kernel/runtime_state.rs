@@ -248,6 +248,14 @@ impl CompatibilityRuntimeOwnedState {
         self.session_snapshot(session_id)
     }
 
+    fn spawn_agent(
+        &self,
+        request: crate::agent::CreateAgentRequest,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let mut sessions = self.session_store.write();
+        self.agent_store.create_agent(request, &mut sessions)
+    }
+
     fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -889,6 +897,11 @@ impl CompatibilityRuntimeState {
         &self,
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if request.machine_ref.is_none() {
+            if let Some(owned) = &self.owned {
+                return owned.spawn_agent(request);
+            }
+        }
         self.with_app_mut(|app| crate::app::KernelSessionService::new(app).spawn_agent(request))
             .await
     }
