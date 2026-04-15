@@ -516,7 +516,7 @@ impl<'a> KernelAgentService<'a> {
             .app
             .attachments
             .list_session_attachment_ids(&completion.session_id);
-        self.app.record_assistant_message_completion(
+        self.record_assistant_message_completion(
             &completion.session_id,
             remote_provider_run_id,
             recipient_attachment_ids,
@@ -607,7 +607,7 @@ impl<'a> KernelAgentService<'a> {
                 .provider_run_id
                 .as_deref()
                 .unwrap_or("provider-run-completed");
-            self.app.record_assistant_message_completion(
+            self.record_assistant_message_completion(
                 &completion.session_id,
                 completion_provider_run_id,
                 recipient_attachment_ids,
@@ -654,6 +654,30 @@ impl<'a> KernelAgentService<'a> {
             completed: completion.completed,
             started_next,
         })
+    }
+
+    fn record_assistant_message_completion(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        let agent_id = self
+            .app
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        self.app.terminal.record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+        );
     }
 
     pub(crate) fn cancel_agent_prompt_for_kernel(

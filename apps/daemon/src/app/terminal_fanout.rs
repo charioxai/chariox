@@ -112,29 +112,6 @@ impl DaemonApp {
         record
     }
 
-    pub(crate) fn record_assistant_message_completion(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-        message_id: &str,
-        completed_at_ms: u64,
-    ) {
-        let agent_id = self
-            .providers
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
-        self.terminal.record_assistant_message_completion(
-            session_id,
-            provider_run_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-            message_id,
-            completed_at_ms,
-        );
-    }
-
     pub(crate) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
         let session = match self.sessions.get_session(session_id) {
             Ok(session) => session,
