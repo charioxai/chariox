@@ -43,6 +43,7 @@ Terminology:
 ## Existing Automation
 
 - Local freeform multi-agent: `node apps/cli/scripts/live-freeform-multi-agent-drill.mjs --providers opencode,codex`
+- Local managed I/O: `node apps/cli/scripts/live-managed-io-drill.mjs --providers opencode,codex`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
 - Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --provider codex` and the same command with `--provider opencode`
@@ -59,6 +60,7 @@ Terminology:
 ## Current Results
 
 - Freeform local multi-agent: **pass** with `opencode,codex` after the router bootstrap lock fix.
+- Local managed I/O: **pass** with `opencode,codex`; agents read `seed.txt`, create provider-specific output files through `arroba.write_artifact`, and fail the drill if direct/native write attempts create forbidden files.
 - Local workflow catalog: **pass** with spawned local daemon and `opencode,codex`.
   - `simple-chain`
   - `validated-increment-chain`
