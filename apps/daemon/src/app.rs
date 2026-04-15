@@ -526,6 +526,10 @@ impl DaemonApp {
         &self.pty
     }
 
+    pub(crate) fn pty_mut(&mut self) -> &mut PtyManager {
+        &mut self.pty
+    }
+
     #[doc(hidden)]
     pub fn create_session(
         &mut self,

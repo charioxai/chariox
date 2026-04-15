@@ -262,6 +262,506 @@ impl CompatibilityRuntimeOwnedState {
         self.agent_store.destroy_agent(agent_id, &mut sessions)
     }
 
+    fn attach(
+        &self,
+        request: crate::attachment::AttachRequest,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        let session_id = request.session_id.clone();
+        let client_id = request.client_id.clone();
+        let capability_level = format!("{:?}", request.capability_level);
+        let replaced_attachment_ids = self
+            .attachment_store
+            .list_client_attachments(&client_id)
+            .into_iter()
+            .map(|attachment| attachment.id().to_string())
+            .collect::<Vec<_>>();
+        for attachment_id in &replaced_attachment_ids {
+            let _ = self.detach(attachment_id)?;
+        }
+
+        let mut sessions = self.session_store.write();
+        let attachment = self.attachment_store.attach(&mut sessions, request)?;
+        drop(sessions);
+
+        if self.agent_store.get_session_agents(&session_id).is_empty() {
+            let worktree_id = self
+                .session_store
+                .get_session(&session_id)?
+                .worktree_id()
+                .to_string();
+            let agent_request = crate::agent::CreateAgentRequest::new(&session_id, "default")
+                .with_worktree(worktree_id);
+            let mut sessions = self.session_store.write();
+            let _ = self
+                .agent_store
+                .create_agent(agent_request, &mut sessions)?;
+            drop(sessions);
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "created default agent for session",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "reason": "session had no agents (possibly after being ended and reattached)",
+                }),
+            );
+        }
+
+        self.sync_focused_provider_run_if_idle(&session_id)?;
+
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "attachment joined session",
+            serde_json::json!({
+                "session_id": session_id,
+                "attachment_id": attachment.id(),
+                "client_id": client_id,
+                "capability_level": capability_level,
+                "replaced_attachment_ids": replaced_attachment_ids,
+            }),
+        );
+        Ok(attachment)
+    }
+
+    fn detach(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        let mut sessions = self.session_store.write();
+        let (attachment, effect) = self
+            .attachment_store
+            .detach_with_effect(&mut sessions, attachment_id)?;
+        drop(sessions);
+
+        let session = self.session_store.get_session(attachment.session_id())?;
+        let owner_removed_queued_prompt_count = self
+            .prompt_state_owner
+            .remove_queued_prompts_by_attachment(&session, attachment_id);
+        self.mirror_prompt_owner_session_state(attachment.session_id())?;
+        let removed_queued_prompt_count = effect
+            .removed_queued_prompt_count
+            .max(owner_removed_queued_prompt_count);
+        let session_after_detach = self.session_store.get_session(attachment.session_id())?;
+
+        if removed_queued_prompt_count > 0 {
+            self.record_notice(
+                attachment.session_id(),
+                None,
+                self.attachment_store
+                    .list_session_attachment_ids(attachment.session_id()),
+                format!(
+                    "Removed {} queued prompt(s) from detached attachment `{}`.",
+                    removed_queued_prompt_count, attachment_id
+                ),
+            );
+        }
+
+        if effect.removed_active_prompt {
+            self.record_notice(
+                attachment.session_id(),
+                None,
+                self.attachment_store
+                    .list_session_attachment_ids(attachment.session_id()),
+                format!(
+                    "Removed the active prompt from detached attachment `{}` and advanced the queue.",
+                    attachment_id
+                ),
+            );
+            if let Some(agent_id) = session_after_detach.focused_agent_id() {
+                let _ = self.activate_next_queued_prompt_for_agent(
+                    attachment.session_id(),
+                    agent_id,
+                    None,
+                )?;
+            }
+        }
+
+        let remaining_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(attachment.session_id());
+        let active_prompt_agent_id = self
+            .prompt_state_owner
+            .active_prompt_agent_id(&self.session_snapshot(attachment.session_id())?);
+        if remaining_attachment_ids.is_empty() && active_prompt_agent_id.is_none() {
+            if let Some(active_provider_run_id) = session_after_detach
+                .active_provider_run_id()
+                .map(str::to_string)
+            {
+                let run = self.provider_store.get_run(&active_provider_run_id)?;
+                if run.state() != crate::provider::ProviderRunState::Ended {
+                    let outcome = self
+                        .provider_store
+                        .park_run_provider_only(attachment.session_id(), &active_provider_run_id)?;
+                    if self
+                        .session_store
+                        .get_session(attachment.session_id())?
+                        .active_provider_run_id()
+                        == Some(outcome.run().id())
+                    {
+                        self.session_store
+                            .set_active_provider_run(attachment.session_id(), None)?;
+                    }
+                    self.provider_run_projection.update(outcome.into_run());
+                }
+            }
+            for run in self.provider_store.list_runs() {
+                if run.session_id() == attachment.session_id() {
+                    self.clear_prompt_activity(run.id());
+                }
+            }
+        }
+
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "attachment left session",
+            serde_json::json!({
+                "session_id": attachment.session_id(),
+                "attachment_id": attachment.id(),
+                "removed_queued_prompts": removed_queued_prompt_count,
+                "removed_active_prompt": effect.removed_active_prompt,
+                "remaining_attachment_ids": remaining_attachment_ids,
+            }),
+        );
+        self.session_snapshot(attachment.session_id())?;
+
+        Ok(attachment)
+    }
+
+    fn focus_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let mut sessions = self.session_store.write();
+        let agent = self
+            .agent_store
+            .focus_agent(session_id, agent_id, &mut sessions)?;
+        drop(sessions);
+        if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
+            self.sync_active_provider_run_for_agent(session_id, agent_id)?;
+        }
+        Ok(agent)
+    }
+
+    fn cycle_agent_focus(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        let mut sessions = self.session_store.write();
+        let agent = self.agent_store.cycle_focus(session_id, &mut sessions)?;
+        drop(sessions);
+        if let Some(focused) = agent.as_ref() {
+            if !self.should_defer_provider_run_sync_for_focus_change(session_id, focused.id())? {
+                self.sync_active_provider_run_for_agent(session_id, focused.id())?;
+            }
+        }
+        Ok(agent)
+    }
+
+    fn resize_terminal(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
+        let provider_run_id = self
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?
+            .to_string();
+
+        let _ = self.reconcile_provider_run_liveness_provider_phase(
+            session_id,
+            &provider_run_id,
+            None,
+        )?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        if provider_run.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id,
+                state: provider_run.state(),
+                operation: "resize terminal",
+            });
+        }
+        if provider_run.endpoint_mode() == crate::provider::AgentEndpointMode::External {
+            return Ok(None);
+        }
+        Ok(Some(provider_run.id().to_string()))
+    }
+
+    fn end_session(
+        &self,
+        session_id: &str,
+    ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+
+        if session.status() == crate::session::SessionStatus::Ended {
+            self.prompt_state_owner.remove_session(session_id);
+            let ended = self.session_store.end_session(session_id)?;
+            return Ok((ended, Vec::new()));
+        }
+
+        let removed_attachments = self.attachment_store.remove_session_attachments(session_id);
+        let terminated_runs = self
+            .provider_store
+            .terminate_session_runs_provider_only(session_id)?;
+        let terminated_run_ids = terminated_runs
+            .runs()
+            .iter()
+            .map(|outcome| outcome.run().id().to_string())
+            .collect::<Vec<_>>();
+        for outcome in terminated_runs.into_runs() {
+            if self
+                .session_store
+                .get_session(session_id)?
+                .active_provider_run_id()
+                == Some(outcome.run().id())
+            {
+                self.session_store
+                    .set_active_provider_run(session_id, None)?;
+            }
+            self.provider_run_projection.update(outcome.into_run());
+        }
+
+        let removed_agents = self.agent_store.remove_session_agents(session_id);
+        let removed_agent_ids: Vec<_> = removed_agents
+            .iter()
+            .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
+            .collect();
+
+        for run in self.provider_store.list_runs() {
+            if run.session_id() == session_id {
+                self.clear_prompt_activity(run.id());
+            }
+        }
+        self.prompt_state_owner.remove_session(session_id);
+        let mut ended = self.session_store.end_session(session_id)?;
+        ended.set_agents(removed_agents);
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session ended",
+            serde_json::json!({
+                "session_id": session_id,
+                "removed_attachment_ids": removed_attachments
+                    .iter()
+                    .map(|attachment| attachment.id().to_string())
+                    .collect::<Vec<_>>(),
+                "terminated_provider_run_ids": terminated_run_ids,
+                "removed_agents": removed_agent_ids,
+            }),
+        );
+        Ok((ended, terminated_run_ids))
+    }
+
+    fn delete_session_ref(
+        &self,
+        session_ref: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
+        let session = self
+            .session_store
+            .read()
+            .resolve_session_ref(session_ref, workspace_id)?;
+        let session_id = session.id().to_string();
+        let (ended, terminated_run_ids) = self.end_session(&session_id)?;
+        let mut deleted = self.session_store.delete_session(ended.id())?;
+        deleted.set_agents(ended.agents().to_vec());
+        self.history_projection.remove(deleted.id());
+        self.session_projection.remove(deleted.id());
+        crate::logging::info_with_fields(
+            "daemon.session",
+            "session deleted",
+            serde_json::json!({
+                "session_id": deleted.id(),
+                "session_alias": deleted.alias(),
+            }),
+        );
+        Ok((deleted, terminated_run_ids))
+    }
+
+    fn should_defer_provider_run_sync_for_focus_change(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.session_snapshot(session_id)?;
+        let Some(active_provider_run_id) = session.active_provider_run_id().map(str::to_string)
+        else {
+            return Ok(false);
+        };
+        let active_run = self.provider_store.get_run(&active_provider_run_id)?;
+        if active_run.agent_instance_id() == Some(target_agent_id)
+            || active_run.state() != crate::provider::ProviderRunState::Running
+        {
+            return Ok(false);
+        }
+
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_agent_id(&session)
+            .is_some()
+            || session.agents().iter().any(|agent| agent.is_processing()))
+    }
+
+    fn sync_active_provider_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let current_active_run_id = self
+            .session_store
+            .get_session(session_id)?
+            .active_provider_run_id()
+            .map(str::to_string);
+
+        if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+            let active_run = self.provider_store.get_run(current_active_run_id)?;
+            if active_run.agent_instance_id() != Some(agent_id)
+                && active_run.state() == crate::provider::ProviderRunState::Running
+            {
+                let outcome = self
+                    .provider_store
+                    .park_run_provider_only(session_id, current_active_run_id)?;
+                self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+                self.provider_run_projection.update(outcome.into_run());
+            }
+        }
+
+        if let Some(agent_run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            match agent_run.state() {
+                crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Starting => {
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(agent_run.id().to_string()))?;
+                }
+                crate::provider::ProviderRunState::Parked => {
+                    let _ = self.resume_provider_run_for_session(session_id, agent_run.id())?;
+                }
+                crate::provider::ProviderRunState::Ended => {
+                    self.session_store
+                        .set_active_provider_run(session_id, None)?;
+                }
+            }
+        } else {
+            self.session_store
+                .set_active_provider_run(session_id, None)?;
+        }
+
+        Ok(())
+    }
+
+    fn sync_focused_provider_run_if_idle(&self, session_id: &str) -> Result<(), DaemonError> {
+        let session = self.session_snapshot(session_id)?;
+        if session.agents().len() > 1 {
+            let focused_agent_id = session.focused_agent_id().map(str::to_string);
+            if let Some(focused_agent_id) = focused_agent_id {
+                if self
+                    .prompt_state_owner
+                    .active_prompt_agent_id(&session)
+                    .is_none()
+                {
+                    let current_active_run_id =
+                        session.active_provider_run_id().map(str::to_string);
+                    if let Some(current_active_run_id) = current_active_run_id.as_deref() {
+                        let active_run = self.provider_store.get_run(current_active_run_id)?;
+                        if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
+                            && active_run.state() == crate::provider::ProviderRunState::Running
+                        {
+                            let outcome = self
+                                .provider_store
+                                .park_run_provider_only(session_id, current_active_run_id)?;
+                            self.clear_active_provider_run_session_pointer(
+                                session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
+                    }
+                }
+                self.project_active_provider_run_for_agent(session_id, &focused_agent_id)?;
+            } else {
+                self.session_store
+                    .set_active_provider_run(session_id, None)?;
+            }
+            return Ok(());
+        }
+
+        if self
+            .prompt_state_owner
+            .active_prompt_agent_id(&session)
+            .is_some()
+            || session.agents().iter().any(|agent| agent.is_processing())
+        {
+            return Ok(());
+        }
+
+        if let Some(focused_agent_id) = session.focused_agent_id() {
+            self.sync_active_provider_run_for_agent(session_id, focused_agent_id)?;
+        } else {
+            self.session_store
+                .set_active_provider_run(session_id, None)?;
+        }
+        Ok(())
+    }
+
+    fn project_active_provider_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let projected_run_id = self
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string());
+        self.session_store
+            .set_active_provider_run(session_id, projected_run_id)?;
+        Ok(())
+    }
+
+    fn mirror_prompt_owner_session_state(&self, session_id: &str) -> Result<(), DaemonError> {
+        let mut agent_ids = self
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        let session = self.session_store.get_session(session_id)?;
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
+        for agent_id in agent_ids {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, &agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                &agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn activate_next_queued_prompt_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self.prompt_state_owner.activate_next_queued_prompt(
+            &session,
+            agent_id,
+            expected_prompt_id,
+        )?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        Ok(prompt)
+    }
+
     fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -1316,6 +1816,9 @@ impl CompatibilityRuntimeState {
         &self,
         request: crate::attachment::AttachRequest,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.attach(request);
+        }
         self.with_app_mut(|app| crate::app::KernelSessionService::new(app).attach(request))
             .await
     }
@@ -1324,6 +1827,9 @@ impl CompatibilityRuntimeState {
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.detach(attachment_id);
+        }
         self.with_app_mut(|app| crate::app::KernelSessionService::new(app).detach(attachment_id))
             .await
     }
@@ -1333,6 +1839,9 @@ impl CompatibilityRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.focus_agent(session_id, agent_id);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).focus_agent(session_id, agent_id)
         })
@@ -1343,6 +1852,9 @@ impl CompatibilityRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return owned.cycle_agent_focus(session_id);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).cycle_agent_focus(session_id)
         })
@@ -1355,6 +1867,13 @@ impl CompatibilityRuntimeState {
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
+        if let Some(owned) = &self.owned {
+            if let Some(provider_run_id) = owned.resize_terminal(session_id)? {
+                self.with_app_mut(|app| app.pty_mut().resize(&provider_run_id, cols, rows))
+                    .await?;
+            }
+            return Ok(());
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).resize_terminal(session_id, cols, rows)
         })
@@ -1461,6 +1980,20 @@ impl CompatibilityRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        if let Some(owned) = &self.owned {
+            let (session, terminated_run_ids) = owned.end_session(session_id)?;
+            for provider_run_id in terminated_run_ids {
+                let (_, process_key) = self
+                    .with_app_mut(|app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&provider_run_id)
+                    })
+                    .await
+                    .unwrap_or((false, None));
+                owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+            }
+            return Ok(session);
+        }
         self.with_app_mut(|app| crate::app::KernelSessionService::new(app).end_session(session_id))
             .await
     }
@@ -1470,6 +2003,21 @@ impl CompatibilityRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        if let Some(owned) = &self.owned {
+            let (session, terminated_run_ids) =
+                owned.delete_session_ref(session_ref, workspace_id)?;
+            for provider_run_id in terminated_run_ids {
+                let (_, process_key) = self
+                    .with_app_mut(|app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&provider_run_id)
+                    })
+                    .await
+                    .unwrap_or((false, None));
+                owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+            }
+            return Ok(session);
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).delete_session_ref(session_ref, workspace_id)
         })

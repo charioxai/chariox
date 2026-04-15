@@ -516,3 +516,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Added a router-backed in-process local daemon client for tests and smoke harnesses that need to send `LocalDaemonRequest` without calling `DaemonApp::handle_local_request` directly.
 - Moved the local smoke harness and external daemon integration test off direct `handle_local_request` calls.
 - Demoted `DaemonApp::handle_local_request` to crate-private compatibility surface. It remains only for internal compatibility tests and transitional service code until later ownership slices remove the remaining facade-only handlers.
+
+### M4.5 session ownership cutover update
+
+- Completed the point-2 cutover for the local session lifecycle: attach, detach, focus, cycle focus, resize validation, end, and delete now run through owned `SessionRuntime` state instead of `KernelSessionService<&mut DaemonApp>` mutation paths.
+- Kept resize and provider process teardown behind narrow app side-effect ports while owned stores perform session/provider validation, queue cleanup, prompt-owner cleanup, provider-run projection updates, and session projection cleanup.
+- Added no-app-lock regressions for attach/detach, focus/cycle, end/delete, resize validation, and router delete behavior.

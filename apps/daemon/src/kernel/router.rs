@@ -2370,7 +2370,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_session_resolves_lane_from_warmed_projection_without_app_lock() {
+    async fn delete_session_uses_owned_runtime_state_without_app_lock() {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
@@ -2408,28 +2408,12 @@ mod tests {
                 async move { delete_router.dispatch(delete_command, delete_request).await },
             );
 
-        let mut lane_created = false;
-        for _ in 0..50 {
-            if router.session_runtime.has_lane(&session_id).await {
-                lane_created = true;
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            lane_created,
-            "delete should resolve the session lane from the warmed projection before touching the app lock"
-        );
-        assert!(
-            !delete_task.is_finished(),
-            "session worker should still wait on the deliberately held app lock"
-        );
-
-        drop(app_guard);
-        let delete_response = delete_task
+        let delete_response = timeout(Duration::from_millis(100), delete_task)
             .await
+            .expect("owned delete should not wait for the app lock")
             .expect("delete task should join")
             .expect("delete should succeed");
+        drop(app_guard);
         assert!(matches!(
             delete_response,
             LocalDaemonResponse::SessionDeleted { .. }

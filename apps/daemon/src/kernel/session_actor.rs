@@ -1046,8 +1046,9 @@ mod tests {
         FocusedAgentProjection, SessionProjectionAction, SessionRuntime,
     };
     use crate::local::{
-        AliasSessionRequest, DestroyAgentRequest, EndSessionRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
+        AliasSessionRequest, AttachToSessionRequest, CycleAgentFocusRequest, DeleteSessionRequest,
+        DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest,
+        LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest, ResizeTerminalRequest,
         UpdateSessionConfigRequest,
     };
     use crate::provider::LaunchProviderRequest;
@@ -1480,6 +1481,272 @@ mod tests {
             agent_runtime_projection.get(&agent_id).is_none(),
             "destroyed agent should be removed from agent-runtime projection"
         );
+    }
+
+    #[tokio::test]
+    async fn attach_and_detach_use_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let attach_request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "owned-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        });
+        let attach_command =
+            KernelCommand::from_local_request("owned-attach", None, None, &attach_request);
+        let _locked_app = app.lock().await;
+        let attach_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(attach_command, attach_request),
+        )
+        .await
+        .expect("owned attach should not wait for the app lock")
+        .expect("attach should succeed");
+        let LocalDaemonResponse::SessionAttached { attachment } = attach_response else {
+            panic!("unexpected attach response");
+        };
+        assert_eq!(attachment.session_id(), session_id);
+        assert!(
+            session_projection
+                .get(&session_id)
+                .is_some_and(|session| session.has_attachment(attachment.id())),
+            "attach should refresh session projection"
+        );
+
+        let detach_request = LocalDaemonRequest::DetachFromSession(DetachFromSessionRequest {
+            attachment_id: attachment.id().to_string(),
+        });
+        let detach_command =
+            KernelCommand::from_local_request("owned-detach", None, None, &detach_request);
+        let detach_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(detach_command, detach_request),
+        )
+        .await
+        .expect("owned detach should not wait for the app lock")
+        .expect("detach should succeed");
+        assert!(matches!(
+            detach_response,
+            LocalDaemonResponse::SessionDetached { .. }
+        ));
+        assert!(
+            session_projection
+                .get(&session_id)
+                .is_some_and(|session| !session.has_attachment(attachment.id())),
+            "detach should refresh session projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_and_cycle_use_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, default_agent_id, extra_agent_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            let extra_agent = crate::app::KernelSessionService::new(&mut app_locked)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias("cycle-me")
+                        .with_worktree("worktree"),
+                )
+                .expect("extra agent should be created");
+            (
+                session.id().to_string(),
+                default_agent.id().to_string(),
+                extra_agent.id().to_string(),
+                app_locked.terminal_stream_store(),
+            )
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let focus_request = LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: default_agent_id.clone(),
+        });
+        let focus_command =
+            KernelCommand::from_local_request("owned-focus", None, None, &focus_request);
+        let _locked_app = app.lock().await;
+        let focus_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(focus_command, focus_request),
+        )
+        .await
+        .expect("owned focus should not wait for the app lock")
+        .expect("focus should succeed");
+        assert!(matches!(
+            focus_response,
+            LocalDaemonResponse::AgentFocused { .. }
+        ));
+        assert_eq!(
+            session_projection
+                .get(&session_id)
+                .and_then(|session| session.focused_agent_id().map(str::to_string)),
+            Some(default_agent_id)
+        );
+
+        let cycle_request = LocalDaemonRequest::CycleAgentFocus(CycleAgentFocusRequest {
+            session_id: session_id.clone(),
+        });
+        let cycle_command =
+            KernelCommand::from_local_request("owned-cycle", None, None, &cycle_request);
+        let cycle_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(cycle_command, cycle_request),
+        )
+        .await
+        .expect("owned focus cycle should not wait for the app lock")
+        .expect("cycle should succeed");
+        let LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } = cycle_response else {
+            panic!("unexpected cycle response");
+        };
+        assert_eq!(agent.id(), extra_agent_id);
+    }
+
+    #[tokio::test]
+    async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (end_session_id, delete_session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (end_session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("end session should be created");
+            let (delete_session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(
+                    CreateSessionRequest::new("workspace", "worktree").with_alias("delete-owned"),
+                )
+                .expect("delete session should be created");
+            (
+                end_session.id().to_string(),
+                delete_session.id().to_string(),
+                app_locked.terminal_stream_store(),
+            )
+        };
+        let session_projection = SessionStateProjectionStore::default();
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            session_projection.clone(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: end_session_id.clone(),
+        });
+        let end_command = KernelCommand::from_local_request("owned-end", None, None, &end_request);
+        let _locked_app = app.lock().await;
+        let end_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(end_command, end_request),
+        )
+        .await
+        .expect("owned end should not wait for the app lock")
+        .expect("end should succeed");
+        assert!(matches!(
+            end_response,
+            LocalDaemonResponse::SessionEnded { .. }
+        ));
+        assert!(
+            session_projection.get(&end_session_id).is_some(),
+            "ended session should remain projected"
+        );
+
+        let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: "delete-owned".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        });
+        let delete_command =
+            KernelCommand::from_local_request("owned-delete", None, None, &delete_request);
+        let delete_response = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(delete_command, delete_request),
+        )
+        .await
+        .expect("owned delete should not wait for the app lock")
+        .expect("delete should succeed");
+        assert!(matches!(
+            delete_response,
+            LocalDaemonResponse::SessionDeleted { .. }
+        ));
+        assert!(
+            session_projection.get(&delete_session_id).is_none(),
+            "deleted session should be removed from projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn resize_terminal_validates_owned_session_state_without_app_lock() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (session_id, terminal_stream) = {
+            let mut app_locked = app.lock().await;
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created");
+            (session.id().to_string(), app_locked.terminal_stream_store())
+        };
+        let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+            owned_runtime_state(&app).await,
+            1,
+            FocusedAgentProjection::default(),
+            SessionStateProjectionStore::default(),
+            AgentRuntimeProjectionStore::default(),
+            terminal_stream,
+        );
+
+        let request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
+            session_id: session_id.clone(),
+            cols: 120,
+            rows: 40,
+        });
+        let command =
+            KernelCommand::from_local_request("owned-resize-validation", None, None, &request);
+        let _locked_app = app.lock().await;
+        let error = timeout(
+            Duration::from_millis(100),
+            runtime.dispatch_session_command(command, request),
+        )
+        .await
+        .expect("owned resize validation should not wait for the app lock")
+        .expect_err("resize without an active provider run should fail");
+        assert!(matches!(
+            error,
+            DaemonError::NoActiveProviderRun { session_id: id } if id == session_id
+        ));
     }
 
     #[tokio::test]
