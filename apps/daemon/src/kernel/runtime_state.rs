@@ -166,9 +166,8 @@ impl CompatibilityRuntimeState {
         session_id: &str,
     ) -> Result<Option<String>, DaemonError> {
         if let Some(owned) = &self.owned {
-            if let Some(session) = owned.session_projection.get(session_id) {
-                return Ok(owned.prompt_state_owner.active_prompt_agent_id(&session));
-            }
+            let session = owned.session_store.get_session(session_id)?;
+            return Ok(owned.prompt_state_owner.active_prompt_agent_id(&session));
         }
         self.with_app_mut(|app| app.prompt_owner_active_prompt_agent_id(session_id))
             .await
@@ -622,23 +621,29 @@ impl CompatibilityRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        self.with_app_mut(|app| {
-            let result = {
-                let mut workflows = crate::app::KernelWorkflowService::new(app);
-                operation(&mut workflows)
-            };
-            let projected_session = if let Ok(response) = result.as_ref() {
-                workflow_response_session(response).or_else(|| {
-                    crate::app::KernelSessionReadService::new(app)
-                        .session_snapshot(session_id)
-                        .ok()
-                })
-            } else {
-                None
-            };
-            (result, projected_session)
-        })
-        .await
+        let (result, response_session) = self
+            .with_app_mut(|app| {
+                let result = {
+                    let mut workflows = crate::app::KernelWorkflowService::new(app);
+                    operation(&mut workflows)
+                };
+                let response_session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, response_session)
+            })
+            .await;
+        let projected_session = if response_session.is_some() || result.is_err() {
+            response_session
+        } else if let Some(owned) = &self.owned {
+            owned.session_snapshot(session_id).ok()
+        } else {
+            self.with_app_mut(|app| {
+                crate::app::KernelSessionReadService::new(app)
+                    .session_snapshot(session_id)
+                    .ok()
+            })
+            .await
+        };
+        (result, projected_session)
     }
 
     pub(crate) async fn start_provider_launch(
@@ -720,18 +725,26 @@ impl CompatibilityRuntimeState {
         ),
         DaemonError,
     > {
-        self.with_app_mut(|app| {
-            let records = crate::app::provider_output::pump_terminal_output_for_attachment(
-                app,
-                session_id,
-                attachment_id,
-            )?;
-            let session = crate::app::KernelSessionReadService::new(app)
-                .session_snapshot(session_id)
-                .ok();
-            Ok((records, session))
-        })
-        .await
+        let records = self
+            .with_app_mut(|app| {
+                crate::app::provider_output::pump_terminal_output_for_attachment(
+                    app,
+                    session_id,
+                    attachment_id,
+                )
+            })
+            .await?;
+        let session = if let Some(owned) = &self.owned {
+            owned.session_snapshot(session_id).ok()
+        } else {
+            self.with_app_mut(|app| {
+                crate::app::KernelSessionReadService::new(app)
+                    .session_snapshot(session_id)
+                    .ok()
+            })
+            .await
+        };
+        Ok((records, session))
     }
 
     pub(crate) async fn pump_active_provider_output_with_snapshot(
@@ -741,17 +754,26 @@ impl CompatibilityRuntimeState {
         recipient_attachment_ids: Vec<String>,
     ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
         self.with_app_mut(|app| {
-            let _ = crate::app::provider_output::ProviderOutputPump::new(app)
-                .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+            crate::app::provider_output::ProviderOutputPump::new(app).pump_provider_output(
+                crate::app::provider_output::ProviderOutputPumpRequest {
                     session_id,
                     provider_run_id,
                     recipient_attachment_ids,
-                })?;
-            Ok(crate::app::KernelSessionReadService::new(app)
-                .session_snapshot(session_id)
-                .ok())
+                },
+            )
         })
-        .await
+        .await?;
+        let session = if let Some(owned) = &self.owned {
+            owned.session_snapshot(session_id).ok()
+        } else {
+            self.with_app_mut(|app| {
+                crate::app::KernelSessionReadService::new(app)
+                    .session_snapshot(session_id)
+                    .ok()
+            })
+            .await
+        };
+        Ok(session)
     }
 
     pub(crate) async fn capability_context(
