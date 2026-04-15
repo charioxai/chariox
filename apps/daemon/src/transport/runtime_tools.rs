@@ -11,6 +11,10 @@ pub const VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL: &str =
 pub const WORKFLOW_CONSOLE_READ_TOOL: &str = "workflow_console_read";
 pub const WORKFLOW_CONSOLE_WRITE_TOOL: &str = "workflow_console_write";
 pub const WORKFLOW_CONSOLE_CLEAR_TOOL: &str = "workflow_console_clear";
+#[allow(dead_code)]
+pub const READ_ARTIFACT_TOOL: &str = "arroba.read_artifact";
+#[allow(dead_code)]
+pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -56,11 +60,91 @@ pub struct WorkflowConsoleWriteArgs {
     pub text: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedReadArtifactArgs {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedTextRangeArgs {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedEditArtifactArgs {
+    pub path: String,
+    pub new_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ManagedTextRangeArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub workflow_output_json: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_token: Option<String>,
+}
+
+#[allow(dead_code)]
+pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    vec![
+        RuntimeToolSpec {
+            name: READ_ARTIFACT_TOOL.to_string(),
+            description: "Read a workspace-relative artifact through Arroba managed I/O and return content with snapshot/version metadata.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text", "structured", "opaque"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: EDIT_ARTIFACT_TOOL.to_string(),
+            description: "Apply a workspace-relative text artifact edit through Arroba managed I/O. Non-overlapping stale edits may be rebased with a warning; overlapping edits are rejected with conflict metadata.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path", "new_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "snapshot_id": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                    "range": {
+                        "type": "object",
+                        "required": ["start", "end"],
+                        "properties": {
+                            "start": {"type": "integer", "minimum": 0},
+                            "end": {"type": "integer", "minimum": 0}
+                        },
+                        "additionalProperties": false
+                    },
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+    ]
 }
 
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
@@ -170,4 +254,31 @@ pub fn validate_workflow_output_schema(schema_ref: &str, output_json: &str) -> R
         return Err(message);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod managed_io_tests {
+    use super::*;
+
+    #[test]
+    fn managed_io_specs_expose_read_and_edit_tools() {
+        let specs = managed_io_runtime_tool_specs();
+        assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
+    }
+
+    #[test]
+    fn managed_edit_args_accept_text_replace_shape() {
+        let args = serde_json::from_value::<ManagedEditArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs",
+            "snapshot_id": "snap:1",
+            "old_text": "before",
+            "new_text": "after"
+        }))
+        .expect("managed edit args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+        assert_eq!(args.old_text.as_deref(), Some("before"));
+        assert_eq!(args.new_text, "after");
+    }
 }
