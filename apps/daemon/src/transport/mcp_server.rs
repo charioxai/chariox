@@ -696,6 +696,81 @@ mod tests {
             std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
             "created through arroba\n"
         );
+
+        let move_delete_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.apply_patch",
+                    "arguments": {
+                        "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: archive/notes.txt\n@@\n-alpha\n+omega\n delta\n*** Delete File: created.txt\n*** End Patch"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("move/delete patch request should succeed");
+        assert_eq!(move_delete_response.status(), StatusCode::OK);
+        let move_delete_body = move_delete_response
+            .into_body()
+            .collect()
+            .await
+            .expect("move/delete body should collect")
+            .to_bytes();
+        let move_delete_value: Value =
+            serde_json::from_slice(&move_delete_body).expect("move/delete body json");
+        assert_eq!(
+            move_delete_value["result"]["structuredContent"]["applied"],
+            true
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("archive/notes.txt"))
+                .expect("moved file should be readable"),
+            "omega\ndelta\n"
+        );
+        assert!(!root.join("notes.txt").exists());
+        assert!(!root.join("created.txt").exists());
+
+        let rejected_patch_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.apply_patch",
+                    "arguments": {
+                        "patch_text": "*** Begin Patch\n*** Add File: should-not-exist.txt\n+nope\n*** Update File: archive/notes.txt\n@@\n-missing\n+bad\n*** End Patch"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("rejected patch request should return a tool result");
+        assert_eq!(rejected_patch_response.status(), StatusCode::OK);
+        let rejected_patch_body = rejected_patch_response
+            .into_body()
+            .collect()
+            .await
+            .expect("rejected patch body should collect")
+            .to_bytes();
+        let rejected_patch_value: Value =
+            serde_json::from_slice(&rejected_patch_body).expect("rejected patch body json");
+        assert_eq!(
+            rejected_patch_value["result"]["structuredContent"]["applied"],
+            false
+        );
+        assert!(!root.join("should-not-exist.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("archive/notes.txt"))
+                .expect("moved file should remain unchanged"),
+            "omega\ndelta\n"
+        );
     }
 
     #[tokio::test]

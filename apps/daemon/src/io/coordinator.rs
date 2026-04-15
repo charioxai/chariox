@@ -133,6 +133,13 @@ impl ArtifactEditCoordinator {
             .map(|tracked| &tracked.content)
     }
 
+    pub fn forget_artifact(&mut self, workspace_identity: &WorkspaceIdentity, path: &Path) {
+        let artifact_id = artifact_id_for(workspace_identity, path);
+        self.artifacts.remove(&artifact_id);
+        self.snapshots
+            .retain(|_, snapshot| snapshot.artifact_id != artifact_id);
+    }
+
     fn prepare_edit_inner(
         &self,
         request: ArtifactWriteRequest,
