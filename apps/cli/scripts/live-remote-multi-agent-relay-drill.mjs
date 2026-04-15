@@ -41,21 +41,22 @@ let submitPromptRequest
 let pumpTerminalOutputRequest
 let endSessionRequest
 
-const DEFAULT_PROVIDER = 'opencode'
-const DEFAULT_MODEL = 'kimi-k2.5'
+const DEFAULT_PROVIDERS = ['opencode', 'codex']
+const DEFAULT_MODEL = 'gpt-5.4'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
 
 function parseArgs(argv) {
   const options = {
-    provider: DEFAULT_PROVIDER,
+    providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--provider') options.provider = argv[++i]
+    if (arg === '--provider') options.providers = [argv[++i]]
+    else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
@@ -256,8 +257,11 @@ function localSpawnAgentRequest(sessionId, provider, alias, model) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs [--provider opencode|codex] [--model MODEL]')
+    console.log('Usage: node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs [--providers opencode,codex] [--model MODEL]')
     return
+  }
+  if (options.providers.length < 2) {
+    throw new Error('remote multi-agent relay drill requires at least two providers')
   }
 
   const ports = makePorts()
@@ -385,45 +389,52 @@ async function main() {
     await waitForEvent(localEvents, (event) => event.event === 'session_snapshot', 30_000, 'local snapshot')
     await waitForEvent(remoteEvents, (event) => event.event === 'session_snapshot', 30_000, 'remote snapshot')
 
-    const localExtraAgent = unwrapVariant(
-      await remoteClient.send(localSpawnAgentRequest(session.id, options.provider, 'local-sidecar', options.model)),
-      'AgentSpawned',
-    ).agent
-    const remoteAgentA = unwrapVariant(
-      await localClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-a', options.model, workerMachineId)),
-      'AgentSpawned',
-    ).agent
-    const remoteAgentB = unwrapVariant(
-      await remoteClient.send(remoteSpawnAgentRequest(session.id, options.provider, 'remote-b', options.model, workerMachineId)),
-      'AgentSpawned',
-    ).agent
+    const localSidecars = []
+    const remoteAgents = []
+    for (let index = 0; index < options.providers.length; index += 1) {
+      const provider = options.providers[index]
+      const localSidecar = unwrapVariant(
+        await remoteClient.send(localSpawnAgentRequest(session.id, provider, `local-${provider}`, options.model)),
+        'AgentSpawned',
+      ).agent
+      localSidecars.push(localSidecar)
 
-    const listed = unwrapVariant(await remoteClient.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
-    if (listed.length < 4) {
-      throw new Error(`expected at least 4 agents in session, got ${listed.length}`)
+      const spawnClient = index % 2 === 0 ? localClient : remoteClient
+      const remoteAgent = unwrapVariant(
+        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, options.model, workerMachineId)),
+        'AgentSpawned',
+      ).agent
+      remoteAgents.push(remoteAgent)
     }
 
-    const baselineRemote1 = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
-    await remoteClient.send(submitPromptRequest(
-      session.id,
-      remoteAttachment.id,
-      localExtraAgent.id,
-      'Reply with exactly LOCAL_SIDE_OK and nothing else.',
-      [],
-    ))
-    await waitForCompletion(remoteClient, session.id, remoteAttachment.id, remoteEvents, baselineRemote1, options.timeoutMs, options.pollMs)
-    const localObservedFirst = localEvents.filter((event) => event.event === 'assistant_message_completed').length
+    const listed = unwrapVariant(await remoteClient.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
+    if (listed.length < 1 + localSidecars.length + remoteAgents.length) {
+      throw new Error(`expected at least ${1 + localSidecars.length + remoteAgents.length} agents in session, got ${listed.length}`)
+    }
 
-    const baselineLocal2 = localEvents.filter((event) => event.event === 'assistant_message_completed').length
-    await localClient.send(submitPromptRequest(
-      session.id,
-      localAttachment.id,
-      remoteAgentA.id,
-      'Reply with exactly REMOTE_AGENT_A_OK and nothing else.',
-      [],
-    ))
-    await waitForCompletion(localClient, session.id, localAttachment.id, localEvents, baselineLocal2, options.timeoutMs, options.pollMs)
-    const remoteObservedSecond = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
+    const beforeReconnectResults = []
+    for (let index = 0; index < options.providers.length; index += 1) {
+      const provider = options.providers[index]
+      const localBaseline = localEvents.filter((event) => event.event === 'assistant_message_completed').length
+      const remoteBaseline = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
+      const targetAgent = index % 2 === 0 ? localSidecars[index] : remoteAgents[index]
+      const submitClient = index % 2 === 0 ? remoteClient : localClient
+      const attachment = index % 2 === 0 ? remoteAttachment : localAttachment
+      await submitClient.send(submitPromptRequest(
+        session.id,
+        attachment.id,
+        targetAgent.id,
+        `Reply with exactly ${provider.toUpperCase()}_BEFORE_RELAY_OK and nothing else.`,
+        [],
+      ))
+      await waitForCompletion(submitClient, session.id, attachment.id, index % 2 === 0 ? remoteEvents : localEvents, index % 2 === 0 ? remoteBaseline : localBaseline, options.timeoutMs, options.pollMs)
+      beforeReconnectResults.push({
+        provider,
+        targetAgentId: targetAgent.id,
+        localCompleted: localEvents.filter((event) => event.event === 'assistant_message_completed').length,
+        remoteCompleted: remoteEvents.filter((event) => event.event === 'assistant_message_completed').length,
+      })
+    }
 
     await terminateChild(relayChild)
     await waitForEvent(remoteEvents, (event) => event.event === 'transport_closed', 30_000, 'transport_closed')
@@ -432,16 +443,25 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
     const resumed = await waitForEvent(remoteEvents, (event) => event.event === 'transport_resumed', 45_000, 'transport_resumed')
 
-    const baselineRemote3 = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
-    await remoteClient.send(submitPromptRequest(
-      session.id,
-      remoteAttachment.id,
-      remoteAgentB.id,
-      'Reply with exactly REMOTE_AGENT_B_OK and nothing else.',
-      [],
-    ))
-    await waitForCompletion(remoteClient, session.id, remoteAttachment.id, remoteEvents, baselineRemote3, options.timeoutMs, options.pollMs)
-    const localObservedThird = localEvents.filter((event) => event.event === 'assistant_message_completed').length
+    const afterReconnectResults = []
+    for (let index = 0; index < remoteAgents.length; index += 1) {
+      const provider = options.providers[index]
+      const baselineRemote = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
+      await remoteClient.send(submitPromptRequest(
+        session.id,
+        remoteAttachment.id,
+        remoteAgents[index].id,
+        `Reply with exactly ${provider.toUpperCase()}_AFTER_RELAY_OK and nothing else.`,
+        [],
+      ))
+      await waitForCompletion(remoteClient, session.id, remoteAttachment.id, remoteEvents, baselineRemote, options.timeoutMs, options.pollMs)
+      afterReconnectResults.push({
+        provider,
+        targetAgentId: remoteAgents[index].id,
+        localCompleted: localEvents.filter((event) => event.event === 'assistant_message_completed').length,
+        remoteCompleted: remoteEvents.filter((event) => event.event === 'assistant_message_completed').length,
+      })
+    }
 
     const finalState = unwrapVariant(await remoteClient.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
 
@@ -450,7 +470,7 @@ async function main() {
       relayUrl,
       homeKernelUrl,
       sessionId: session.id,
-      provider: options.provider,
+      providers: options.providers,
       model: options.model,
       machinesVisible: machines.map((machine) => ({
         machineId: machine.machine_id,
@@ -458,10 +478,15 @@ async function main() {
         providers: machine.available_providers,
       })),
       agents: {
-        localExtraAgentId: localExtraAgent.id,
-        remoteAgentAId: remoteAgentA.id,
-        remoteAgentBId: remoteAgentB.id,
-        remoteBindings: [remoteAgentA, remoteAgentB].map((agent) => agent.remote_execution ?? null),
+        localSidecars: localSidecars.map((agent) => ({
+          id: agent.id,
+          provider: agent.provider,
+        })),
+        remoteAgents: remoteAgents.map((agent) => ({
+          id: agent.id,
+          provider: agent.provider,
+          remoteExecution: agent.remote_execution ?? null,
+        })),
       },
       events: {
         local: {
@@ -481,9 +506,8 @@ async function main() {
         resumedFromEventId: resumed.resumed_from_event_id ?? null,
       },
       crossObservation: {
-        localSawRemoteClientPromptCompletion: localObservedFirst,
-        remoteSawLocalClientPromptCompletion: remoteObservedSecond,
-        localSawPostReconnectRemotePromptCompletion: localObservedThird,
+        beforeReconnect: beforeReconnectResults,
+        afterReconnect: afterReconnectResults,
       },
       finalFocusedAgentId: finalState.session?.focused_agent_id ?? null,
       listedAgentCount: listed.length,

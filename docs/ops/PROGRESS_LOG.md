@@ -608,3 +608,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed live-drill point 2 locally: the full workflow catalog passes with a spawned local daemon and `opencode,codex` providers, including validated handoff, workflow console tools, final run output, cyclic final output, budgeted cyclic final output, and cyclic intermediate-output/final-output flows.
 - Fixed the hard runtime issues found by the catalog: invoke now enqueues owned entry dispatches, workflow console write no longer deadlocks on session-store lock ordering, resolved workflow failures are cleaned after successful retry/final submission, node turn budgets ignore no-payload recovery attempts, and final-output turns no longer emit stale downstream handoff failures before pending final output is committed.
 - Tightened the live workflow drill prompts where the intended first-turn payload was ambiguous for live providers, using exact fenced workflow output examples for entry turns and explicit console-output payload contracts.
+
+### M4.5 remote freeform relay live drill closure
+
+- Closed live-drill point 3: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex --model gpt-5.4 --timeout-ms 240000 --poll-ms 1000` passed with a relay, home daemon, worker daemon, direct local client, and relayed client.
+- The drill spawned OpenCode and Codex local sidecar agents plus OpenCode and Codex worker-machine leased agents in the same freeform multi-agent session. Prompts submitted from both local and relayed clients completed, both clients observed all four completions, the relayed client observed relay `transport_closed` and `transport_resumed`, and worker-machine agents completed prompts after relay restart.
+- Updated the remote freeform drill automation to accept `--providers opencode,codex` so point 3 is a single mixed-provider session instead of two independent single-provider passes.

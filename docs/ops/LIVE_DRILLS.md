@@ -44,7 +44,7 @@ Terminology:
 
 - Local freeform multi-agent: `node apps/cli/scripts/live-freeform-multi-agent-drill.mjs --providers opencode,codex`
 - Local workflow: `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario <scenario> --providers opencode,codex`
-- Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --provider opencode` and the same command with `--provider codex`
+- Remote freeform multi-agent: `node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex`
 - Remote workflow: `node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario <scenario> --provider codex` and the same command with `--provider opencode`
 - Lower-level relay runtime: `node apps/cli/scripts/live-relay-runtime-drill.mjs`
 - Lower-level remote machine runtime: `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs`
@@ -67,7 +67,7 @@ Terminology:
   - `cyclic-final-run-output-chain`
   - `cyclic-budgeted-final-run-output-chain`
   - `cyclic-final-run-with-intermediate-output-chain`
-- Remote freeform relay: **not started in this gate**.
+- Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
 - Remote workflow relay: **not started in this gate**.
 
 Point-2 fixes proven by the local workflow catalog:
@@ -80,3 +80,11 @@ Point-2 fixes proven by the local workflow catalog:
 - Resolved missing-output/output-validation failures are cleared when a later successful turn for the same workflow node produces output or submits final output.
 - Node max-turn budget accounting counts completed turns with completion payloads, so recovered missing-output attempts do not consume the production success budget.
 - Final workflow-output submissions no longer generate downstream handoff validation failures while completion is still committing pending turn outputs.
+
+Point-3 evidence:
+
+```
+node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex --model gpt-5.4 --timeout-ms 240000 --poll-ms 1000
+```
+
+Observed result: both providers were visible on the worker machine, both providers had local sidecar agents and remote leased worker agents, both local and relayed clients observed four assistant completions, the relayed client observed `transport_closed` and `transport_resumed`, and both remote worker agents completed prompts after relay restart.
