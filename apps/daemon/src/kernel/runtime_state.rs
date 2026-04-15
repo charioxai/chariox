@@ -10,7 +10,7 @@ use crate::app::{
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
-use crate::local::LocalDaemonResponse;
+use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -2145,6 +2145,615 @@ impl CompatibilityRuntimeOwnedState {
             self.history_projection.append(entry);
         }
     }
+
+    fn workflow_session(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.session_snapshot(session_id)
+    }
+
+    fn workflow_create_workflow(
+        &self,
+        request: crate::local::CreateWorkflowRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self
+            .session_store
+            .write()
+            .create_workflow(&request.session_id, request.alias)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
+    }
+
+    fn workflow_alias_workflow(
+        &self,
+        request: crate::local::AliasWorkflowRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self.session_store.write().assign_workflow_alias(
+            &request.session_id,
+            &request.workflow_ref,
+            request.alias,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowAliased { workflow, session })
+    }
+
+    fn workflow_list_workflows(
+        &self,
+        request: crate::local::ListWorkflowsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowsListed {
+            workflows: self
+                .session_store
+                .read()
+                .list_workflows(&request.session_id)?,
+        })
+    }
+
+    fn workflow_resolve_workflow(
+        &self,
+        request: crate::local::ResolveWorkflowRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowResolved {
+            workflow: self
+                .session_store
+                .read()
+                .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?,
+        })
+    }
+
+    fn workflow_create_endpoint(
+        &self,
+        request: crate::local::CreateWorkflowEndpointRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let endpoint = self.session_store.write().create_workflow_endpoint(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.entry_node_id,
+            request.alias,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowEndpointCreated {
+            endpoint,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_alias_endpoint(
+        &self,
+        request: crate::local::AliasWorkflowEndpointRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let endpoint = self.session_store.write().assign_workflow_endpoint_alias(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.alias,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowEndpointAliased {
+            endpoint,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_bind_endpoint(
+        &self,
+        request: crate::local::BindWorkflowEndpointRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let endpoint = self.session_store.write().bind_workflow_endpoint(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            &request.entry_node_id,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowEndpointBound {
+            endpoint,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_add_node(
+        &self,
+        request: crate::local::AddWorkflowNodeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if self
+            .agent_store
+            .get_session_agents(&request.session_id)
+            .into_iter()
+            .all(|agent| agent.id() != request.agent_id)
+        {
+            return Err(DaemonError::AgentNotFound {
+                agent_id: request.agent_id,
+            });
+        }
+        let node = self.session_store.write().add_workflow_node(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.agent_id,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowNodeAdded {
+            node,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_remove_node(
+        &self,
+        request: crate::local::RemoveWorkflowNodeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self.session_store.write().remove_workflow_node(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowNodeRemoved {
+            node,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_update_node_instructions(
+        &self,
+        request: crate::local::UpdateWorkflowNodeInstructionsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self
+            .session_store
+            .write()
+            .update_workflow_node_instructions(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.instructions,
+            )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowNodeInstructionsUpdated {
+            node,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_set_node_can_complete_run(
+        &self,
+        request: crate::local::SetWorkflowNodeCanCompleteRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self
+            .session_store
+            .write()
+            .set_workflow_node_can_complete_run(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.can_complete_workflow_run,
+            )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated {
+            node,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_set_node_can_emit_intermediate_output(
+        &self,
+        request: crate::local::SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self
+            .session_store
+            .write()
+            .set_workflow_node_can_emit_intermediate_output(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.can_emit_intermediate_workflow_run_output,
+            )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(
+            LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated {
+                node,
+                workflow,
+                session,
+            },
+        )
+    }
+
+    fn workflow_set_node_intermediate_output_schema(
+        &self,
+        request: crate::local::SetWorkflowNodeIntermediateOutputSchemaRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self
+            .session_store
+            .write()
+            .set_workflow_node_intermediate_output_schema_ref(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.node_id,
+                request.intermediate_output_schema_ref,
+            )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(
+            LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
+                node,
+                workflow,
+                session,
+            },
+        )
+    }
+
+    fn workflow_set_node_max_turns(
+        &self,
+        request: crate::local::SetWorkflowNodeMaxTurnsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let node = self.session_store.write().set_workflow_node_max_turns(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.node_id,
+            request.max_turns,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated {
+            node,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_add_edge(
+        &self,
+        request: crate::local::AddWorkflowEdgeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let edge = self.session_store.write().add_workflow_edge(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.from_node_id,
+            &request.to_node_id,
+            request.output_schema_ref,
+            request.validation_policy,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowEdgeAdded {
+            edge,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_remove_edge(
+        &self,
+        request: crate::local::RemoveWorkflowEdgeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let edge = self.session_store.write().remove_workflow_edge(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.edge_id,
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowEdgeRemoved {
+            edge,
+            workflow,
+            session,
+        })
+    }
+
+    fn workflow_set_flush_context(
+        &self,
+        request: crate::local::SetWorkflowFlushContextRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self
+            .session_store
+            .write()
+            .set_workflow_flush_agent_context_before_run(
+                &request.session_id,
+                &request.workflow_ref,
+                request.flush_agent_context_before_run,
+            )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowFlushContextUpdated { workflow, session })
+    }
+
+    fn workflow_set_run_output_schema(
+        &self,
+        request: crate::local::SetWorkflowRunOutputSchemaRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self
+            .session_store
+            .write()
+            .set_workflow_run_output_schema_ref(
+                &request.session_id,
+                &request.workflow_ref,
+                request.run_output_schema_ref,
+            )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowRunOutputSchemaUpdated { workflow, session })
+    }
+
+    fn workflow_set_intermediate_output_schema(
+        &self,
+        request: crate::local::SetWorkflowIntermediateOutputSchemaRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow = self
+            .session_store
+            .write()
+            .set_workflow_intermediate_output_schema_ref(
+                &request.session_id,
+                &request.workflow_ref,
+                request.intermediate_output_schema_ref,
+            )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowIntermediateOutputSchemaUpdated { workflow, session })
+    }
+
+    fn workflow_set_launch_policy(
+        &self,
+        request: crate::local::SetWorkflowLaunchPolicyRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let session = self
+            .session_store
+            .write()
+            .set_workflow_launch_policy(&request.session_id, request.policy)?;
+        let mut session = session;
+        session.set_agents(self.agent_store.get_session_agents(&request.session_id));
+        self.project_session_runtime_view(&mut session);
+        self.session_projection.update(session.clone());
+        Ok(LocalDaemonResponse::WorkflowLaunchPolicyUpdated { session })
+    }
+
+    fn workflow_list_runs(
+        &self,
+        request: crate::local::ListWorkflowRunsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: self
+                .session_store
+                .read()
+                .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?,
+        })
+    }
+
+    fn workflow_get_run(
+        &self,
+        request: crate::local::GetWorkflowRunRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowRun {
+            workflow_run: self
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
+        })
+    }
+
+    fn workflow_create_watchdog(
+        &self,
+        request: crate::local::CreateWorkflowWatchdogRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self.session_store.write().create_workflow_watchdog(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            request.interval_seconds,
+            request.invocation_prompt,
+            request.policy,
+            if request.max_wakeups_configured {
+                Some(request.max_wakeups)
+            } else {
+                None
+            },
+        )?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
+        let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogCreated {
+            watchdog,
+            workflow,
+            endpoint,
+            session,
+        })
+    }
+
+    fn workflow_list_watchdogs(
+        &self,
+        request: crate::local::ListWorkflowWatchdogsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowWatchdogsListed {
+            watchdogs: self
+                .session_store
+                .read()
+                .list_workflow_watchdogs(&request.session_id, request.workflow_ref.as_deref())?,
+        })
+    }
+
+    fn workflow_set_watchdog_enabled(
+        &self,
+        request: crate::local::SetWorkflowWatchdogEnabledRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self.session_store.write().set_workflow_watchdog_enabled(
+            &request.session_id,
+            &request.watchdog_ref,
+            request.enabled,
+        )?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogUpdated { watchdog, session })
+    }
+
+    fn workflow_remove_watchdog(
+        &self,
+        request: crate::local::RemoveWorkflowWatchdogRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let watchdog = self
+            .session_store
+            .write()
+            .remove_workflow_watchdog(&request.session_id, &request.watchdog_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowWatchdogRemoved { watchdog, session })
+    }
+
+    fn workflow_list_queued_launches(
+        &self,
+        request: crate::local::ListQueuedWorkflowLaunchesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesListed {
+            queued_launches: self
+                .session_store
+                .read()
+                .list_queued_workflow_launches(&request.session_id)?,
+        })
+    }
+
+    fn workflow_remove_queued_launch(
+        &self,
+        request: crate::local::RemoveQueuedWorkflowLaunchRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_launch = self
+            .session_store
+            .write()
+            .remove_queued_workflow_launch(&request.session_id, &request.queue_item_ref)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchRemoved {
+            queued_launch,
+            session,
+        })
+    }
+
+    fn workflow_clear_queued_launches(
+        &self,
+        request: crate::local::ClearQueuedWorkflowLaunchesRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let queued_launches = self
+            .session_store
+            .write()
+            .clear_queued_workflow_launches(&request.session_id)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::QueuedWorkflowLaunchesCleared {
+            queued_launches,
+            session,
+        })
+    }
+
+    fn workflow_validate_output(
+        &self,
+        request: crate::local::ValidateWorkflowOutputRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let warning = crate::transport::runtime_tools::validate_workflow_output_schema(
+            &request.output_schema_ref,
+            &request.output_json,
+        )
+        .err();
+        Ok(LocalDaemonResponse::WorkflowOutputValidated {
+            valid: warning.is_none(),
+            warning,
+        })
+    }
+
+    fn workflow_ack_turn(
+        &self,
+        request: crate::local::AckWorkflowTurnRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let workflow_run_id = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?
+            .id()
+            .to_string();
+        let workflow_run = self.session_store.write().ack_workflow_turn(
+            &request.session_id,
+            &workflow_run_id,
+            &request.workflow_node_run_id,
+            &request.delivery_token,
+        )?;
+        let event = crate::session::WorkflowRuntimeToolCallEvent::new(
+            crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL.to_string(),
+            serde_json::json!({"delivery_token": request.delivery_token}).to_string(),
+            Some(
+                serde_json::json!({
+                    "workflow_run_id": workflow_run.id(),
+                    "workflow_node_run_id": request.workflow_node_run_id,
+                    "state": "acknowledged",
+                })
+                .to_string(),
+            ),
+            true,
+        );
+        let _ = self
+            .session_store
+            .write()
+            .record_workflow_runtime_tool_call(
+                &request.session_id,
+                &request.workflow_node_run_id,
+                event,
+            );
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&request.session_id, &workflow_run_id)?;
+        let session = self.workflow_session(&request.session_id)?;
+        Ok(LocalDaemonResponse::WorkflowTurnAcknowledged {
+            workflow_run,
+            session,
+        })
+    }
 }
 
 struct OwnedProviderRunExit {
@@ -3320,39 +3929,291 @@ impl CompatibilityRuntimeState {
         });
     }
 
-    pub(crate) async fn execute_workflow_service_operation(
+    pub(crate) async fn execute_workflow_request(
         &self,
-        session_id: &str,
-        operation: impl FnOnce(
-            &mut crate::app::KernelWorkflowService<'_>,
-        ) -> Result<LocalDaemonResponse, DaemonError>,
+        request: LocalDaemonRequest,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        let (result, response_session) = self
-            .with_app_mut(|app| {
-                let result = {
-                    let mut workflows = crate::app::KernelWorkflowService::new(app);
-                    operation(&mut workflows)
-                };
-                let response_session = result.as_ref().ok().and_then(workflow_response_session);
-                (result, response_session)
-            })
-            .await;
-        let projected_session = if response_session.is_some() || result.is_err() {
-            response_session
-        } else if let Some(owned) = &self.owned {
-            owned.session_snapshot(session_id).ok()
-        } else {
-            self.with_app_mut(|app| {
-                crate::app::KernelSessionReadService::new(app)
-                    .session_snapshot(session_id)
-                    .ok()
-            })
-            .await
+        let Some(owned) = &self.owned else {
+            return (
+                Err(DaemonError::LocalTransport {
+                    operation: "execute workflow request",
+                    message: "owned workflow runtime is not available".to_string(),
+                }),
+                None,
+            );
         };
-        (result, projected_session)
+
+        match request {
+            LocalDaemonRequest::CreateWorkflow(request) => {
+                let result = owned.workflow_create_workflow(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::AliasWorkflow(request) => {
+                let result = owned.workflow_alias_workflow(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflows(request) => {
+                (owned.workflow_list_workflows(request), None)
+            }
+            LocalDaemonRequest::ResolveWorkflow(request) => {
+                (owned.workflow_resolve_workflow(request), None)
+            }
+            LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
+                let result = owned.workflow_create_endpoint(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::AliasWorkflowEndpoint(request) => {
+                let result = owned.workflow_alias_endpoint(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::BindWorkflowEndpoint(request) => {
+                let result = owned.workflow_bind_endpoint(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::AddWorkflowNode(request) => {
+                let result = owned.workflow_add_node(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveWorkflowNode(request) => {
+                let result = owned.workflow_remove_node(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => {
+                let result = owned.workflow_update_node_instructions(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => {
+                let result = owned.workflow_set_node_can_complete_run(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
+                let result = owned.workflow_set_node_can_emit_intermediate_output(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
+                let result = owned.workflow_set_node_intermediate_output_schema(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => {
+                let result = owned.workflow_set_node_max_turns(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::AddWorkflowEdge(request) => {
+                let result = owned.workflow_add_edge(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveWorkflowEdge(request) => {
+                let result = owned.workflow_remove_edge(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowFlushContext(request) => {
+                let result = owned.workflow_set_flush_context(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => {
+                let result = owned.workflow_set_run_output_schema(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowIntermediateOutputSchema(request) => {
+                let result = owned.workflow_set_intermediate_output_schema(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::SetWorkflowLaunchPolicy(request) => {
+                let result = owned.workflow_set_launch_policy(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflowRuns(request) => {
+                (owned.workflow_list_runs(request), None)
+            }
+            LocalDaemonRequest::GetWorkflowRun(request) => (owned.workflow_get_run(request), None),
+            LocalDaemonRequest::CreateWorkflowWatchdog(request) => {
+                let result = owned.workflow_create_watchdog(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
+                (owned.workflow_list_watchdogs(request), None)
+            }
+            LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => {
+                let result = owned.workflow_set_watchdog_enabled(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::RemoveWorkflowWatchdog(request) => {
+                let result = owned.workflow_remove_watchdog(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListQueuedWorkflowLaunches(request) => {
+                (owned.workflow_list_queued_launches(request), None)
+            }
+            LocalDaemonRequest::RemoveQueuedWorkflowLaunch(request) => {
+                let result = owned.workflow_remove_queued_launch(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ClearQueuedWorkflowLaunches(request) => {
+                let result = owned.workflow_clear_queued_launches(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
+                let session_id = request.session_id.clone();
+                let result = self
+                    .with_app_mut(|app| {
+                        let outcome = app.invoke_workflow_endpoint_with_admission(
+                            &request.session_id,
+                            &request.workflow_ref,
+                            &request.endpoint_ref,
+                            request.prompt,
+                        )?;
+                        let session = crate::app::KernelSessionReadService::new(app)
+                            .session_snapshot(&request.session_id)?;
+                        match outcome {
+                            crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                                workflow_run,
+                                workflow,
+                                endpoint,
+                            } => Ok(LocalDaemonResponse::WorkflowRunInvoked {
+                                workflow_run,
+                                workflow,
+                                endpoint,
+                                session,
+                            }),
+                            crate::app::workflow_runtime::WorkflowLaunchOutcome::Queued {
+                                queued_launch,
+                                workflow,
+                                endpoint,
+                            } => Ok(LocalDaemonResponse::WorkflowRunQueued {
+                                queued_launch,
+                                workflow,
+                                endpoint,
+                                session,
+                            }),
+                        }
+                    })
+                    .await;
+                let session = result
+                    .as_ref()
+                    .ok()
+                    .and_then(workflow_response_session)
+                    .or_else(|| owned.session_snapshot(&session_id).ok());
+                (result, session)
+            }
+            LocalDaemonRequest::CancelWorkflowRun(request) => {
+                let session_id = request.session_id.clone();
+                let result = self
+                    .with_app_mut(|app| {
+                        let workflow_run_id = app
+                            .sessions()
+                            .resolve_workflow_run_ref(
+                                &request.session_id,
+                                &request.workflow_run_ref,
+                            )?
+                            .id()
+                            .to_string();
+                        let active_prompt_workflow_run_id = match app
+                            .prompt_owner_active_prompt_agent_id(&request.session_id)?
+                        {
+                            Some(agent_id) => app
+                                .prompt_owner_active_prompt_for_agent(
+                                    &request.session_id,
+                                    &agent_id,
+                                )?
+                                .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
+                            None => None,
+                        };
+                        if active_prompt_workflow_run_id.as_deref()
+                            == Some(workflow_run_id.as_str())
+                        {
+                            let _ = app.cancel_active_prompt_for_runtime(&request.session_id)?;
+                        }
+                        let workflow_run = app
+                            .sessions_mut()
+                            .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+                        let _ = app.prompt_owner_remove_queued_prompts_by_workflow_run(
+                            &request.session_id,
+                            &workflow_run_id,
+                        )?;
+                        let _ = app.drain_session_workflow_launch_queue(&request.session_id)?;
+                        let session = crate::app::KernelSessionReadService::new(app)
+                            .session_snapshot(&request.session_id)?;
+                        Ok(LocalDaemonResponse::WorkflowRunCancelled {
+                            workflow_run,
+                            session,
+                        })
+                    })
+                    .await;
+                let session = result
+                    .as_ref()
+                    .ok()
+                    .and_then(workflow_response_session)
+                    .or_else(|| owned.session_snapshot(&session_id).ok());
+                (result, session)
+            }
+            LocalDaemonRequest::ResumeWorkflowRun(request) => {
+                let session_id = request.session_id.clone();
+                let result = self
+                    .with_app_mut(|app| {
+                        let workflow_run =
+                            crate::app::workflow_runtime::resume_workflow_run_from_runtime(
+                                app,
+                                &request.session_id,
+                                &request.workflow_run_ref,
+                            )?;
+                        let session = crate::app::KernelSessionReadService::new(app)
+                            .session_snapshot(&request.session_id)?;
+                        Ok(LocalDaemonResponse::WorkflowRunResumed {
+                            workflow_run,
+                            session,
+                        })
+                    })
+                    .await;
+                let session = result
+                    .as_ref()
+                    .ok()
+                    .and_then(workflow_response_session)
+                    .or_else(|| owned.session_snapshot(&session_id).ok());
+                (result, session)
+            }
+            LocalDaemonRequest::ValidateWorkflowOutput(request) => {
+                let result = owned.workflow_validate_output(request);
+                (result, None)
+            }
+            LocalDaemonRequest::AckWorkflowTurn(request) => {
+                let result = owned.workflow_ack_turn(request);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            _ => (
+                Err(DaemonError::LocalTransport {
+                    operation: "execute workflow request",
+                    message: "request is not handled by the workflow runtime".to_string(),
+                }),
+                None,
+            ),
+        }
     }
 
     pub(crate) async fn start_provider_launch(

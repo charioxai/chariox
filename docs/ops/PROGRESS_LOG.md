@@ -540,3 +540,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Completed point 4 for production runtime paths by moving active provider-output pumping, structured output batch application, structured prompt job reaping, prompt activity settlement, and provider-exit prompt cleanup onto owned runtime stores.
 - Removed the app-level provider-exit prompt settlement helper; provider liveness now closes/cancels owned prompts and advances queued work without routing through `DaemonApp` prompt lifecycle helpers.
 - Kept remaining PTY spawn/poll/drain/write calls as narrow process I/O side-effect ports while provider run state, output fanout/history, prompt claims, and projections are owned by runtime state.
+
+### M4.5 workflow command ownership update
+
+- Cut workflow command mutation over to the runtime-state owner: workflow definition, endpoint, graph, schema, launch-policy, watchdog, queued-launch, validation, and ack commands now mutate cloneable session/workflow stores directly from `CompatibilityRuntimeState`.
+- Deleted the transitional `KernelWorkflowService` module and removed `WorkflowRuntimeStore`'s per-method app-backed service delegation.
+- Kept invoke/cancel/resume workflow progression behind explicit runtime-state scheduler ports while the scheduler internals remain the remaining point-5 work before transport/relay cleanup.

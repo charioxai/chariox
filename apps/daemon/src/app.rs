@@ -7,7 +7,6 @@ use tokio::runtime::{Handle, Runtime};
 
 mod kernel_agent;
 mod kernel_session;
-mod kernel_workflow;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 pub(crate) mod provider_output;
@@ -54,7 +53,6 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
-pub(crate) use kernel_workflow::KernelWorkflowService;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_runtime::{
     generate_runtime_mcp_auth_token, sanitize_resume_state_for_launch,
