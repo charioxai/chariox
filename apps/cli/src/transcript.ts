@@ -262,6 +262,14 @@ type CodexFileChange = {
   movePath?: unknown
 }
 
+type ManagedIoChange = {
+  path?: unknown
+  kind?: unknown
+  diff?: unknown
+  diff_truncated?: unknown
+  diffTruncated?: unknown
+}
+
 function formatTodoTranscriptUpdate(update: ToolTranscriptUpdate) {
   if (update.tool !== "todowrite") {
     return null
@@ -287,6 +295,11 @@ function formatTodoTranscriptUpdate(update: ToolTranscriptUpdate) {
 }
 
 export function readApplyPatchFiles(update: ToolTranscriptUpdate) {
+  const managedFiles = readManagedIoChangeFiles(update)
+  if (managedFiles.length > 0) {
+    return managedFiles
+  }
+
   if (update.tool !== "apply_patch") {
     return []
   }
@@ -329,7 +342,7 @@ function formatApplyPatchTranscriptUpdate(update: ToolTranscriptUpdate) {
   ].filter(Boolean)
 
   return [
-    `**patch**${formatToolStatusBadge(nonEmpty(update.status))}`,
+    `**${isManagedIoTool(update.tool) ? "managed I/O" : "patch"}**${formatToolStatusBadge(nonEmpty(update.status))}`,
     `${files.length} ${files.length === 1 ? "file" : "files"}${parts.length ? ` · ${parts.join(", ")}` : ""}`,
     ...files.slice(0, 6).map((file: ApplyPatchFile) => `- ${file.title}`),
   ].join("\n")
@@ -384,6 +397,49 @@ function readCodexFileChangeFiles(value: unknown): ApplyPatchFile[] {
   return changes
     .map(readCodexFileChange)
     .filter((file): file is ApplyPatchFile => Boolean(file))
+}
+
+function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[] {
+  if (!isManagedIoTool(update.tool)) {
+    return []
+  }
+
+  for (const source of [update.output, update.raw]) {
+    const normalized = normalizeJsonLike(source)
+    if (!isObjectValue(normalized)) {
+      continue
+    }
+    const file = readManagedIoChange(normalized.change)
+    if (file) {
+      return [file]
+    }
+  }
+
+  return []
+}
+
+function isManagedIoTool(tool: unknown) {
+  return tool === "arroba.edit_artifact" || tool === "arroba.write_artifact"
+}
+
+function readManagedIoChange(value: unknown): ApplyPatchFile | null {
+  if (!isObjectValue(value)) {
+    return null
+  }
+  const change = value as ManagedIoChange
+  const filePath = readString(change.path)
+  const diff = readString(change.diff)
+  if (!filePath || !diff) {
+    return null
+  }
+  const kind = normalizeFileChangeKind(readString(change.kind), null)
+  const truncated = change.diff_truncated === true || change.diffTruncated === true
+  return {
+    kind,
+    filePath,
+    title: `${codexFileChangeTitle(kind, filePath, null)}${truncated ? " (diff truncated)" : ""}`,
+    diff: buildCodexFileChangeDiff(filePath, null, kind, diff),
+  }
 }
 
 function normalizeJsonLike(value: unknown): unknown {

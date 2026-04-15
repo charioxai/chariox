@@ -651,6 +651,61 @@ test("formatToolTranscriptUpdate summarizes apply_patch changes", () => {
   )
 })
 
+test("formatToolTranscriptUpdate summarizes managed I/O diffs", () => {
+  const output = JSON.stringify({
+    applied: true,
+    path: "src/app.ts",
+    change: {
+      path: "src/app.ts",
+      kind: "update",
+      diff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1,1 +1,1 @@",
+        "-old()",
+        "+next()",
+      ].join("\n"),
+      diff_truncated: false,
+    },
+  })
+
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-managed-1",
+      tool: "arroba.edit_artifact",
+      status: "completed",
+      output,
+    }),
+    [
+      "**managed I/O** · COMPLETED",
+      "1 file · 1 updated",
+      "- Patched src/app.ts",
+    ].join("\n"),
+  )
+
+  assert.deepEqual(readApplyPatchFiles({
+    id: "tool-managed-1",
+    tool: "arroba.edit_artifact",
+    status: "completed",
+    output,
+  }), [
+    {
+      kind: "update",
+      filePath: "src/app.ts",
+      title: "Patched src/app.ts",
+      diff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1,1 +1,1 @@",
+        "-old()",
+        "+next()",
+      ].join("\n"),
+    },
+  ])
+})
+
 test("mergeToolTranscriptUpdate keeps prior tool details across partial updates", () => {
   const merged = mergeToolTranscriptUpdate(
     {

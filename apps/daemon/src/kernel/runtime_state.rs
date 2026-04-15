@@ -6879,7 +6879,7 @@ impl KernelRuntimeState {
                     &mut coordinator,
                     crate::io::ManagedFileReadRequest {
                         workspace_identity,
-                        workspace_root,
+                        workspace_root: workspace_root.clone(),
                         path: PathBuf::from(args.path),
                         domain,
                     },
@@ -6930,20 +6930,32 @@ impl KernelRuntimeState {
                         });
                     }
                 };
+                let path = PathBuf::from(args.path.clone());
+                let before = managed_io_text_for_diff(&workspace_root, &path, false);
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
                         workspace_identity,
-                        workspace_root,
+                        workspace_root: workspace_root.clone(),
                         domain,
                         intent: crate::io::AgentEditIntent {
-                            path: PathBuf::from(args.path),
+                            path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
                             operation,
                         },
                     },
                 );
-                Ok(managed_io_edit_result(result))
+                let after = managed_io_result_applied(&result)
+                    .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
+                    .flatten();
+                Ok(managed_io_edit_result(
+                    result,
+                    ManagedIoChangeContext {
+                        path,
+                        before,
+                        after,
+                    },
+                ))
             }
             crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL => {
                 let args = serde_json::from_value::<
@@ -6961,14 +6973,16 @@ impl KernelRuntimeState {
                         message: "managed write currently supports only text artifacts".to_string(),
                     });
                 }
+                let path = PathBuf::from(args.path.clone());
+                let before = managed_io_text_for_diff(&workspace_root, &path, true);
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
                         workspace_identity,
-                        workspace_root,
+                        workspace_root: workspace_root.clone(),
                         domain,
                         intent: crate::io::AgentEditIntent {
-                            path: PathBuf::from(args.path),
+                            path: path.clone(),
                             snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
                             operation: crate::io::AgentEditOperation::WriteArtifact {
                                 content: crate::io::ArtifactContent::Text(args.content_text),
@@ -6976,7 +6990,17 @@ impl KernelRuntimeState {
                         },
                     },
                 );
-                Ok(managed_io_edit_result(result))
+                let after = managed_io_result_applied(&result)
+                    .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
+                    .flatten();
+                Ok(managed_io_edit_result(
+                    result,
+                    ManagedIoChangeContext {
+                        path,
+                        before,
+                        after,
+                    },
+                ))
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_managed_io_runtime_tool_call",
@@ -7034,30 +7058,42 @@ fn managed_io_read_payload(read: crate::io::ArtifactReadResult) -> serde_json::V
     payload
 }
 
+struct ManagedIoChangeContext {
+    path: PathBuf,
+    before: Option<ManagedIoTextSnapshot>,
+    after: Option<ManagedIoTextSnapshot>,
+}
+
+struct ManagedIoTextSnapshot {
+    existed: bool,
+    text: String,
+}
+
 fn managed_io_edit_result(
     result: crate::io::EditResult,
+    change: ManagedIoChangeContext,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {
     match result {
         crate::io::EditResult::Applied { new_version } => {
-            crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "applied": true,
-                    "new_version": new_version.value(),
-                }),
-            }
+            let mut payload = serde_json::json!({
+                "applied": true,
+                "new_version": new_version.value(),
+            });
+            add_managed_io_change_payload(&mut payload, change);
+            crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
         }
         crate::io::EditResult::AppliedWithWarning {
             new_version,
             warning,
-        } => crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
+        } => {
+            let mut payload = serde_json::json!({
                 "applied": true,
                 "new_version": new_version.value(),
                 "warning": managed_io_warning_payload(warning),
-            }),
-        },
+            });
+            add_managed_io_change_payload(&mut payload, change);
+            crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
+        }
         crate::io::EditResult::Rejected { reason } => {
             crate::transport::runtime_tools::RuntimeToolResult {
                 ok: false,
@@ -7069,6 +7105,162 @@ fn managed_io_edit_result(
             }
         }
     }
+}
+
+fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
+    matches!(
+        result,
+        crate::io::EditResult::Applied { .. } | crate::io::EditResult::AppliedWithWarning { .. }
+    )
+}
+
+fn add_managed_io_change_payload(payload: &mut serde_json::Value, change: ManagedIoChangeContext) {
+    let Some(after) = change.after else {
+        return;
+    };
+    let before = change.before.unwrap_or(ManagedIoTextSnapshot {
+        existed: false,
+        text: String::new(),
+    });
+    let diff = managed_io_unified_diff(&change.path, &before, &after);
+    payload["path"] = serde_json::Value::String(change.path.to_string_lossy().to_string());
+    payload["change"] = serde_json::json!({
+        "path": change.path.to_string_lossy(),
+        "kind": if before.existed { "update" } else { "add" },
+        "diff": diff.text,
+        "diff_truncated": diff.truncated,
+    });
+}
+
+struct ManagedIoDiff {
+    text: String,
+    truncated: bool,
+}
+
+const MANAGED_IO_MAX_DIFF_BYTES: usize = 80_000;
+
+fn managed_io_unified_diff(
+    path: &PathBuf,
+    before: &ManagedIoTextSnapshot,
+    after: &ManagedIoTextSnapshot,
+) -> ManagedIoDiff {
+    let normalized_path = path.to_string_lossy();
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "diff --git a/{normalized_path} b/{normalized_path}"
+    ));
+    if !before.existed {
+        lines.push("new file mode 100644".to_string());
+        lines.push("--- /dev/null".to_string());
+    } else {
+        lines.push(format!("--- a/{normalized_path}"));
+    }
+    lines.push(format!("+++ b/{normalized_path}"));
+    let before_lines = diff_lines(&before.text);
+    let after_lines = diff_lines(&after.text);
+    lines.push(format!(
+        "@@ -1,{} +1,{} @@",
+        before_lines.len(),
+        after_lines.len()
+    ));
+    lines.extend(managed_io_diff_body(&before_lines, &after_lines));
+    let mut text = lines.join("\n");
+    let mut truncated = false;
+    if text.len() > MANAGED_IO_MAX_DIFF_BYTES {
+        text.truncate(MANAGED_IO_MAX_DIFF_BYTES);
+        text.push_str("\n... diff truncated ...");
+        truncated = true;
+    }
+    ManagedIoDiff { text, truncated }
+}
+
+fn diff_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.split_inclusive('\n')
+        .map(|line| line.strip_suffix('\n').unwrap_or(line))
+        .collect()
+}
+
+fn managed_io_diff_body(before: &[&str], after: &[&str]) -> Vec<String> {
+    let lcs = managed_io_lcs_table(before, after);
+    let mut body = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < before.len() && j < after.len() {
+        if before[i] == after[j] {
+            body.push(format!(" {}", before[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            body.push(format!("-{}", before[i]));
+            i += 1;
+        } else {
+            body.push(format!("+{}", after[j]));
+            j += 1;
+        }
+    }
+    while i < before.len() {
+        body.push(format!("-{}", before[i]));
+        i += 1;
+    }
+    while j < after.len() {
+        body.push(format!("+{}", after[j]));
+        j += 1;
+    }
+    body
+}
+
+fn managed_io_lcs_table(before: &[&str], after: &[&str]) -> Vec<Vec<usize>> {
+    let mut table = vec![vec![0; after.len() + 1]; before.len() + 1];
+    for i in (0..before.len()).rev() {
+        for j in (0..after.len()).rev() {
+            table[i][j] = if before[i] == after[j] {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+    table
+}
+
+fn managed_io_text_for_diff(
+    workspace_root: &PathBuf,
+    path: &PathBuf,
+    allow_missing: bool,
+) -> Option<ManagedIoTextSnapshot> {
+    let full_path = managed_io_diff_workspace_path(workspace_root, path)?;
+    match std::fs::read_to_string(full_path) {
+        Ok(text) => Some(ManagedIoTextSnapshot {
+            existed: true,
+            text,
+        }),
+        Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => {
+            Some(ManagedIoTextSnapshot {
+                existed: false,
+                text: String::new(),
+            })
+        }
+        Err(_) => None,
+    }
+}
+
+fn managed_io_diff_workspace_path(workspace_root: &PathBuf, path: &PathBuf) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    Some(workspace_root.join(relative))
 }
 
 fn managed_io_warning_payload(warning: crate::io::ArtifactEditWarning) -> serde_json::Value {

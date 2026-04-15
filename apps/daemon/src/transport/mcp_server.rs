@@ -603,6 +603,18 @@ mod tests {
         let edit_value: Value = serde_json::from_slice(&edit_body).expect("edit body json");
         assert_eq!(edit_value["result"]["structuredContent"]["applied"], true);
         assert_eq!(
+            edit_value["result"]["structuredContent"]["change"]["kind"],
+            "update"
+        );
+        assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+            .as_str()
+            .expect("edit diff should be present")
+            .contains("-beta"));
+        assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+            .as_str()
+            .expect("edit diff should be present")
+            .contains("+gamma"));
+        assert_eq!(
             std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
             "alpha\ngamma\n"
         );
@@ -634,6 +646,14 @@ mod tests {
             .to_bytes();
         let write_value: Value = serde_json::from_slice(&write_body).expect("write body json");
         assert_eq!(write_value["result"]["structuredContent"]["applied"], true);
+        assert_eq!(
+            write_value["result"]["structuredContent"]["change"]["kind"],
+            "add"
+        );
+        assert!(write_value["result"]["structuredContent"]["change"]["diff"]
+            .as_str()
+            .expect("write diff should be present")
+            .contains("+created through arroba"));
         assert_eq!(
             std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
             "created through arroba\n"
