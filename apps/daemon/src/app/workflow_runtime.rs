@@ -132,47 +132,6 @@ impl DaemonApp {
         WorkflowProgression::is_workflow_prompt_attachment(attachment_id)
     }
 
-    pub(crate) fn start_workflow_prompt_from_runtime(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-    ) -> Result<(), DaemonError> {
-        WorkflowProgression::on_prompt_started(self, session_id, prompt)
-    }
-
-    pub(crate) fn complete_workflow_prompt_from_runtime(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-        provider_run_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        WorkflowProgression::on_prompt_completed(self, session_id, prompt, provider_run_id)
-    }
-
-    pub(crate) fn cancel_workflow_prompt_from_runtime(
-        &mut self,
-        session_id: &str,
-        prompt: &PromptQueueItem,
-    ) -> Result<(), DaemonError> {
-        WorkflowProgression::on_prompt_cancelled(self, session_id, prompt)
-    }
-
-    pub(crate) fn ensure_workflow_provider_run_from_runtime(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<String, DaemonError> {
-        WorkflowProgression::ensure_provider_run(self, session_id, agent_id)
-    }
-
-    pub(crate) fn resume_workflow_run_from_runtime(
-        &mut self,
-        session_id: &str,
-        workflow_run_ref: &str,
-    ) -> Result<WorkflowRun, DaemonError> {
-        WorkflowProgression::resume_run(self, session_id, workflow_run_ref)
-    }
-
     pub(crate) fn read_workflow_console_from_runtime(
         &self,
         session_id: &str,
@@ -469,6 +428,47 @@ impl DaemonApp {
         }
         Ok(())
     }
+}
+
+pub(crate) fn start_workflow_prompt_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<(), DaemonError> {
+    WorkflowProgression::on_prompt_started(app, session_id, prompt)
+}
+
+pub(crate) fn complete_workflow_prompt_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_run_id: Option<&str>,
+) -> Result<(), DaemonError> {
+    WorkflowProgression::on_prompt_completed(app, session_id, prompt, provider_run_id)
+}
+
+pub(crate) fn cancel_workflow_prompt_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<(), DaemonError> {
+    WorkflowProgression::on_prompt_cancelled(app, session_id, prompt)
+}
+
+pub(crate) fn ensure_workflow_provider_run_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<String, DaemonError> {
+    WorkflowProgression::ensure_provider_run(app, session_id, agent_id)
+}
+
+pub(crate) fn resume_workflow_run_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_run_ref: &str,
+) -> Result<WorkflowRun, DaemonError> {
+    WorkflowProgression::resume_run(app, session_id, workflow_run_ref)
 }
 
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {

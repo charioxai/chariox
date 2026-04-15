@@ -105,8 +105,11 @@ impl<'a> KernelWorkflowContext<'a> {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<crate::session::WorkflowRun, DaemonError> {
-        self.app
-            .resume_workflow_run_from_runtime(session_id, workflow_run_ref)
+        crate::app::workflow_runtime::resume_workflow_run_from_runtime(
+            self.app,
+            session_id,
+            workflow_run_ref,
+        )
     }
 
     fn dispatch_runtime_tool_call(

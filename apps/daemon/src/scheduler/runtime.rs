@@ -520,7 +520,11 @@ fn dispatch_workflow_prompt(
     let mut last_retryable_error = None;
     for attempt in 0..3 {
         let provider_run_id =
-            app.ensure_workflow_provider_run_from_runtime(session_id, target_agent_id)?;
+            crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+                app,
+                session_id,
+                target_agent_id,
+            )?;
         match dispatch(app, &provider_run_id) {
             Ok(()) => {
                 crate::transport::flow_control::note_prompt_started(app, &provider_run_id);

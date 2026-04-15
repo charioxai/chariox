@@ -599,7 +599,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let completed = self
                 .app
                 .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
-            self.app.complete_workflow_prompt_from_runtime(
+            crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+                self.app,
                 session_id,
                 &completed,
                 Some(provider_run_id),

@@ -616,7 +616,8 @@ impl<'a> KernelAgentService<'a> {
             );
             flow_control::mark_prompt_completion_recorded(self.app, completion_provider_run_id);
         }
-        self.app.complete_workflow_prompt_from_runtime(
+        crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
+            self.app,
             &completion.session_id,
             &completion.completed,
             completion.provider_run_id.as_deref(),
@@ -917,10 +918,11 @@ impl<'a> KernelAgentService<'a> {
             {
                 Ok(provider_run_id) => provider_run_id,
                 Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
-                    match self
-                        .app
-                        .ensure_workflow_provider_run_from_runtime(session_id, &target_agent_id)
-                    {
+                    match crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+                        self.app,
+                        session_id,
+                        &target_agent_id,
+                    ) {
                         Ok(provider_run_id) => provider_run_id,
                         Err(error) => {
                             self.app.record_notice(
@@ -999,8 +1001,9 @@ impl<'a> KernelAgentService<'a> {
                         let cancelled = self
                             .app
                             .prompt_owner_cancel_active_prompt_only(session_id, &target_agent_id)?;
-                        self.app
-                            .cancel_workflow_prompt_from_runtime(session_id, &cancelled)?;
+                        crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+                            self.app, session_id, &cancelled,
+                        )?;
                         flow_control::clear_prompt_activity(self.app, &provider_run_id);
                         return Err(dispatch_error);
                     }
@@ -1013,8 +1016,9 @@ impl<'a> KernelAgentService<'a> {
                             workflow_node_run_id,
                         )?;
                     }
-                    self.app
-                        .start_workflow_prompt_from_runtime(session_id, &active)?;
+                    crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                        self.app, session_id, &active,
+                    )?;
                     flow_control::note_prompt_started(self.app, &provider_run_id);
                     crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id)?;
@@ -1070,8 +1074,9 @@ impl<'a> KernelAgentService<'a> {
                     workflow_node_run_id,
                 )?;
             }
-            self.app
-                .start_workflow_prompt_from_runtime(session_id, &active)?;
+            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                self.app, session_id, &active,
+            )?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
             crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
@@ -1176,8 +1181,9 @@ impl<'a> KernelAgentService<'a> {
                     workflow_node_run_id,
                 )?;
             }
-            self.app
-                .start_workflow_prompt_from_runtime(session_id, &active)?;
+            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+                self.app, session_id, &active,
+            )?;
             crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
@@ -1407,8 +1413,9 @@ impl<'a> KernelAgentService<'a> {
         let prompt = self
             .app
             .prompt_owner_finalize_active_prompt_cancellation(session_id, agent_id)?;
-        self.app
-            .cancel_workflow_prompt_from_runtime(session_id, &prompt)?;
+        crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+            self.app, session_id, &prompt,
+        )?;
         let cancellation_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.app
                 .providers
