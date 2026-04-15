@@ -5861,6 +5861,10 @@ impl CompatibilityRuntimeState {
                         .session_store
                         .write()
                         .cancel_workflow_run(&request.session_id, &request.workflow_run_ref)?;
+                    let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
+                        claim.session_id == request.session_id
+                            && claim.operation == "workflow_node_dispatch"
+                    });
                     let workflow = owned
                         .session_store
                         .read()

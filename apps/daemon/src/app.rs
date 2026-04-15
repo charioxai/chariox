@@ -39,7 +39,9 @@ use crate::kernel::projection::{
     SessionStateProjectionStore, TransportHealthStore,
 };
 use crate::kernel::prompt_state::PromptStateOwner;
-use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
+use crate::kernel::workspace_coordinator::{
+    WorkspaceClaimGuard, WorkspaceCoordinator, WorkspaceOperationClaimSnapshot,
+};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
     ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,
@@ -143,6 +145,30 @@ impl PromptWorkspaceClaimStore {
             .expect("prompt workspace claim mutex poisoned")
             .remove(provider_run_id)
             .is_some()
+    }
+
+    pub(crate) fn remove_matching(
+        &self,
+        mut predicate: impl FnMut(&WorkspaceOperationClaimSnapshot) -> bool,
+    ) -> usize {
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("prompt workspace claim mutex poisoned");
+        let provider_run_ids = guard
+            .iter()
+            .filter_map(|(provider_run_id, claim)| {
+                claim
+                    .snapshot()
+                    .filter(|snapshot| predicate(snapshot))
+                    .map(|_| provider_run_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let removed = provider_run_ids.len();
+        for provider_run_id in provider_run_ids {
+            guard.remove(&provider_run_id);
+        }
+        removed
     }
 }
 

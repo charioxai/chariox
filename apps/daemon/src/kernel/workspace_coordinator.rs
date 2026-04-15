@@ -53,6 +53,12 @@ impl Drop for WorkspaceClaimGuard {
     }
 }
 
+impl WorkspaceClaimGuard {
+    pub(crate) fn snapshot(&self) -> Option<WorkspaceOperationClaimSnapshot> {
+        self.coordinator.claim_snapshot(&self.claim_id)
+    }
+}
+
 impl WorkspaceCoordinator {
     #[allow(dead_code)]
     pub(crate) fn acquire_worktree_read_claim(
@@ -173,6 +179,15 @@ impl WorkspaceCoordinator {
             .values()
             .cloned()
             .collect()
+    }
+
+    fn claim_snapshot(&self, claim_id: &str) -> Option<WorkspaceOperationClaimSnapshot> {
+        self.state
+            .lock()
+            .expect("workspace coordinator lock should not be poisoned")
+            .claims
+            .get(claim_id)
+            .cloned()
     }
 
     fn release_claim(&self, claim_id: &str) {

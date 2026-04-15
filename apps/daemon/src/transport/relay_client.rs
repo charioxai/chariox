@@ -11,13 +11,13 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use arroba_relay::protocol::{ClientTarget, EncryptedRelayPayload, RelayEnvelope, RelayError};
 
-use crate::app::{DaemonApp, RemoteLeaseRuntime};
+use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::kernel::command::{KernelCommand, KernelCommandSource};
 use crate::kernel::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::kernel_transport::{
-    event_is_relevant_to_attachment, event_session_id, watch_subscription_state, KernelEvent,
-    WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
+    event_is_relevant_to_attachment, event_session_id, KernelEvent, WatchResult,
+    RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS,
 };
 use crate::local::LocalDaemonRequest;
 use crate::transport::relay_crypto;
@@ -90,8 +90,7 @@ pub async fn run_daemon_relay_connector(
         }
 
         let (relay_url, heartbeat) = {
-            let app = app.lock().await;
-            let config = app.config();
+            let config = router.relay_config_snapshot();
             match (config.relay_url.clone(), config.relay_token.clone()) {
                 (Some(relay_url), Some(_)) => {
                     (relay_url, Duration::from_millis(config.relay_heartbeat_ms))
@@ -133,14 +132,10 @@ pub async fn run_daemon_relay_connector(
                 });
                 let subscription_tasks: RelaySubscriptionTasks =
                     Arc::new(Mutex::new(BTreeMap::new()));
-                let daemon_id = {
-                    let app = app.lock().await;
-                    app.config().daemon_id.clone()
-                };
+                let daemon_id = router.relay_daemon_id();
                 let register = {
-                    let mut app = app.lock().await;
                     RelayEnvelope::DaemonRegister {
-                        registration: app.relay_registration(),
+                        registration: router.relay_registration().await,
                     }
                 };
                 if outgoing_tx.send(register).is_err() {
@@ -169,7 +164,6 @@ pub async fn run_daemon_relay_connector(
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
                                     if handle_incoming_envelope(
-                                        &app,
                                         &router,
                                         &command_sequence,
                                         &state,
@@ -210,11 +204,7 @@ pub async fn run_daemon_relay_connector(
                             break;
                         }
                         _ = sleep(heartbeat) => {
-                            let still_configured = {
-                                let app = app.lock().await;
-                                app.config().relay_url.as_deref() == Some(relay_url.as_str())
-                                    && app.config().relay_token.is_some()
-                            };
+                            let still_configured = router.relay_is_configured_for_url(&relay_url);
                             if !still_configured {
                                 let _ = outgoing_tx.send(RelayEnvelope::Close {
                                     reason: "relay configuration changed".to_string(),
@@ -224,12 +214,11 @@ pub async fn run_daemon_relay_connector(
                                 set_disconnected(&state).await;
                                 break;
                             }
-                            pump_leased_projection_events(&app, &outgoing_tx).await;
+                            pump_leased_projection_events(&router, &outgoing_tx).await;
                             let heartbeat_frame = {
-                                let mut app = app.lock().await;
                                 RelayEnvelope::DaemonHeartbeat {
                                     daemon_id: daemon_id.clone(),
-                                    registration: Some(app.relay_registration()),
+                                    registration: Some(router.relay_registration().await),
                                 }
                             };
                             if outgoing_tx.send(heartbeat_frame).is_err() {
@@ -260,7 +249,6 @@ pub async fn run_daemon_relay_connector(
 }
 
 async fn handle_incoming_envelope(
-    app: &Arc<Mutex<DaemonApp>>,
     router: &Arc<CommandRouter>,
     command_sequence: &Arc<AtomicU64>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -281,7 +269,7 @@ async fn handle_incoming_envelope(
             encrypted_request,
         } => {
             let relay_response =
-                handle_daemon_request(app, router, command_sequence, encrypted_request).await;
+                handle_daemon_request(router, command_sequence, encrypted_request).await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -297,7 +285,7 @@ async fn handle_incoming_envelope(
             encrypted_request,
         } => {
             let relay_response =
-                handle_daemon_peer_request(app, router, outgoing_tx, encrypted_request).await;
+                handle_daemon_peer_request(router, outgoing_tx, encrypted_request).await;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonIncomingPeerResponse {
@@ -328,7 +316,7 @@ async fn handle_incoming_envelope(
             from_daemon_id: _,
             encrypted_event,
         } => {
-            handle_daemon_peer_event(app, encrypted_event).await?;
+            handle_daemon_peer_event(router, encrypted_event).await?;
         }
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
@@ -339,9 +327,9 @@ async fn handle_incoming_envelope(
             resume_from_event_id,
         } => {
             {
-                let app = app.lock().await;
-                crate::app::KernelSessionReadService::new(&app)
-                    .ensure_attachment_in_session(&session_id, &attachment_id)?;
+                router
+                    .ensure_relay_subscription_attachment(&session_id, &attachment_id)
+                    .await?;
             }
             if let Some(existing) = subscription_tasks
                 .lock()
@@ -351,7 +339,7 @@ async fn handle_incoming_envelope(
                 existing.abort();
             }
             let ack = encrypt_json_response(
-                app,
+                router,
                 &client_public_key,
                 serde_json::json!({
                     "ok": true,
@@ -369,7 +357,7 @@ async fn handle_incoming_envelope(
             )?;
             replay_recent_relay_events(
                 event_runtime,
-                app,
+                router,
                 outgoing_tx,
                 &relay_subscription_id,
                 &client_public_key,
@@ -379,7 +367,7 @@ async fn handle_incoming_envelope(
             )
             .await?;
             let task = tokio::spawn(run_relay_subscription_loop(
-                Arc::clone(app),
+                Arc::clone(router),
                 outgoing_tx.clone(),
                 relay_subscription_id.clone(),
                 client_public_key.clone(),
@@ -404,9 +392,12 @@ async fn handle_incoming_envelope(
             if let Some(task) = existing {
                 task.abort();
             }
-            let ack =
-                encrypt_json_response(app, &client_public_key, serde_json::json!({ "ok": true }))
-                    .await?;
+            let ack = encrypt_json_response(
+                router,
+                &client_public_key,
+                serde_json::json!({ "ok": true }),
+            )
+            .await?;
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -428,30 +419,24 @@ async fn handle_incoming_envelope(
 }
 
 async fn pump_leased_projection_events(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
 ) {
-    let events = {
-        let mut app = app.lock().await;
-        match RemoteLeaseRuntime::new(&mut app).pump_leased_runtime_projections() {
-            Ok(events) => events,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay",
-                    "failed to pump leased runtime projections",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
+    let events = match router.relay_pump_leased_runtime_projections().await {
+        Ok(events) => events,
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay",
+                "failed to pump leased runtime projections",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            return;
         }
     };
     for (target_daemon_id, event) in events {
-        let config = {
-            let app = app.lock().await;
-            app.config().clone()
-        };
+        let config = router.relay_config_snapshot();
         let target_kernel = match tokio::time::timeout(
             std::time::Duration::from_secs(2),
             relay_discovery::get_live_kernel(&config, &target_daemon_id),
@@ -536,15 +521,13 @@ struct RelayPeerResponseEnvelope {
 }
 
 async fn handle_daemon_peer_request(
-    app: &Arc<Mutex<DaemonApp>>,
     router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, requester_public_key, daemon_private_key, daemon_id) = {
-        let app = app.lock().await;
-        let daemon_private_key = app.config().relay_private_key.clone();
-        let daemon_id = app.config().daemon_id.clone();
+        let daemon_private_key = router.relay_private_key();
+        let daemon_id = router.relay_daemon_id();
         let decrypted = match relay_crypto::decrypt_payload_for_private_key(
             &daemon_private_key,
             &encrypted_request,
@@ -589,14 +572,9 @@ async fn handle_daemon_peer_request(
             home_session_id,
             home_agent_id,
         } => {
-            let lease = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).create_execution_lease(
-                    &home_kernel_id,
-                    &home_session_id,
-                    &home_agent_id,
-                )
-            };
+            let lease = router
+                .relay_create_execution_lease(&home_kernel_id, &home_session_id, &home_agent_id)
+                .await;
             match lease {
                 Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated { lease },
                 Err(error) => {
@@ -608,10 +586,7 @@ async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::DestroyExecutionLease { lease_id } => {
-            let destroyed = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).destroy_execution_lease(&lease_id)
-            };
+            let destroyed = router.relay_destroy_execution_lease(&lease_id).await;
             match destroyed {
                 Ok(_) => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
                 Err(error) => {
@@ -628,11 +603,9 @@ async fn handle_daemon_peer_request(
             model,
             effort,
         } => {
-            let leased_agent = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app)
-                    .create_leased_agent(&lease_id, &provider, model, effort)
-            };
+            let leased_agent = router
+                .relay_create_leased_agent(&lease_id, &provider, model, effort)
+                .await;
             match leased_agent {
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentSpawned { leased_agent },
                 Err(error) => {
@@ -644,10 +617,7 @@ async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => {
-            let destroyed = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).destroy_leased_agent(&leased_agent_id)
-            };
+            let destroyed = router.relay_destroy_leased_agent(&leased_agent_id).await;
             match destroyed {
                 Ok(_) => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
                 Err(error) => {
@@ -664,19 +634,18 @@ async fn handle_daemon_peer_request(
             attachments,
             workflow_context,
         } => {
-            let submitted = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).submit_leased_prompt_with_workflow_context(
+            let submitted = router
+                .relay_submit_leased_prompt(
                     &leased_agent_id,
                     &prompt,
                     attachments,
                     workflow_context,
                 )
-            };
+                .await;
             match submitted {
                 Ok((provider_run_id, outcome)) => {
                     if let Err(error) = emit_leased_projection_event(
-                        app,
+                        router,
                         outgoing_tx,
                         &leased_agent_id,
                         &provider_run_id,
@@ -708,19 +677,14 @@ async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
-            let completion = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).complete_leased_prompt(&leased_agent_id)
-            };
+            let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
             match completion {
                 Ok(completion) => {
-                    let provider_run_id = {
-                        let mut app = app.lock().await;
-                        RemoteLeaseRuntime::new(&mut app)
-                            .leased_agent_provider_run_id(&leased_agent_id)
-                            .ok()
-                            .flatten()
-                    };
+                    let provider_run_id = router
+                        .relay_leased_agent_provider_run_id(&leased_agent_id)
+                        .await
+                        .ok()
+                        .flatten();
                     RelayPeerResponse::LeasedPromptCompleted {
                         provider_run_id,
                         completion,
@@ -735,10 +699,7 @@ async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
-            let cancellation = {
-                let mut app = app.lock().await;
-                RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased_agent_id)
-            };
+            let cancellation = router.relay_cancel_leased_prompt(&leased_agent_id).await;
             match cancellation {
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
                 Err(error) => {
@@ -802,13 +763,10 @@ async fn handle_daemon_peer_request(
 }
 
 async fn handle_daemon_peer_event(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     encrypted_event: EncryptedRelayPayload,
 ) -> Result<(), DaemonError> {
-    let daemon_private_key = {
-        let app = app.lock().await;
-        app.config().relay_private_key.clone()
-    };
+    let daemon_private_key = router.relay_private_key();
     let decrypted =
         relay_crypto::decrypt_payload_for_private_key(&daemon_private_key, &encrypted_event)?;
     let event =
@@ -827,36 +785,34 @@ async fn handle_daemon_peer_event(
             notices,
             completions,
         } => {
-            let mut app = app.lock().await;
-            RemoteLeaseRuntime::new(&mut app).project_remote_runtime_projection(
-                &home_session_id,
-                &home_agent_id,
-                &provider_run_id,
-                output_chunks,
-                notices,
-                completions,
-            )?;
+            router
+                .relay_project_remote_runtime_projection(
+                    &home_session_id,
+                    &home_agent_id,
+                    &provider_run_id,
+                    output_chunks,
+                    notices,
+                    completions,
+                )
+                .await?;
         }
     }
     Ok(())
 }
 
 async fn emit_leased_projection_event(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     leased_agent_id: &str,
     provider_run_id: &str,
     pump_output: bool,
 ) -> Result<(), DaemonError> {
-    let (config, target_daemon_id, event) = {
-        let mut app = app.lock().await;
-        let config = app.config().clone();
-        let Some((target_daemon_id, event)) = RemoteLeaseRuntime::new(&mut app)
-            .drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)?
-        else {
-            return Ok(());
-        };
-        (config, target_daemon_id, event)
+    let config = router.relay_config_snapshot();
+    let Some((target_daemon_id, event)) = router
+        .relay_drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)
+        .await?
+    else {
+        return Ok(());
     };
     let target_kernel = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -1146,14 +1102,12 @@ async fn resolve_pending_peer_response(
 }
 
 async fn handle_daemon_request(
-    app: &Arc<Mutex<DaemonApp>>,
     router: &CommandRouter,
     command_sequence: &AtomicU64,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, client_public_key, daemon_private_key) = {
-        let app = app.lock().await;
-        let daemon_private_key = app.config().relay_private_key.clone();
+        let daemon_private_key = router.relay_private_key();
         let decrypted = match relay_crypto::decrypt_payload_for_private_key(
             &daemon_private_key,
             &encrypted_request,
@@ -1287,14 +1241,11 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
 }
 
 async fn encrypt_json_response(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     client_public_key: &str,
     value: serde_json::Value,
 ) -> Result<EncryptedRelayPayload, DaemonError> {
-    let daemon_private_key = {
-        let app = app.lock().await;
-        app.config().relay_private_key.clone()
-    };
+    let daemon_private_key = router.relay_private_key();
     let plaintext = serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay response",
         message: error.to_string(),
@@ -1335,7 +1286,7 @@ async fn abort_subscription_tasks(subscription_tasks: &RelaySubscriptionTasks) {
 }
 
 async fn run_relay_subscription_loop(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     outgoing_tx: mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: String,
     client_public_key: String,
@@ -1347,16 +1298,14 @@ async fn run_relay_subscription_loop(
     let mut tick: u64 = 0;
 
     loop {
-        let watch_result = {
-            let mut app = app.lock().await;
-            watch_subscription_state(
-                &mut app,
+        let watch_result = router
+            .relay_watch_subscription_state(
                 &session_id,
                 &attachment_id,
                 tick,
                 previous_snapshot.clone(),
             )
-        };
+            .await;
 
         match watch_result {
             WatchResult::Ok {
@@ -1367,7 +1316,7 @@ async fn run_relay_subscription_loop(
             } => {
                 if !records.is_empty()
                     && emit_relay_event(
-                        &app,
+                        &router,
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
@@ -1381,7 +1330,7 @@ async fn run_relay_subscription_loop(
                 }
                 if !notices.is_empty()
                     && emit_relay_event(
-                        &app,
+                        &router,
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
@@ -1395,7 +1344,7 @@ async fn run_relay_subscription_loop(
                 }
                 for completion in completions {
                     if emit_relay_event(
-                        &app,
+                        &router,
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
@@ -1418,7 +1367,7 @@ async fn run_relay_subscription_loop(
                 if let Some(snapshot) = *snapshot {
                     previous_snapshot = Some(snapshot.clone());
                     if emit_relay_event(
-                        &app,
+                        &router,
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
@@ -1436,7 +1385,7 @@ async fn run_relay_subscription_loop(
                 }
                 if tick.is_multiple_of(RELAY_HEARTBEAT_INTERVAL_TICKS)
                     && emit_relay_event(
-                        &app,
+                        &router,
                         &outgoing_tx,
                         &subscription_id,
                         &client_public_key,
@@ -1453,7 +1402,7 @@ async fn run_relay_subscription_loop(
             }
             WatchResult::Unavailable(message) => {
                 let _ = emit_relay_event(
-                    &app,
+                    &router,
                     &outgoing_tx,
                     &subscription_id,
                     &client_public_key,
@@ -1474,17 +1423,14 @@ async fn run_relay_subscription_loop(
 }
 
 async fn emit_relay_event(
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
     client_public_key: &str,
     event_runtime: &Arc<RelayEventRuntime>,
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
-    let daemon_private_key = {
-        let app = app.lock().await;
-        app.config().relay_private_key.clone()
-    };
+    let daemon_private_key = router.relay_private_key();
     let plaintext = serde_json::to_vec(&event).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay event",
         message: error.to_string(),
@@ -1508,7 +1454,7 @@ async fn emit_relay_event(
 
 async fn replay_recent_relay_events(
     event_runtime: &Arc<RelayEventRuntime>,
-    app: &Arc<Mutex<DaemonApp>>,
+    router: &Arc<CommandRouter>,
     outgoing_tx: &mpsc::UnboundedSender<RelayEnvelope>,
     subscription_id: &str,
     client_public_key: &str,
@@ -1532,10 +1478,7 @@ async fn replay_recent_relay_events(
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }
-        let daemon_private_key = {
-            let app = app.lock().await;
-            app.config().relay_private_key.clone()
-        };
+        let daemon_private_key = router.relay_private_key();
         let plaintext =
             serde_json::to_vec(&persisted.event).map_err(|error| DaemonError::LocalTransport {
                 operation: "serialize relay event",
@@ -1554,7 +1497,7 @@ async fn replay_recent_relay_events(
         )?;
     }
     emit_relay_event(
-        app,
+        router,
         outgoing_tx,
         subscription_id,
         client_public_key,
@@ -1621,6 +1564,7 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     use crate::agent::CreateAgentRequest;
+    use crate::app::RemoteLeaseRuntime;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
     use crate::local::{
@@ -2765,7 +2709,16 @@ mod tests {
         )
         .expect("peer event should encrypt");
 
-        handle_daemon_peer_event(&app, encrypted_event)
+        let provider_runtime_lanes = {
+            let app = app.lock().await;
+            app.provider_run_operation_lanes()
+        };
+        let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+            Arc::clone(&app),
+            INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            provider_runtime_lanes,
+        ));
+        handle_daemon_peer_event(&router, encrypted_event)
             .await
             .expect("peer event should project");
 

@@ -558,3 +558,9 @@ Chronological notes to preserve execution context between contributors/agents.
 - Moved workflow prompt completion scheduling, invoke admission/start, cancel cleanup, queued-launch start, provider-run ensure, and blocked-claim retry behavior onto owned runtime-state operations for the production local workflow path.
 - Preserved workflow join-node readiness by preventing incomplete joins from being dispatched while still retrying the blocked sibling branch after workspace-claim release.
 - Left the old app workflow-runtime helpers only as compatibility/test-facing surfaces; router/workflow-lane invoke and cancel no longer use the app-backed workflow launch or cancellation helpers.
+
+### M4.5 transport and relay ownership update
+
+- Closed point 6 for the production relay transport path by routing relay registration/config/key reads, subscription authorization/watch snapshots, peer lease commands, leased prompt settlement, and remote projection events through `CommandRouter` relay/runtime ports instead of direct relay-client `DaemonApp` state access.
+- Kept connector bootstrap and the unused relay test helper as the only direct `relay_client.rs` app-lock reads; production daemon/workflow relay requests, runtime MCP forwarding, subscription replay, and peer prompt handling now enter the router/runtime boundary.
+- Hardened workflow cancellation cleanup by releasing session workflow-dispatch workspace claims when a run is cancelled, preventing subsequent queued or manual workflow launches from inheriting stale claim conflicts.
