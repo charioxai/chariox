@@ -1738,9 +1738,16 @@ fn router_projection_stores(
     PromptStateOwner,
     PromptIdAllocator,
 ) {
-    let app = app
-        .try_lock()
-        .expect("CommandRouter should be created before holding the app lock");
+    let started = std::time::Instant::now();
+    let app = loop {
+        if let Ok(app) = app.try_lock() {
+            break app;
+        }
+        if started.elapsed() >= Duration::from_secs(5) {
+            panic!("CommandRouter could not acquire the app lock during bootstrap");
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
     (
         app.history_store(),
         app.session_state_projection_store(),

@@ -46,6 +46,8 @@ const {
   createWorkflowEndpointRequest,
   invokeWorkflowEndpointRequest,
   getSessionStateRequest,
+  pumpTerminalOutputRequest,
+  getProviderRunRequest,
   spawnAgentRequest,
   launchProviderRunRequest,
   listProviderProcessesRequest,
@@ -54,6 +56,7 @@ const {
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowIntermediateOutputSchemaRequest,
   setWorkflowRunOutputSchemaRequest,
+  setWorkflowFlushContextRequest,
   endSessionRequest,
 } = requests
 
@@ -187,6 +190,15 @@ async function ensureSchemaFile() {
   return schemaPath
 }
 
+async function resolveBinary(binaryPath, manifestPath, binName) {
+  try {
+    await import('node:fs/promises').then(({ access }) => access(binaryPath))
+    return binaryPath
+  } catch {
+    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
+  }
+}
+
 function buildSimpleChainScenario(providers, model) {
   return {
     id: 'simple-chain',
@@ -262,6 +274,8 @@ function buildConsoleIncrementScenario(providers, model) {
           'Each number must be on its own line. Include the trailing newline in the write payload.',
           'Do not call `validate_workflow_output` for this task unless the runtime explicitly requires it.',
           'After the write succeeds, emit the normal workflow output block.',
+          'Set `output.message` to JSON with exactly one integer field: `value` set to 1842.',
+          'Your summary should be `wrote 1842`.',
         ].join('\n\n')
       }
       return [
@@ -275,6 +289,8 @@ function buildConsoleIncrementScenario(providers, model) {
         'Do not write any extra prose to the console.',
         'Do not call `validate_workflow_output` for this task unless the runtime explicitly requires it.',
         'After the write succeeds, emit the normal workflow output block.',
+        'Set `output.message` to JSON with exactly one integer field: `value` set to the incremented integer.',
+        'Your summary should say `read X, wrote Y`.',
       ].join('\n\n')
     },
     edgeRequest(sessionId, workflowId, fromNodeId, toNodeId) {
@@ -303,6 +319,7 @@ function buildFinalRunOutputScenario(providers, model, schemaPath) {
           'Use the integer from the endpoint prompt unchanged.',
           'Do not add any other fields.',
           'Your summary should be `sent 1842`.',
+          workflowOutput('sent 1842', JSON.stringify({ value: 1842 })),
         ].join('\n\n')
       }
       return [
@@ -358,6 +375,7 @@ function buildCyclicFinalRunOutputScenario(providers, model, schemaPath) {
           `If that value is ${threshold} or greater, complete the workflow run and submit final workflow run output JSON with exactly one integer field: \`value\` set to that received value.`,
           'When you are generating final workflow run output, do not generate normal node-to-node output.',
           `Use summaries like \`started ${original}\`, \`forwarded X\`, or \`completed ${threshold}\`.`,
+          workflowOutput(`started ${original}`, JSON.stringify({ value: original })),
         ].join('\n\n')
       }
       return [
@@ -415,6 +433,7 @@ function buildCyclicBudgetedFinalRunOutputScenario(providers, model, schemaPath)
           'If this is your last allowed turn, do not forward. Instead, submit final workflow run output JSON with exactly one integer field: `value` set to the received current value.',
           'When you are generating final workflow run output, do not generate normal node-to-node output.',
           `Use summaries like \`started ${original}\`, \`forwarded X\`, or \`completed X\`.`,
+          workflowOutput(`started ${original}`, JSON.stringify({ value: original })),
         ].join('\n\n')
       }
       return [
@@ -473,6 +492,7 @@ function buildCyclicFinalRunWithIntermediateOutputScenario(providers, model, sch
           `If that value is ${threshold} or greater, the received value is your computed number for this turn. Submit that computed number as intermediate workflow run output JSON with exactly one integer field: \`value\`. Then submit final workflow run output JSON with exactly one integer field: \`value\` set to that same received value.`,
           'When you are generating final workflow run output, do not generate normal node-to-node output.',
           `Use summaries like \`started ${original}\`, \`forwarded X\`, or \`completed ${threshold}\`.`,
+          workflowOutput(`started ${original}`, JSON.stringify({ value: original })),
         ].join('\n\n')
       }
       return [
@@ -564,9 +584,14 @@ async function main() {
   if (options.spawnDaemon) {
     const spawned = deriveSpawnedKernelUrl()
     kernelUrl = spawned.kernelUrl
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/daemon/target/debug/arroba-daemon'),
+      path.join(repoRoot, 'apps/daemon/Cargo.toml'),
+      'arroba-daemon',
+    )
     daemonChild = spawn(
-      'cargo',
-      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/daemon/Cargo.toml'), '--bin', 'arroba-daemon'],
+      daemonBinary,
+      [],
       { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
     )
   }
@@ -595,10 +620,25 @@ async function main() {
     if (details == null) console.log(prefix)
     else console.log(prefix, JSON.stringify(details))
   }
+  const waitForProviderRunReady = async (providerRunId) => {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const response = await client.send(getProviderRunRequest(providerRunId))
+      const providerRun = unwrap(response, 'ProviderRun')?.provider_run
+      if (providerRun && providerRun.state !== 'Starting') {
+        if (providerRun.state !== 'Running' && providerRun.state !== 'Parked') {
+          throw new Error(`provider run ${providerRunId} reached unexpected state ${providerRun.state}`)
+        }
+        return providerRun
+      }
+      await sleep(250)
+    }
+    throw new Error(`provider run ${providerRunId} did not become ready`)
+  }
 
   let sessionId = null
   let trackedProviderProcesses = []
   let cleanupReport = null
+  const terminalRecords = []
   const captureTrackedProviderProcesses = async () => {
     if (!daemonChild) return
     const listed = unwrap(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed')?.processes || []
@@ -611,7 +651,8 @@ async function main() {
   }
   try {
     if (daemonChild) {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
+      let ready = false
+      for (let attempt = 0; attempt < 80; attempt += 1) {
         try {
           const probeClient = new LocalIpcClient(kernelUrl)
           const probeSession = unwrap(
@@ -620,16 +661,23 @@ async function main() {
           ).session
           await probeClient.send(endSessionRequest(probeSession.id)).catch(() => {})
           await probeClient.close()
+          ready = true
           break
         } catch {
           await sleep(250)
         }
       }
+      if (!ready) {
+        throw new Error(`spawned daemon did not become ready at ${kernelUrl}`)
+      }
     }
     logStep('create_session')
     const session = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated').session
     sessionId = session.id
-    await client.send(attachToSessionRequest(session.id, `live-drill-${Date.now()}`))
+    const attachment = unwrap(
+      await client.send(attachToSessionRequest(session.id, `live-drill-${Date.now()}`)),
+      'SessionAttached',
+    ).attachment
 
     const agentIds = []
     const nodeIds = []
@@ -654,10 +702,24 @@ async function main() {
         'AgentSpawned',
       ).agent
       agentIds.push(agent.id)
+      if (!options.machineRef) {
+        logStep('launch_provider', { index, provider, agentId: agent.id })
+        const launchResponse = await client.send(
+          launchProviderRunRequest(session.id, provider, 'default', scenario.model, 'medium', agent.id),
+        )
+        const providerRun = unwrap(launchResponse, 'ProviderRunLaunchAccepted')?.provider_run
+        if (!providerRun?.id) {
+          throw new Error(`provider launch for agent ${agent.id} did not return a provider run`)
+        }
+        logStep('wait_provider_ready', { index, providerRunId: providerRun.id })
+        await waitForProviderRunReady(providerRun.id)
+      }
     }
 
     logStep('create_workflow', { alias: scenario.alias })
     const workflow = unwrap(await client.send(createWorkflowRequest(session.id, scenario.alias)), 'WorkflowCreated').workflow
+    logStep('set_workflow_flush_context', { workflowId: workflow.id, flushAgentContextBeforeRun: false })
+    await client.send(setWorkflowFlushContextRequest(session.id, workflow.id, false))
     for (let index = 0; index < scenario.providers.length; index += 1) {
       const provider = scenario.providers[index]
       logStep('add_node', { index, provider })
@@ -703,11 +765,14 @@ async function main() {
 
     for (let index = 0; index < options.pollLimit; index += 1) {
       await sleep(options.pollIntervalMs)
+      const outputResp = await client.send(pumpTerminalOutputRequest(session.id, attachment.id)).catch(() => null)
+      const outputRecords = unwrap(outputResp, 'TerminalOutput')?.records || []
+      terminalRecords.push(...outputRecords)
       const stateResp = await client.send(getSessionStateRequest(session.id))
       const state = unwrap(stateResp, 'SessionStateLoaded')?.session ?? unwrap(stateResp, 'SessionState')?.session
       const run = (state.workflow_runs || []).find((entry) => entry.id === workflowRun.id)
       if (run && ['Completed', 'Failed', 'Stopped'].includes(run.status)) {
-        console.log(JSON.stringify({
+        const result = {
           sessionId: session.id,
           workflowId: workflow.id,
           workflowRunId: workflowRun.id,
@@ -726,8 +791,22 @@ async function main() {
             tools: nodeRun.turn_envelope?.runtime_tool_calls || [],
           })),
           failureEvents: run.failure_events || [],
-        }, null, 2))
+          terminalRecords: terminalRecords.slice(-20).map((record) => ({
+            kind: record.kind,
+            providerRunId: record.provider_run_id ?? null,
+            text: Array.isArray(record.bytes)
+              ? Buffer.from(record.bytes).toString('utf8').slice(0, 800)
+              : '',
+          })),
+        }
+        console.log(JSON.stringify(result, null, 2))
         await captureTrackedProviderProcesses()
+        if ((run.failure_events || []).length > 0) {
+          throw new Error(`workflow drill ${scenario.id} recorded failure events`)
+        }
+        if (run.status !== 'Completed') {
+          throw new Error(`workflow drill ${scenario.id} ended with status ${run.status}`)
+        }
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
         return

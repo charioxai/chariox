@@ -204,7 +204,7 @@ pub fn submit_codex_prompt(
     let effort = normalize_variant(run.variant());
     let input = codex_input(prompt, attachments);
     let thread_id = state.thread_id.clone();
-    let _ = client.turn_start(
+    let response = client.turn_start(
         &mut state.socket,
         &mut state.next_request_id,
         &thread_id,
@@ -214,6 +214,9 @@ pub fn submit_codex_prompt(
         input,
         &mut state.buffered_notifications,
     )?;
+    if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
+        state.active_turn_id = Some(turn_id);
+    }
     Ok(())
 }
 
@@ -353,6 +356,9 @@ fn apply_notification(
             status,
             error_message,
         } => {
+            if active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                return;
+            }
             if !turn_id.is_empty() {
                 completions.push(CodexAssistantCompletion {
                     message_id: format!("codex-turn:{turn_id}"),
@@ -373,6 +379,17 @@ fn apply_notification(
             notices.push(message);
         }
     }
+}
+
+fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {
+    response
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| response.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn sync_tool_item(
@@ -1098,6 +1115,34 @@ mod tests {
         assert_eq!(active_turn_id, None);
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+    }
+
+    #[test]
+    fn stale_turn_completion_does_not_complete_prompt() {
+        let mut active_turn_id = Some("current-turn".to_string());
+        let mut tool_items = BTreeMap::new();
+        let mut chunks = Vec::new();
+        let mut completions = Vec::new();
+        let mut notices = Vec::new();
+        let mut prompt_completed = false;
+
+        apply_notification(
+            CodexNotification::TurnCompleted {
+                turn_id: "stale-turn".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+            },
+            &mut active_turn_id,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+        );
+
+        assert!(!prompt_completed);
+        assert!(completions.is_empty());
+        assert_eq!(active_turn_id.as_deref(), Some("current-turn"));
     }
 
     #[test]

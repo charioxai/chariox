@@ -1633,6 +1633,13 @@ impl WorkflowRun {
         event
     }
 
+    pub fn retain_failure_events(
+        &mut self,
+        mut predicate: impl FnMut(&WorkflowFailureEvent) -> bool,
+    ) {
+        self.failure_events.retain(|event| predicate(event));
+    }
+
     pub fn add_intermediate_output(
         &mut self,
         output: WorkflowIntermediateOutput,

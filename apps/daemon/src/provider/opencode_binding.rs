@@ -151,7 +151,7 @@ pub(super) fn abort_opencode_session(
 
 pub(super) fn submit_opencode_prompt(
     run: &RuntimeProviderRun,
-    state: &OpenCodeRuntimeState,
+    state: &mut OpenCodeRuntimeState,
     prompt: &str,
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
@@ -163,6 +163,7 @@ pub(super) fn submit_opencode_prompt(
         Some(run.model()),
         run.variant(),
     )?;
+    state.note_prompt_submitted();
     Ok(())
 }
 

@@ -10,6 +10,12 @@ Chronological notes to preserve execution context between contributors/agents.
 - Completed the M4.5 dead-code purge by deleting now-unused app-backed session/projection/remote-lease/workflow-console helpers, the obsolete app-backed runtime-tool dispatcher and its tests, and stale test-only calls into compatibility helpers.
 - Verified with clean `cargo check`, daemon lib tests, runtime integration tests, kernel websocket integration tests, relay-client tests, and daemon bin tests. Recommendation: treat M4.5 ownership as closed and move next to final docs/invariant alignment before the final I/O-coordination slice.
 
+### M4.5 live drill gate alignment
+
+- Added [LIVE_DRILLS.md](/Users/miguel/arroba/docs/ops/LIVE_DRILLS.md) as the gate before new tasks. It covers local freeform multi-agent mode, local workflow drills, remote freeform relay drills, and remote workflow relay drills.
+- Adopted **freeform multi-agent mode** as the name for normal non-workflow multi-agent sessions, replacing the working phrase "unscheduled mode".
+- Next recommendation: run the live drill matrix and fix only drill blockers before opening new feature work.
+
 ### M4.5 prompt ownership hard-center update
 
 - Moved the single-agent slow-structured local prompt submit path onto owned `CompatibilityRuntimeState` stores, including user history append, prompt-owner submit/mirror mutation, queued notice emission, prompt echo, provider prompt claim acquisition, and dispatch preparation without waiting on the compatibility app mutex.
@@ -589,3 +595,16 @@ Chronological notes to preserve execution context between contributors/agents.
 - Closed point 7 for production command/runtime ownership by replacing `CompatibilityRuntimeState` with mandatory `KernelRuntimeState`/`KernelRuntimeOwnedState`; runtime construction no longer carries optional owned state or a no-owned compatibility fallback.
 - Deleted the unreachable app-backed runtime fallback branches for session reads/mutations, prompt dispatch/abort cleanup, provider launch mutation, terminal-output pumping, capability authorization, and workflow runtime-tool dispatch. Remaining `DaemonApp` access is limited to named side-effect ports for PTY/process/relay operations and remote-agent lifecycle.
 - Removed the obsolete app-backed prompt-dispatch runtime helper and kept the legacy relay helper test-only, leaving `DaemonApp` as bootstrap/composition plus explicit side-effect services rather than the command mutation owner.
+
+### M4.5 live drill gate update
+
+- Added the live drill matrix and adopted **freeform multi-agent mode** as the name for normal non-workflow multi-agent sessions.
+- Local freeform OpenCode + Codex passed after fixing router bootstrap lock contention during concurrent router construction.
+- Local workflow drills are blocked on entry-node live provider completion: downstream workflow turns can ack and emit output, but entry-node turns that launch a provider lazily can complete without a drained structured output payload. The reproducible hard-fail command is `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario validated-increment-chain --providers codex,opencode --model gpt-5.4 --poll-limit 120 --poll-interval-ms 2000`.
+- Current drill fixes in progress: workflow prompts rendered by owned runtime now include node instructions and validation/tool rules, structured provider completion ignores stale lifecycle events, queued workflow prompts advanced after provider launch receive workflow-start bookkeeping, and terminal output pumping drains all running session provider runs rather than only the focused active run.
+
+### M4.5 local workflow live drill closure
+
+- Closed live-drill point 2 locally: the full workflow catalog passes with a spawned local daemon and `opencode,codex` providers, including validated handoff, workflow console tools, final run output, cyclic final output, budgeted cyclic final output, and cyclic intermediate-output/final-output flows.
+- Fixed the hard runtime issues found by the catalog: invoke now enqueues owned entry dispatches, workflow console write no longer deadlocks on session-store lock ordering, resolved workflow failures are cleaned after successful retry/final submission, node turn budgets ignore no-payload recovery attempts, and final-output turns no longer emit stale downstream handoff failures before pending final output is committed.
+- Tightened the live workflow drill prompts where the intended first-turn payload was ambiguous for live providers, using exact fenced workflow output examples for entry turns and explicit console-output payload contracts.

@@ -1084,8 +1084,8 @@ fn execute_submit_command(
         return Ok(());
     }
 
-    let (slot, state) = take_opencode_runtime(opencode_runs, &run_id)?;
-    let result = submit_opencode_prompt(&run, &state, &prompt, &attachments);
+    let (slot, mut state) = take_opencode_runtime(opencode_runs, &run_id)?;
+    let result = submit_opencode_prompt(&run, &mut state, &prompt, &attachments);
     restore_opencode_runtime_if_live(opencode_runs, cleared_runs, &run_id, &slot, state);
     result
 }

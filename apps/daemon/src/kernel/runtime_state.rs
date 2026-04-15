@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -809,6 +810,17 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+            started_next.workflow_run_id(),
+            started_next.workflow_node_run_id(),
+        ) {
+            let _ = self.session_store.write().mark_workflow_turn_dispatched(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            let _ = self.workflow_start_prompt(session_id, &started_next)?;
+        }
         let _ = self.session_snapshot(session_id)?;
         Ok(Some(crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
@@ -2776,6 +2788,7 @@ impl KernelRuntimeOwnedState {
                     "workflow_run_id": workflow_run.id(),
                     "workflow_node_run_id": request.workflow_node_run_id,
                     "state": "acknowledged",
+                    "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer; emit the required final fenced json block before stopping.",
                 })
                 .to_string(),
             ),
@@ -3017,12 +3030,15 @@ impl KernelRuntimeOwnedState {
                 message: "workflow run has no entry node run",
             }
         })?;
-        let prompt_text = format!(
-            "Endpoint prompt:\n{endpoint_prompt}\n\nNode instruction reference (daemon-managed): .arroba/workflows/{}/nodes/{}.md\n\nFor the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"workflow-ack:{}\"}}\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{{\"summary\":\"human-facing summary\",\"output\":{{\"message\":\"explicit downstream output message\"}}}}\n",
+        let prompt_text = self.workflow_turn_prompt_text(
+            session_id,
             workflow_run.id(),
+            node_run.id(),
             node_run.node_id(),
-            node_run.id()
-        );
+            endpoint_prompt,
+            None,
+            None,
+        )?;
         let _ = self.session_store.write().prepare_workflow_turn(
             session_id,
             workflow_run.id(),
@@ -3481,6 +3497,23 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    fn workflow_prompt_has_completion_output(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        self.workflow_completion_snapshot(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            Some(provider_run_id),
+        )
+        .and_then(|snapshot| snapshot.output().cloned())
+        .is_some()
+    }
+
     #[allow(dead_code)]
     fn workflow_max_turns(&self, session_id: &str) -> Option<usize> {
         self.session_store
@@ -3606,23 +3639,30 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id,
                 dispatch.node_run.id(),
             );
-            let control_block = control_mailbox
-                .as_ref()
-                .map(|content| {
-                    format!(
-                        "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node.\n\n"
-                    )
-                })
-                .unwrap_or_default();
-            let outgoing_contracts = self.workflow_outgoing_edge_contracts_text(
+            let prompt_text = match self.workflow_turn_prompt_text(
                 session_id,
                 workflow_run_id,
+                dispatch.node_run.id(),
                 dispatch.node_run.node_id(),
-            );
-            let prompt_text = format!(
-                "Workflow handoff payloads (JSON array):\n{handoff_payloads_json}\n\n{outgoing_contracts}{control_block}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"workflow-ack:{}\"}}\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{{\"summary\":\"human-facing summary\",\"output\":{{\"message\":\"explicit downstream output message\"}}}}\n",
-                dispatch.node_run.id()
-            );
+                "",
+                Some(&handoff_payloads_json),
+                control_mailbox.as_deref(),
+            ) {
+                Ok(prompt_text) => prompt_text,
+                Err(error) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store.list_session_attachment_ids(session_id),
+                        format!(
+                            "Workflow run `{workflow_run_id}` could not prepare downstream node `{}`: {}",
+                            dispatch.node_run.node_id(),
+                            error
+                        ),
+                    );
+                    continue;
+                }
+            };
             let _ = self.session_store.write().prepare_workflow_turn(
                 session_id,
                 workflow_run_id,
@@ -3745,6 +3785,57 @@ impl KernelRuntimeOwnedState {
             }
         }
         prepared
+    }
+
+    fn workflow_turn_prompt_text(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        node_id: &str,
+        endpoint_prompt: &str,
+        handoff_payloads_json: Option<&str>,
+        control_mailbox: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
+        let node_instructions = workflow
+            .node(node_id)
+            .and_then(|node| node.instructions())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("No node-specific instructions were configured.");
+        let endpoint_block = if endpoint_prompt.trim().is_empty() {
+            String::new()
+        } else {
+            format!("Endpoint prompt:\n{}\n\n", endpoint_prompt.trim())
+        };
+        let handoff_block = handoff_payloads_json
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "[]")
+            .map(|value| format!("Workflow handoff payloads (JSON array):\n{value}\n\n"))
+            .unwrap_or_default();
+        let edge_contracts =
+            self.workflow_outgoing_edge_contracts_text(session_id, workflow_run_id, node_id);
+        let control_block = control_mailbox
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|content| {
+                format!(
+                    "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output.\n\n"
+                )
+            })
+            .unwrap_or_default();
+        Ok(format!(
+            "{endpoint_block}{handoff_block}Workflow-level prompt:\n{}\n\nNode-level instructions:\n{node_instructions}\n\n{edge_contracts}{control_block}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"workflow-ack:{workflow_node_run_id}\"}}\n\nIf an outgoing edge contract for this turn includes an `output_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_output` with the delivery token above, that `output_schema_ref`, and your proposed `output.message` JSON. If no `output_schema_ref` is present for this turn, do not call `validate_workflow_output`.\n\nIf your node-level instructions require shared console output or inspection, use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{{\"summary\":\"human-facing summary\",\"output\":{{\"message\":\"explicit downstream output message\"}}}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes an `output_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning.",
+            workflow_run.invocation_prompt().unwrap_or_default()
+        ))
     }
 
     fn workflow_retry_blocked_claims(&self) -> Vec<crate::app::KernelPromptDispatch> {
@@ -4104,6 +4195,7 @@ impl KernelRuntimeOwnedState {
                         "workflow_run_id": workflow_run.id(),
                         "workflow_node_run_id": context.workflow_node_run_id,
                         "state": "acknowledged",
+                        "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer; emit the required final fenced json block before stopping.",
                     }),
                 })
             }
@@ -4260,15 +4352,16 @@ impl KernelRuntimeOwnedState {
                     .session_store
                     .read()
                     .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+                let source_agent_id = self.workflow_node_agent_id(
+                    &context.session_id,
+                    &context.workflow_run_ref,
+                    &context.workflow_node_run_id,
+                );
                 let entry = self.session_store.write().append_workflow_console_entry(
                     &context.session_id,
                     workflow_run.workflow_id(),
                     Some(context.workflow_node_run_id.clone()),
-                    self.workflow_node_agent_id(
-                        &context.session_id,
-                        &context.workflow_run_ref,
-                        &context.workflow_node_run_id,
-                    ),
+                    source_agent_id,
                     &args.text,
                 )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -5688,15 +5781,22 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
                 let session_id = request.session_id.clone();
-                let result = owned
-                    .workflow_invoke_endpoint_with_admission(
-                        &request.session_id,
-                        &request.workflow_ref,
-                        &request.endpoint_ref,
-                        request.prompt,
-                    )
-                    .map(|(outcome, _dispatches)| {
-                        let session = owned.session_snapshot(&request.session_id)?;
+                let result = match owned.workflow_invoke_endpoint_with_admission(
+                    &request.session_id,
+                    &request.workflow_ref,
+                    &request.endpoint_ref,
+                    request.prompt,
+                ) {
+                    Ok((outcome, dispatches)) => {
+                        for dispatch in dispatches {
+                            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                            }
+                        }
+                        let session = match owned.session_snapshot(&request.session_id) {
+                            Ok(session) => session,
+                            Err(error) => return (Err(error), None),
+                        };
                         match outcome {
                             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                                 workflow_run,
@@ -5719,8 +5819,9 @@ impl KernelRuntimeState {
                                 session,
                             }),
                         }
-                    })
-                    .and_then(|result| result);
+                    }
+                    Err(error) => Err(error),
+                };
                 let session = result
                     .as_ref()
                     .ok()
@@ -6176,6 +6277,24 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if !force {
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                active_prompt.workflow_run_id(),
+                active_prompt.workflow_node_run_id(),
+            ) {
+                if !owned.workflow_prompt_has_completion_output(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                    provider_run_id,
+                ) {
+                    return Ok(crate::app::ProviderRunExitSessionSummary {
+                        had_active_prompt: true,
+                        started_next_prompt: false,
+                    });
+                }
+            }
+        }
         let provider_run_state = provider_run.state();
         let next_queued_prompt = if provider_run_state == crate::provider::ProviderRunState::Running
         {
@@ -6542,20 +6661,39 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
-        let provider_run_id = owned
+        let active_provider_run_id = owned
             .session_store
             .get_session(session_id)?
             .active_provider_run_id()
             .map(str::to_string);
-        if let Some(provider_run_id) = provider_run_id {
-            let recipient_attachment_ids = owned
-                .attachment_store
-                .list_session_attachment_ids(session_id);
+        let mut provider_run_ids = BTreeSet::new();
+        if let Some(provider_run_id) = active_provider_run_id {
+            provider_run_ids.insert(provider_run_id);
+        }
+        provider_run_ids.extend(
+            owned
+                .provider_store
+                .list_runs()
+                .into_iter()
+                .filter(|run| run.session_id() == session_id)
+                .filter(|run| {
+                    matches!(
+                        run.state(),
+                        crate::provider::ProviderRunState::Starting
+                            | crate::provider::ProviderRunState::Running
+                    )
+                })
+                .map(|run| run.id().to_string()),
+        );
+        let recipient_attachment_ids = owned
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        for provider_run_id in provider_run_ids {
             let _ = self
                 .pump_owned_provider_output(
                     session_id,
                     &provider_run_id,
-                    recipient_attachment_ids,
+                    recipient_attachment_ids.clone(),
                     false,
                 )
                 .await?;

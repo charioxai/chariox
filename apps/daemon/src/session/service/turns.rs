@@ -686,6 +686,18 @@ impl SessionService {
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
+        let completed_node_id = node_run.node_id().to_string();
+        let has_pending_final_output = node_run
+            .turn_envelope()
+            .and_then(|envelope| {
+                envelope.pending_output_submission(WorkflowTurnSubmissionKind::Final)
+            })
+            .is_some();
+        let should_clear_resolved_failures = validation_warnings.is_empty()
+            && (completion
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.output().is_some())
+                || has_pending_final_output);
         let pending_outputs =
             Self::take_pending_workflow_turn_outputs(node_run.turn_envelope_mut());
         Self::apply_workflow_node_completion(node_run, completion);
@@ -695,6 +707,23 @@ impl SessionService {
             workflow_node_run_id,
             pending_outputs,
         );
+        if should_clear_resolved_failures {
+            let resolved_source_node_run_ids = workflow_run
+                .node_runs()
+                .iter()
+                .filter(|node_run| node_run.node_id() == completed_node_id)
+                .map(|node_run| node_run.id().to_string())
+                .collect::<std::collections::BTreeSet<_>>();
+            workflow_run.retain_failure_events(|event| {
+                let resolved_failure = matches!(
+                    event.kind(),
+                    WorkflowFailureKind::MissingStructuredOutput
+                        | WorkflowFailureKind::OutputValidationFailed
+                ) && resolved_source_node_run_ids
+                    .contains(event.source_node_run_id());
+                !resolved_failure
+            });
+        }
         for message in emitted_messages {
             workflow_run.add_message(message);
         }
@@ -725,6 +754,7 @@ impl SessionService {
                     .node_runs()
                     .iter()
                     .filter(|node_run| node_run.node_id() == context.source_node_run.node_id())
+                    .filter(|node_run| node_run.completion().is_some())
                     .count() as u32;
                 completed_turns >= limit
             });
@@ -825,6 +855,16 @@ impl SessionService {
         completion: Option<&WorkflowCompletionSnapshot>,
     ) -> Result<(Vec<WorkflowMessage>, Vec<WorkflowOutputValidationWarning>), DaemonError> {
         if context.workflow_run.completed_by_node_run_id() == Some(context.source_node_run.id()) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if context
+            .source_node_run
+            .turn_envelope()
+            .and_then(|envelope| {
+                envelope.pending_output_submission(WorkflowTurnSubmissionKind::Final)
+            })
+            .is_some()
+        {
             return Ok((Vec::new(), Vec::new()));
         }
         let mut validation_warnings = Vec::new();

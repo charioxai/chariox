@@ -67,7 +67,7 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: ACK_WORKFLOW_TURN_TOOL.to_string(),
-            description: "Acknowledge that the current workflow turn was received.".to_string(),
+            description: "Acknowledge that the current workflow turn was received. This does not complete the turn; after this tool returns, continue the same response and emit the required final fenced JSON workflow output.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["delivery_token"],

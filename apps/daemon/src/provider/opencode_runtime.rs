@@ -104,6 +104,10 @@ impl OpenCodeRuntimeState {
     pub(super) fn stop(self) {
         self.event_subscription.stop();
     }
+
+    pub(super) fn note_prompt_submitted(&mut self) {
+        self.awaiting_session_idle = true;
+    }
 }
 
 pub(super) fn drain_opencode_events(
@@ -342,7 +346,7 @@ pub(super) fn drain_opencode_events(
                             bytes: format_session_status(&kind).into_bytes(),
                         });
                     }
-                    if kind == "idle" {
+                    if kind == "idle" && state.awaiting_session_idle {
                         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                         if let Ok(messages) = client.messages(&state.session_id) {
                             if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
@@ -408,7 +412,7 @@ pub(super) fn drain_opencode_events(
                         completions.extend(snapshot_completions);
                         state.awaiting_session_idle = true;
                     }
-                    if snapshot.status == "idle" {
+                    if snapshot.status == "idle" && state.awaiting_session_idle {
                         prompt_completed = true;
                         state.awaiting_session_idle = false;
                     }
@@ -925,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_status_is_treated_as_prompt_completion() {
+    fn idle_status_without_submitted_prompt_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
@@ -944,12 +948,37 @@ mod tests {
         let result =
             drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
 
-        assert!(result.prompt_completed);
+        assert!(!result.prompt_completed);
         assert!(result.completions.is_empty());
         assert!(result
             .chunks
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderStatus));
+    }
+
+    #[test]
+    fn idle_status_after_submitted_prompt_is_treated_as_prompt_completion() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted();
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let result =
+            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+
+        assert!(result.prompt_completed);
+        assert!(!state.awaiting_session_idle);
     }
 
     #[test]
