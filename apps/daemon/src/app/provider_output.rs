@@ -75,6 +75,57 @@ pub(crate) fn pump_terminal_output_for_attachment(
     Ok(app.terminal.drain_output_records(session_id, attachment_id))
 }
 
+pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) {
+    ProviderOutputStructuredPromptReaper::new(app).reap();
+    let sessions = app.sessions.list_sessions();
+    for session in sessions {
+        let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
+        let mut agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
+        for agent_id in agent_ids {
+            if app
+                .prompt_state_owner
+                .active_prompt_for_agent_snapshot(&session, &agent_id)
+                .is_none()
+            {
+                continue;
+            }
+            let Some(provider_run_id) = app
+                .providers
+                .get_run_for_agent(session.id(), &agent_id)
+                .map(|run| run.id().to_string())
+            else {
+                continue;
+            };
+            if let Err(error) =
+                ProviderOutputPump::new(app).pump_provider_output(ProviderOutputPumpRequest {
+                    session_id: session.id(),
+                    provider_run_id: &provider_run_id,
+                    recipient_attachment_ids: recipient_attachment_ids.clone(),
+                    initial_liveness_already_checked: false,
+                })
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_output",
+                    "background prompt pump failed",
+                    serde_json::json!({
+                        "session_id": session.id(),
+                        "provider_run_id": provider_run_id,
+                        "agent_id": agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+}
+
 pub(crate) struct ProviderOutputPump<'a> {
     context: ProviderOutputPumpContext<'a>,
 }

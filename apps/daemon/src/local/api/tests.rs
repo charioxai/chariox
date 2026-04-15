@@ -3,7 +3,9 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
+use crate::app::provider_output::{
+    pump_active_prompt_outputs, ProviderOutputPump, ProviderOutputPumpRequest,
+};
 use crate::attachment::ClientCapabilityLevel;
 use crate::local::test_support::LocalRouterTestHarness;
 use crate::provider::{LaunchProviderRequest, ProviderPromptChunk, ProviderPromptSignalBatch};
@@ -2383,7 +2385,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
     );
 
     harness.with_app_mut(|app| {
-        app.pump_active_prompt_outputs();
+        pump_active_prompt_outputs(app);
         app.pump_workflow_watchdogs();
     });
     harness.with_app(|app| {
