@@ -8,7 +8,7 @@ use crate::provider::{
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
 
@@ -70,23 +70,17 @@ impl DaemonApp {
     }
 
     pub(crate) fn cached_provider_catalog(&self) -> Option<OpenCodeProviderCatalog> {
-        let Some((cached_at, catalog)) = &self.provider_catalog_cache else {
-            return None;
-        };
-        if cached_at.elapsed() < PROVIDER_CATALOG_CACHE_TTL {
-            Some(catalog.clone())
-        } else {
-            None
-        }
+        self.provider_catalog_cache
+            .get_fresh(PROVIDER_CATALOG_CACHE_TTL)
     }
 
     pub(crate) fn cache_provider_catalog(&mut self, catalog: OpenCodeProviderCatalog) {
-        self.provider_catalog_cache = Some((Instant::now(), catalog.clone()));
+        self.provider_catalog_cache.set(catalog.clone());
         self.update_provider_catalog_projection(catalog);
     }
 
     pub(crate) fn invalidate_provider_catalog_cache(&mut self) {
-        self.provider_catalog_cache = None;
+        self.provider_catalog_cache.clear();
         self.invalidate_provider_catalog_projection();
     }
 
@@ -171,7 +165,7 @@ impl DaemonApp {
             machine.machine_id.clone(),
             machine.machine_alias.clone(),
         )?;
-        self.provider_catalog_cache = None;
+        self.provider_catalog_cache.clear();
         let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
         Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
     }
@@ -187,7 +181,7 @@ impl DaemonApp {
         .unwrap_or_default();
         let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
         let saved = DaemonConfig::forget_remote_machine(machine.clone())?;
-        self.provider_catalog_cache = None;
+        self.provider_catalog_cache.clear();
         let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
         Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
     }
@@ -203,7 +197,7 @@ impl DaemonApp {
         .unwrap_or_default();
         let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
         DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
-        self.provider_catalog_cache = None;
+        self.provider_catalog_cache.clear();
         let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
     }
@@ -241,7 +235,7 @@ impl DaemonApp {
         match request.provider.as_str() {
             "codex" => {
                 let response = logout_provider_response(request)?;
-                self.provider_catalog_cache = None;
+                self.provider_catalog_cache.clear();
                 Ok(response)
             }
             provider => Err(DaemonError::LocalTransport {

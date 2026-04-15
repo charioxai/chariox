@@ -32,7 +32,7 @@ pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
-pub use service::ProviderProcessService;
+pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub use types::{
     default_provider_command_catalogs, AgentEndpointMode, ControlCapability, ControlCapabilityMode,

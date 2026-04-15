@@ -43,7 +43,7 @@ use crate::kernel::prompt_state::PromptStateOwner;
 use crate::kernel::workspace_coordinator::{WorkspaceClaimGuard, WorkspaceCoordinator};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderProcessInfo, ProviderProcessService,
-    ProviderRunOperationLanes, RuntimeProviderRun,
+    ProviderProcessServiceStore, ProviderRunOperationLanes, RuntimeProviderRun,
 };
 use crate::pty::PtyManager;
 use crate::session::{RuntimeSession, SessionService, SessionStateStore};
@@ -66,8 +66,8 @@ pub struct DaemonApp {
     pub(crate) agents: AgentServiceStore,
     pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
-    pub(crate) providers: ProviderProcessService,
-    pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
+    pub(crate) providers: ProviderProcessServiceStore,
+    pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
     pub(crate) prompt_activity: PromptActivityStore,
     prompt_workspace_claims: BTreeMap<String, WorkspaceClaimGuard>,
@@ -155,6 +155,38 @@ impl ProviderProcessTrackingStore {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderCatalogCacheStore {
+    inner: Arc<Mutex<Option<(Instant, OpenCodeProviderCatalog)>>>,
+}
+
+impl ProviderCatalogCacheStore {
+    pub(crate) fn get_fresh(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
+        let cache = self
+            .inner
+            .lock()
+            .expect("provider catalog cache mutex poisoned");
+        let Some((cached_at, catalog)) = &*cache else {
+            return None;
+        };
+        (cached_at.elapsed() < ttl).then(|| catalog.clone())
+    }
+
+    pub(crate) fn set(&self, catalog: OpenCodeProviderCatalog) {
+        *self
+            .inner
+            .lock()
+            .expect("provider catalog cache mutex poisoned") = Some((Instant::now(), catalog));
+    }
+
+    pub(crate) fn clear(&self) {
+        *self
+            .inner
+            .lock()
+            .expect("provider catalog cache mutex poisoned") = None;
+    }
+}
+
 impl DaemonApp {
     pub(crate) fn artifact_attachment_segment(attachment_id: &str) -> String {
         attachment_id
@@ -193,8 +225,8 @@ impl DaemonApp {
             agents: AgentServiceStore::new(AgentService::new()),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
-            providers: ProviderProcessService::new(),
-            provider_catalog_cache: None,
+            providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
+            provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             prompt_activity: PromptActivityStore::default(),
             prompt_workspace_claims: BTreeMap::new(),
@@ -423,12 +455,12 @@ impl DaemonApp {
         self.attachments.write()
     }
 
-    pub fn providers(&self) -> &ProviderProcessService {
+    pub fn providers(&self) -> &ProviderProcessServiceStore {
         &self.providers
     }
 
-    pub fn providers_mut(&mut self) -> &mut ProviderProcessService {
-        &mut self.providers
+    pub fn providers_mut(&self) -> std::sync::MutexGuard<'_, ProviderProcessService> {
+        self.providers.write()
     }
 
     pub fn terminal(&self) -> &TerminalStreamStore {

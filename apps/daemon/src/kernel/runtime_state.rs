@@ -7,7 +7,7 @@ use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
-use crate::provider::ProviderRunOperationLanes;
+use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::session::SessionStateStore;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
@@ -24,6 +24,7 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
+    provider_store: ProviderProcessServiceStore,
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -43,6 +44,7 @@ impl CompatibilityRuntimeState {
         session_store: SessionStateStore,
         agent_store: AgentServiceStore,
         attachment_store: AttachmentServiceStore,
+        provider_store: ProviderProcessServiceStore,
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -56,6 +58,7 @@ impl CompatibilityRuntimeState {
                 session_store,
                 agent_store,
                 attachment_store,
+                provider_store,
                 session_projection,
                 provider_run_projection,
                 prompt_state_owner,
@@ -400,6 +403,11 @@ impl CompatibilityRuntimeState {
     }
 
     async fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        if let Some(owned) = &self.owned {
+            return owned
+                .provider_store
+                .structured_prompt_io_in_flight(provider_run_id);
+        }
         self.with_app_mut(|app| app.structured_prompt_io_in_flight(provider_run_id))
             .await
     }
