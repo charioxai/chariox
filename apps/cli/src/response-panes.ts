@@ -39,35 +39,6 @@ export type SplitPaneGeometry = {
   tertiaryMinHeight: 0
 }
 
-export type PaneBorderSide = "left" | "top" | "right" | "bottom"
-
-export function computeSharedPaneBorderEdges(options: {
-  rowIndex: number
-  panePosition: number
-  rowVisibleCount: number
-  focused: boolean
-  leftNeighborFocused: boolean
-  rowBelowVisible: boolean
-  rowBelowFocused: boolean
-}): PaneBorderSide[] {
-  const edges: PaneBorderSide[] = []
-
-  if (options.panePosition === 0 || options.focused || !options.leftNeighborFocused) {
-    edges.push("left")
-  }
-  if (options.rowIndex === 0 || options.focused) {
-    edges.push("top")
-  }
-  if (options.panePosition === options.rowVisibleCount - 1 || options.focused) {
-    edges.push("right")
-  }
-  if (!options.rowBelowVisible || options.focused || !options.rowBelowFocused) {
-    edges.push("bottom")
-  }
-
-  return edges
-}
-
 export function selectResponsePaneAgents<T extends ResponsePaneAgent>(
   agents: readonly T[],
   focusedAgentId: string | null | undefined,

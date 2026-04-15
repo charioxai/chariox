@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  computeSharedPaneBorderEdges,
   computeSplitPaneGeometry,
   responsePaneBindingsMatch,
   responsePaneRowSlots,
@@ -129,57 +128,6 @@ test("workflowCanvasPaneIndices exposes spare trailing split-pane slots for the 
       maxAgentsPerScreen: 3,
     }),
     [],
-  )
-})
-
-test("computeSharedPaneBorderEdges lets focused panes own shared borders", () => {
-  assert.deepEqual(
-    computeSharedPaneBorderEdges({
-      rowIndex: 0,
-      panePosition: 0,
-      rowVisibleCount: 2,
-      focused: true,
-      leftNeighborFocused: false,
-      rowBelowVisible: false,
-      rowBelowFocused: false,
-    }),
-    ["left", "top", "right", "bottom"],
-  )
-  assert.deepEqual(
-    computeSharedPaneBorderEdges({
-      rowIndex: 0,
-      panePosition: 1,
-      rowVisibleCount: 2,
-      focused: false,
-      leftNeighborFocused: true,
-      rowBelowVisible: false,
-      rowBelowFocused: false,
-    }),
-    ["top", "right", "bottom"],
-  )
-  assert.deepEqual(
-    computeSharedPaneBorderEdges({
-      rowIndex: 0,
-      panePosition: 0,
-      rowVisibleCount: 2,
-      focused: false,
-      leftNeighborFocused: false,
-      rowBelowVisible: true,
-      rowBelowFocused: true,
-    }),
-    ["left", "top"],
-  )
-  assert.deepEqual(
-    computeSharedPaneBorderEdges({
-      rowIndex: 1,
-      panePosition: 0,
-      rowVisibleCount: 1,
-      focused: true,
-      leftNeighborFocused: false,
-      rowBelowVisible: false,
-      rowBelowFocused: false,
-    }),
-    ["left", "top", "right", "bottom"],
   )
 })
 
