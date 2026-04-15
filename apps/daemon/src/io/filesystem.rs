@@ -55,6 +55,7 @@ impl ManagedFileIo {
         coordinator: &mut ArtifactEditCoordinator,
         request: ManagedFileWriteRequest,
     ) -> Result<EditResult, ArtifactEditError> {
+        reject_arroba_owned_write_path(&request.workspace_root, &request.intent.path)?;
         let full_path = resolve_workspace_path(&request.workspace_root, &request.intent.path)?;
         let allow_missing = matches!(
             request.intent.operation,
@@ -158,6 +159,10 @@ fn write_content(path: &Path, content: &ArtifactContent) -> Result<(), ArtifactE
 }
 
 fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, ArtifactEditError> {
+    Ok(root.join(normalize_workspace_relative_path(path)?))
+}
+
+fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEditError> {
     if path.is_absolute() {
         return Err(ArtifactEditError::InvalidOperation {
             message: "managed file paths must be relative to the workspace root".to_string(),
@@ -175,7 +180,29 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, ArtifactE
             }
         }
     }
-    Ok(root.join(relative))
+    Ok(relative)
+}
+
+fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), ArtifactEditError> {
+    let relative = normalize_workspace_relative_path(path)?;
+    if relative == Path::new(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH)
+        && is_arroba_source_workspace(root)
+    {
+        return Err(ArtifactEditError::InvalidOperation {
+            message: format!(
+                "the Arroba managed-I/O instruction policy `{}` is owned by Arroba and cannot be edited through managed artifact I/O",
+                crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn is_arroba_source_workspace(root: &Path) -> bool {
+    root.join("apps/daemon/Cargo.toml").is_file()
+        && root
+            .join(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH)
+            .is_file()
 }
 
 #[cfg(test)]
@@ -361,6 +388,47 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).expect("created file should read"),
             "created through arroba\n"
+        );
+    }
+
+    #[test]
+    fn managed_file_write_rejects_arroba_owned_instruction_policy() {
+        let root = test_root("reject-policy");
+        let policy_path = root.join(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH);
+        fs::create_dir_all(policy_path.parent().unwrap()).expect("create policy parent");
+        fs::write(
+            root.join("apps/daemon/Cargo.toml"),
+            "[package]\nname = \"arroba-daemon\"\n",
+        )
+        .expect("write daemon manifest marker");
+        fs::write(&policy_path, "original policy\n").expect("write policy marker");
+        let mut coordinator = ArtifactEditCoordinator::new();
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root.clone(),
+                domain: ArtifactDomainKind::TextDocument,
+                intent: AgentEditIntent {
+                    path: PathBuf::from(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH),
+                    snapshot_id: None,
+                    operation: AgentEditOperation::WriteArtifact {
+                        content: ArtifactContent::Text("agent override\n".to_string()),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            EditResult::Rejected {
+                reason: ArtifactEditError::InvalidOperation { .. }
+            }
+        ));
+        assert_eq!(
+            fs::read_to_string(policy_path).unwrap(),
+            "original policy\n"
         );
     }
 }
