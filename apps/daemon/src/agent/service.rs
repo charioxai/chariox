@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use crate::error::DaemonError;
 use crate::provider::ProviderResumeState;
 use crate::session::{SessionService, SessionStatus};
@@ -392,5 +394,127 @@ impl AgentService {
 impl Default for AgentService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentServiceStore {
+    inner: Arc<Mutex<AgentService>>,
+}
+
+impl AgentServiceStore {
+    pub fn new(service: AgentService) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(service)),
+        }
+    }
+
+    pub fn read(&self) -> MutexGuard<'_, AgentService> {
+        self.inner.lock().expect("agent service mutex poisoned")
+    }
+
+    pub fn write(&self) -> MutexGuard<'_, AgentService> {
+        self.inner.lock().expect("agent service mutex poisoned")
+    }
+
+    pub fn create_agent(
+        &self,
+        request: CreateAgentRequest,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().create_agent(request, sessions)
+    }
+
+    pub fn create_default_agent(
+        &self,
+        session_id: &str,
+        worktree_id: &str,
+        provider: &str,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .create_default_agent(session_id, worktree_id, provider, sessions)
+    }
+
+    pub fn destroy_agent(
+        &self,
+        agent_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().destroy_agent(agent_id, sessions)
+    }
+
+    pub fn focus_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().focus_agent(session_id, agent_id, sessions)
+    }
+
+    pub fn cycle_focus(
+        &self,
+        session_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write().cycle_focus(session_id, sessions)
+    }
+
+    pub fn set_agent_state(
+        &self,
+        agent_id: &str,
+        state: AgentState,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_state(agent_id, state)
+    }
+
+    pub fn set_agent_processing(
+        &self,
+        agent_id: &str,
+        is_processing: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_processing(agent_id, is_processing)
+    }
+
+    pub fn set_agent_runtime_profile(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        resume_state: ProviderResumeState,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_agent_runtime_profile(agent_id, provider, model, effort, resume_state)
+    }
+
+    pub fn bind_remote_execution(
+        &self,
+        agent_id: &str,
+        remote_execution: RemoteAgentBinding,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .bind_remote_execution(agent_id, remote_execution)
+    }
+
+    pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        self.read().get_agent(agent_id)
+    }
+
+    pub fn get_agent_by_ref(&self, agent_ref: &str) -> Result<AgentInstance, DaemonError> {
+        self.read().get_agent_by_ref(agent_ref)
+    }
+
+    pub fn get_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
+        self.read().get_session_agents(session_id)
+    }
+
+    pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {
+        self.read().get_focused_agent(session_id)
+    }
+
+    pub fn remove_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
+        self.write().remove_session_agents(session_id)
     }
 }

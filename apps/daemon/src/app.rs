@@ -26,8 +26,10 @@ pub(crate) use prompt_lifecycle::{
 
 use arroba_relay::protocol::{ClientTarget, DaemonRegistration, RelayKernelPresence};
 
-use crate::agent::{AgentInstance, AgentService, CreateAgentRequest, RemoteAgentBinding};
-use crate::attachment::AttachmentService;
+use crate::agent::{
+    AgentInstance, AgentService, AgentServiceStore, CreateAgentRequest, RemoteAgentBinding,
+};
+use crate::attachment::{AttachmentService, AttachmentServiceStore};
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, LeasedWorkflowTurnBinding};
@@ -61,8 +63,8 @@ pub struct DaemonApp {
     config: DaemonConfig,
     started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
-    pub(crate) agents: AgentService,
-    pub(crate) attachments: AttachmentService,
+    pub(crate) agents: AgentServiceStore,
+    pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
     pub(crate) providers: ProviderProcessService,
     pub(crate) provider_catalog_cache: Option<(Instant, OpenCodeProviderCatalog)>,
@@ -144,8 +146,8 @@ impl DaemonApp {
         config.validate()?;
 
         Ok(Self {
-            agents: AgentService::new(),
-            attachments: AttachmentService::new(),
+            agents: AgentServiceStore::new(AgentService::new()),
+            attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
             providers: ProviderProcessService::new(),
             provider_catalog_cache: None,
@@ -362,20 +364,20 @@ impl DaemonApp {
         self.sessions.write()
     }
 
-    pub fn agents(&self) -> &AgentService {
+    pub fn agents(&self) -> &AgentServiceStore {
         &self.agents
     }
 
-    pub fn agents_mut(&mut self) -> &mut AgentService {
-        &mut self.agents
+    pub fn agents_mut(&self) -> std::sync::MutexGuard<'_, AgentService> {
+        self.agents.write()
     }
 
-    pub fn attachments(&self) -> &AttachmentService {
+    pub fn attachments(&self) -> &AttachmentServiceStore {
         &self.attachments
     }
 
-    pub fn attachments_mut(&mut self) -> &mut AttachmentService {
-        &mut self.attachments
+    pub fn attachments_mut(&self) -> std::sync::MutexGuard<'_, AttachmentService> {
+        self.attachments.write()
     }
 
     pub fn providers(&self) -> &ProviderProcessService {

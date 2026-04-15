@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::agent::AgentServiceStore;
 use crate::app::DaemonApp;
+use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::provider::ProviderRunOperationLanes;
@@ -20,6 +22,8 @@ pub(crate) struct CompatibilityRuntimeState {
 pub(crate) struct CompatibilityRuntimeOwnedState {
     config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
+    agent_store: AgentServiceStore,
+    attachment_store: AttachmentServiceStore,
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
     prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -37,6 +41,8 @@ impl CompatibilityRuntimeState {
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::kernel::projection::DaemonConfigProjectionStore,
         session_store: SessionStateStore,
+        agent_store: AgentServiceStore,
+        attachment_store: AttachmentServiceStore,
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
         prompt_state_owner: crate::kernel::prompt_state::PromptStateOwner,
@@ -48,6 +54,8 @@ impl CompatibilityRuntimeState {
             owned: Some(CompatibilityRuntimeOwnedState {
                 config_projection,
                 session_store,
+                agent_store,
+                attachment_store,
                 session_projection,
                 provider_run_projection,
                 prompt_state_owner,
@@ -124,6 +132,13 @@ impl CompatibilityRuntimeState {
         &self,
         attachment_id: &str,
     ) -> Result<String, DaemonError> {
+        if let Some(owned) = &self.owned {
+            return Ok(owned
+                .attachment_store
+                .get_attachment(attachment_id)?
+                .session_id()
+                .to_string());
+        }
         self.with_app_mut(|app| {
             crate::app::KernelSessionService::new(app).attachment_session_id(attachment_id)
         })
@@ -557,10 +572,19 @@ impl CompatibilityRuntimeState {
         )
         .with_variant(request.variant);
         if let Some(agent_id) = request.agent_id.clone().or_else(|| {
-            self.owned
-                .as_ref()
-                .and_then(|owned| owned.session_projection.get(&request.session_id))
-                .and_then(|session| session.focused_agent_id().map(str::to_string))
+            self.owned.as_ref().and_then(|owned| {
+                owned
+                    .session_store
+                    .get_session(&request.session_id)
+                    .ok()
+                    .and_then(|session| session.focused_agent_id().map(str::to_string))
+                    .or_else(|| {
+                        owned
+                            .agent_store
+                            .get_focused_agent(&request.session_id)
+                            .map(|agent| agent.id().to_string())
+                    })
+            })
         }) {
             launch_request = launch_request.with_agent_id(agent_id);
         }

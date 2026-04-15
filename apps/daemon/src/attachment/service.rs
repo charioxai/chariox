@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
 use crate::session::{PromptDetachEffect, SessionService};
@@ -10,6 +11,75 @@ pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     events: Vec<AttachmentEvent>,
     next_attachment_number: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentServiceStore {
+    inner: Arc<Mutex<AttachmentService>>,
+}
+
+impl AttachmentServiceStore {
+    pub fn new(service: AttachmentService) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(service)),
+        }
+    }
+
+    pub fn read(&self) -> MutexGuard<'_, AttachmentService> {
+        self.inner
+            .lock()
+            .expect("attachment service mutex poisoned")
+    }
+
+    pub fn write(&self) -> MutexGuard<'_, AttachmentService> {
+        self.inner
+            .lock()
+            .expect("attachment service mutex poisoned")
+    }
+
+    pub fn attach(
+        &self,
+        sessions: &mut SessionService,
+        request: AttachRequest,
+    ) -> Result<RuntimeAttachment, DaemonError> {
+        self.write().attach(sessions, request)
+    }
+
+    pub fn detach(
+        &self,
+        sessions: &mut SessionService,
+        attachment_id: &str,
+    ) -> Result<RuntimeAttachment, DaemonError> {
+        self.write().detach(sessions, attachment_id)
+    }
+
+    pub fn detach_with_effect(
+        &self,
+        sessions: &mut SessionService,
+        attachment_id: &str,
+    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
+        self.write().detach_with_effect(sessions, attachment_id)
+    }
+
+    pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
+        self.read().get_attachment(attachment_id)
+    }
+
+    pub fn list_events(&self) -> Vec<AttachmentEvent> {
+        self.read().list_events().to_vec()
+    }
+
+    pub fn list_session_attachment_ids(&self, session_id: &str) -> Vec<String> {
+        self.read().list_session_attachment_ids(session_id)
+    }
+
+    pub fn list_client_attachments(&self, client_id: &str) -> Vec<RuntimeAttachment> {
+        self.read().list_client_attachments(client_id)
+    }
+
+    pub fn remove_session_attachments(&self, session_id: &str) -> Vec<RuntimeAttachment> {
+        self.write().remove_session_attachments(session_id)
+    }
 }
 
 impl AttachmentService {
