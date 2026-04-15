@@ -298,6 +298,12 @@ Tool responses must include structured success, warning, and rejection payloads 
 16. Extend to `StructuredDocument` domains where safe.
 17. Design later image/audio/video/PDF/vector artifact domains.
 
+## Current Status
+
+- Landed: initial artifact identity, version, snapshot, workspace identity, edit intent, result, warning, and conflict types.
+- Landed: in-memory artifact edit coordinator foundation with managed reads, synchronous text edit application, stale non-overlap rebase, and overlap rejection.
+- Not landed yet: runtime/MCP tool exposure, filesystem hash verification, provider write-permission enforcement, and workspace identity change detection.
+
 ## Non-Goals
 
 - Whole-file locking for text/code artifacts.

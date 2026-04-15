@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod app;
+pub mod artifact_io;
 pub mod attachment;
 pub mod capability;
 pub mod config;
