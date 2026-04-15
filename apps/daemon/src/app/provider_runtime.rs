@@ -20,6 +20,37 @@ pub(crate) struct StartedProviderLaunch {
     pub(crate) previous_active_run_id: Option<String>,
 }
 
+pub(crate) struct ProviderLaunchProcessRuntime<'a> {
+    app: &'a mut DaemonApp,
+}
+
+impl<'a> ProviderLaunchProcessRuntime<'a> {
+    pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
+        Self { app }
+    }
+
+    pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        if run.endpoint_mode() != AgentEndpointMode::Managed {
+            return Ok(());
+        }
+        self.app.pty.spawn_for_run(run)?;
+        ProviderProcessTracker::new(self.app).register_managed_run(run)
+    }
+
+    pub(crate) fn remove_run(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(bool, Option<String>), DaemonError> {
+        let process_key = self.app.pty.process_key(provider_run_id).ok();
+        let removed = self.app.pty.remove_process(provider_run_id)?;
+        Ok((removed, process_key))
+    }
+
+    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)
+    }
+}
+
 pub(crate) struct ProviderRunReadService<'a> {
     app: &'a DaemonApp,
 }
@@ -835,33 +866,6 @@ impl DaemonApp {
         }
         self.update_provider_run_projection(run.clone());
         Ok(started)
-    }
-
-    pub(crate) fn spawn_provider_process_for_launch(
-        &mut self,
-        run: &RuntimeProviderRun,
-    ) -> Result<(), DaemonError> {
-        if run.endpoint_mode() != AgentEndpointMode::Managed {
-            return Ok(());
-        }
-        self.pty.spawn_for_run(run)?;
-        ProviderProcessTracker::new(self).register_managed_run(run)
-    }
-
-    pub(crate) fn remove_pty_process_for_run(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<(bool, Option<String>), DaemonError> {
-        let process_key = self.pty.process_key(provider_run_id).ok();
-        let removed = self.pty.remove_process(provider_run_id)?;
-        Ok((removed, process_key))
-    }
-
-    pub(crate) fn poll_provider_pty_process_running_for_runtime(
-        &mut self,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        ProviderRunLivenessProcesses::poll_process_running(self, provider_run_id)
     }
 
     pub(crate) fn settle_provider_run_exit_for_runtime(

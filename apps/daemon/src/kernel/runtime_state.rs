@@ -921,7 +921,9 @@ impl CompatibilityRuntimeState {
             None,
         )? {
             let (_, process_key) = self
-                .with_app_mut(|app| app.remove_pty_process_for_run(provider_run_id))
+                .with_app_mut(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
+                })
                 .await
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
@@ -929,7 +931,9 @@ impl CompatibilityRuntimeState {
         }
 
         let process_running = self
-            .with_app_mut(|app| app.poll_provider_pty_process_running_for_runtime(provider_run_id))
+            .with_app_mut(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).poll_running(provider_run_id)
+            })
             .await?;
         let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
             session_id,
@@ -940,7 +944,9 @@ impl CompatibilityRuntimeState {
             return Ok(false);
         };
         let (_, process_key) = self
-            .with_app_mut(|app| app.remove_pty_process_for_run(provider_run_id))
+            .with_app_mut(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
+            })
             .await
             .unwrap_or((false, None));
         owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
@@ -1354,7 +1360,9 @@ impl CompatibilityRuntimeState {
                 }),
             );
             if let Err(error) = self
-                .with_app_mut(|app| app.spawn_provider_process_for_launch(&run))
+                .with_app_mut(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+                })
                 .await
             {
                 crate::logging::error_with_fields(
@@ -1520,7 +1528,9 @@ impl CompatibilityRuntimeState {
                 ),
             );
             let (_, process_key) = self
-                .with_app_mut(|app| app.remove_pty_process_for_run(started.run.id()))
+                .with_app_mut(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(started.run.id())
+                })
                 .await
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(started.run.id(), process_key);
