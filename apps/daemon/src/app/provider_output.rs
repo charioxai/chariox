@@ -9,7 +9,9 @@ use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRu
 use crate::provider::{ProviderPromptSignalBatch, RuntimeProviderRun};
 use crate::pty::PtyOutputChunk;
 use crate::session::{PromptStatus, SessionStateStore};
-use crate::terminal::{TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore};
+use crate::terminal::{
+    RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
@@ -249,6 +251,34 @@ impl ProviderOutputFanout {
         record
     }
 
+    fn record_notice(
+        &self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> RuntimeNoticeRecord {
+        let message = message.into();
+        let agent_id = provider_run_id.and_then(|run_id| {
+            self.provider_store
+                .get_run(run_id)
+                .ok()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        let record = self.terminal.record_notice(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+            message.clone(),
+        );
+        self.append_history_entry(
+            session_id,
+            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id.as_deref(), message),
+        );
+        record
+    }
+
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
@@ -449,8 +479,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         self.app
             .update_provider_run_projection(provider_run.clone());
+        let terminal_sink = ProviderOutputFanout::new(self.app);
         for notice in &poll_result.notices {
-            self.app.record_notice(
+            terminal_sink.record_notice(
                 session_id,
                 Some(provider_run_id),
                 recipient_attachment_ids.clone(),
