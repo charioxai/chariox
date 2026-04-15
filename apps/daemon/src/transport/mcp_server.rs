@@ -184,8 +184,9 @@ async fn handle_json_rpc_value(
                 "jsonrpc": JSON_RPC_VERSION,
                 "id": id,
                 "result": {
-                    "tools": crate::transport::runtime_tools::workflow_runtime_tool_specs()
+                    "tools": crate::transport::runtime_tools::managed_io_runtime_tool_specs()
                         .into_iter()
+                        .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
                         .map(|tool| serde_json::json!({
                             "name": tool.name,
                             "description": tool.description,
@@ -366,6 +367,12 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "workflow_console_clear"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.read_artifact"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.edit_artifact"));
     }
 
     #[tokio::test]
@@ -462,6 +469,139 @@ mod tests {
         assert_eq!(
             value["result"]["structuredContent"]["state"],
             "acknowledged"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_http_tools_call_reads_and_edits_managed_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-managed-io-mcp-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let worktree = root.to_string_lossy().to_string();
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", &worktree))
+            .expect("session should exist");
+        let agent_id = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("agent-a")
+                    .with_model("test-model")
+                    .with_worktree(&worktree),
+            )
+            .expect("agent should spawn")
+            .id()
+            .to_string();
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf".to_string()))
+            .expect("workflow should exist")
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, &agent_id)
+            .expect("node should be added")
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should exist");
+        app.invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("start".to_string()),
+        )
+        .expect("workflow should invoke");
+        let auth_token = app
+            .providers()
+            .get_run_for_agent(session.id(), &agent_id)
+            .expect("provider run should exist")
+            .runtime_mcp_auth_token()
+            .expect("mcp auth token should exist")
+            .to_string();
+
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+        let read_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.read_artifact",
+                    "arguments": {
+                        "path": "notes.txt"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("read request should succeed");
+        assert_eq!(read_response.status(), StatusCode::OK);
+        let read_body = read_response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body should collect")
+            .to_bytes();
+        let read_value: Value = serde_json::from_slice(&read_body).expect("read body json");
+        assert_eq!(
+            read_value["result"]["structuredContent"]["content_text"],
+            "alpha\nbeta\n"
+        );
+        let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
+            .as_str()
+            .expect("snapshot id should be present")
+            .to_string();
+
+        let edit_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.edit_artifact",
+                    "arguments": {
+                        "path": "notes.txt",
+                        "snapshot_id": snapshot_id,
+                        "old_text": "beta",
+                        "new_text": "gamma"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("edit request should succeed");
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let edit_body = edit_response
+            .into_body()
+            .collect()
+            .await
+            .expect("edit body should collect")
+            .to_bytes();
+        let edit_value: Value = serde_json::from_slice(&edit_body).expect("edit body json");
+        assert_eq!(edit_value["result"]["structuredContent"]["applied"], true);
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
+            "alpha\ngamma\n"
         );
     }
 

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,7 @@ pub(crate) struct KernelRuntimeOwnedState {
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     terminal_stream: crate::terminal::TerminalStreamStore,
     workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
+    managed_io_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
 }
 
 impl KernelRuntimeOwnedState {
@@ -122,6 +124,40 @@ impl KernelRuntimeOwnedState {
             worktree_root: std::path::PathBuf::from(session.worktree_id()),
             workspace_coordinator: self.workspace_coordinator.clone(),
         })
+    }
+
+    fn managed_io_workspace_for_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(PathBuf, crate::io::WorkspaceIdentity), DaemonError> {
+        let session = self.session_store.get_session(provider_run.session_id())?;
+        let workspace_root = provider_run
+            .working_directory()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
+        let identity = crate::io::WorkspaceIdentity {
+            vcs_provider: None,
+            repo_id: None,
+            repo_url: None,
+            branch: None,
+            head_commit: None,
+            worktree_root_fingerprint: workspace_root.to_string_lossy().to_string(),
+        };
+        Ok((workspace_root, identity))
+    }
+
+    fn managed_io_domain_from_arg(
+        domain: Option<&str>,
+    ) -> Result<crate::io::ArtifactDomainKind, DaemonError> {
+        match domain.unwrap_or("text") {
+            "text" => Ok(crate::io::ArtifactDomainKind::TextDocument),
+            "structured" => Ok(crate::io::ArtifactDomainKind::StructuredDocument),
+            "opaque" => Ok(crate::io::ArtifactDomainKind::OpaqueBlob),
+            other => Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_managed_io",
+                message: format!("unsupported artifact domain `{other}`"),
+            }),
+        }
     }
 
     fn prepare_provider_launch_request(
@@ -4647,6 +4683,9 @@ impl KernelRuntimeState {
                 structured_output_records,
                 terminal_stream,
                 workspace_coordinator,
+                managed_io_coordinator: Arc::new(Mutex::new(
+                    crate::io::ArtifactEditCoordinator::new(),
+                )),
             },
         }
     }
@@ -6751,6 +6790,19 @@ impl KernelRuntimeState {
                     message: "invalid runtime MCP auth token".to_string(),
                 });
             }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
+            ) {
+                return self
+                    .dispatch_managed_io_runtime_tool_call(
+                        &provider_runs[0],
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
             let requested_delivery_token = match canonical_tool_name {
                 crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
                     serde_json::from_value::<crate::transport::runtime_tools::AckWorkflowTurnArgs>(
@@ -6801,6 +6853,104 @@ impl KernelRuntimeState {
         }
     }
 
+    async fn dispatch_managed_io_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let (workspace_root, workspace_identity) = self
+            .owned
+            .managed_io_workspace_for_provider_run(provider_run)?;
+        let mut coordinator = self.owned.managed_io_coordinator.lock().await;
+        match tool_name {
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedReadArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_read_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                let read = crate::io::ManagedFileIo::read_artifact(
+                    &mut coordinator,
+                    crate::io::ManagedFileReadRequest {
+                        workspace_identity,
+                        workspace_root,
+                        path: PathBuf::from(args.path),
+                        domain,
+                    },
+                )
+                .map_err(managed_io_daemon_error)?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: managed_io_read_payload(read),
+                })
+            }
+            crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedEditArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_edit_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_edit_artifact",
+                        message: "managed edit currently supports only text artifacts".to_string(),
+                    });
+                }
+                let operation = match (args.range, args.old_text) {
+                    (Some(range), Some(old_text)) => crate::io::AgentEditOperation::ReplaceRange {
+                        range: crate::io::TextRange::new(range.start, range.end),
+                        old_text,
+                        new_text: args.new_text,
+                    },
+                    (None, Some(old_text)) => crate::io::AgentEditOperation::ReplaceText {
+                        old_text,
+                        new_text: args.new_text,
+                    },
+                    (Some(_), None) => {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "runtime_tool_edit_artifact",
+                            message: "range edits require old_text".to_string(),
+                        });
+                    }
+                    (None, None) => {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "runtime_tool_edit_artifact",
+                            message: "managed text edits require old_text or range+old_text"
+                                .to_string(),
+                        });
+                    }
+                };
+                let result = crate::io::ManagedFileIo::apply_edit(
+                    &mut coordinator,
+                    crate::io::ManagedFileWriteRequest {
+                        workspace_identity,
+                        workspace_root,
+                        domain,
+                        intent: crate::io::AgentEditIntent {
+                            path: PathBuf::from(args.path),
+                            snapshot_id: args.snapshot_id.map(crate::io::ArtifactSnapshotId::new),
+                            operation,
+                        },
+                    },
+                );
+                Ok(managed_io_edit_result(result))
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "dispatch_managed_io_runtime_tool_call",
+                message: format!("unsupported managed I/O tool `{other}`"),
+            }),
+        }
+    }
+
     pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,
@@ -6829,6 +6979,143 @@ pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) workspace_id: String,
     pub(crate) worktree_root: std::path::PathBuf,
     pub(crate) workspace_coordinator: crate::kernel::workspace_coordinator::WorkspaceCoordinator,
+}
+
+fn managed_io_read_payload(read: crate::io::ArtifactReadResult) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "artifact_id": read.artifact_id.as_str(),
+        "path": read.path.to_string_lossy(),
+        "domain": managed_io_domain_name(read.domain),
+        "version": read.version.value(),
+        "snapshot_id": read.snapshot_id.as_str(),
+    });
+    match read.content {
+        crate::io::ArtifactContent::Text(text) => {
+            payload["content_text"] = serde_json::Value::String(text);
+        }
+        crate::io::ArtifactContent::Bytes(bytes) => {
+            payload["byte_count"] = serde_json::json!(bytes.len());
+        }
+    }
+    payload
+}
+
+fn managed_io_edit_result(
+    result: crate::io::EditResult,
+) -> crate::transport::runtime_tools::RuntimeToolResult {
+    match result {
+        crate::io::EditResult::Applied { new_version } => {
+            crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "applied": true,
+                    "new_version": new_version.value(),
+                }),
+            }
+        }
+        crate::io::EditResult::AppliedWithWarning {
+            new_version,
+            warning,
+        } => crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "applied": true,
+                "new_version": new_version.value(),
+                "warning": managed_io_warning_payload(warning),
+            }),
+        },
+        crate::io::EditResult::Rejected { reason } => {
+            crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "applied": false,
+                    "reason": managed_io_error_payload(reason),
+                    "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through arroba.edit_artifact.",
+                }),
+            }
+        }
+    }
+}
+
+fn managed_io_warning_payload(warning: crate::io::ArtifactEditWarning) -> serde_json::Value {
+    match warning {
+        crate::io::ArtifactEditWarning::RebasedOverNonOverlappingChange {
+            base_version,
+            applied_version,
+        } => serde_json::json!({
+            "kind": "rebased_over_non_overlapping_change",
+            "base_version": base_version.value(),
+            "applied_version": applied_version.value(),
+        }),
+    }
+}
+
+fn managed_io_error_payload(error: crate::io::ArtifactEditError) -> serde_json::Value {
+    match error {
+        crate::io::ArtifactEditError::ArtifactNotTracked { path } => serde_json::json!({
+            "kind": "artifact_not_tracked",
+            "path": path.to_string_lossy(),
+        }),
+        crate::io::ArtifactEditError::SnapshotNotFound { snapshot_id } => serde_json::json!({
+            "kind": "snapshot_not_found",
+            "snapshot_id": snapshot_id.as_str(),
+        }),
+        crate::io::ArtifactEditError::UnsupportedDomain { domain } => serde_json::json!({
+            "kind": "unsupported_domain",
+            "domain": managed_io_domain_name(domain),
+        }),
+        crate::io::ArtifactEditError::InvalidOperation { message } => serde_json::json!({
+            "kind": "invalid_operation",
+            "message": message,
+        }),
+        crate::io::ArtifactEditError::Filesystem { path, message } => serde_json::json!({
+            "kind": "filesystem",
+            "path": path.to_string_lossy(),
+            "message": message,
+        }),
+        crate::io::ArtifactEditError::ExternalChangeDuringApply { path } => serde_json::json!({
+            "kind": "external_change_during_apply",
+            "path": path.to_string_lossy(),
+        }),
+        crate::io::ArtifactEditError::Conflict {
+            path,
+            base_version,
+            current_version,
+            requested_ranges,
+            changed_ranges,
+            message,
+        } => serde_json::json!({
+            "kind": "conflict",
+            "path": path.to_string_lossy(),
+            "base_version": base_version.value(),
+            "current_version": current_version.value(),
+            "requested_ranges": requested_ranges.into_iter().map(managed_io_range_payload).collect::<Vec<_>>(),
+            "changed_ranges": changed_ranges.into_iter().map(managed_io_range_payload).collect::<Vec<_>>(),
+            "message": message,
+        }),
+    }
+}
+
+fn managed_io_range_payload(range: crate::io::TextRange) -> serde_json::Value {
+    serde_json::json!({
+        "start": range.start,
+        "end": range.end,
+    })
+}
+
+fn managed_io_domain_name(domain: crate::io::ArtifactDomainKind) -> &'static str {
+    match domain {
+        crate::io::ArtifactDomainKind::TextDocument => "text",
+        crate::io::ArtifactDomainKind::StructuredDocument => "structured",
+        crate::io::ArtifactDomainKind::OpaqueBlob => "opaque",
+    }
+}
+
+fn managed_io_daemon_error(error: crate::io::ArtifactEditError) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "runtime_tool_managed_io",
+        message: managed_io_error_payload(error).to_string(),
+    }
 }
 
 fn workflow_response_session(

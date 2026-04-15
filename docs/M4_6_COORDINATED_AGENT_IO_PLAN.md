@@ -304,7 +304,8 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: in-memory artifact edit coordinator foundation with managed reads, synchronous text edit application, stale non-overlap rebase, and overlap rejection.
 - Landed: filesystem-backed managed read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
 - Landed: runtime tool argument/schema definitions for managed artifact read/edit tools.
-- Not landed yet: runtime/MCP dispatch wiring, filesystem watcher, provider write-permission enforcement, and workspace identity change detection.
+- Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit tools backed by the provider run workspace root.
+- Not landed yet: filesystem watcher, provider write-permission enforcement, and workspace identity change detection.
 
 ## Non-Goals
 
