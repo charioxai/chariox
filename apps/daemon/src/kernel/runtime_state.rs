@@ -3,7 +3,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::agent::AgentServiceStore;
-use crate::app::{DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore};
+use crate::app::{
+    DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore, ProviderProcessTrackingStore,
+};
 use crate::attachment::AttachmentServiceStore;
 use crate::error::DaemonError;
 use crate::history::{SessionHistoryEntry, SessionHistoryStore};
@@ -26,6 +28,7 @@ pub(crate) struct CompatibilityRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    provider_process_tracking: ProviderProcessTrackingStore,
     session_projection: crate::kernel::projection::SessionStateProjectionStore,
     provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
     history_store: SessionHistoryStore,
@@ -414,6 +417,36 @@ impl CompatibilityRuntimeOwnedState {
         Ok(provider_run)
     }
 
+    fn remove_provider_process_tracking_for_run(
+        &self,
+        provider_run_id: &str,
+        pty_process_key: Option<String>,
+    ) {
+        let process_key = self
+            .provider_process_tracking
+            .read()
+            .run_processes
+            .get(provider_run_id)
+            .cloned()
+            .or(pty_process_key);
+        let Some(process_key) = process_key else {
+            return;
+        };
+        let mut tracking = self.provider_process_tracking.write();
+        tracking.run_processes.remove(provider_run_id);
+        let should_remove_entry = if let Some(entry) = tracking.processes.get_mut(&process_key) {
+            entry
+                .owner_provider_run_ids
+                .retain(|id| id != provider_run_id);
+            entry.owner_provider_run_ids.is_empty()
+        } else {
+            false
+        };
+        if should_remove_entry {
+            tracking.processes.remove(&process_key);
+        }
+    }
+
     fn record_notice(
         &self,
         session_id: &str,
@@ -479,6 +512,7 @@ impl CompatibilityRuntimeState {
         agent_store: AgentServiceStore,
         attachment_store: AttachmentServiceStore,
         provider_store: ProviderProcessServiceStore,
+        provider_process_tracking: ProviderProcessTrackingStore,
         session_projection: crate::kernel::projection::SessionStateProjectionStore,
         provider_run_projection: crate::kernel::projection::ProviderRunProjectionStore,
         history_store: SessionHistoryStore,
@@ -497,6 +531,7 @@ impl CompatibilityRuntimeState {
                 agent_store,
                 attachment_store,
                 provider_store,
+                provider_process_tracking,
                 session_projection,
                 provider_run_projection,
                 history_store,
@@ -1360,10 +1395,11 @@ impl CompatibilityRuntimeState {
                     error
                 ),
             );
-            self.with_app_mut(|app| {
-                let _ = app.remove_provider_process_for_run(started.run.id());
-            })
-            .await;
+            let (_, process_key) = self
+                .with_app_mut(|app| app.remove_pty_process_for_run(started.run.id()))
+                .await
+                .unwrap_or((false, None));
+            owned.remove_provider_process_tracking_for_run(started.run.id(), process_key);
             owned.provider_store.clear_runtime(started.run.id());
             if let Ok(outcome) = owned
                 .provider_store

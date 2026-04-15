@@ -367,6 +367,10 @@ impl DaemonApp {
         self.history_projection.clone()
     }
 
+    pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {
+        self.provider_process_tracking.clone()
+    }
+
     pub(crate) fn provider_catalog_projection_store(&self) -> ProviderCatalogProjectionStore {
         self.provider_catalog_projection.clone()
     }

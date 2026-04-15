@@ -842,11 +842,13 @@ impl DaemonApp {
         ProviderProcessTracker::new(self).register_managed_run(run)
     }
 
-    pub(crate) fn remove_provider_process_for_run(
+    pub(crate) fn remove_pty_process_for_run(
         &mut self,
         provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        ProviderProcessTracker::new(self).remove_run(provider_run_id)
+    ) -> Result<(bool, Option<String>), DaemonError> {
+        let process_key = self.pty.process_key(provider_run_id).ok();
+        let removed = self.pty.remove_process(provider_run_id)?;
+        Ok((removed, process_key))
     }
 
     pub(crate) fn finish_provider_launch(
