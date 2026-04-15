@@ -1225,34 +1225,28 @@ impl CompatibilityRuntimeState {
                         .resume_provider_run_for_session(run.session_id(), previous_active_run_id)
                     {
                         Ok(resumed_run) => {
-                            self.with_app_mut(|app| {
-                                app.record_notice(
+                            owned.record_notice(
+                                run.session_id(),
+                                Some(resumed_run.id()),
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
                                     run.session_id(),
-                                    Some(resumed_run.id()),
-                                    recipients,
-                                    format!(
-                                        "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
-                                        run.session_id(),
-                                        resumed_run.id()
-                                    ),
-                                );
-                            })
-                            .await;
+                                    resumed_run.id()
+                                ),
+                            );
                         }
                         Err(resume_error) => {
-                            self.with_app_mut(|app| {
-                                app.record_notice(
+                            owned.record_notice(
+                                run.session_id(),
+                                None,
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
                                     run.session_id(),
-                                    None,
-                                    recipients,
-                                    format!(
-                                        "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
-                                        run.session_id(),
-                                        resume_error
-                                    ),
-                                );
-                            })
-                            .await;
+                                    resume_error
+                                ),
+                            );
                         }
                     }
                 }
@@ -1356,17 +1350,17 @@ impl CompatibilityRuntimeState {
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(started.run.session_id());
+            owned.record_notice(
+                started.run.session_id(),
+                Some(started.run.id()),
+                recipients,
+                format!(
+                    "Provider launch `{}` failed before it became ready: {}",
+                    started.run.id(),
+                    error
+                ),
+            );
             self.with_app_mut(|app| {
-                app.record_notice(
-                    started.run.session_id(),
-                    Some(started.run.id()),
-                    recipients,
-                    format!(
-                        "Provider launch `{}` failed before it became ready: {}",
-                        started.run.id(),
-                        error
-                    ),
-                );
                 let _ = app.remove_provider_process_for_run(started.run.id());
             })
             .await;
