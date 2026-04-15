@@ -2,6 +2,13 @@
 
 Chronological notes to preserve execution context between contributors/agents.
 
+## 2026-04-15
+
+### M4.5 runtime integration bridge update
+
+- Restored the daemon integration suite after direct facade retirement by routing the stale test-facing session, prompt, terminal, provider-output, and structured-runtime-state helpers through the explicit `KernelSessionService`, `KernelAgentService`, provider-output pump, provider terminal-input, and provider-run actor boundaries instead of the deleted generic local request dispatcher.
+- Verified the slice with `cargo test` in `apps/daemon`: 329 daemon unit tests, 15 kernel WebSocket integration tests, and 30 runtime integration tests passed.
+
 ## 2026-04-12
 
 ### M4.5 kernel runtime refactor progress

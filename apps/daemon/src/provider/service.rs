@@ -56,6 +56,12 @@ impl ProviderProcessServiceStore {
         self.read().get_run(run_id)
     }
 
+    #[doc(hidden)]
+    pub fn structured_runtime_state_bound_for_tests(&self, provider_run_id: &str) -> bool {
+        self.read()
+            .structured_runtime_state_bound_for_tests(provider_run_id)
+    }
+
     pub(crate) fn start_run_provider_only(
         &self,
         request: LaunchProviderRequest,

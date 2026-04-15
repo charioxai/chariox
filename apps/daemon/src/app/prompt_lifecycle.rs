@@ -206,7 +206,8 @@ impl<'a> KernelPromptDispatchRuntime<'a> {
 }
 
 impl DaemonApp {
-    pub(crate) fn submit_prompt(
+    #[doc(hidden)]
+    pub fn submit_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,
@@ -356,7 +357,8 @@ impl DaemonApp {
         }
     }
 
-    pub(crate) fn complete_active_prompt(
+    #[doc(hidden)]
+    pub fn complete_active_prompt(
         &mut self,
         session_id: &str,
         agent_id: &str,
@@ -369,8 +371,8 @@ impl DaemonApp {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn cancel_active_prompt(
+    #[doc(hidden)]
+    pub fn cancel_active_prompt(
         &mut self,
         session_id: &str,
         attachment_id: &str,
