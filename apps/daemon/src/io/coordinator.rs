@@ -24,6 +24,17 @@ pub struct ArtifactWriteRequest {
     pub intent: AgentEditIntent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedArtifactEdit {
+    pub artifact_id: ArtifactId,
+    pub path: PathBuf,
+    pub domain: ArtifactDomainKind,
+    pub previous_version: ArtifactVersion,
+    pub new_version: ArtifactVersion,
+    pub content: ArtifactContent,
+    pub warning: Option<ArtifactEditWarning>,
+}
+
 #[derive(Debug, Clone)]
 struct TrackedArtifact {
     path: PathBuf,
@@ -88,10 +99,32 @@ impl ArtifactEditCoordinator {
     }
 
     pub fn apply_edit(&mut self, request: ArtifactWriteRequest) -> EditResult {
-        match self.apply_edit_inner(request) {
+        match self.prepare_edit(request) {
+            Ok(prepared) => self.commit_prepared_edit(prepared),
+            Err(reason) => EditResult::Rejected { reason },
+        }
+    }
+
+    pub fn prepare_edit(
+        &self,
+        request: ArtifactWriteRequest,
+    ) -> Result<PreparedArtifactEdit, ArtifactEditError> {
+        self.prepare_edit_inner(request)
+    }
+
+    pub fn commit_prepared_edit(&mut self, prepared: PreparedArtifactEdit) -> EditResult {
+        match self.commit_prepared_edit_inner(prepared) {
             Ok(result) => result,
             Err(reason) => EditResult::Rejected { reason },
         }
+    }
+
+    pub fn resolve_artifact_id(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        path: &Path,
+    ) -> ArtifactId {
+        artifact_id_for(workspace_identity, path)
     }
 
     pub fn current_content(&self, artifact_id: &ArtifactId) -> Option<&ArtifactContent> {
@@ -100,10 +133,10 @@ impl ArtifactEditCoordinator {
             .map(|tracked| &tracked.content)
     }
 
-    fn apply_edit_inner(
-        &mut self,
+    fn prepare_edit_inner(
+        &self,
         request: ArtifactWriteRequest,
-    ) -> Result<EditResult, ArtifactEditError> {
+    ) -> Result<PreparedArtifactEdit, ArtifactEditError> {
         let artifact_id = artifact_id_for(&request.workspace_identity, &request.intent.path);
         let tracked = self.artifacts.get(&artifact_id).cloned().ok_or_else(|| {
             ArtifactEditError::ArtifactNotTracked {
@@ -117,11 +150,11 @@ impl ArtifactEditCoordinator {
     }
 
     fn apply_text_edit(
-        &mut self,
+        &self,
         artifact_id: ArtifactId,
         tracked: TrackedArtifact,
         request: ArtifactWriteRequest,
-    ) -> Result<EditResult, ArtifactEditError> {
+    ) -> Result<PreparedArtifactEdit, ArtifactEditError> {
         let current =
             tracked
                 .content
@@ -166,37 +199,24 @@ impl ArtifactEditCoordinator {
         };
         let new_content = TextDocumentDomain::apply_plan(current, &rebased)?;
         let new_version = tracked.version.next();
-        let snapshot_id = self.allocate_snapshot_id(&artifact_id, new_version);
         let content = ArtifactContent::Text(new_content);
-        self.snapshots.insert(
-            snapshot_id.clone(),
-            SnapshotRecord {
-                artifact_id: artifact_id.clone(),
-                version: new_version,
-                content: content.clone(),
-            },
-        );
-        self.artifacts.insert(
-            artifact_id,
-            TrackedArtifact {
-                path: tracked.path,
-                domain: tracked.domain,
-                version: new_version,
-                content: content.clone(),
-                content_hash: hash_content(&content),
-            },
-        );
-        if base_version != tracked.version {
-            Ok(EditResult::AppliedWithWarning {
-                new_version,
-                warning: ArtifactEditWarning::RebasedOverNonOverlappingChange {
-                    base_version,
-                    applied_version: tracked.version,
-                },
+        let warning = if base_version != tracked.version {
+            Some(ArtifactEditWarning::RebasedOverNonOverlappingChange {
+                base_version,
+                applied_version: tracked.version,
             })
         } else {
-            Ok(EditResult::Applied { new_version })
-        }
+            None
+        };
+        Ok(PreparedArtifactEdit {
+            artifact_id,
+            path: tracked.path,
+            domain: tracked.domain,
+            previous_version: tracked.version,
+            new_version,
+            content,
+            warning,
+        })
     }
 
     fn text_conflict_error(
@@ -215,6 +235,57 @@ impl ArtifactEditCoordinator {
             changed_ranges: TextDocumentDomain::changed_ranges(base, current),
             message: "edit overlaps changes made since the base snapshot; reread and retry"
                 .to_string(),
+        }
+    }
+
+    fn commit_prepared_edit_inner(
+        &mut self,
+        prepared: PreparedArtifactEdit,
+    ) -> Result<EditResult, ArtifactEditError> {
+        let tracked = self.artifacts.get(&prepared.artifact_id).ok_or_else(|| {
+            ArtifactEditError::ArtifactNotTracked {
+                path: prepared.path.clone(),
+            }
+        })?;
+        if tracked.version != prepared.previous_version {
+            return Err(ArtifactEditError::Conflict {
+                path: prepared.path,
+                base_version: prepared.previous_version,
+                current_version: tracked.version,
+                requested_ranges: Vec::new(),
+                changed_ranges: Vec::new(),
+                message: "artifact changed after edit preparation; reread and retry".to_string(),
+            });
+        }
+
+        let snapshot_id = self.allocate_snapshot_id(&prepared.artifact_id, prepared.new_version);
+        self.snapshots.insert(
+            snapshot_id,
+            SnapshotRecord {
+                artifact_id: prepared.artifact_id.clone(),
+                version: prepared.new_version,
+                content: prepared.content.clone(),
+            },
+        );
+        self.artifacts.insert(
+            prepared.artifact_id,
+            TrackedArtifact {
+                path: prepared.path,
+                domain: prepared.domain,
+                version: prepared.new_version,
+                content: prepared.content.clone(),
+                content_hash: hash_content(&prepared.content),
+            },
+        );
+        if let Some(warning) = prepared.warning {
+            Ok(EditResult::AppliedWithWarning {
+                new_version: prepared.new_version,
+                warning,
+            })
+        } else {
+            Ok(EditResult::Applied {
+                new_version: prepared.new_version,
+            })
         }
     }
 

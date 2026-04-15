@@ -187,6 +187,13 @@ pub enum ArtifactEditError {
     InvalidOperation {
         message: String,
     },
+    Filesystem {
+        path: PathBuf,
+        message: String,
+    },
+    ExternalChangeDuringApply {
+        path: PathBuf,
+    },
     Conflict {
         path: PathBuf,
         base_version: ArtifactVersion,

@@ -1,0 +1,287 @@
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+use crate::io::coordinator::{ArtifactEditCoordinator, ArtifactReadRequest, ArtifactWriteRequest};
+use crate::io::types::{
+    AgentEditIntent, ArtifactContent, ArtifactDomainKind, ArtifactEditError, ArtifactReadResult,
+    EditResult, WorkspaceIdentity,
+};
+
+#[derive(Debug, Clone)]
+pub struct ManagedFileReadRequest {
+    pub workspace_identity: WorkspaceIdentity,
+    pub workspace_root: PathBuf,
+    pub path: PathBuf,
+    pub domain: ArtifactDomainKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedFileWriteRequest {
+    pub workspace_identity: WorkspaceIdentity,
+    pub workspace_root: PathBuf,
+    pub intent: AgentEditIntent,
+    pub domain: ArtifactDomainKind,
+}
+
+pub struct ManagedFileIo;
+
+impl ManagedFileIo {
+    pub fn read_artifact(
+        coordinator: &mut ArtifactEditCoordinator,
+        request: ManagedFileReadRequest,
+    ) -> Result<ArtifactReadResult, ArtifactEditError> {
+        let full_path = resolve_workspace_path(&request.workspace_root, &request.path)?;
+        let content = read_content(&full_path, request.domain)?;
+        Ok(coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: request.workspace_identity,
+            path: request.path,
+            domain: request.domain,
+            content,
+        }))
+    }
+
+    pub fn apply_edit(
+        coordinator: &mut ArtifactEditCoordinator,
+        request: ManagedFileWriteRequest,
+    ) -> EditResult {
+        match Self::apply_edit_inner(coordinator, request) {
+            Ok(result) => result,
+            Err(reason) => EditResult::Rejected { reason },
+        }
+    }
+
+    fn apply_edit_inner(
+        coordinator: &mut ArtifactEditCoordinator,
+        request: ManagedFileWriteRequest,
+    ) -> Result<EditResult, ArtifactEditError> {
+        let full_path = resolve_workspace_path(&request.workspace_root, &request.intent.path)?;
+        let observed_content = read_content(&full_path, request.domain)?;
+        coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: request.workspace_identity.clone(),
+            path: request.intent.path.clone(),
+            domain: request.domain,
+            content: observed_content.clone(),
+        });
+
+        let prepared = coordinator.prepare_edit(ArtifactWriteRequest {
+            workspace_identity: request.workspace_identity,
+            intent: request.intent,
+        })?;
+        let latest_content = read_content(&full_path, request.domain)?;
+        if latest_content != observed_content {
+            return Err(ArtifactEditError::ExternalChangeDuringApply { path: full_path });
+        }
+        write_content(&full_path, &prepared.content)?;
+        Ok(coordinator.commit_prepared_edit(prepared))
+    }
+}
+
+fn read_content(
+    path: &Path,
+    domain: ArtifactDomainKind,
+) -> Result<ArtifactContent, ArtifactEditError> {
+    let bytes = fs::read(path).map_err(|error| ArtifactEditError::Filesystem {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    match domain {
+        ArtifactDomainKind::TextDocument | ArtifactDomainKind::StructuredDocument => {
+            let text =
+                String::from_utf8(bytes).map_err(|error| ArtifactEditError::InvalidOperation {
+                    message: format!("artifact is not valid UTF-8: {error}"),
+                })?;
+            Ok(ArtifactContent::Text(text))
+        }
+        ArtifactDomainKind::OpaqueBlob => Ok(ArtifactContent::Bytes(bytes)),
+    }
+}
+
+fn write_content(path: &Path, content: &ArtifactContent) -> Result<(), ArtifactEditError> {
+    let bytes = match content {
+        ArtifactContent::Text(text) => text.as_bytes().to_vec(),
+        ArtifactContent::Bytes(bytes) => bytes.clone(),
+    };
+    fs::write(path, bytes).map_err(|error| ArtifactEditError::Filesystem {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, ArtifactEditError> {
+    if path.is_absolute() {
+        return Err(ArtifactEditError::InvalidOperation {
+            message: "managed file paths must be relative to the workspace root".to_string(),
+        });
+    }
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(ArtifactEditError::InvalidOperation {
+                    message: "managed file path escapes the workspace root".to_string(),
+                });
+            }
+        }
+    }
+    Ok(root.join(relative))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::types::{AgentEditOperation, ArtifactEditWarning};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace() -> WorkspaceIdentity {
+        WorkspaceIdentity::local("repo-a")
+    }
+
+    fn test_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("arroba-managed-file-io-{name}-{nanos}"));
+        fs::create_dir_all(&root).expect("create test root");
+        root
+    }
+
+    #[test]
+    fn managed_file_read_tracks_snapshot() {
+        let root = test_root("read");
+        let path = root.join("src.txt");
+        fs::write(&path, "alpha\n").expect("write fixture");
+        let mut coordinator = ArtifactEditCoordinator::new();
+
+        let read = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                path: PathBuf::from("src.txt"),
+                domain: ArtifactDomainKind::TextDocument,
+            },
+        )
+        .expect("read artifact");
+
+        assert_eq!(read.content, ArtifactContent::Text("alpha\n".to_string()));
+        assert!(coordinator.current_content(&read.artifact_id).is_some());
+    }
+
+    #[test]
+    fn managed_file_apply_rebases_external_non_overlap_before_write() {
+        let root = test_root("rebase");
+        let path = root.join("src.txt");
+        fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let first_read = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root.clone(),
+                path: PathBuf::from("src.txt"),
+                domain: ArtifactDomainKind::TextDocument,
+            },
+        )
+        .expect("read artifact");
+        fs::write(&path, "zero\none\ntwo\nthree\n").expect("external write");
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::TextDocument,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("src.txt"),
+                    snapshot_id: Some(first_read.snapshot_id),
+                    operation: AgentEditOperation::ReplaceText {
+                        old_text: "three".to_string(),
+                        new_text: "four".to_string(),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            EditResult::AppliedWithWarning {
+                warning: ArtifactEditWarning::RebasedOverNonOverlappingChange { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read result"),
+            "zero\none\ntwo\nfour\n"
+        );
+    }
+
+    #[test]
+    fn managed_file_apply_rejects_external_overlap() {
+        let root = test_root("conflict");
+        let path = root.join("src.txt");
+        fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let first_read = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root.clone(),
+                path: PathBuf::from("src.txt"),
+                domain: ArtifactDomainKind::TextDocument,
+            },
+        )
+        .expect("read artifact");
+        fs::write(&path, "one\nTWO\nthree\n").expect("external write");
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::TextDocument,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("src.txt"),
+                    snapshot_id: Some(first_read.snapshot_id),
+                    operation: AgentEditOperation::ReplaceText {
+                        old_text: "two".to_string(),
+                        new_text: "deux".to_string(),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            EditResult::Rejected {
+                reason: ArtifactEditError::Conflict { .. }
+            }
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read result"),
+            "one\nTWO\nthree\n"
+        );
+    }
+
+    #[test]
+    fn managed_file_read_rejects_path_escape() {
+        let root = test_root("escape");
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let result = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                path: PathBuf::from("../outside.txt"),
+                domain: ArtifactDomainKind::TextDocument,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ArtifactEditError::InvalidOperation { .. })
+        ));
+    }
+}
