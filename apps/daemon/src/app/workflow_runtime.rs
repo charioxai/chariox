@@ -165,12 +165,6 @@ impl DaemonApp {
         WorkflowProgression::ensure_provider_run(self, session_id, agent_id)
     }
 
-    pub(crate) fn retry_blocked_workflow_claims_from_runtime(&mut self) {
-        for session_id in WorkflowProgression::retry_blocked_claims(self) {
-            let _ = crate::app::KernelSessionReadService::new(self).session_snapshot(&session_id);
-        }
-    }
-
     pub(crate) fn resume_workflow_run_from_runtime(
         &mut self,
         session_id: &str,
@@ -474,5 +468,11 @@ impl DaemonApp {
             }
         }
         Ok(())
+    }
+}
+
+pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
+    for session_id in WorkflowProgression::retry_blocked_claims(app) {
+        let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id);
     }
 }

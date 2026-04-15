@@ -28,7 +28,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
 pub(crate) fn clear_prompt_activity(app: &mut DaemonApp, provider_run_id: &str) {
     app.prompt_activity.write().remove(provider_run_id);
     if app.release_prompt_workspace_claim(provider_run_id) {
-        app.retry_blocked_workflow_claims_from_runtime();
+        crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app);
     }
 }
 

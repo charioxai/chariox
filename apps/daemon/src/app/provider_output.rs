@@ -796,7 +796,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     fn clear_prompt_activity(&mut self, provider_run_id: &str) {
         self.prompt_activity.write().remove(provider_run_id);
         if self.app.release_prompt_workspace_claim(provider_run_id) {
-            self.app.retry_blocked_workflow_claims_from_runtime();
+            crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(self.app);
         }
     }
 

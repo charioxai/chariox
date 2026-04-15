@@ -1072,8 +1072,10 @@ impl CompatibilityRuntimeState {
                 format!("Prompt dispatch failed after acknowledgement: {error}"),
             );
             if released_claim {
-                self.with_app_mut(|app| app.retry_blocked_workflow_claims_from_runtime())
-                    .await;
+                self.with_app_mut(|app| {
+                    crate::app::workflow_runtime::retry_blocked_workflow_claims_from_runtime(app)
+                })
+                .await;
             }
             return Err(error);
         }
