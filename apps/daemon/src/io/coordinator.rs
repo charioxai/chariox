@@ -236,8 +236,82 @@ impl ArtifactEditCoordinator {
         })?;
         match tracked.domain {
             ArtifactDomainKind::TextDocument => self.apply_text_edit(artifact_id, tracked, request),
-            domain => Err(ArtifactEditError::UnsupportedDomain { domain }),
+            ArtifactDomainKind::StructuredDocument | ArtifactDomainKind::OpaqueBlob => {
+                self.apply_whole_artifact_edit(artifact_id, tracked, request)
+            }
         }
+    }
+
+    fn apply_whole_artifact_edit(
+        &self,
+        artifact_id: ArtifactId,
+        tracked: TrackedArtifact,
+        request: ArtifactWriteRequest,
+    ) -> Result<PreparedArtifactEdit, ArtifactEditError> {
+        let (base_version, snapshot_content) = match request.intent.snapshot_id.as_ref() {
+            Some(snapshot_id) => {
+                let snapshot = self.snapshots.get(snapshot_id).ok_or_else(|| {
+                    ArtifactEditError::SnapshotNotFound {
+                        snapshot_id: snapshot_id.clone(),
+                    }
+                })?;
+                if snapshot.artifact_id != artifact_id {
+                    return Err(ArtifactEditError::InvalidOperation {
+                        message: "snapshot belongs to a different artifact".to_string(),
+                    });
+                }
+                (snapshot.version, Some(snapshot.content.clone()))
+            }
+            None => (tracked.version, None),
+        };
+        if base_version != tracked.version {
+            return Err(ArtifactEditError::Conflict {
+                path: tracked.path,
+                base_version,
+                current_version: tracked.version,
+                requested_ranges: vec![whole_artifact_range()],
+                changed_ranges: vec![whole_artifact_range()],
+                message: "non-text artifacts are coordinated as whole-file locks; reread and retry"
+                    .to_string(),
+            });
+        }
+        if let Some(snapshot_content) = snapshot_content {
+            if snapshot_content != tracked.content {
+                return Err(ArtifactEditError::Conflict {
+                    path: tracked.path,
+                    base_version,
+                    current_version: tracked.version,
+                    requested_ranges: vec![whole_artifact_range()],
+                    changed_ranges: vec![whole_artifact_range()],
+                    message:
+                        "non-text artifact content changed since the base snapshot; reread and retry"
+                            .to_string(),
+                });
+            }
+        }
+        let content = match request.intent.operation {
+            crate::io::types::AgentEditOperation::WriteArtifact { content } => content,
+            _ => {
+                return Err(ArtifactEditError::UnsupportedDomain {
+                    domain: tracked.domain,
+                });
+            }
+        };
+        if !content_matches_domain(tracked.domain, &content) {
+            return Err(ArtifactEditError::InvalidOperation {
+                message: "write content does not match the artifact domain".to_string(),
+            });
+        }
+        let new_version = tracked.version.next();
+        Ok(PreparedArtifactEdit {
+            artifact_id,
+            path: tracked.path,
+            domain: tracked.domain,
+            previous_version: tracked.version,
+            new_version,
+            content,
+            warning: None,
+        })
     }
 
     fn apply_text_edit(
@@ -396,18 +470,30 @@ impl ArtifactEditCoordinator {
 }
 
 fn artifact_id_for(workspace_identity: &WorkspaceIdentity, path: &Path) -> ArtifactId {
-    ArtifactId::new(format!("{}:{}", coordination_key(workspace_identity), normalize_path(path)))
+    ArtifactId::new(format!(
+        "{}:{}",
+        coordination_key(workspace_identity),
+        normalize_path(path)
+    ))
 }
 
 fn coordination_key(workspace_identity: &WorkspaceIdentity) -> String {
-    if let Some(repo_id) = workspace_identity.repo_id.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(repo_id) = workspace_identity
+        .repo_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         return format!(
             "repo_id:{}:{}",
             repo_id,
             workspace_identity.branch.as_deref().unwrap_or("")
         );
     }
-    if let Some(repo_url) = workspace_identity.repo_url.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(repo_url) = workspace_identity
+        .repo_url
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         return format!(
             "repo_url:{}:{}",
             normalize_repo_url(repo_url),
@@ -455,6 +541,18 @@ fn ranges_overlap(left: &[TextRange], right: &[TextRange]) -> bool {
         .any(|left| right.iter().any(|right| left.overlaps(*right)))
 }
 
+fn content_matches_domain(domain: ArtifactDomainKind, content: &ArtifactContent) -> bool {
+    matches!(
+        (domain, content),
+        (ArtifactDomainKind::TextDocument, ArtifactContent::Text(_))
+            | (
+                ArtifactDomainKind::StructuredDocument,
+                ArtifactContent::Text(_)
+            )
+            | (ArtifactDomainKind::OpaqueBlob, ArtifactContent::Bytes(_))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +572,19 @@ mod tests {
             path: PathBuf::from(path),
             domain: ArtifactDomainKind::TextDocument,
             content: ArtifactContent::Text(content.to_string()),
+        })
+    }
+
+    fn read_opaque(
+        coordinator: &mut ArtifactEditCoordinator,
+        path: &str,
+        content: &[u8],
+    ) -> ArtifactReadResult {
+        coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: workspace(),
+            path: PathBuf::from(path),
+            domain: ArtifactDomainKind::OpaqueBlob,
+            content: ArtifactContent::Bytes(content.to_vec()),
         })
     }
 
@@ -523,6 +634,57 @@ mod tests {
         assert_eq!(
             coordinator.current_content(&read.artifact_id),
             Some(&ArtifactContent::Text("alpha\ngamma\n".to_string()))
+        );
+    }
+
+    #[test]
+    fn opaque_write_replaces_whole_artifact() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let read = read_opaque(&mut coordinator, "assets/logo.bin", &[0, 1, 2]);
+        let result = coordinator.apply_edit(ArtifactWriteRequest {
+            workspace_identity: workspace(),
+            intent: AgentEditIntent {
+                path: PathBuf::from("assets/logo.bin"),
+                snapshot_id: Some(read.snapshot_id),
+                operation: AgentEditOperation::WriteArtifact {
+                    content: ArtifactContent::Bytes(vec![3, 4, 5, 6]),
+                },
+            },
+        });
+
+        assert!(matches!(result, EditResult::Applied { .. }));
+        assert_eq!(
+            coordinator.current_content(&read.artifact_id),
+            Some(&ArtifactContent::Bytes(vec![3, 4, 5, 6]))
+        );
+    }
+
+    #[test]
+    fn stale_opaque_write_rejects_as_whole_file_conflict() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let first_read = read_opaque(&mut coordinator, "assets/logo.bin", &[0, 1, 2]);
+        let _second_read = read_opaque(&mut coordinator, "assets/logo.bin", &[0, 1, 9]);
+
+        let result = coordinator.apply_edit(ArtifactWriteRequest {
+            workspace_identity: workspace(),
+            intent: AgentEditIntent {
+                path: PathBuf::from("assets/logo.bin"),
+                snapshot_id: Some(first_read.snapshot_id),
+                operation: AgentEditOperation::WriteArtifact {
+                    content: ArtifactContent::Bytes(vec![3, 4, 5]),
+                },
+            },
+        });
+
+        assert!(matches!(
+            result,
+            EditResult::Rejected {
+                reason: ArtifactEditError::Conflict { .. }
+            }
+        ));
+        assert_eq!(
+            coordinator.current_content(&first_read.artifact_id),
+            Some(&ArtifactContent::Bytes(vec![0, 1, 9]))
         );
     }
 

@@ -43,6 +43,7 @@ V1 domains:
 | Domain | Region model | V1 support |
 | --- | --- | --- |
 | `TextDocument` | byte ranges, line ranges, hunks with context | Required fine-grained support |
+| `StructuredDocument` | whole artifact in v1 | Treated as a whole-file text artifact until type-specific domains land |
 | `OpaqueBlob` | whole artifact | Required fallback for every non-text artifact |
 
 For v1, images, audio, video, PDFs, archives, and other non-text artifacts are treated as binary opaque blobs with whole-file locking. Type-specific region models are explicitly deferred beyond v1.
@@ -307,6 +308,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: filesystem-backed managed read/apply helper with workspace-relative path validation, external-content refresh before apply, prepared-edit commit, and pre-write external change check.
 - Landed: runtime tool argument/schema definitions for managed artifact read/edit/write tools.
 - Landed: authenticated runtime/MCP dispatch wiring for managed artifact read/edit/write tools backed by the provider run workspace root.
+- Landed: opaque managed reads/writes use base64 payloads and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque writes preserve exact bytes.
 - Landed: provider launch contract for required managed-I/O writes.
 - Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
 - Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct repo writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
@@ -315,11 +317,10 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
 - Landed: external artifact change monitor boundary that tracks managed reads, runs a scoped live watcher for tracked artifacts, records detected external changes, and returns agent-facing external-change notices for edit/write/patch/delete/move paths.
 - Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
-- Landed: remote coordinated managed-I/O routing for text artifacts. Leased worker provider runs forward `read_artifact`, `edit_artifact`, `write_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final text states only if its local artifact still matches the forwarded pre-apply state.
+- Landed: remote coordinated managed-I/O routing for text artifacts. Leased worker provider runs forward `read_artifact`, `edit_artifact`, `write_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final text states only if its local artifact still matches the forwarded pre-apply state. Remote `read_artifact`/`write_artifact` also carry opaque bytes as base64 for whole-file opaque writes.
 - Landed: remote managed-I/O live smoke automation. It starts relay/home/worker daemons, leases provider agents on the worker machine, runs managed read/write/edit/apply-patch/move/delete through the home kernel, and cleans up sessions, daemons, history, workspaces, and transient CLI module caches.
-- Landed: remote managed-I/O smoke pass with Codex after leased runs require managed I/O.
-- Landed: remote managed-I/O full pass with OpenCode, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
-- Not landed yet: full remote Codex negative/collision/external-change pass; the observed blocker is the full drill timing out while waiting for both overlapping `edit_artifact` results. Type-specific non-text artifact domains beyond v1 opaque whole-file locking are also not landed.
+- Landed: remote managed-I/O full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
+- Not landed yet: automated live-drill coverage for opaque/non-text artifacts. Type-specific non-text artifact domains beyond v1 opaque whole-file locking are also not landed.
 
 ## Non-Goals
 

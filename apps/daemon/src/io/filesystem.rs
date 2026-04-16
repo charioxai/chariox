@@ -451,6 +451,78 @@ mod tests {
     }
 
     #[test]
+    fn managed_file_write_creates_new_opaque_file() {
+        let root = test_root("create-opaque");
+        let path = root.join("assets").join("image.bin");
+        let mut coordinator = ArtifactEditCoordinator::new();
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::OpaqueBlob,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("assets/image.bin"),
+                    snapshot_id: None,
+                    operation: AgentEditOperation::WriteArtifact {
+                        content: ArtifactContent::Bytes(vec![0, 159, 255, 10]),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(result, EditResult::Applied { .. }));
+        assert_eq!(
+            fs::read(&path).expect("created opaque file should read"),
+            vec![0, 159, 255, 10]
+        );
+    }
+
+    #[test]
+    fn managed_file_opaque_stale_write_rejects_and_preserves_external_bytes() {
+        let root = test_root("opaque-conflict");
+        let path = root.join("asset.bin");
+        fs::write(&path, [1, 2, 3]).expect("write fixture");
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let first_read = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root.clone(),
+                path: PathBuf::from("asset.bin"),
+                domain: ArtifactDomainKind::OpaqueBlob,
+            },
+        )
+        .expect("read opaque artifact");
+        fs::write(&path, [1, 2, 9]).expect("external write");
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::OpaqueBlob,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("asset.bin"),
+                    snapshot_id: Some(first_read.snapshot_id),
+                    operation: AgentEditOperation::WriteArtifact {
+                        content: ArtifactContent::Bytes(vec![4, 5, 6]),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            EditResult::Rejected {
+                reason: ArtifactEditError::Conflict { .. }
+            }
+        ));
+        assert_eq!(fs::read(path).expect("read result"), vec![1, 2, 9]);
+    }
+
+    #[test]
     fn managed_file_write_rejects_arroba_owned_instruction_policy() {
         let root = test_root("reject-policy");
         let policy_path = root.join(crate::provider::MANAGED_IO_INSTRUCTIONS_SOURCE_PATH);

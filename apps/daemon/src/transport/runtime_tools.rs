@@ -102,7 +102,10 @@ pub struct ManagedEditArtifactArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedWriteArtifactArgs {
     pub path: String,
-    pub content_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,7 +153,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: READ_ARTIFACT_TOOL.to_string(),
-            description: "Read a workspace-relative artifact through Arroba managed I/O and return content with snapshot/version metadata.".to_string(),
+            description: "Read a workspace-relative artifact through Arroba managed I/O and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -210,7 +213,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: DELETE_ARTIFACT_TOOL.to_string(),
-            description: "Delete a workspace-relative text artifact through Arroba managed I/O.".to_string(),
+            description: "Delete a workspace-relative artifact through Arroba managed I/O. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -218,7 +221,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "path": {"type": "string"},
                     "domain": {
                         "type": "string",
-                        "enum": ["text"]
+                        "enum": ["text", "structured", "opaque"]
                     }
                 },
                 "additionalProperties": false
@@ -226,7 +229,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MOVE_ARTIFACT_TOOL.to_string(),
-            description: "Move a workspace-relative text artifact through Arroba managed I/O. Optional old_text/new_text can edit the moved content atomically.".to_string(),
+            description: "Move a workspace-relative artifact through Arroba managed I/O. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["from_path", "to_path"],
@@ -237,7 +240,7 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "new_text": {"type": "string"},
                     "domain": {
                         "type": "string",
-                        "enum": ["text"]
+                        "enum": ["text", "structured", "opaque"]
                     }
                 },
                 "additionalProperties": false
@@ -245,17 +248,18 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: WRITE_ARTIFACT_TOOL.to_string(),
-            description: "Create or overwrite a workspace-relative text artifact through Arroba managed I/O. Use this when creating a new file or replacing a whole file; use arroba.edit_artifact for smaller edits.".to_string(),
+            description: "Create or overwrite a workspace-relative artifact through Arroba managed I/O. Use content_text for text/structured artifacts and content_base64 for opaque artifacts. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "required": ["path", "content_text"],
+                "required": ["path"],
                 "properties": {
                     "path": {"type": "string"},
                     "content_text": {"type": "string"},
+                    "content_base64": {"type": "string"},
                     "snapshot_id": {"type": "string"},
                     "domain": {
                         "type": "string",
-                        "enum": ["text"]
+                        "enum": ["text", "structured", "opaque"]
                     }
                 },
                 "additionalProperties": false
@@ -412,7 +416,22 @@ mod managed_io_tests {
         .expect("managed write args should parse");
 
         assert_eq!(args.path, "src/lib.rs");
-        assert_eq!(args.content_text, "hello");
+        assert_eq!(args.content_text.as_deref(), Some("hello"));
+        assert_eq!(args.content_base64, None);
+    }
+
+    #[test]
+    fn managed_write_args_accept_opaque_content_shape() {
+        let args = serde_json::from_value::<ManagedWriteArtifactArgs>(serde_json::json!({
+            "path": "assets/blob.bin",
+            "content_base64": "AAEC",
+            "domain": "opaque"
+        }))
+        .expect("managed opaque write args should parse");
+
+        assert_eq!(args.path, "assets/blob.bin");
+        assert_eq!(args.content_text, None);
+        assert_eq!(args.content_base64.as_deref(), Some("AAEC"));
     }
 
     #[test]

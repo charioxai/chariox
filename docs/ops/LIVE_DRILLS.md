@@ -64,11 +64,13 @@ Terminology:
 - Daemon lib, runtime integration, websocket integration, relay-client, and bin tests remain green after any drill fixes.
 - Docs reflect the final drill results before new tasks begin.
 
+Workspace identity note: managed I/O captures repo/branch/head identity for each provider run. If a drill changes `HEAD`, branch, or repo identity while another managed-I/O run is active, the kernel may reject the next tool call with `workspace_identity_changed`. That is expected protection, not a merge conflict; rerun the drill from a stable workspace identity.
+
 ## Current Results
 
 - Freeform local multi-agent: **pass** with `opencode,codex` after the router bootstrap lock fix.
 - Local managed I/O: **pass** with `opencode,codex`; agents read `seed.txt`, create provider-specific output files through `arroba.write_artifact`, edit/apply-patch/move/delete through managed tools, fail if direct/native write attempts create forbidden files, serialize same-area agent collisions to one winning write, rebase stale non-overlapping external changes, and reject stale overlapping external changes. The drill owns and tears down its daemon, session, isolated workspace, session history, and transient CLI module cache.
-- Remote managed I/O: **full pass with `opencode`** and **smoke pass with `codex`** after leased runs require managed I/O. OpenCode covers managed read/write/edit/apply-patch/move/delete, direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection. Codex full remote remains blocked in the overlap phase, where the drill times out waiting for both overlapping `edit_artifact` results.
+- Remote managed I/O: **full pass with `opencode,codex`** after leased runs require managed I/O. The full drill covers managed read/write/edit/apply-patch/move/delete, direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection. Use OpenAI/Codex-family models for OpenCode, for example `--provider-model opencode=openai/gpt-5.3-codex`.
 - Local workflow catalog: **pass** with spawned local daemon and `opencode,codex`.
   - `simple-chain`
   - `validated-increment-chain`

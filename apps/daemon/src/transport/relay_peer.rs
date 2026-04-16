@@ -31,6 +31,8 @@ pub struct RemoteManagedIoArtifactState {
     pub exists: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
