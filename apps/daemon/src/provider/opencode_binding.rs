@@ -1,13 +1,17 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
+use rand::distributions::{Alphanumeric, DistString};
 
 use super::{OpenCodeClient, ProviderResumeState, RuntimeProviderRun};
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
 
 const OPENCODE_EVENT_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_EVENT_SUBSCRIBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const OPENCODE_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
+const OPENCODE_SESSION_CREATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
 pub(crate) struct OpenCodeRunSelection {
@@ -80,7 +84,11 @@ pub(crate) fn initialize_opencode_runtime(
                     "provider_session_id": previous_session_id,
                 }),
             );
-            let session_id = client.create_session(managed_io_permission.clone())?;
+            let session_id = client.create_session_with_retry(
+                managed_io_permission.clone(),
+                OPENCODE_SESSION_CREATE_TIMEOUT,
+                OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+            )?;
             crate::logging::info_with_fields(
                 "daemon.provider.opencode",
                 "created opencode session",
@@ -92,7 +100,11 @@ pub(crate) fn initialize_opencode_runtime(
             session_id
         }
         None => {
-            let session_id = client.create_session(managed_io_permission.clone())?;
+            let session_id = client.create_session_with_retry(
+                managed_io_permission.clone(),
+                OPENCODE_SESSION_CREATE_TIMEOUT,
+                OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+            )?;
             crate::logging::info_with_fields(
                 "daemon.provider.opencode",
                 "created opencode session",
@@ -204,6 +216,25 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn generated_message_ids_use_opencode_sortable_timestamp_width() {
+        let id = super::next_opencode_message_id();
+
+        assert!(id.starts_with("msg_"));
+        assert_eq!(id.len(), 30);
+        assert!(id[4..16].chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn generated_message_ids_sort_after_current_opencode_ids() {
+        let id = super::next_opencode_message_id();
+
+        assert!(
+            id.as_str() > "msg_d0000000000000000000000000",
+            "generated id {id} should sort in OpenCode's current ascending range"
+        );
+    }
 }
 
 pub(super) fn submit_opencode_prompt(
@@ -213,15 +244,31 @@ pub(super) fn submit_opencode_prompt(
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(run.id(), state.base_url())?;
+    let message_id = next_opencode_message_id();
     client.submit_prompt(
         state.session_id(),
+        &message_id,
         prompt,
         attachments,
         Some(run.model()),
         run.variant(),
     )?;
-    state.note_prompt_submitted();
+    state.note_prompt_submitted(message_id);
     Ok(())
+}
+
+fn next_opencode_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed) & 0x0fff;
+    let encoded_time =
+        timestamp_ms.saturating_mul(0x1000).saturating_add(sequence) & 0xffff_ffff_ffff;
+    let random = Alphanumeric.sample_string(&mut rand::thread_rng(), 14);
+    format!("msg_{encoded_time:012x}{random}")
 }
 
 fn resolve_initial_selection(

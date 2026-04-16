@@ -1409,7 +1409,7 @@ mod tests {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
-        let (session_id, agent_id, terminal_stream) = {
+        let (session_id, agent_id, provider_run_id, terminal_stream) = {
             let mut app_locked = app.lock().await;
             let (session, default_agent) = crate::app::KernelSessionService::new(&mut app_locked)
                 .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -1421,10 +1421,13 @@ mod tests {
                         .with_worktree("worktree"),
                 )
                 .expect("extra agent should be created");
+            let provider_run =
+                launch_dev_stub_provider(&mut app_locked, session.id(), extra_agent.id(), "opus");
             assert_ne!(default_agent.id(), extra_agent.id());
             (
                 session.id().to_string(),
                 extra_agent.id().to_string(),
+                provider_run.id().to_string(),
                 app_locked.terminal_stream_store(),
             )
         };
@@ -1482,6 +1485,15 @@ mod tests {
         assert!(
             agent_runtime_projection.get(&agent_id).is_none(),
             "destroyed agent should be removed from agent-runtime projection"
+        );
+        let provider_run = _locked_app
+            .providers()
+            .get_run(&provider_run_id)
+            .expect("destroyed agent provider run should still be addressable");
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Ended,
+            "destroying an agent should end its provider run"
         );
     }
 

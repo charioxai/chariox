@@ -748,6 +748,8 @@ Required rules:
 - the daemon MUST maintain per-node instruction content used as system or preamble context
 - the daemon MUST maintain an optional workflow-level prompt used as shared context for all nodes
 - the daemon MUST provide a stable reference so nodes can reload instructions after compaction
+- workflow prompt injection MUST be rendered by the scheduler-owned prompt injection layer, not by provider adapters, transport handlers, CLI scripts, or per-dispatch ad hoc string assembly
+- local workflow dispatch, remote workflow dispatch, retry/replay dispatch, and tests MUST enter the same prompt renderer so turn index, last-turn guidance, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content stay consistent
 - the daemon MUST expose a kernel-owned output validation tool to workflow nodes
 - the runtime MUST expose a dedicated workflow-turn acknowledgment operation separate from output validation
 - node completion output SHOULD be validated against per-edge schema constraints before routing

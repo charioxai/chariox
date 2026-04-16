@@ -71,6 +71,7 @@ Terminology:
   - `cyclic-final-run-with-intermediate-output-chain`
 - Remote freeform relay: **pass** with `opencode,codex`, direct local client plus relayed client, local sidecar agents plus worker-machine leased agents, relay restart, transport close/resume, and post-reconnect prompt completion.
 - Remote workflow relay: **pass** with `opencode,codex`, relay, home daemon, worker daemon, remote worker-machine leases, forwarded workflow runtime tools, cyclic workflow progression, intermediate output, final workflow output, and clean final projections.
+- Workflow prompt-injection invariant: **pass**. Workflow prompt construction is scheduler-owned and shared by local dispatch, remote dispatch, retry/replay paths, and tests; the renderer injects turn index, last-turn guidance only on the last allowed node turn, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content.
 
 Point-2 fixes proven by the local workflow catalog:
 
@@ -82,6 +83,7 @@ Point-2 fixes proven by the local workflow catalog:
 - Resolved missing-output/output-validation failures are cleared when a later successful turn for the same workflow node produces output or submits final output.
 - Node max-turn budget accounting counts completed turns with completion payloads, so recovered missing-output attempts do not consume the production success budget.
 - Final workflow-output submissions no longer generate downstream handoff validation failures while completion is still committing pending turn outputs.
+- The budgeted cyclic final-output scenario now checks the exact final output payload, so a stale pre-ack provider output cannot accidentally satisfy a later final workflow turn.
 
 Point-3 evidence:
 

@@ -2867,7 +2867,7 @@ impl KernelRuntimeOwnedState {
                     "workflow_run_id": workflow_run.id(),
                     "workflow_node_run_id": request.workflow_node_run_id,
                     "state": "acknowledged",
-                    "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer; emit the required final fenced json block before stopping.",
+                    "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer. If this turn requires final workflow run output, call validate_and_submit_workflow_run_output before stopping; otherwise emit the required final fenced json block before stopping.",
                 })
                 .to_string(),
             ),
@@ -3963,37 +3963,122 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
-        let node_instructions = workflow
-            .node(node_id)
-            .and_then(|node| node.instructions())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("No node-specific instructions were configured.");
-        let endpoint_block = if endpoint_prompt.trim().is_empty() {
-            String::new()
-        } else {
-            format!("Endpoint prompt:\n{}\n\n", endpoint_prompt.trim())
-        };
-        let handoff_block = handoff_payloads_json
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && *value != "[]")
-            .map(|value| format!("Workflow handoff payloads (JSON array):\n{value}\n\n"))
-            .unwrap_or_default();
-        let edge_contracts =
-            self.workflow_outgoing_edge_contracts_text(session_id, workflow_run_id, node_id);
-        let control_block = control_mailbox
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|content| {
-                format!(
-                    "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output.\n\n"
-                )
+        let node = workflow.node(node_id);
+        let base_directory =
+            self.workflow_runtime_base_directory(session_id, workflow_run_id, workflow_node_run_id);
+        let instruction_ref = self.workflow_node_instruction_reference(
+            base_directory.as_ref(),
+            workflow_run_id,
+            node_id,
+            node.and_then(|node| node.instructions()),
+        );
+        let turn_index = workflow_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == node_id)
+            .count() as u32;
+        Ok(
+            crate::scheduler::prompt_injection::build_workflow_turn_prompt(
+                crate::scheduler::prompt_injection::WorkflowPromptInjectionContext {
+                    endpoint_prompt: endpoint_prompt.to_string(),
+                    workflow_prompt: workflow_run
+                        .invocation_prompt()
+                        .map(str::to_string)
+                        .unwrap_or_default(),
+                    node_instructions: node
+                        .and_then(|node| node.instructions())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("No node-specific instructions were configured.")
+                        .to_string(),
+                    instruction_ref,
+                    handoff_payloads_json: handoff_payloads_json.map(str::to_string),
+                    outgoing_edge_contracts: self.workflow_outgoing_edge_contracts_text(
+                        session_id,
+                        workflow_run_id,
+                        node_id,
+                    ),
+                    control_mailbox: control_mailbox.map(str::to_string),
+                    delivery_token: format!("workflow-ack:{workflow_node_run_id}"),
+                    node_turn: node.map(|node| {
+                        crate::scheduler::prompt_injection::WorkflowNodeTurnPromptContext {
+                            turn_index,
+                            max_turns: node.max_turns(),
+                            can_complete_workflow_run: node.can_complete_workflow_run(),
+                            can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
+                        }
+                    }),
+                    base_directory,
+                },
+            ),
+        )
+    }
+
+    fn workflow_runtime_base_directory(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Option<PathBuf> {
+        let session = self.session_store.get_session(session_id).ok()?;
+        let workflow_run = session.workflow_run(workflow_run_id)?;
+        let node_run = workflow_run
+            .node_runs()
+            .iter()
+            .find(|candidate| candidate.id() == workflow_node_run_id)?;
+        self.provider_store
+            .get_latest_run_for_agent(session_id, node_run.agent_id())
+            .and_then(|run| run.working_directory().cloned())
+            .or_else(|| {
+                let worktree = PathBuf::from(session.worktree_id());
+                if worktree.is_absolute() {
+                    Some(worktree)
+                } else {
+                    std::env::current_dir().ok().map(|cwd| cwd.join(worktree))
+                }
             })
-            .unwrap_or_default();
-        Ok(format!(
-            "{endpoint_block}{handoff_block}Workflow-level prompt:\n{}\n\nNode-level instructions:\n{node_instructions}\n\n{edge_contracts}{control_block}For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n{{\"delivery_token\":\"workflow-ack:{workflow_node_run_id}\"}}\n\nIf an outgoing edge contract for this turn includes an `output_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_output` with the delivery token above, that `output_schema_ref`, and your proposed `output.message` JSON. If no `output_schema_ref` is present for this turn, do not call `validate_workflow_output`.\n\nIf your node-level instructions require shared console output or inspection, use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\nAt the end of this workflow turn, return exactly one fenced ```json block with this shape:\n{{\"summary\":\"human-facing summary\",\"output\":{{\"message\":\"explicit downstream output message\"}}}}\nDo not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it.\n\nIf a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes an `output_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_output` returns `valid: false` or any warning, revise the proposed output, call `validate_workflow_output` again, and only finalize once the tool returns `valid: true` with no warning.",
-            workflow_run.invocation_prompt().unwrap_or_default()
-        ))
+    }
+
+    fn workflow_node_instruction_reference(
+        &self,
+        base_directory: Option<&PathBuf>,
+        workflow_run_id: &str,
+        node_id: &str,
+        node_instructions: Option<&str>,
+    ) -> Option<String> {
+        let root = base_directory?
+            .join(".arroba")
+            .join("workflow-runtime")
+            .join("kernel")
+            .join(workflow_run_id)
+            .join("workflow-instructions");
+        let path = root.join(format!("node-{node_id}.md"));
+        if !path.exists() || node_instructions.is_some() {
+            if let Err(error) = std::fs::create_dir_all(&root) {
+                tracing::debug!(
+                    ?error,
+                    "Failed to create workflow instruction directory at {:?}",
+                    root
+                );
+                return None;
+            }
+            let content = node_instructions
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!(
+                        "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
+                    )
+                });
+            if let Err(error) = std::fs::write(&path, content) {
+                tracing::debug!(
+                    ?error,
+                    "Failed to write workflow instruction file at {:?}",
+                    path
+                );
+                return None;
+            }
+        }
+        Some(path.to_string_lossy().to_string())
     }
 
     fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
@@ -4330,7 +4415,7 @@ impl KernelRuntimeOwnedState {
                         "workflow_run_id": workflow_run.id(),
                         "workflow_node_run_id": context.workflow_node_run_id,
                         "state": "acknowledged",
-                        "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer; emit the required final fenced json block before stopping.",
+                        "next_action": "Continue this same workflow turn. This acknowledgement is not the final answer. If this turn requires final workflow run output, call validate_and_submit_workflow_run_output before stopping; otherwise emit the required final fenced json block before stopping.",
                     }),
                 })
             }
@@ -7677,6 +7762,107 @@ impl KernelRuntimeState {
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok((output, final_states))
             }
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedApplyPatchArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "forwarded_managed_io_apply_patch",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "forwarded_managed_io_apply_patch",
+                        message: "remote managed apply_patch currently supports only text artifacts"
+                            .to_string(),
+                    });
+                }
+                let operations = parse_managed_apply_patch(&args.patch_text)?;
+                apply_remote_managed_patch_operations(
+                    &mut coordinator,
+                    context.worker_workspace_identity,
+                    domain,
+                    operations,
+                    artifact_states,
+                    crate::io::ArtifactReservationOwner::new(
+                        format!("remote:{}", context.worker_provider_run_id),
+                        Some(context.home_agent_id),
+                        tool_name,
+                    ),
+                    &workspace_context,
+                )
+            }
+            crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedDeleteArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "forwarded_managed_io_delete_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "forwarded_managed_io_delete_artifact",
+                        message: "remote managed delete currently supports only text artifacts"
+                            .to_string(),
+                    });
+                }
+                apply_remote_managed_patch_operations(
+                    &mut coordinator,
+                    context.worker_workspace_identity,
+                    domain,
+                    vec![ManagedPatchOperation::Delete {
+                        path: PathBuf::from(args.path),
+                    }],
+                    artifact_states,
+                    crate::io::ArtifactReservationOwner::new(
+                        format!("remote:{}", context.worker_provider_run_id),
+                        Some(context.home_agent_id),
+                        tool_name,
+                    ),
+                    &workspace_context,
+                )
+            }
+            crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedMoveArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "forwarded_managed_io_move_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "forwarded_managed_io_move_artifact",
+                        message: "remote managed move currently supports only text artifacts"
+                            .to_string(),
+                    });
+                }
+                apply_remote_managed_patch_operations(
+                    &mut coordinator,
+                    context.worker_workspace_identity,
+                    domain,
+                    vec![ManagedPatchOperation::Move {
+                        from_path: PathBuf::from(args.from_path),
+                        to_path: PathBuf::from(args.to_path),
+                        old_text: args.old_text,
+                        new_text: args.new_text,
+                    }],
+                    artifact_states,
+                    crate::io::ArtifactReservationOwner::new(
+                        format!("remote:{}", context.worker_provider_run_id),
+                        Some(context.home_agent_id),
+                        tool_name,
+                    ),
+                    &workspace_context,
+                )
+            }
             _ => Ok((
                 crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
@@ -7841,8 +8027,76 @@ fn remote_managed_io_artifact_states_for_tool(
             let content = managed_io_read_optional_text(workspace_root, &path)?;
             Ok(vec![remote_managed_io_state(&path, content)])
         }
+        crate::transport::runtime_tools::APPLY_PATCH_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedApplyPatchArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "remote_managed_io_apply_patch_state",
+                message: format!("invalid tool arguments: {error}"),
+            })?;
+            let operations = parse_managed_apply_patch(&args.patch_text)?;
+            remote_managed_io_states_for_patch_operations(workspace_root, &operations)
+        }
+        crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedDeleteArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "remote_managed_io_delete_state",
+                message: format!("invalid tool arguments: {error}"),
+            })?;
+            let path = PathBuf::from(args.path);
+            let content = managed_io_read_optional_text(workspace_root, &path)?;
+            Ok(vec![remote_managed_io_state(&path, content)])
+        }
+        crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
+            let args = serde_json::from_value::<crate::transport::runtime_tools::ManagedMoveArtifactArgs>(
+                arguments.clone(),
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "remote_managed_io_move_state",
+                message: format!("invalid tool arguments: {error}"),
+            })?;
+            let operations = vec![ManagedPatchOperation::Move {
+                from_path: PathBuf::from(args.from_path),
+                to_path: PathBuf::from(args.to_path),
+                old_text: args.old_text,
+                new_text: args.new_text,
+            }];
+            remote_managed_io_states_for_patch_operations(workspace_root, &operations)
+        }
         _ => Ok(Vec::new()),
     }
+}
+
+fn remote_managed_io_states_for_patch_operations(
+    workspace_root: &PathBuf,
+    operations: &[ManagedPatchOperation],
+) -> Result<Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>, DaemonError> {
+    let mut paths = BTreeSet::new();
+    for operation in operations {
+        match operation {
+            ManagedPatchOperation::Add { path, .. }
+            | ManagedPatchOperation::Update { path, .. }
+            | ManagedPatchOperation::Delete { path } => {
+                paths.insert(path.clone());
+            }
+            ManagedPatchOperation::Move {
+                from_path, to_path, ..
+            } => {
+                paths.insert(from_path.clone());
+                paths.insert(to_path.clone());
+            }
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let content = managed_io_read_optional_text(workspace_root, &path)?;
+            Ok(remote_managed_io_state(&path, content))
+        })
+        .collect()
 }
 
 fn remote_managed_io_state(
@@ -7920,6 +8174,283 @@ fn apply_remote_managed_io_final_states(
         .collect::<BTreeMap<_, _>>();
     managed_io_write_final_states(workspace_root, &states)?;
     Ok(None)
+}
+
+fn apply_remote_managed_patch_operations(
+    coordinator: &mut crate::io::ArtifactEditCoordinator,
+    workspace_identity: crate::io::WorkspaceIdentity,
+    domain: crate::io::ArtifactDomainKind,
+    operations: Vec<ManagedPatchOperation>,
+    artifact_states: Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    reservation_owner: crate::io::ArtifactReservationOwner,
+    workspace_context: &ManagedIoWorkspaceContext,
+) -> Result<
+    (
+        crate::transport::runtime_tools::RuntimeToolResult,
+        Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    ),
+    DaemonError,
+> {
+    let mut before_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+    let mut final_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+    let mut reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>> = BTreeMap::new();
+
+    for state in &artifact_states {
+        let path = PathBuf::from(&state.path);
+        let content = remote_managed_io_content_from_state(state, domain)?;
+        coordinator.read_artifact(crate::io::ArtifactReadRequest {
+            workspace_identity: workspace_identity.clone(),
+            path,
+            domain,
+            content,
+        });
+    }
+
+    for operation in operations {
+        match operation {
+            ManagedPatchOperation::Add { path, content } => {
+                managed_io_validate_patch_path(&workspace_context.root, &path)?;
+                let current = remote_managed_patch_state(
+                    &artifact_states,
+                    &path,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if current.is_some() {
+                    return Ok((managed_patch_rejected(
+                        path,
+                        "add file target already exists; reread and retry with an update",
+                    ), Vec::new()));
+                }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(path, Some(content));
+            }
+            ManagedPatchOperation::Update {
+                path,
+                old_text,
+                new_text,
+            } => {
+                managed_io_validate_patch_path(&workspace_context.root, &path)?;
+                let current = remote_managed_patch_state(
+                    &artifact_states,
+                    &path,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                let Some(current) = current else {
+                    return Ok((managed_patch_rejected(
+                        path,
+                        "update file target does not exist",
+                    ), Vec::new()));
+                };
+                let Some((range, updated)) = replace_unique_text(&current, &old_text, &new_text)
+                else {
+                    return Ok((managed_patch_rejected(
+                        path,
+                        "patch old text was not found exactly once in the current artifact",
+                    ), Vec::new()));
+                };
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(range);
+                final_states.insert(path, Some(updated));
+            }
+            ManagedPatchOperation::Delete { path } => {
+                managed_io_validate_patch_path(&workspace_context.root, &path)?;
+                let current = remote_managed_patch_state(
+                    &artifact_states,
+                    &path,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if current.is_none() {
+                    return Ok((managed_patch_rejected(
+                        path,
+                        "delete file target does not exist",
+                    ), Vec::new()));
+                }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(path, None);
+            }
+            ManagedPatchOperation::Move {
+                from_path,
+                to_path,
+                old_text,
+                new_text,
+            } => {
+                managed_io_validate_patch_path(&workspace_context.root, &from_path)?;
+                managed_io_validate_patch_path(&workspace_context.root, &to_path)?;
+                if from_path == to_path {
+                    return Ok((managed_patch_rejected(
+                        from_path,
+                        "move source and target are identical",
+                    ), Vec::new()));
+                }
+                let source = remote_managed_patch_state(
+                    &artifact_states,
+                    &from_path,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                let Some(mut source) = source else {
+                    return Ok((managed_patch_rejected(
+                        from_path,
+                        "move source does not exist",
+                    ), Vec::new()));
+                };
+                let target = remote_managed_patch_state(
+                    &artifact_states,
+                    &to_path,
+                    &mut before_states,
+                    &mut final_states,
+                )?;
+                if target.is_some() {
+                    return Ok((managed_patch_rejected(
+                        to_path,
+                        "move target already exists",
+                    ), Vec::new()));
+                }
+                if let (Some(old_text), Some(new_text)) = (old_text, new_text) {
+                    let Some((_range, updated)) =
+                        replace_unique_text(&source, &old_text, &new_text)
+                    else {
+                        return Ok((managed_patch_rejected(
+                            from_path,
+                            "move patch old text was not found exactly once in the current artifact",
+                        ), Vec::new()));
+                    };
+                    source = updated;
+                }
+                reservation_ranges
+                    .entry(from_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                reservation_ranges
+                    .entry(to_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                final_states.insert(from_path, None);
+                final_states.insert(to_path, Some(source));
+            }
+        }
+    }
+
+    let mut reservations = Vec::new();
+    for (path, ranges) in reservation_ranges {
+        match managed_io_try_reserve_ranges(
+            coordinator,
+            &workspace_identity,
+            &path,
+            ranges,
+            reservation_owner.clone(),
+        ) {
+            Ok(token) => reservations.push(token),
+            Err(mut output) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                add_managed_io_workspace_payload(&mut output.payload, workspace_context);
+                return Ok((output, Vec::new()));
+            }
+        }
+    }
+
+    for (path, after) in &final_states {
+        match after {
+            Some(text) => {
+                coordinator.read_artifact(crate::io::ArtifactReadRequest {
+                    workspace_identity: workspace_identity.clone(),
+                    path: path.clone(),
+                    domain,
+                    content: crate::io::ArtifactContent::Text(text.clone()),
+                });
+            }
+            None => coordinator.forget_artifact(&workspace_identity, path),
+        }
+    }
+    for token in reservations {
+        coordinator.release_reservation(token);
+    }
+
+    let mut changes = Vec::new();
+    for (path, after) in &final_states {
+        let before =
+            before_states
+                .get(path)
+                .cloned()
+                .flatten()
+                .map(|text| ManagedIoTextSnapshot {
+                    existed: true,
+                    text,
+                });
+        let after_snapshot = after.clone().map(|text| ManagedIoTextSnapshot {
+            existed: true,
+            text,
+        });
+        let mut change_payload = serde_json::json!({});
+        add_managed_io_change_payload(
+            &mut change_payload,
+            ManagedIoChangeContext {
+                path: path.clone(),
+                before,
+                after: after_snapshot,
+            },
+        );
+        if let Some(change) = change_payload.get("change") {
+            changes.push(change.clone());
+        }
+    }
+
+    let mut payload = serde_json::json!({
+        "applied": true,
+        "atomic": true,
+        "changes": changes,
+    });
+    if changes.len() == 1 {
+        payload["change"] = changes[0].clone();
+        if let Some(path) = changes[0].get("path").cloned() {
+            payload["path"] = path;
+        }
+    }
+    add_managed_io_workspace_payload(&mut payload, workspace_context);
+    let final_artifact_states = final_states
+        .into_iter()
+        .map(|(path, content)| remote_managed_io_state(&path, content))
+        .collect::<Vec<_>>();
+    Ok((
+        crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
+        final_artifact_states,
+    ))
+}
+
+fn remote_managed_patch_state(
+    artifact_states: &[crate::transport::relay_peer::RemoteManagedIoArtifactState],
+    path: &PathBuf,
+    before_states: &mut BTreeMap<PathBuf, Option<String>>,
+    final_states: &mut BTreeMap<PathBuf, Option<String>>,
+) -> Result<Option<String>, DaemonError> {
+    if let Some(current) = final_states.get(path) {
+        return Ok(current.clone());
+    }
+    let state = remote_managed_io_state_for_path(artifact_states, path).ok_or_else(|| {
+        DaemonError::LocalTransport {
+            operation: "remote_managed_io_patch_state",
+            message: format!("missing forwarded artifact state for `{}`", path.to_string_lossy()),
+        }
+    })?;
+    let current = state.content_text.clone();
+    before_states
+        .entry(path.clone())
+        .or_insert_with(|| current.clone());
+    final_states.insert(path.clone(), current.clone());
+    Ok(current)
 }
 
 fn leased_workflow_tool_result_should_complete_turn(
@@ -9302,6 +9833,78 @@ mod managed_io_external_change_notice_tests {
         assert_eq!(
             std::fs::read_to_string(root.join(&path)).expect("read result"),
             "external\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_managed_patch_operations_return_move_and_delete_final_states() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-remote-managed-patch-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        let workspace = crate::io::WorkspaceIdentity::local("remote-patch-repo");
+        let workspace_context = ManagedIoWorkspaceContext {
+            root: root.clone(),
+            identity: workspace.clone(),
+            generation: 0,
+            identity_changed: false,
+            valid: true,
+        };
+        let mut coordinator = crate::io::ArtifactEditCoordinator::new();
+        let states = vec![
+            remote_managed_io_state(&PathBuf::from("a.txt"), Some("hello\n".to_string())),
+            remote_managed_io_state(&PathBuf::from("b.txt"), None),
+            remote_managed_io_state(&PathBuf::from("c.txt"), Some("delete me\n".to_string())),
+        ];
+
+        let (result, final_states) = apply_remote_managed_patch_operations(
+            &mut coordinator,
+            workspace.clone(),
+            crate::io::ArtifactDomainKind::TextDocument,
+            vec![
+                ManagedPatchOperation::Move {
+                    from_path: PathBuf::from("a.txt"),
+                    to_path: PathBuf::from("b.txt"),
+                    old_text: Some("hello\n".to_string()),
+                    new_text: Some("goodbye\n".to_string()),
+                },
+                ManagedPatchOperation::Delete {
+                    path: PathBuf::from("c.txt"),
+                },
+            ],
+            states,
+            crate::io::ArtifactReservationOwner::new("remote:run-1", Some("agent-1".to_string()), "arroba.apply_patch"),
+            &workspace_context,
+        )
+        .expect("remote patch should apply");
+
+        assert!(result.ok);
+        assert_eq!(final_states.len(), 3);
+        assert_eq!(
+            remote_managed_io_state_for_path(&final_states, &PathBuf::from("a.txt"))
+                .unwrap()
+                .content_text,
+            None
+        );
+        assert_eq!(
+            remote_managed_io_state_for_path(&final_states, &PathBuf::from("b.txt"))
+                .unwrap()
+                .content_text
+                .as_deref(),
+            Some("goodbye\n")
+        );
+        assert_eq!(
+            remote_managed_io_state_for_path(&final_states, &PathBuf::from("c.txt"))
+                .unwrap()
+                .content_text,
+            None
+        );
+        let b_id = coordinator.resolve_artifact_id(&workspace, &PathBuf::from("b.txt"));
+        assert_eq!(
+            coordinator.current_content(&b_id),
+            Some(&crate::io::ArtifactContent::Text("goodbye\n".to_string()))
         );
         let _ = std::fs::remove_dir_all(root);
     }

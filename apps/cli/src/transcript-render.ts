@@ -13,6 +13,7 @@ import {
 } from "@opentui/core"
 
 import type { TranscriptEntry } from "./cli-types.js"
+import { transcriptEntryPadding } from "./transcript-entry-style.js"
 import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
   guessPathFenceLanguage,
@@ -63,12 +64,13 @@ export function buildTranscriptEntryRenderable(
     markdownRenderable = null
 
     const bodyColor = transcriptBodyColor(nextEntry, surfaceTone)
+    const padding = transcriptEntryPadding(nextEntry)
     body = new BoxRenderable(renderer, {
       width: "100%",
-      paddingLeft: 0,
-      paddingRight: 0,
-      paddingTop: 0,
-      paddingBottom: 0,
+      paddingLeft: padding.horizontal,
+      paddingRight: padding.horizontal,
+      paddingTop: padding.vertical,
+      paddingBottom: padding.vertical,
       flexDirection: "column",
       ...(bodyColor ? { backgroundColor: bodyColor } : {}),
     })
@@ -511,7 +513,7 @@ function transcriptAccent(entry: TranscriptEntry) {
 }
 
 function transcriptUsesSeparator(entry: TranscriptEntry) {
-  return entry.role !== "status"
+  return entry.role === "user"
 }
 
 function transcriptBodyColor(entry: TranscriptEntry, surfaceTone: TranscriptSurfaceTone = "default") {

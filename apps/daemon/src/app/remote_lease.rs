@@ -536,11 +536,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         if !completions.is_empty() {
-            let _ = self.app.complete_active_prompt(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                Some(provider_run_id),
-            )?;
+            if self
+                .app
+                .prompt_owner_active_prompt_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )?
+                .is_some()
+            {
+                let _ = self.app.complete_active_prompt(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                    Some(provider_run_id),
+                )?;
+            }
             self.app.leased_workflow_turns.remove(provider_run_id);
         }
         if output_chunks.is_empty() && notices.is_empty() && completions.is_empty() {

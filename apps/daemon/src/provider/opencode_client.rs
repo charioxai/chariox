@@ -83,8 +83,12 @@ pub struct OpenCodeMessageInfo {
     #[serde(rename = "sessionID")]
     pub session_id: String,
     pub role: String,
+    #[serde(rename = "parentID", default)]
+    pub parent_id: Option<String>,
     #[serde(default)]
     pub finish: Option<String>,
+    #[serde(default)]
+    pub error: Option<Value>,
     #[serde(rename = "providerID", default)]
     pub provider_id: Option<String>,
     #[serde(rename = "modelID", default)]
@@ -102,6 +106,17 @@ pub struct OpenCodeMessageInfo {
 impl OpenCodeMessageInfo {
     pub fn is_tool_call_only_completion(&self) -> bool {
         self.finish.as_deref() == Some("tool-calls")
+    }
+
+    pub fn is_terminal_assistant_completion(&self) -> bool {
+        if self.error.is_some() {
+            return true;
+        }
+        self.time.completed.is_some()
+            && self
+                .finish
+                .as_deref()
+                .is_some_and(|finish| finish != "tool-calls" && finish != "unknown")
     }
 
     pub fn resolved_model(&self) -> Option<String> {
@@ -394,6 +409,27 @@ impl OpenCodeClient {
         Ok(created.id)
     }
 
+    pub fn create_session_with_retry(
+        &self,
+        permission: Option<Value>,
+        timeout: Duration,
+        retry_interval: Duration,
+    ) -> Result<String, DaemonError> {
+        let deadline = Instant::now() + timeout;
+        let mut last_error = None;
+
+        loop {
+            match self.create_session(permission.clone()) {
+                Ok(session_id) => return Ok(session_id),
+                Err(error) if Instant::now() < deadline => {
+                    last_error = Some(error);
+                    std::thread::sleep(retry_interval);
+                }
+                Err(error) => return Err(last_error.unwrap_or(error)),
+            }
+        }
+    }
+
     pub fn configured_defaults(&self) -> Result<OpenCodeConfiguredDefaults, DaemonError> {
         let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
             Ok(config) => config,
@@ -425,6 +461,7 @@ impl OpenCodeClient {
     pub fn submit_prompt(
         &self,
         session_id: &str,
+        message_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
         model: Option<&str>,
@@ -446,6 +483,7 @@ impl OpenCodeClient {
             }));
         }
         let mut body = json!({
+            "messageID": message_id,
             "parts": parts,
         });
         if let Some((provider_id, model_id)) = parse_model(model) {

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm } from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,6 +121,26 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
 
+async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const connected = await new Promise((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.once('connect', () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.once('error', () => {
+        socket.destroy()
+        resolve(false)
+      })
+    })
+    if (connected) return
+    await sleep(100)
+  }
+  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
 async function resolveBinary(binaryPath, manifestPath, binName) {
   try {
     await access(binaryPath)
@@ -174,7 +195,10 @@ async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
       kernelMaxMissedPongs: 10,
     })
     try {
-      await client.send(listRemoteMachinesRequest())
+      await Promise.race([
+        client.send(listRemoteMachinesRequest()),
+        sleep(2_000).then(() => { throw new Error('probe timeout') }),
+      ])
       await client.close().catch(() => {})
       return
     } catch (error) {
@@ -263,6 +287,7 @@ async function main() {
 
   try {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
+    await waitForTcpPort(ports.relayPort)
     homeChild = spawnProcess(daemonBinary, [], {
       cwd: repoRoot,
       env: daemonEnv({

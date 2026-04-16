@@ -1,6 +1,7 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 
+pub(crate) mod prompt_injection;
 pub mod runtime;
 pub struct SchedulerService;
 

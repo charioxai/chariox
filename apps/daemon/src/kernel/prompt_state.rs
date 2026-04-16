@@ -338,6 +338,14 @@ impl PromptStateOwner {
             .retain(|key, _| key.session_id.as_str() != session_id);
     }
 
+    pub(crate) fn remove_agent(&self, session_id: &str, agent_id: &str) {
+        self.state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned")
+            .states
+            .remove(&PromptStateKey::new(session_id, agent_id));
+    }
+
     fn remove_queued_prompts_matching(
         &self,
         session: &RuntimeSession,

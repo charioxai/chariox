@@ -47,7 +47,7 @@ pub(crate) struct OpenCodeRuntimeState {
     event_subscription: OpenCodeEventSubscription,
     last_status_kind: Option<String>,
     last_completed_assistant_message_id: Option<String>,
-    awaiting_session_idle: bool,
+    active_user_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -89,7 +89,7 @@ impl OpenCodeRuntimeState {
             event_subscription,
             last_status_kind: None,
             last_completed_assistant_message_id: None,
-            awaiting_session_idle: false,
+            active_user_message_id: None,
         }
     }
 
@@ -105,8 +105,8 @@ impl OpenCodeRuntimeState {
         self.event_subscription.stop();
     }
 
-    pub(super) fn note_prompt_submitted(&mut self) {
-        self.awaiting_session_idle = true;
+    pub(super) fn note_prompt_submitted(&mut self, user_message_id: String) {
+        self.active_user_message_id = Some(user_message_id);
     }
 }
 
@@ -156,7 +156,21 @@ pub(super) fn drain_opencode_events(
                         message_id: info.id.clone(),
                         completed_at_ms: info.time.completed.unwrap_or_default(),
                     });
-                    state.awaiting_session_idle = true;
+                }
+                if opencode_message_completes_active_prompt(state, &info) {
+                    let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                    if let Ok(messages) = client.messages(&state.session_id) {
+                        if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
+                            resolved_usage_tokens_total = Some(total_tokens);
+                        }
+                        record_snapshot_message_metadata(state, &messages);
+                        chunks.extend(render_snapshot_output_chunks(state, &messages).chunks);
+                        let snapshot_completions =
+                            collect_new_completed_assistant_messages(state, &messages);
+                        completions.extend(snapshot_completions);
+                    }
+                    prompt_completed = true;
+                    state.active_user_message_id = None;
                 }
             }
             Ok(OpenCodeEvent::MessagePartDelta {
@@ -254,11 +268,13 @@ pub(super) fn drain_opencode_events(
                                 merge_key: Some(part.id.clone()),
                                 bytes: delta.into_bytes(),
                             }),
-                            "text" => chunks.push(OpenCodeOutputChunk {
-                                kind: TerminalOutputKind::ProviderOutput,
-                                merge_key: Some(part.id.clone()),
-                                bytes: delta.into_bytes(),
-                            }),
+                            "text" => {
+                                chunks.push(OpenCodeOutputChunk {
+                                    kind: TerminalOutputKind::ProviderOutput,
+                                    merge_key: Some(part.id.clone()),
+                                    bytes: delta.into_bytes(),
+                                });
+                            }
                             _ => {}
                         }
                     }
@@ -334,6 +350,7 @@ pub(super) fn drain_opencode_events(
                     });
                     notices.push(message);
                     prompt_completed = true;
+                    state.active_user_message_id = None;
                 }
             }
             Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
@@ -346,7 +363,7 @@ pub(super) fn drain_opencode_events(
                             bytes: format_session_status(&kind).into_bytes(),
                         });
                     }
-                    if kind == "idle" && state.awaiting_session_idle {
+                    if state.active_user_message_id.is_some() {
                         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                         if let Ok(messages) = client.messages(&state.session_id) {
                             if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
@@ -359,11 +376,12 @@ pub(super) fn drain_opencode_events(
                                 collect_new_completed_assistant_messages(state, &messages);
                             if !status_completions.is_empty() {
                                 completions.extend(status_completions);
-                                state.awaiting_session_idle = true;
+                            }
+                            if opencode_messages_complete_active_prompt(state, &messages) {
+                                prompt_completed = true;
+                                state.active_user_message_id = None;
                             }
                         }
-                        prompt_completed = true;
-                        state.awaiting_session_idle = false;
                     }
                 }
             }
@@ -410,18 +428,17 @@ pub(super) fn drain_opencode_events(
                         collect_new_completed_assistant_messages(state, &snapshot.messages);
                     if !snapshot_completions.is_empty() {
                         completions.extend(snapshot_completions);
-                        state.awaiting_session_idle = true;
                     }
-                    if snapshot.status == "idle" && state.awaiting_session_idle {
+                    if opencode_messages_complete_active_prompt(state, &snapshot.messages) {
                         prompt_completed = true;
-                        state.awaiting_session_idle = false;
+                        state.active_user_message_id = None;
                     }
                 }
             }
         }
     }
 
-    if state.awaiting_session_idle && !prompt_completed {
+    if state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
         if let Ok(snapshot) = client.snapshot(&state.session_id) {
             if resolved_model.is_none() {
@@ -460,9 +477,9 @@ pub(super) fn drain_opencode_events(
                     bytes: format_session_status(&snapshot.status).into_bytes(),
                 });
             }
-            if snapshot.status == "idle" {
+            if opencode_messages_complete_active_prompt(state, &snapshot.messages) {
                 prompt_completed = true;
-                state.awaiting_session_idle = false;
+                state.active_user_message_id = None;
             }
         }
     }
@@ -481,6 +498,28 @@ pub(super) fn drain_opencode_events(
 
 struct SnapshotRenderResult {
     chunks: Vec<OpenCodeOutputChunk>,
+}
+
+fn opencode_message_completes_active_prompt(
+    state: &OpenCodeRuntimeState,
+    info: &crate::provider::opencode_client::OpenCodeMessageInfo,
+) -> bool {
+    let Some(active_user_message_id) = state.active_user_message_id.as_deref() else {
+        return false;
+    };
+    info.session_id == state.session_id
+        && info.role == "assistant"
+        && info.parent_id.as_deref() == Some(active_user_message_id)
+        && info.is_terminal_assistant_completion()
+}
+
+fn opencode_messages_complete_active_prompt(
+    state: &OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+) -> bool {
+    messages
+        .iter()
+        .any(|message| opencode_message_completes_active_prompt(state, &message.info))
 }
 
 fn refresh_opencode_message_metadata(
@@ -766,7 +805,7 @@ mod tests {
                 std::sync::mpsc::channel().1,
             ),
         );
-        let chunks = render_snapshot_output_chunks(
+        let rendered = render_snapshot_output_chunks(
             &mut state,
             &[crate::provider::OpenCodeMessage {
                 info: serde_json::from_value(json!({
@@ -809,8 +848,8 @@ mod tests {
                     },
                 ],
             }],
-        )
-        .chunks;
+        );
+        let chunks = rendered.chunks;
 
         assert_eq!(
             chunks
@@ -878,13 +917,14 @@ mod tests {
     }
 
     #[test]
-    fn completed_assistant_waits_for_idle_status_before_completing_prompt() {
+    fn terminal_assistant_for_active_prompt_completes_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
+        state.note_prompt_submitted("msg_user".to_string());
 
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
@@ -892,6 +932,8 @@ mod tests {
                     "id": "message-1",
                     "sessionID": "session-1",
                     "role": "assistant",
+                    "parentID": "msg_user",
+                    "finish": "stop",
                     "time": { "completed": 1 }
                 }))
                 .expect("message info should deserialize"),
@@ -901,7 +943,6 @@ mod tests {
 
         let first = drain_opencode_events(&mut state, "provider-run-1")
             .expect("first drain should succeed");
-        assert!(!first.prompt_completed);
         assert_eq!(
             first.completions,
             vec![OpenCodeAssistantCompletion {
@@ -909,23 +950,8 @@ mod tests {
                 completed_at_ms: 1,
             }]
         );
-        assert!(state.awaiting_session_idle);
-
-        let second = drain_opencode_events(&mut state, "provider-run-1")
-            .expect("second drain should succeed");
-        assert!(!second.prompt_completed);
-
-        tx.send(
-            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
-                session_id: "session-1".to_string(),
-                kind: "idle".to_string(),
-            },
-        )
-        .expect("idle status should send");
-
-        let third = drain_opencode_events(&mut state, "provider-run-1")
-            .expect("third drain should succeed");
-        assert!(third.prompt_completed);
+        assert!(first.prompt_completed);
+        assert!(state.active_user_message_id.is_none());
     }
 
     #[test]
@@ -957,14 +983,14 @@ mod tests {
     }
 
     #[test]
-    fn idle_status_after_submitted_prompt_is_treated_as_prompt_completion() {
+    fn idle_status_after_submitted_prompt_without_response_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
-        state.note_prompt_submitted();
+        state.note_prompt_submitted("msg_user".to_string());
 
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
@@ -977,18 +1003,19 @@ mod tests {
         let result =
             drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
 
-        assert!(result.prompt_completed);
-        assert!(!state.awaiting_session_idle);
+        assert!(!result.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
     }
 
     #[test]
-    fn running_tools_block_prompt_completion_until_idle_status_arrives() {
+    fn idle_status_after_assistant_text_does_not_complete_without_terminal_assistant() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
+        state.note_prompt_submitted("msg_user".to_string());
 
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
@@ -996,6 +1023,60 @@ mod tests {
                     "id": "message-1",
                     "sessionID": "session-1",
                     "role": "assistant",
+                    "parentID": "msg_user"
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
+                part: Box::new(OpenCodePart {
+                    id: "text-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    message_id: "message-1".to_string(),
+                    kind: "text".to_string(),
+                    text: "answer".to_string(),
+                    tool: String::new(),
+                    state: None,
+                    time: None,
+                }),
+            },
+        )
+        .expect("text part should send");
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let result =
+            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+
+        assert!(!result.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
+    }
+
+    #[test]
+    fn tool_call_assistant_blocks_prompt_completion_until_final_assistant() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "finish": "tool-calls",
                     "time": { "completed": 1 }
                 }))
                 .expect("message info should deserialize"),
@@ -1067,6 +1148,50 @@ mod tests {
         assert!(!third.prompt_completed);
 
         tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-2",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "finish": "stop",
+                    "time": { "completed": 2 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("final assistant update should send");
+
+        let fourth = drain_opencode_events(&mut state, "provider-run-1")
+            .expect("fourth drain should succeed");
+        assert!(fourth.prompt_completed);
+    }
+
+    #[test]
+    fn idle_status_after_tool_call_only_assistant_does_not_complete_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-tool-calls",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "finish": "tool-calls",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("tool-call assistant update should send");
+        tx.send(
             crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
                 session_id: "session-1".to_string(),
                 kind: "idle".to_string(),
@@ -1074,9 +1199,10 @@ mod tests {
         )
         .expect("idle status should send");
 
-        let fourth = drain_opencode_events(&mut state, "provider-run-1")
-            .expect("fourth drain should succeed");
-        assert!(fourth.prompt_completed);
+        let result =
+            drain_opencode_events(&mut state, "provider-run-1").expect("drain should succeed");
+        assert!(!result.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
     }
 
     #[test]
@@ -1106,6 +1232,6 @@ mod tests {
             .expect("first drain should succeed");
         assert!(first.completions.is_empty());
         assert!(!first.prompt_completed);
-        assert!(!state.awaiting_session_idle);
+        assert!(state.active_user_message_id.is_none());
     }
 }

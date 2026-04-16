@@ -429,7 +429,7 @@ function buildCyclicBudgetedFinalRunOutputScenario(providers, model, schemaPath)
           `The original number for this workflow is ${original}.`,
           `If this is your first turn and there is no upstream handoff payload, generate normal node-to-node output with JSON {"value":${original}}.`,
           'On later turns, read the upstream handoff payload and extract `output.message` JSON with integer field `value`.',
-          `If this is not your last allowed turn, add 1 and forward it as normal node-to-node output JSON with exactly one integer field: \`value\`.`,
+          `On later turns only, if this is not your last allowed turn, add 1 and forward it as normal node-to-node output JSON with exactly one integer field: \`value\`.`,
           'If this is your last allowed turn, do not forward. Instead, submit final workflow run output JSON with exactly one integer field: `value` set to the received current value.',
           'When you are generating final workflow run output, do not generate normal node-to-node output.',
           `Use summaries like \`started ${original}\`, \`forwarded X\`, or \`completed X\`.`,
@@ -463,6 +463,8 @@ function buildCyclicBudgetedFinalRunOutputScenario(providers, model, schemaPath)
       await client.send(setWorkflowNodeCanCompleteRunRequest(sessionId, workflowId, nodeIds[0], true))
       await client.send(requests.setWorkflowNodeMaxTurnsRequest(sessionId, workflowId, nodeIds[0], aMaxTurns))
     },
+    expectedFinalOutput: JSON.stringify({ value: original + 1 }),
+    expectedFailureEventKindsWhenCompleted: ['missing_structured_output'],
     extraEdges(nodeIds) {
       return [[nodeIds[1], nodeIds[0]]]
     },
@@ -808,11 +810,24 @@ async function main() {
         }
         console.log(JSON.stringify(result, null, 2))
         await captureTrackedProviderProcesses()
-        if ((run.failure_events || []).length > 0) {
-          throw new Error(`workflow drill ${scenario.id} recorded failure events`)
-        }
         if (run.status !== 'Completed') {
           throw new Error(`workflow drill ${scenario.id} ended with status ${run.status}`)
+        }
+        const failureEvents = run.failure_events || []
+        if (failureEvents.length > 0) {
+          const expectedKinds = new Set(scenario.expectedFailureEventKindsWhenCompleted || [])
+          const unexpected = failureEvents.filter((event) => !expectedKinds.has(event.kind))
+          if (unexpected.length > 0) {
+            throw new Error(`workflow drill ${scenario.id} recorded unexpected failure events`)
+          }
+        }
+        if (scenario.expectedFinalOutput !== undefined) {
+          const actualFinalOutput = run.final_output?.message
+          if (actualFinalOutput !== scenario.expectedFinalOutput) {
+            throw new Error(
+              `workflow drill ${scenario.id} final output mismatch: expected ${scenario.expectedFinalOutput}, got ${actualFinalOutput}`,
+            )
+          }
         }
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()

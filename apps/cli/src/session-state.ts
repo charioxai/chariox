@@ -112,6 +112,32 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
   return Boolean(session.active_prompt) || session.queued_prompts.length > 0
 }
 
+export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
+  return session.agents.some((agent) => {
+    return agent.is_processing || agent.state === "Working"
+  })
+}
+
+export function shouldConfirmIdleTurnCompletion(options: {
+  nextSession: RuntimeSession
+  currentWorking: boolean
+  currentSubmitting: boolean
+  currentBusyLatches: Record<string, boolean>
+  currentStreamingAgentId: string | null
+  currentProviderActivityLabel: string | null
+  currentActiveStatusLabel: string | null
+}): boolean {
+  if (sessionHasPromptWork(options.nextSession) || sessionHasProcessingAgent(options.nextSession)) {
+    return false
+  }
+  return options.currentWorking
+    || options.currentSubmitting
+    || Object.values(options.currentBusyLatches).some(Boolean)
+    || options.currentStreamingAgentId !== null
+    || options.currentProviderActivityLabel !== null
+    || options.currentActiveStatusLabel !== null
+}
+
 export function agentPromptState(
   session: RuntimeSession,
   agentId: string | null | undefined,

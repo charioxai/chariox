@@ -193,6 +193,7 @@ import {
   deriveSessionTransitionState,
   sessionHasPromptWork,
   sessionResponseLayout,
+  shouldConfirmIdleTurnCompletion,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 import { createSessionAttachmentController } from "./session-attachment-controller.js"
@@ -2839,6 +2840,15 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       currentAgentActivityLabels: agentActivityLabels(),
       layoutPreference: preferencesState().ui?.multiAgentResponseLayout,
     })
+    const shouldConfirmIdleCompletion = shouldConfirmIdleTurnCompletion({
+      nextSession,
+      currentWorking: working(),
+      currentSubmitting: submitting(),
+      currentBusyLatches: agentBusyLatches(),
+      currentStreamingAgentId: streamingAgentId(),
+      currentProviderActivityLabel: providerActivityLabel(),
+      currentActiveStatusLabel: activeStatusLabel(),
+    })
     setSessionState(nextSession)
     setAgentActivityLabels(transition.nextAgentActivityLabels)
     setStreamingAgentId(transition.nextStreamingAgentId)
@@ -2847,7 +2857,8 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (transition.nextHasPromptWork) {
       turnCompletionConfirmed = false
       cancelPendingTurnCompletion()
-    } else if (turnCompletionConfirmed) {
+    } else if (turnCompletionConfirmed || shouldConfirmIdleCompletion) {
+      turnCompletionConfirmed = true
       scheduleTurnCompletion()
     } else {
       cancelPendingTurnCompletion()

@@ -1,7 +1,7 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
 import { For } from "solid-js"
 
-import { PaneGridBorderChars, PromptBorderChars, theme } from "./theme.js"
+import { PaneGridBorderChars, theme } from "./theme.js"
 
 type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
@@ -272,9 +272,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       <box
         flexShrink={0}
         overflow="visible"
-        border={["top"]}
-        borderColor={props.fatalError ? theme.error : theme.primary}
-        customBorderChars={PromptBorderChars}
+        border={false}
       >
         <box
           ref={props.onCommandCenterBoxRef}

@@ -37,7 +37,9 @@ mod tests {
     use super::provider::{LaunchProviderRequest, ProviderResumeState};
     use super::session::{CreateSessionRequest, PromptSubmissionOutcome};
     use super::terminal::TerminalOutputKind;
-    use super::transport::relay_peer::{RelayProjectedCompletion, RelayProjectedOutputChunk};
+    use super::transport::relay_peer::{
+        RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
+    };
     use super::{DaemonApp, DaemonConfig, DaemonError};
 
     #[test]
@@ -249,6 +251,50 @@ mod tests {
             completion.completed.target_agent_id(),
             leased_agent.backing_agent_id
         );
+    }
+
+    #[test]
+    fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "session-1", "agent-home-1")
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None)
+            .expect("leased agent should be created");
+
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+            .expect("leased prompt should submit");
+        match outcome {
+            PromptSubmissionOutcome::Started { .. } => {}
+            other => panic!("unexpected prompt submission outcome: {other:?}"),
+        }
+        app.terminal_mut().record_assistant_message_completion(
+            &leased_agent.backing_session_id,
+            &provider_run_id,
+            Some(&leased_agent.backing_agent_id),
+            vec![leased_agent.backing_attachment_id.clone()],
+            "assistant-msg-1",
+            1234,
+        );
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("backing prompt should settle first");
+
+        let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("settled backing prompt should not block completion projection")
+            .expect("completion projection should be emitted");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
+        assert!(completions
+            .iter()
+            .any(|completion| completion.message_id == "assistant-msg-1"));
     }
 
     #[test]

@@ -10,8 +10,10 @@ import {
   buildDetachedSessionState,
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
+  sessionHasProcessingAgent,
   sessionHasPromptWork,
   sessionResponseLayout,
+  shouldConfirmIdleTurnCompletion,
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
 } from "./session-state.js"
 
@@ -125,6 +127,52 @@ test("sessionHasPromptWork and agentHasPromptWork honor prompt_states across age
   assert.equal(sessionHasPromptWork(nextSession), true)
   assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), true)
+})
+
+test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
+  const idleSession = session({
+    agents: [agent("agent-a", { state: "Focused" }), agent("agent-b")],
+  })
+
+  assert.equal(sessionHasPromptWork(idleSession), false)
+  assert.equal(sessionHasProcessingAgent(idleSession), false)
+  assert.equal(shouldConfirmIdleTurnCompletion({
+    nextSession: idleSession,
+    currentWorking: true,
+    currentSubmitting: false,
+    currentBusyLatches: {},
+    currentStreamingAgentId: "agent-a",
+    currentProviderActivityLabel: "thinking",
+    currentActiveStatusLabel: "thinking",
+  }), true)
+})
+
+test("shouldConfirmIdleTurnCompletion does not override active prompt or processing snapshots", () => {
+  const activePromptSession = session({
+    active_prompt: {
+      id: "prompt-1",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "hello",
+      status: "running",
+    },
+    agents: [agent("agent-a", { is_processing: false, state: "Focused" })],
+  })
+  const processingSession = session({
+    agents: [agent("agent-a", { is_processing: true, state: "Working" })],
+  })
+
+  for (const nextSession of [activePromptSession, processingSession]) {
+    assert.equal(shouldConfirmIdleTurnCompletion({
+      nextSession,
+      currentWorking: true,
+      currentSubmitting: true,
+      currentBusyLatches: { "agent-a": true },
+      currentStreamingAgentId: "agent-a",
+      currentProviderActivityLabel: "thinking",
+      currentActiveStatusLabel: "thinking",
+    }), false)
+  }
 })
 
 test("agentPromptState tolerates daemon payloads that omit empty queued prompts", () => {
