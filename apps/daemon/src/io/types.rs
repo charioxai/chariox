@@ -1,6 +1,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArtifactId(String);
 
@@ -56,7 +58,7 @@ impl fmt::Display for ArtifactSnapshotId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceIdentity {
     pub vcs_provider: Option<String>,
     pub repo_id: Option<String>,

@@ -15,6 +15,7 @@ use crate::session::CreateSessionRequest;
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayPromptAttachment,
+    RemoteManagedIoContext,
 };
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
@@ -328,6 +329,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .leased_workflow_turns
             .get(provider_run_id)
             .map(|binding| binding.context.clone())
+    }
+
+    pub(crate) fn leased_managed_io_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+        worker_workspace_identity: crate::io::WorkspaceIdentity,
+    ) -> Option<RemoteManagedIoContext> {
+        let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
+            self.app
+                .providers
+                .get_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+                .map(|run| run.id() == provider_run_id)
+                .unwrap_or(false)
+        })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        Some(RemoteManagedIoContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_provider_run_id: provider_run_id.to_string(),
+            worker_workspace_identity,
+        })
     }
 
     pub(crate) fn complete_leased_workflow_prompt_for_provider_run(

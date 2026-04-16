@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
+use crate::io::WorkspaceIdentity;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
 
@@ -12,6 +13,24 @@ pub struct RelayPromptAttachment {
     pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contents_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteManagedIoContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub worker_provider_run_id: String,
+    pub worker_workspace_identity: WorkspaceIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteManagedIoArtifactState {
+    pub path: String,
+    pub exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +75,12 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    ForwardManagedIoRuntimeTool {
+        context: RemoteManagedIoContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+        artifact_states: Vec<RemoteManagedIoArtifactState>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +115,10 @@ pub enum RelayPeerResponse {
     },
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    ManagedIoRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+        final_artifact_states: Vec<RemoteManagedIoArtifactState>,
     },
 }
 

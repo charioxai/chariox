@@ -540,6 +540,29 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn dispatch_forwarded_managed_io_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteManagedIoContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+        artifact_states: Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Vec<crate::transport::relay_peer::RemoteManagedIoArtifactState>,
+        ),
+        DaemonError,
+    > {
+        self.runtime_state
+            .dispatch_forwarded_managed_io_runtime_tool_call(
+                context,
+                tool_name,
+                arguments,
+                artifact_states,
+            )
+            .await
+    }
+
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,

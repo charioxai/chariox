@@ -396,11 +396,32 @@ impl ArtifactEditCoordinator {
 }
 
 fn artifact_id_for(workspace_identity: &WorkspaceIdentity, path: &Path) -> ArtifactId {
-    ArtifactId::new(format!(
-        "{}:{}",
-        workspace_identity.worktree_root_fingerprint,
-        normalize_path(path)
-    ))
+    ArtifactId::new(format!("{}:{}", coordination_key(workspace_identity), normalize_path(path)))
+}
+
+fn coordination_key(workspace_identity: &WorkspaceIdentity) -> String {
+    if let Some(repo_id) = workspace_identity.repo_id.as_deref().filter(|value| !value.is_empty()) {
+        return format!(
+            "repo_id:{}:{}",
+            repo_id,
+            workspace_identity.branch.as_deref().unwrap_or("")
+        );
+    }
+    if let Some(repo_url) = workspace_identity.repo_url.as_deref().filter(|value| !value.is_empty()) {
+        return format!(
+            "repo_url:{}:{}",
+            normalize_repo_url(repo_url),
+            workspace_identity.branch.as_deref().unwrap_or("")
+        );
+    }
+    workspace_identity.worktree_root_fingerprint.clone()
+}
+
+fn normalize_repo_url(repo_url: &str) -> String {
+    repo_url
+        .trim()
+        .trim_end_matches(".git")
+        .to_ascii_lowercase()
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -459,6 +480,17 @@ mod tests {
     fn text_range_of(haystack: &str, needle: &str) -> TextRange {
         let start = haystack.find(needle).expect("needle should exist");
         TextRange::new(start, start + needle.len())
+    }
+
+    fn git_workspace(root: &str) -> WorkspaceIdentity {
+        WorkspaceIdentity {
+            vcs_provider: Some("git".to_string()),
+            repo_id: None,
+            repo_url: Some("https://github.com/example/repo.git".to_string()),
+            branch: Some("main".to_string()),
+            head_commit: Some("commit-a".to_string()),
+            worktree_root_fingerprint: root.to_string(),
+        }
     }
 
     #[test]
@@ -602,6 +634,28 @@ mod tests {
                 "LEFT!\nmiddle\nRIGHT!\n".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn git_workspace_artifacts_coordinate_across_different_roots() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let local = git_workspace("/local/repo");
+        let remote = git_workspace("/remote/repo");
+        let local_read = coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: local,
+            path: PathBuf::from("src/lib.rs"),
+            domain: ArtifactDomainKind::TextDocument,
+            content: ArtifactContent::Text("left\nright\n".to_string()),
+        });
+        let remote_read = coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: remote,
+            path: PathBuf::from("src/lib.rs"),
+            domain: ArtifactDomainKind::TextDocument,
+            content: ArtifactContent::Text("left\nright\n".to_string()),
+        });
+
+        assert_eq!(local_read.artifact_id, remote_read.artifact_id);
+        assert_eq!(remote_read.version.value(), 1);
     }
 
     #[test]

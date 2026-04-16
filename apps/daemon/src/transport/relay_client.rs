@@ -728,6 +728,33 @@ async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardManagedIoRuntimeTool {
+            context,
+            tool_name,
+            arguments,
+            artifact_states,
+        } => {
+            let handled = router
+                .dispatch_forwarded_managed_io_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    artifact_states,
+                )
+                .await;
+            match handled {
+                Ok((result, final_artifact_states)) => RelayPeerResponse::ManagedIoRuntimeToolHandled {
+                    result,
+                    final_artifact_states,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
     };
     let plaintext = match serde_json::to_vec(&response) {
         Ok(bytes) => bytes,

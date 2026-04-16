@@ -315,7 +315,8 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
 - Landed: external artifact change monitor boundary that tracks managed reads, runs a scoped live watcher for tracked artifacts, records detected external changes, and returns agent-facing external-change notices for edit/write/patch/delete/move paths.
 - Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
-- Not landed yet: remote coordinated edit routing and type-specific non-text artifact domains beyond v1 opaque whole-file locking.
+- Landed: first remote coordinated managed-I/O routing slice. Leased worker provider runs forward `read_artifact`, `edit_artifact`, and `write_artifact` through the home kernel when the worker workspace matches the home session repo/branch. The home kernel owns artifact snapshots/reservations/conflict decisions, and the worker applies accepted final text states only if its local artifact still matches the forwarded pre-apply state.
+- Not landed yet: live remote managed-I/O drills, remote apply-patch/move/delete routing, and type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals
 
