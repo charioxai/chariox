@@ -437,7 +437,7 @@ fn ranges_overlap(left: &[TextRange], right: &[TextRange]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::types::{AgentEditOperation, TextRange};
+    use crate::io::types::{AgentEditOperation, ArtifactEditWarning, TextRange};
 
     fn workspace() -> WorkspaceIdentity {
         WorkspaceIdentity::local("repo-a")
@@ -454,6 +454,11 @@ mod tests {
             domain: ArtifactDomainKind::TextDocument,
             content: ArtifactContent::Text(content.to_string()),
         })
+    }
+
+    fn text_range_of(haystack: &str, needle: &str) -> TextRange {
+        let start = haystack.find(needle).expect("needle should exist");
+        TextRange::new(start, start + needle.len())
     }
 
     #[test]
@@ -547,6 +552,97 @@ mod tests {
         assert_eq!(
             coordinator.current_content(&first_read.artifact_id),
             Some(&ArtifactContent::Text("A\nb\nC\nd\nE\n".to_string()))
+        );
+    }
+
+    #[test]
+    fn concurrent_non_overlapping_snapshot_edits_land_on_intended_targets() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let base = "left\nmiddle\nright\n";
+        let first_read = read_text(&mut coordinator, "src/lib.rs", base);
+        let second_read = read_text(&mut coordinator, "src/lib.rs", base);
+
+        let first_result = coordinator.apply_edit(ArtifactWriteRequest {
+            workspace_identity: workspace(),
+            intent: AgentEditIntent {
+                path: PathBuf::from("src/lib.rs"),
+                snapshot_id: Some(first_read.snapshot_id),
+                operation: AgentEditOperation::ReplaceRange {
+                    range: text_range_of(base, "left"),
+                    old_text: "left".to_string(),
+                    new_text: "LEFT!".to_string(),
+                },
+            },
+        });
+        assert!(matches!(first_result, EditResult::Applied { .. }));
+
+        let second_result = coordinator.apply_edit(ArtifactWriteRequest {
+            workspace_identity: workspace(),
+            intent: AgentEditIntent {
+                path: PathBuf::from("src/lib.rs"),
+                snapshot_id: Some(second_read.snapshot_id),
+                operation: AgentEditOperation::ReplaceRange {
+                    range: text_range_of(base, "right"),
+                    old_text: "right".to_string(),
+                    new_text: "RIGHT!".to_string(),
+                },
+            },
+        });
+
+        assert!(matches!(
+            second_result,
+            EditResult::AppliedWithWarning {
+                warning: ArtifactEditWarning::RebasedOverNonOverlappingChange { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            coordinator.current_content(&second_read.artifact_id),
+            Some(&ArtifactContent::Text(
+                "LEFT!\nmiddle\nRIGHT!\n".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn stale_range_edit_rebases_across_before_and_after_insertions_exactly() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let base = "header\nalpha\nTARGET\nomega\nfooter\n";
+        let first_read = read_text(&mut coordinator, "src/lib.rs", base);
+        let _ = coordinator.read_artifact(ArtifactReadRequest {
+            workspace_identity: workspace(),
+            path: PathBuf::from("src/lib.rs"),
+            domain: ArtifactDomainKind::TextDocument,
+            content: ArtifactContent::Text(
+                "intro\nheader\nalpha\nTARGET\nomega\nfooter\noutro\n".to_string(),
+            ),
+        });
+
+        let result = coordinator.apply_edit(ArtifactWriteRequest {
+            workspace_identity: workspace(),
+            intent: AgentEditIntent {
+                path: PathBuf::from("src/lib.rs"),
+                snapshot_id: Some(first_read.snapshot_id),
+                operation: AgentEditOperation::ReplaceRange {
+                    range: text_range_of(base, "TARGET"),
+                    old_text: "TARGET".to_string(),
+                    new_text: "REPLACED".to_string(),
+                },
+            },
+        });
+
+        assert!(matches!(
+            result,
+            EditResult::AppliedWithWarning {
+                warning: ArtifactEditWarning::RebasedOverNonOverlappingChange { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            coordinator.current_content(&first_read.artifact_id),
+            Some(&ArtifactContent::Text(
+                "intro\nheader\nalpha\nREPLACED\nomega\nfooter\noutro\n".to_string()
+            ))
         );
     }
 

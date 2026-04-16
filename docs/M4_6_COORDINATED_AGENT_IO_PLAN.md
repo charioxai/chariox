@@ -314,7 +314,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: unsupported provider-mode rejection at launch when managed I/O is required but the adapter cannot enforce write blocking.
 - Landed: managed-I/O health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
 - Landed: external artifact change monitor boundary that tracks managed reads, runs a scoped live watcher for tracked artifacts, records detected external changes, and returns agent-facing external-change notices for edit/write/patch/delete/move paths.
-- Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes succeed and direct/native write attempts do not create repo files.
+- Landed: local managed-I/O live drill for Codex and OpenCode proving managed reads/writes/edits/apply-patch/move/delete succeed, direct/native write attempts do not create repo files, same-area agent collisions allow only one final write, stale non-overlapping external changes rebase to the intended target, and stale overlapping external changes are rejected without changing the file. The drill uses an isolated spawned daemon/session/workspace and cleans its transient artifacts on exit.
 - Not landed yet: remote coordinated edit routing and type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals

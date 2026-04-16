@@ -208,7 +208,7 @@ fn is_arroba_source_workspace(root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::types::{AgentEditOperation, ArtifactEditWarning};
+    use crate::io::types::{AgentEditOperation, ArtifactEditWarning, TextRange};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace() -> WorkspaceIdentity {
@@ -223,6 +223,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("arroba-managed-file-io-{name}-{nanos}"));
         fs::create_dir_all(&root).expect("create test root");
         root
+    }
+
+    fn text_range_of(haystack: &str, needle: &str) -> TextRange {
+        let start = haystack.find(needle).expect("needle should exist");
+        TextRange::new(start, start + needle.len())
     }
 
     #[test]
@@ -292,6 +297,60 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).expect("read result"),
             "zero\none\ntwo\nfour\n"
+        );
+    }
+
+    #[test]
+    fn managed_file_apply_places_rebased_range_edit_exactly() {
+        let root = test_root("exact-rebase");
+        let path = root.join("src.txt");
+        let base = "header\nalpha\nTARGET\nomega\nfooter\n";
+        fs::write(&path, base).expect("write fixture");
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let first_read = ManagedFileIo::read_artifact(
+            &mut coordinator,
+            ManagedFileReadRequest {
+                workspace_identity: workspace(),
+                workspace_root: root.clone(),
+                path: PathBuf::from("src.txt"),
+                domain: ArtifactDomainKind::TextDocument,
+            },
+        )
+        .expect("read artifact");
+        fs::write(
+            &path,
+            "intro\nheader\nalpha\nTARGET\nomega\nfooter\noutro\n",
+        )
+        .expect("external write");
+
+        let result = ManagedFileIo::apply_edit(
+            &mut coordinator,
+            ManagedFileWriteRequest {
+                workspace_identity: workspace(),
+                workspace_root: root,
+                domain: ArtifactDomainKind::TextDocument,
+                intent: AgentEditIntent {
+                    path: PathBuf::from("src.txt"),
+                    snapshot_id: Some(first_read.snapshot_id),
+                    operation: AgentEditOperation::ReplaceRange {
+                        range: text_range_of(base, "TARGET"),
+                        old_text: "TARGET".to_string(),
+                        new_text: "REPLACED".to_string(),
+                    },
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            EditResult::AppliedWithWarning {
+                warning: ArtifactEditWarning::RebasedOverNonOverlappingChange { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read result"),
+            "intro\nheader\nalpha\nREPLACED\nomega\nfooter\noutro\n"
         );
     }
 
