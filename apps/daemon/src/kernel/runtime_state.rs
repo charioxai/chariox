@@ -6939,24 +6939,6 @@ impl KernelRuntimeState {
         Ok((records, session))
     }
 
-    pub(crate) async fn pump_active_provider_output_with_snapshot(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
-        let _ = self
-            .pump_owned_provider_output(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-                false,
-            )
-            .await?;
-        let session = self.owned.session_snapshot(session_id).ok();
-        Ok(session)
-    }
-
     pub(crate) async fn capability_context(
         &self,
         session_id: &str,
