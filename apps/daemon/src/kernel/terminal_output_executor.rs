@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::error::DaemonError;
 use crate::kernel::projection::{
     AgentRuntimeProjectionStore, ProviderRunProjectionStore, SessionStateProjectionStore,
@@ -57,23 +59,16 @@ impl TerminalOutputExecutor {
                 .await?;
             return Ok(LocalDaemonResponse::TerminalOutput { records });
         };
-        let Some(provider_run_id) = session.active_provider_run_id().map(str::to_string) else {
-            return Ok(LocalDaemonResponse::TerminalOutput {
-                records: self
-                    .terminal_stream
-                    .drain_output_records(&request.session_id, &request.attachment_id),
+        if !session.has_attachment(&request.attachment_id) {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: request.session_id,
+                attachment_id: request.attachment_id,
             });
-        };
-        if self
-            .provider_run_projection
-            .get(&provider_run_id)
-            .is_some_and(|run| {
-                run.session_id() == request.session_id
-                    && matches!(
-                        run.state(),
-                        ProviderRunState::Ended | ProviderRunState::Parked
-                    )
-            })
+        }
+        if session
+            .active_provider_run_id()
+            .is_none_or(|provider_run_id| self.projected_provider_run_is_idle(&request, provider_run_id))
+            && !session.has_any_prompt_work()
         {
             return Ok(LocalDaemonResponse::TerminalOutput {
                 records: self
@@ -82,20 +77,67 @@ impl TerminalOutputExecutor {
             });
         }
 
-        let recipient_attachment_ids = session.attachment_ids().iter().cloned().collect();
-        let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-        self.terminal_output_store
-            .pump_active_provider_output(
-                &request.session_id,
-                &provider_run_id,
-                recipient_attachment_ids,
-            )
+        let provider_run_ids = self.provider_run_ids_for_pump(&session);
+        let mut permits = Vec::new();
+        for provider_run_id in &provider_run_ids {
+            permits.push(self.provider_runtime_lanes.acquire(provider_run_id).await);
+        }
+        let records = self
+            .terminal_output_store
+            .pump_terminal_output_with_compat_snapshot(&request.session_id, &request.attachment_id)
             .await?;
+        drop(permits);
         Ok(LocalDaemonResponse::TerminalOutput {
-            records: self
-                .terminal_stream
-                .drain_output_records(&request.session_id, &request.attachment_id),
+            records,
         })
+    }
+
+    fn projected_provider_run_is_idle(
+        &self,
+        request: &PumpTerminalOutputRequest,
+        provider_run_id: &str,
+    ) -> bool {
+        self.provider_run_projection
+            .get(provider_run_id)
+            .is_some_and(|run| {
+                run.session_id() == request.session_id
+                    && matches!(
+                        run.state(),
+                        ProviderRunState::Ended | ProviderRunState::Parked
+                    )
+            })
+    }
+
+    fn provider_run_ids_for_pump(&self, session: &crate::session::RuntimeSession) -> BTreeSet<String> {
+        let mut provider_run_ids = BTreeSet::new();
+        if let Some(provider_run_id) = session.active_provider_run_id() {
+            if !self.projected_run_is_idle_for_session(session.id(), provider_run_id) {
+                provider_run_ids.insert(provider_run_id.to_string());
+            }
+        }
+        for (agent_id, prompt_state) in session.prompt_states() {
+            if prompt_state.active_prompt().is_none() {
+                continue;
+            }
+            if let Some(run) = self.provider_run_projection.get_for_agent(session.id(), agent_id) {
+                if !matches!(run.state(), ProviderRunState::Ended | ProviderRunState::Parked) {
+                    provider_run_ids.insert(run.id().to_string());
+                }
+            }
+        }
+        provider_run_ids
+    }
+
+    fn projected_run_is_idle_for_session(&self, session_id: &str, provider_run_id: &str) -> bool {
+        self.provider_run_projection
+            .get(provider_run_id)
+            .is_some_and(|run| {
+                run.session_id() == session_id
+                    && matches!(
+                        run.state(),
+                        ProviderRunState::Ended | ProviderRunState::Parked
+                    )
+            })
     }
 }
 
@@ -123,24 +165,6 @@ impl TerminalOutputStore {
             .await?;
         self.refresh_session_projection(session);
         Ok(records)
-    }
-
-    async fn pump_active_provider_output(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
-    ) -> Result<(), DaemonError> {
-        let session = self
-            .state
-            .pump_active_provider_output_with_snapshot(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids,
-            )
-            .await?;
-        self.refresh_session_projection(session);
-        Ok(())
     }
 
     fn refresh_session_projection(&self, session: Option<crate::session::RuntimeSession>) {
