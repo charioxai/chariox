@@ -498,6 +498,20 @@ impl DaemonApp {
         self.prompt_workspace_claims.remove(provider_run_id)
     }
 
+    pub(crate) fn release_workflow_node_workspace_claim(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> bool {
+        let owner = format!("{workflow_run_id}:{workflow_node_run_id}");
+        self.prompt_workspace_claims.remove_matching(|claim| {
+            claim.session_id == session_id
+                && claim.attachment_id.as_deref() == Some(owner.as_str())
+                && claim.operation == "workflow_node_dispatch"
+        }) > 0
+    }
+
     pub(crate) fn update_provider_run_projection(&self, run: RuntimeProviderRun) {
         self.provider_run_projection.update(run);
         self.provider_process_projection.invalidate();

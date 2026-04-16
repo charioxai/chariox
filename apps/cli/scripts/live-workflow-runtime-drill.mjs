@@ -600,8 +600,13 @@ async function main() {
         relayAuthToken: options.relayToken,
         targetDaemonId: options.targetDaemonId,
         targetDaemonAlias: options.targetDaemonAlias,
+        kernelPingIntervalMs: 60_000,
+        kernelMaxMissedPongs: 10,
       })
-    : new LocalIpcClient(kernelUrl)
+    : new LocalIpcClient(kernelUrl, {
+        kernelPingIntervalMs: 60_000,
+        kernelMaxMissedPongs: 10,
+      })
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const unwrap = (resp, key) => resp?.[key] ?? resp
   const pidExists = (pid) => {

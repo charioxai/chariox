@@ -891,8 +891,13 @@ pub fn on_workflow_prompt_completed(
         .as_deref()
         .map(|provider_run_id| app.release_prompt_workspace_claim(provider_run_id))
         .unwrap_or(false);
+    let released_workflow_claim = app.release_workflow_node_workspace_claim(
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+    );
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
-    if released_claim {
+    if released_claim || released_workflow_claim {
         let _ = retry_blocked_workflow_claims(app);
     }
     let state_suffix = match workflow_run.status() {

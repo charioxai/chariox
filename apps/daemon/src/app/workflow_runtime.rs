@@ -375,6 +375,36 @@ pub(crate) fn complete_workflow_prompt_from_runtime(
     WorkflowProgression::on_prompt_completed(app, session_id, prompt, provider_run_id)
 }
 
+pub(crate) fn workflow_prompt_has_completion_output_from_runtime(
+    app: &DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_run_id: Option<&str>,
+) -> bool {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return true;
+    };
+    let Ok(session) = app.sessions().get_session(session_id) else {
+        return false;
+    };
+    let Ok(history) = crate::app::KernelSessionReadService::new(app).session_history(session_id)
+    else {
+        return false;
+    };
+    crate::scheduler::runtime::build_workflow_completion_snapshot_from_history(
+        &session,
+        history,
+        session_id,
+        workflow_run_id,
+        workflow_node_run_id,
+        provider_run_id.unwrap_or_default(),
+    )
+    .and_then(|snapshot| snapshot.output().cloned())
+    .is_some()
+}
+
 pub(crate) fn cancel_workflow_prompt_from_runtime(
     app: &mut DaemonApp,
     session_id: &str,

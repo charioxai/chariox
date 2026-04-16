@@ -41,6 +41,6 @@ pub use types::{
     ControlOperation, LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,
     ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
     ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, RuntimeMcpBinding,
-    RuntimeProviderRun,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderWriteAccessMode,
+    RuntimeMcpBinding, RuntimeProviderRun,
 };

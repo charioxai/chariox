@@ -37,15 +37,15 @@ let endSessionRequest
 let listRemoteMachinesRequest
 
 const DEFAULT_SCENARIO = 'validated-increment-chain'
-const DEFAULT_PROVIDER = 'codex'
-const DEFAULT_MODEL = 'gpt-5.2'
+const DEFAULT_PROVIDERS = ['opencode', 'codex']
+const DEFAULT_MODEL = 'gpt-5.4'
 const DEFAULT_POLL_LIMIT = 120
 const DEFAULT_POLL_INTERVAL_MS = 2000
 
 function parseArgs(argv) {
   const options = {
     scenario: DEFAULT_SCENARIO,
-    provider: DEFAULT_PROVIDER,
+    providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
     pollLimit: DEFAULT_POLL_LIMIT,
     pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
@@ -53,7 +53,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--scenario') options.scenario = argv[++i]
-    else if (arg === '--provider') options.provider = argv[++i]
+    else if (arg === '--provider') options.providers = [argv[++i]]
+    else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++i])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++i])
@@ -146,7 +147,10 @@ async function terminateChild(child, signal = 'SIGTERM') {
 
 async function waitForLocalDaemon(kernelUrl) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = new LocalIpcClient(kernelUrl)
+    const probe = new LocalIpcClient(kernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
     try {
       const session = unwrap(await probe.send(createSessionRequest(repoRoot, repoRoot)), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
@@ -163,7 +167,12 @@ async function waitForLocalDaemon(kernelUrl) {
 async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias) {
   let lastError = null
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const client = new LocalIpcClient(relayUrl, { relayAuthToken: relayToken, targetDaemonAlias })
+    const client = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
     try {
       await client.send(listRemoteMachinesRequest())
       await client.close().catch(() => {})
@@ -205,8 +214,11 @@ async function runWorkflowChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--provider codex|opencode] [--model MODEL]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--providers opencode,codex] [--model MODEL]')
     return
+  }
+  if (options.providers.length < 1) {
+    throw new Error('remote workflow runtime drill requires at least one provider')
   }
 
   const ports = makePorts()
@@ -292,7 +304,10 @@ async function main() {
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
 
-    localClient = new LocalIpcClient(homeKernelUrl)
+    localClient = new LocalIpcClient(homeKernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
     await waitForRemoteMachine(localClient, workerMachineId)
 
     const stdout = await runWorkflowChild([
@@ -302,7 +317,7 @@ async function main() {
       '--relay-token', relayToken,
       '--target-daemon-alias', 'home',
       '--machine-ref', workerMachineId,
-      '--providers', `${options.provider},${options.provider}`,
+      '--providers', options.providers.join(','),
       '--model', options.model,
       '--workspace', repoRoot,
       '--worktree', repoRoot,
@@ -321,7 +336,7 @@ async function main() {
       workerMachineId,
       workerMachineAlias,
       scenario: options.scenario,
-      provider: options.provider,
+      providers: options.providers,
       model: options.model,
       workflow: result,
     }, null, 2))

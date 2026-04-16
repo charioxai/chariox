@@ -320,6 +320,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|run| run.id().to_string()))
     }
 
+    pub(crate) fn leased_workflow_turn_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<RemoteWorkflowTurnContext> {
+        self.app
+            .leased_workflow_turns
+            .get(provider_run_id)
+            .map(|binding| binding.context.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn leased_agent_active_prompt_attachments(
         &self,
@@ -463,6 +473,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 completed_at_ms: record.completed_at_ms,
             })
             .collect::<Vec<_>>();
+        if !completions.is_empty() {
+            let _ = self.app.complete_active_prompt(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                Some(provider_run_id),
+            )?;
+            self.app.leased_workflow_turns.remove(provider_run_id);
+        }
         if output_chunks.is_empty() && notices.is_empty() && completions.is_empty() {
             return Ok(None);
         }
@@ -577,12 +595,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 completion.completed_at_ms,
             );
         }
-        if saw_completion
-            && self
-                .app
-                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-                .is_some()
+        if let Some(active_prompt) = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
         {
+            let workflow_output_ready = active_prompt.workflow_run_id().is_some()
+                && crate::app::workflow_runtime::workflow_prompt_has_completion_output_from_runtime(
+                    self.app,
+                    session_id,
+                    &active_prompt,
+                    Some(provider_run_id),
+                );
+            if !saw_completion && !workflow_output_ready {
+                return Ok(());
+            }
+            if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
+                return Ok(());
+            }
             let remote_execution = self
                 .app
                 .agents

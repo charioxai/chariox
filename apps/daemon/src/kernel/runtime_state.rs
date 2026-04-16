@@ -47,6 +47,19 @@ pub(crate) struct KernelRuntimeOwnedState {
     workspace_identity_monitor: crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitor,
 }
 
+#[derive(Default)]
+struct WorkflowPromptDispatches {
+    local: Vec<crate::app::KernelPromptDispatch>,
+    remote: Vec<crate::app::KernelRemotePromptDispatch>,
+}
+
+impl WorkflowPromptDispatches {
+    fn extend(&mut self, other: Self) {
+        self.local.extend(other.local);
+        self.remote.extend(other.remote);
+    }
+}
+
 struct ManagedIoWorkspaceContext {
     root: PathBuf,
     identity: crate::io::WorkspaceIdentity,
@@ -286,6 +299,44 @@ impl KernelRuntimeOwnedState {
     }
 
     fn destroy_agent(&self, agent_id: &str) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let session_id = agent.session_id().to_string();
+        let provider_run_ids = self
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session_id
+                    && run.agent_instance_id() == Some(agent_id)
+                    && run.state() != crate::provider::ProviderRunState::Ended
+            })
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        for provider_run_id in provider_run_ids {
+            let ended = self
+                .provider_store
+                .terminate_run_provider_only(&session_id, &provider_run_id)?
+                .into_run();
+            if self
+                .session_store
+                .get_session(&session_id)?
+                .active_provider_run_id()
+                == Some(ended.id())
+            {
+                self.session_store
+                    .set_active_provider_run(&session_id, None)?;
+            }
+            self.provider_run_projection.update(ended.clone());
+            self.clear_prompt_activity(ended.id());
+            self.remove_provider_process_tracking_for_run(ended.id(), None);
+        }
+        self.prompt_state_owner.remove_agent(&session_id, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            &session_id,
+            agent_id,
+            None,
+            std::collections::VecDeque::new(),
+        )?;
         let mut sessions = self.session_store.write();
         self.agent_store.destroy_agent(agent_id, &mut sessions)
     }
@@ -2923,6 +2974,109 @@ impl KernelRuntimeOwnedState {
         Ok(run.id().to_string())
     }
 
+    fn workflow_dispatch_claim_id(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if let Some(remote_execution) = agent.remote_execution() {
+            return Ok(format!(
+                "remote-workflow:{}:{}",
+                remote_execution.worker_kernel_id, remote_execution.leased_agent_id
+            ));
+        }
+        self.workflow_ensure_provider_run(session_id, agent_id)
+    }
+
+    fn workflow_submit_prepared_prompt(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let mut dispatches = WorkflowPromptDispatches::default();
+        let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
+            Some(submission) => submission,
+            None => match self.submit_remote_prepared_prompt(&prepared)? {
+                Some(submission) => submission,
+                None => return Ok(dispatches),
+            },
+        };
+        if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome {
+            let _ = self.session_store.write().mark_workflow_turn_dispatched(
+                &prepared.session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            let _ = self.workflow_start_prompt(&prepared.session_id, prompt);
+        }
+        if let Some(dispatch) = submission.dispatch.take() {
+            dispatches.local.push(dispatch);
+        }
+        if let Some(mut dispatch) = submission.remote_dispatch.take() {
+            if dispatch.workflow_context.is_none() {
+                let prompt = match &submission.outcome {
+                    crate::session::PromptSubmissionOutcome::Started { prompt }
+                    | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+                };
+                dispatch.workflow_context = Some(self.remote_workflow_turn_context_for_prompt(
+                    &prepared.session_id,
+                    prompt.target_agent_id(),
+                    prompt,
+                )?);
+            }
+            dispatches.remote.push(dispatch);
+        }
+        Ok(dispatches)
+    }
+
+    fn remote_workflow_turn_context_for_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<crate::execution_lease::RemoteWorkflowTurnContext, DaemonError> {
+        let workflow_run_id =
+            prompt
+                .workflow_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow run id".to_string(),
+                })?;
+        let workflow_node_run_id =
+            prompt
+                .workflow_node_run_id()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "dispatch remote workflow prompt",
+                    message: "remote workflow prompt is missing workflow node run id".to_string(),
+                })?;
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let delivery_token = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == workflow_node_run_id)
+            .and_then(|node_run| node_run.turn_envelope())
+            .map(|envelope| envelope.delivery_token().to_string())
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "dispatch remote workflow prompt",
+                message: format!(
+                    "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
+                ),
+            })?;
+        Ok(crate::execution_lease::RemoteWorkflowTurnContext {
+            home_kernel_id: self.config_projection.snapshot().daemon_id,
+            home_session_id: session_id.to_string(),
+            home_agent_id: target_agent_id.to_string(),
+            workflow_run_id: workflow_run.id().to_string(),
+            workflow_node_run_id: workflow_node_run_id.to_string(),
+            delivery_token,
+        })
+    }
+
     fn workflow_validate_agents(
         &self,
         session_id: &str,
@@ -3044,7 +3198,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         workflow_run: &crate::session::WorkflowRun,
-    ) -> Result<Vec<crate::app::KernelPromptDispatch>, DaemonError> {
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let endpoint_prompt = workflow_run
             .invocation_prompt()
             .map(str::trim)
@@ -3075,10 +3229,10 @@ impl KernelRuntimeOwnedState {
             None,
             None,
         )?;
-        let provider_run_id = self.workflow_ensure_provider_run(session_id, node_run.agent_id())?;
+        let claim_id = self.workflow_dispatch_claim_id(session_id, node_run.agent_id())?;
         match self.acquire_workflow_node_workspace_claim(
             session_id,
-            &provider_run_id,
+            &claim_id,
             node_run.agent_id(),
             workflow_run.id(),
             node_run.id(),
@@ -3105,7 +3259,7 @@ impl KernelRuntimeOwnedState {
                     ),
                 );
                 let _ = self.session_snapshot(session_id)?;
-                return Ok(Vec::new());
+                return Ok(WorkflowPromptDispatches::default());
             }
             Err(error) => return Err(error),
         }
@@ -3125,28 +3279,15 @@ impl KernelRuntimeOwnedState {
             crate::session::PromptStatus::Queued,
         )
         .with_workflow_context(workflow_run.id(), node_run.id());
-        let mut dispatches = Vec::new();
-        if let Some(mut submission) =
-            self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+        self.workflow_submit_prepared_prompt(
+            crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),
                 prompt,
                 force_queue: false,
-            })?
-        {
-            if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome
-            {
-                let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                    session_id,
-                    workflow_run.id(),
-                    node_run.id(),
-                );
-                let _ = self.workflow_start_prompt(session_id, prompt);
-            }
-            if let Some(dispatch) = submission.dispatch.take() {
-                dispatches.push(dispatch);
-            }
-        }
-        Ok(dispatches)
+            },
+            workflow_run.id(),
+            node_run.id(),
+        )
     }
 
     fn workflow_invoke_queued_launch(
@@ -3156,7 +3297,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
-            Vec<crate::app::KernelPromptDispatch>,
+            WorkflowPromptDispatches,
         ),
         DaemonError,
     > {
@@ -3208,7 +3349,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
-            Vec<crate::app::KernelPromptDispatch>,
+            WorkflowPromptDispatches,
         ),
         DaemonError,
     > {
@@ -3257,7 +3398,7 @@ impl KernelRuntimeOwnedState {
                     workflow,
                     endpoint,
                 },
-                Vec::new(),
+                WorkflowPromptDispatches::default(),
             )),
         }
     }
@@ -3310,11 +3451,11 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
-    ) -> Result<Vec<crate::app::KernelPromptDispatch>, DaemonError> {
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
         else {
-            return Ok(Vec::new());
+            return Ok(WorkflowPromptDispatches::default());
         };
         let completion_snapshot = self.workflow_completion_snapshot(
             session_id,
@@ -3367,7 +3508,7 @@ impl KernelRuntimeOwnedState {
                 );
                 self.workflow_maybe_start_next_queued_launch(session_id);
                 let _ = self.session_snapshot(session_id)?;
-                return Ok(Vec::new());
+                return Ok(WorkflowPromptDispatches::default());
             }
             Err(error) => return Err(error),
         };
@@ -3642,8 +3783,8 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_id: &str,
         dispatches: &[crate::session::WorkflowDispatch],
-    ) -> Vec<crate::app::KernelPromptDispatch> {
-        let mut prepared = Vec::new();
+    ) -> WorkflowPromptDispatches {
+        let mut prepared = WorkflowPromptDispatches::default();
         for dispatch in dispatches {
             if !self.workflow_dispatch_has_all_inputs(session_id, workflow_run_id, &dispatch) {
                 continue;
@@ -3699,10 +3840,10 @@ impl KernelRuntimeOwnedState {
                 control_mailbox,
                 Some(handoff_payloads_json),
             );
-            let provider_run_id = match self
-                .workflow_ensure_provider_run(session_id, dispatch.node_run.agent_id())
+            let claim_id = match self
+                .workflow_dispatch_claim_id(session_id, dispatch.node_run.agent_id())
             {
-                Ok(provider_run_id) => provider_run_id,
+                Ok(claim_id) => claim_id,
                 Err(error) => {
                     self.record_notice(
                             session_id,
@@ -3719,7 +3860,7 @@ impl KernelRuntimeOwnedState {
             };
             match self.acquire_workflow_node_workspace_claim(
                 session_id,
-                &provider_run_id,
+                &claim_id,
                 dispatch.node_run.agent_id(),
                 workflow_run_id,
                 dispatch.node_run.id(),
@@ -3776,27 +3917,16 @@ impl KernelRuntimeOwnedState {
                 crate::session::PromptStatus::Queued,
             )
             .with_workflow_context(workflow_run_id, dispatch.node_run.id());
-            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.to_string(),
-                prompt,
-                force_queue: false,
-            }) {
-                Ok(Some(mut submission)) => {
-                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
-                        &submission.outcome
-                    {
-                        let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                            session_id,
-                            workflow_run_id,
-                            dispatch.node_run.id(),
-                        );
-                        let _ = self.workflow_start_prompt(session_id, prompt);
-                    }
-                    if let Some(dispatch) = submission.dispatch.take() {
-                        prepared.push(dispatch);
-                    }
-                }
-                Ok(None) => {}
+            match self.workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.to_string(),
+                    prompt,
+                    force_queue: false,
+                },
+                workflow_run_id,
+                dispatch.node_run.id(),
+            ) {
+                Ok(dispatches) => prepared.extend(dispatches),
                 Err(error) => {
                     self.record_notice(
                         session_id,
@@ -3865,7 +3995,7 @@ impl KernelRuntimeOwnedState {
         ))
     }
 
-    fn workflow_retry_blocked_claims(&self) -> Vec<crate::app::KernelPromptDispatch> {
+    fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
         let mut blocked = Vec::new();
         for session in self.session_store.read().list_sessions() {
             for workflow_run in session.workflow_runs() {
@@ -3893,12 +4023,12 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
-        let mut dispatches = Vec::new();
+        let mut dispatches = WorkflowPromptDispatches::default();
         for (session_id, workflow_run_id, workflow_node_run_id, agent_id, node_id, prompt_text) in
             blocked
         {
-            let provider_run_id = match self.workflow_ensure_provider_run(&session_id, &agent_id) {
-                Ok(provider_run_id) => provider_run_id,
+            let claim_id = match self.workflow_dispatch_claim_id(&session_id, &agent_id) {
+                Ok(claim_id) => claim_id,
                 Err(error) => {
                     self.record_notice(
                         &session_id,
@@ -3913,7 +4043,7 @@ impl KernelRuntimeOwnedState {
             };
             match self.acquire_workflow_node_workspace_claim(
                 &session_id,
-                &provider_run_id,
+                &claim_id,
                 &agent_id,
                 &workflow_run_id,
                 &workflow_node_run_id,
@@ -3949,27 +4079,16 @@ impl KernelRuntimeOwnedState {
                 crate::session::PromptStatus::Queued,
             )
             .with_workflow_context(&workflow_run_id, &workflow_node_run_id);
-            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.clone(),
-                prompt,
-                force_queue: false,
-            }) {
-                Ok(Some(mut submission)) => {
-                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
-                        &submission.outcome
-                    {
-                        let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                            &session_id,
-                            &workflow_run_id,
-                            &workflow_node_run_id,
-                        );
-                        let _ = self.workflow_start_prompt(&session_id, prompt);
-                    }
-                    if let Some(dispatch) = submission.dispatch.take() {
-                        dispatches.push(dispatch);
-                    }
-                }
-                Ok(None) => {}
+            match self.workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt,
+                    force_queue: false,
+                },
+                &workflow_run_id,
+                &workflow_node_run_id,
+            ) {
+                Ok(prepared) => dispatches.extend(prepared),
                 Err(error) => {
                     self.record_notice(
                         &session_id,
@@ -4112,13 +4231,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         workflow_run_ref: &str,
-    ) -> Result<
-        (
-            crate::session::WorkflowRun,
-            Vec<crate::app::KernelPromptDispatch>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
         let workflow_run = self
             .session_store
             .write()
@@ -4135,7 +4248,7 @@ impl KernelRuntimeOwnedState {
                 ))
             })
             .collect::<Vec<_>>();
-        let mut dispatches = Vec::new();
+        let mut dispatches = WorkflowPromptDispatches::default();
         for (workflow_node_run_id, agent_id, prompt_text) in resumable {
             let prompt = crate::session::PromptQueueItem::new(
                 self.session_store.reserve_prompt_id(),
@@ -4144,23 +4257,17 @@ impl KernelRuntimeOwnedState {
                 prompt_text,
                 crate::session::PromptStatus::Queued,
             )
-            .with_workflow_context(workflow_run.id(), workflow_node_run_id);
-            match self.submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.to_string(),
-                prompt,
-                force_queue: false,
-            }) {
-                Ok(Some(mut submission)) => {
-                    if let crate::session::PromptSubmissionOutcome::Started { prompt } =
-                        &submission.outcome
-                    {
-                        let _ = self.workflow_start_prompt(session_id, prompt);
-                    }
-                    if let Some(dispatch) = submission.dispatch.take() {
-                        dispatches.push(dispatch);
-                    }
-                }
-                Ok(None) => {}
+            .with_workflow_context(workflow_run.id(), &workflow_node_run_id);
+            match self.workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.to_string(),
+                    prompt,
+                    force_queue: false,
+                },
+                workflow_run.id(),
+                &workflow_node_run_id,
+            ) {
+                Ok(prepared) => dispatches.extend(prepared),
                 Err(error) => {
                     self.record_notice(
                         session_id,
@@ -4258,6 +4365,11 @@ impl KernelRuntimeOwnedState {
                     payload: serde_json::json!({
                         "valid": warning.is_none(),
                         "warning": warning,
+                        "next_action": if warning.is_none() {
+                            "Validation passed. Now finish this same workflow turn by emitting exactly one final fenced json block and then stop."
+                        } else {
+                            "Validation failed or warned. Revise the output and call validate_workflow_output again before finalizing."
+                        },
                     }),
                 })
             }
@@ -5129,6 +5241,14 @@ impl KernelRuntimeState {
                     &remote_provider_run_id,
                     next_queued_prompt,
                 )?;
+                if completion.completed.workflow_run_id().is_some() {
+                    let dispatches = owned.workflow_complete_prompt(
+                        session_id,
+                        &completion.completed,
+                        Some(&remote_provider_run_id),
+                    )?;
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                }
                 if let Some(started_next) = completion.started_next.as_ref() {
                     let attachments = self
                         .with_app_side_effect(|app| {
@@ -5202,30 +5322,14 @@ impl KernelRuntimeState {
                             &completion.completion.completed,
                             owned_provider_run_id.as_deref(),
                         )?;
-                        for dispatch in dispatches {
-                            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                                let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                            }
-                        }
+                        self.spawn_workflow_prompt_dispatches(dispatches);
                     }
                     if completion.released_claim
                         && completion.completion.completed.workflow_run_id().is_none()
                     {
-                        for dispatch in owned.workflow_retry_blocked_claims() {
-                            if let Err(error) = self
-                                .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                                .await
-                            {
-                                owned.record_notice(
-                                    &dispatch.session_id,
-                                    Some(&dispatch.provider_run_id),
-                                    owned
-                                        .attachment_store
-                                        .list_session_attachment_ids(&dispatch.session_id),
-                                    format!("Blocked workflow retry dispatch failed: {error}"),
-                                );
-                            }
-                        }
+                        self.spawn_workflow_prompt_dispatches(
+                            owned.workflow_retry_blocked_claims(),
+                        );
                     }
                     return Ok(completion.completion);
                 }
@@ -5244,11 +5348,7 @@ impl KernelRuntimeState {
                         &completion_result.completed,
                         owned_provider_run_id.as_deref(),
                     )?;
-                    for dispatch in dispatches {
-                        if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                            let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                        }
-                    }
+                    self.spawn_workflow_prompt_dispatches(dispatches);
                 }
                 if let Some(started_next) = completion_result.started_next.as_ref() {
                     if crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -5461,23 +5561,23 @@ impl KernelRuntimeState {
                 format!("Prompt dispatch failed after acknowledgement: {error}"),
             );
             if released_claim {
-                for dispatch in owned.workflow_retry_blocked_claims() {
-                    if let Err(error) = self
-                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                        .await
-                    {
-                        owned.record_notice(
-                            &dispatch.session_id,
-                            Some(&dispatch.provider_run_id),
-                            owned
-                                .attachment_store
-                                .list_session_attachment_ids(&dispatch.session_id),
-                            format!("Blocked workflow retry dispatch failed: {error}"),
-                        );
-                    }
-                }
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
             Err(error)
+        }
+    }
+
+    fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        for dispatch in dispatches.local {
+            let state = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                    let _ = state.fail_prompt_dispatch(dispatch, error).await;
+                }
+            });
+        }
+        for dispatch in dispatches.remote {
+            self.spawn_remote_prompt_dispatch(dispatch);
         }
     }
 
@@ -5841,11 +5941,7 @@ impl KernelRuntimeState {
                     request.prompt,
                 ) {
                     Ok((outcome, dispatches)) => {
-                        for dispatch in dispatches {
-                            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                                let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                            }
-                        }
+                        self.spawn_workflow_prompt_dispatches(dispatches);
                         let session = match owned.session_snapshot(&request.session_id) {
                             Ok(session) => session,
                             Err(error) => return (Err(error), None),
@@ -5970,11 +6066,7 @@ impl KernelRuntimeState {
                     .workflow_resume_run(&request.session_id, &request.workflow_run_ref)
                 {
                     Ok((workflow_run, dispatches)) => {
-                        for dispatch in dispatches {
-                            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                                let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                            }
-                        }
+                        self.spawn_workflow_prompt_dispatches(dispatches);
                         owned.workflow_session(&request.session_id).map(|session| {
                             LocalDaemonResponse::WorkflowRunResumed {
                                 workflow_run,
@@ -6256,21 +6348,7 @@ impl KernelRuntimeState {
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
         let Some(active_prompt) = active_prompt else {
             if owned.clear_prompt_activity(provider_run_id) {
-                for dispatch in owned.workflow_retry_blocked_claims() {
-                    if let Err(error) = self
-                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                        .await
-                    {
-                        owned.record_notice(
-                            &dispatch.session_id,
-                            Some(&dispatch.provider_run_id),
-                            owned
-                                .attachment_store
-                                .list_session_attachment_ids(&dispatch.session_id),
-                            format!("Blocked workflow retry dispatch failed: {error}"),
-                        );
-                    }
-                }
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
@@ -6294,21 +6372,7 @@ impl KernelRuntimeState {
             )?;
             owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
             if cancellation.released_claim {
-                for dispatch in owned.workflow_retry_blocked_claims() {
-                    if let Err(error) = self
-                        .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                        .await
-                    {
-                        owned.record_notice(
-                            &dispatch.session_id,
-                            Some(&dispatch.provider_run_id),
-                            owned
-                                .attachment_store
-                                .list_session_attachment_ids(&dispatch.session_id),
-                            format!("Blocked workflow retry dispatch failed: {error}"),
-                        );
-                    }
-                }
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
             if let Some(dispatch) = cancellation.dispatch {
                 if let Err(error) = self
@@ -6381,21 +6445,7 @@ impl KernelRuntimeState {
                 &completion.completion.completed,
                 Some(provider_run_id),
             )?;
-            for dispatch in dispatches {
-                if let Err(error) = self
-                    .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                    .await
-                {
-                    owned.record_notice(
-                        &dispatch.session_id,
-                        Some(&dispatch.provider_run_id),
-                        owned
-                            .attachment_store
-                            .list_session_attachment_ids(&dispatch.session_id),
-                        format!("Workflow dispatch failed after completion: {error}"),
-                    );
-                }
-            }
+            self.spawn_workflow_prompt_dispatches(dispatches);
         }
         if let Some(started_next) = completion.completion.started_next.as_ref() {
             if crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -6406,14 +6456,7 @@ impl KernelRuntimeState {
         }
         if completion.released_claim && completion.completion.completed.workflow_run_id().is_none()
         {
-            for dispatch in owned.workflow_retry_blocked_claims() {
-                if let Err(error) = self
-                    .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-                    .await
-                {
-                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                }
-            }
+            self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
@@ -6821,6 +6864,45 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
+            let provider_run_ids = provider_runs
+                .iter()
+                .map(|run| run.id().to_string())
+                .collect::<Vec<_>>();
+            let leased_workflow_context = self
+                .with_app_side_effect(|app| {
+                    let runtime = crate::app::RemoteLeaseRuntime::new(app);
+                    provider_run_ids.iter().find_map(|provider_run_id| {
+                        runtime.leased_workflow_turn_context_for_provider_run(provider_run_id)
+                    })
+                })
+                .await;
+            if let Some(context) = leased_workflow_context {
+                let response = self
+                    .with_app_side_effect(|app| {
+                        app.block_on_relay_future(
+                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                                app.config(),
+                                ClientTarget {
+                                    daemon_id: Some(context.home_kernel_id.clone()),
+                                    daemon_alias: None,
+                                },
+                                RelayPeerRequest::ForwardWorkflowRuntimeTool {
+                                    context: context.clone(),
+                                    tool_name: canonical_tool_name.to_string(),
+                                    arguments: arguments.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .await?;
+                return match response {
+                    RelayPeerResponse::WorkflowRuntimeToolHandled { result } => Ok(result),
+                    other => Err(DaemonError::LocalTransport {
+                        operation: "forward leased workflow runtime tool",
+                        message: format!("unexpected forwarded workflow tool response: {other:?}"),
+                    }),
+                };
+            }
             let requested_delivery_token = match canonical_tool_name {
                 crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
                     serde_json::from_value::<crate::transport::runtime_tools::AckWorkflowTurnArgs>(
@@ -7171,10 +7253,11 @@ impl KernelRuntimeState {
             .cloned()
             .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
         let identity = workspace_identity_for_root_off_thread(workspace_root.clone()).await?;
-        let snapshot = self
-            .owned
-            .workspace_identity_monitor
-            .observe_provider_run(provider_run.id(), workspace_root.clone(), identity);
+        let snapshot = self.owned.workspace_identity_monitor.observe_provider_run(
+            provider_run.id(),
+            workspace_root.clone(),
+            identity,
+        );
         Ok(ManagedIoWorkspaceContext {
             root: workspace_root,
             identity: snapshot.current_identity,
