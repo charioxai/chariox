@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -188,13 +187,18 @@ async function main() {
   }
 
   const runtimeDir = path.join(cliRoot, '.tmp-live-managed-io-drill')
-  const rootDir = path.join(os.tmpdir(), `arroba-managed-io-${process.pid}-${Date.now()}`)
+  // Keep the live workspace out of OS temp directories: Codex read-only mode may
+  // allow TMPDIR writes, which would make the negative direct-write probe invalid.
+  const rootDir = path.join(cliRoot, 'target', 'live-managed-io-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
   await mkdir(outputsDir, { recursive: true })
   await writeFile(path.join(workspace, 'seed.txt'), 'seed-value-42\n', 'utf8')
+  for (const provider of options.providers) {
+    await writeFile(path.join(outputsDir, `${provider}-delete-me.txt`), 'delete-me\n', 'utf8')
+  }
 
   const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
   const {
@@ -278,8 +282,7 @@ async function main() {
         `Step 3: call \`arroba.edit_artifact\` with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text"}.`,
         `Step 4: call \`arroba.apply_patch\` with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
         `Step 5: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
-        `Step 6: call \`arroba.write_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","content_text":"delete-me\\n","domain":"text"}.`,
-        `Step 7: call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"}.`,
+        `Step 6: call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DONE and nothing else.`,
       ].join('\n')
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))

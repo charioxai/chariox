@@ -201,7 +201,7 @@ Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough 
 
 Current enforcement mechanisms:
 
-- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns.
+- Codex managed-I/O runs use the provider read-only sandbox for new threads and turns, disable Codex's native shell tool, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, and auto-decline any native command/file-change permission request so writes route through Arroba managed I/O.
 - OpenCode managed-I/O runs deny native `edit`, `bash`, and `task`, leaving file writes available only through Arroba managed I/O tools.
 - OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
 

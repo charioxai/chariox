@@ -21,6 +21,13 @@ pub struct CodexClient {
     endpoint: String,
 }
 
+struct CodexPermissionPolicy {
+    approval_policy: &'static str,
+    sandbox: &'static str,
+    sandbox_policy: Value,
+    config_overrides: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexRunSelection {
     pub model: Option<String>,
@@ -211,15 +218,18 @@ impl CodexClient {
         model: Option<&str>,
         write_access_mode: ProviderWriteAccessMode,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
-        let (approval_policy, sandbox, sandbox_policy) = codex_permission_policy(write_access_mode);
+        let policy = codex_permission_policy(write_access_mode);
         let mut params = json!({
-            "approvalPolicy": approval_policy,
-            "sandbox": sandbox,
-            "sandboxPolicy": sandbox_policy,
+            "approvalPolicy": policy.approval_policy,
+            "sandbox": policy.sandbox,
+            "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
             "ephemeral": true,
             "serviceName": "arroba",
         });
+        if !policy.config_overrides.is_empty() {
+            params["config"] = json!(policy.config_overrides);
+        }
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
         }
@@ -241,14 +251,14 @@ impl CodexClient {
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
-        let (approval_policy, sandbox, sandbox_policy) = codex_permission_policy(write_access_mode);
+        let policy = codex_permission_policy(write_access_mode);
         let mut params = json!({
             "threadId": thread_id,
             "input": input,
-            "approvalPolicy": approval_policy,
+            "approvalPolicy": policy.approval_policy,
             "personality": "pragmatic",
-            "sandbox": sandbox,
-            "sandboxPolicy": sandbox_policy,
+            "sandbox": policy.sandbox,
+            "sandboxPolicy": policy.sandbox_policy,
             "summary": "detailed",
         });
         if let Some(cwd) = cwd {
@@ -371,6 +381,9 @@ impl CodexClient {
             let raw = self.read_next_message(socket, Duration::from_secs(30))?;
             let message: JsonRpcMessage = serde_json::from_str(&raw)
                 .map_err(|error| self.protocol_error("codex_read_parse", error.to_string()))?;
+            if self.respond_to_server_request(socket, &message)? {
+                continue;
+            }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
                     return Err(self.protocol_error(method, error));
@@ -409,6 +422,9 @@ impl CodexClient {
                 let message: JsonRpcMessage = serde_json::from_str(&raw).map_err(|error| {
                     self.protocol_error("codex_notification_parse", error.to_string())
                 })?;
+                if self.respond_to_server_request(socket, &message)? {
+                    return Ok(None);
+                }
                 Ok(parse_notification(message))
             }
             Err(tokio_tungstenite::tungstenite::Error::Io(error))
@@ -487,6 +503,34 @@ impl CodexClient {
         }
     }
 
+    fn respond_to_server_request(
+        &self,
+        socket: &mut CodexSocket,
+        message: &JsonRpcMessage,
+    ) -> Result<bool, DaemonError> {
+        let Some(request_id) = message.id.as_ref() else {
+            return Ok(false);
+        };
+        let Some(method) = message.method.as_deref() else {
+            return Ok(false);
+        };
+        let result = match method {
+            "item/commandExecution/requestApproval" => json!({ "decision": "decline" }),
+            "item/fileChange/requestApproval" => json!({ "decision": "decline" }),
+            "item/permissions/requestApproval" => json!({ "permissions": {} }),
+            _ => return Ok(false),
+        };
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result,
+        });
+        socket
+            .send(Message::Text(payload.to_string().into()))
+            .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
+        Ok(true)
+    }
+
     fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {
         DaemonError::ProviderProtocol {
             provider_run_id: self.provider_run_id.clone(),
@@ -496,17 +540,32 @@ impl CodexClient {
     }
 }
 
-fn codex_permission_policy(
-    write_access_mode: ProviderWriteAccessMode,
-) -> (&'static str, &'static str, Value) {
+fn codex_permission_policy(write_access_mode: ProviderWriteAccessMode) -> CodexPermissionPolicy {
     match write_access_mode {
-        ProviderWriteAccessMode::Unrestricted => (
-            "never",
-            "danger-full-access",
-            json!({ "type": "dangerFullAccess" }),
-        ),
+        ProviderWriteAccessMode::Unrestricted => CodexPermissionPolicy {
+            approval_policy: "never",
+            sandbox: "danger-full-access",
+            sandbox_policy: json!({ "type": "dangerFullAccess" }),
+            config_overrides: BTreeMap::new(),
+        },
         ProviderWriteAccessMode::ManagedIoRequired => {
-            ("never", "read-only", json!({ "type": "readOnly" }))
+            let mut config_overrides = BTreeMap::new();
+            config_overrides.insert("features.shell_tool".to_string(), json!(false));
+            config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
+            config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
+            CodexPermissionPolicy {
+                approval_policy: "on-request",
+                sandbox: "read-only",
+                sandbox_policy: json!({
+                    "type": "readOnly",
+                    "access": {
+                        "type": "restricted",
+                        "includePlatformDefaults": true,
+                        "readableRoots": []
+                    }
+                }),
+                config_overrides,
+            }
         }
     }
 }
@@ -762,12 +821,33 @@ mod tests {
 
     #[test]
     fn managed_io_permission_policy_uses_read_only_sandbox() {
-        let (approval_policy, sandbox, sandbox_policy) =
-            codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
+        let policy = codex_permission_policy(ProviderWriteAccessMode::ManagedIoRequired);
 
-        assert_eq!(approval_policy, "never");
-        assert_eq!(sandbox, "read-only");
-        assert_eq!(sandbox_policy, json!({ "type": "readOnly" }));
+        assert_eq!(policy.approval_policy, "on-request");
+        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(
+            policy.sandbox_policy,
+            json!({
+                "type": "readOnly",
+                "access": {
+                    "type": "restricted",
+                    "includePlatformDefaults": true,
+                    "readableRoots": []
+                }
+            })
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.shell_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("include_apply_patch_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.apply_patch_freeform"),
+            Some(&json!(false))
+        );
     }
 
     #[test]

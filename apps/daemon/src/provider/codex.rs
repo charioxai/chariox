@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
@@ -62,7 +64,7 @@ fn plan_codex_launch_unlocked(
     }
 
     let executable = resolve_codex_executable_unlocked()?;
-    let (config_args, env) = runtime_mcp_config(request);
+    let (config_args, env) = runtime_mcp_config(request)?;
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
         process_label: "codex:app-server".to_string(),
@@ -205,11 +207,24 @@ fn external_launch(endpoint: String) -> ProviderLaunchResult {
 
 fn runtime_mcp_config(
     request: Option<&LaunchProviderRequest>,
-) -> (Vec<String>, BTreeMap<String, String>) {
+) -> Result<(Vec<String>, BTreeMap<String, String>), DaemonError> {
     let Some(binding) = request.and_then(|request| request.runtime_mcp_binding.as_ref()) else {
-        return (Vec::new(), BTreeMap::new());
+        return Ok((Vec::new(), BTreeMap::new()));
     };
+    let model_catalog_path = write_managed_io_model_catalog(
+        request
+            .map(|request| request.model.as_str())
+            .unwrap_or("gpt-5.4"),
+    )?;
     let args = vec![
+        "-c".to_string(),
+        format!("model_catalog_json={:?}", model_catalog_path),
+        "-c".to_string(),
+        "features.shell_tool=false".to_string(),
+        "-c".to_string(),
+        "features.apply_patch_freeform=false".to_string(),
+        "-c".to_string(),
+        "include_apply_patch_tool=false".to_string(),
         "-c".to_string(),
         format!("mcp_servers.arroba.url={:?}", binding.server_url),
         "-c".to_string(),
@@ -220,7 +235,59 @@ fn runtime_mcp_config(
     ];
     let mut env = BTreeMap::new();
     env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
-    (args, env)
+    Ok((args, env))
+}
+
+fn write_managed_io_model_catalog(model: &str) -> Result<PathBuf, DaemonError> {
+    let slug = model.rsplit('/').next().unwrap_or(model);
+    let catalog = serde_json::json!({
+        "models": [{
+            "slug": slug,
+            "display_name": slug,
+            "description": "Arroba managed-I/O model metadata overlay",
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [
+                { "effort": "low", "description": "Fast responses with lighter reasoning" },
+                { "effort": "medium", "description": "Balanced reasoning" },
+                { "effort": "high", "description": "Greater reasoning depth" }
+            ],
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": 0,
+            "availability_nux": null,
+            "upgrade": null,
+            "base_instructions": "You are Codex, a coding agent. Follow the user instructions and use available tools exactly as requested.",
+            "supports_reasoning_summaries": true,
+            "default_reasoning_summary": "auto",
+            "support_verbosity": true,
+            "default_verbosity": "low",
+            "apply_patch_tool_type": null,
+            "web_search_tool_type": "text",
+            "truncation_policy": { "mode": "tokens", "limit": 10000 },
+            "supports_parallel_tool_calls": true,
+            "supports_image_detail_original": true,
+            "context_window": 272000,
+            "effective_context_window_percent": 95,
+            "experimental_supported_tools": [],
+            "input_modalities": ["text", "image"]
+        }]
+    });
+    let mut hasher = DefaultHasher::new();
+    model.hash(&mut hasher);
+    let path = env::temp_dir().join(format!(
+        "arroba-codex-managed-io-models-{:x}.json",
+        hasher.finish()
+    ));
+    let content = serde_json::to_string(&catalog).map_err(|error| DaemonError::LocalTransport {
+        operation: "codex_managed_io_model_catalog",
+        message: error.to_string(),
+    })?;
+    fs::write(&path, content).map_err(|error| DaemonError::LocalTransport {
+        operation: "codex_managed_io_model_catalog",
+        message: format!("failed to write managed-I/O Codex model catalog: {error}"),
+    })?;
+    Ok(path)
 }
 
 fn resolve_codex_port() -> Result<u16, DaemonError> {
@@ -359,6 +426,22 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("model_catalog_json")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "features.shell_tool=false"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "features.apply_patch_freeform=false"));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "include_apply_patch_tool=false"));
     }
 
     #[test]
