@@ -32,7 +32,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_TIMEOUT_MS = 240_000
 const DEFAULT_POLL_MS = 1_000
@@ -80,7 +80,7 @@ function printHelp() {
     `  --worktree ${repoRoot}`,
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',

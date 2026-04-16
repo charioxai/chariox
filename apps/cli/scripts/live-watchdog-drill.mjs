@@ -29,7 +29,7 @@ const {
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_INTERVAL_SECONDS = 1
 const DEFAULT_PROVIDERS = [
   'opencode',
@@ -95,7 +95,7 @@ function printHelp() {
     `  --workspace ${repoRoot}`,
     `  --worktree ${repoRoot}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
     `  --interval-seconds ${DEFAULT_INTERVAL_SECONDS}`,
     '  --policy skip|queue',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,

@@ -466,6 +466,7 @@ impl OpenCodeClient {
         attachments: &[PromptAttachment],
         model: Option<&str>,
         variant: Option<&str>,
+        disable_native_writes: bool,
     ) -> Result<(), DaemonError> {
         let mut parts = Vec::new();
         if !prompt.is_empty() {
@@ -494,6 +495,16 @@ impl OpenCodeClient {
         }
         if let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) {
             body["variant"] = json!(variant);
+        }
+        if disable_native_writes {
+            body["tools"] = json!({
+                "edit": false,
+                "write": false,
+                "apply_patch": false,
+                "multiedit": false,
+                "bash": false,
+                "task": false
+            });
         }
 
         self.send_no_content_request(

@@ -39,7 +39,7 @@ let listRemoteMachinesRequest
 
 const DEFAULT_SCENARIO = 'validated-increment-chain'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_POLL_LIMIT = 120
 const DEFAULT_POLL_INTERVAL_MS = 2000
 

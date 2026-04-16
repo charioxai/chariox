@@ -4,15 +4,15 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 
 ## Provider Models
 
-- Default live-drill model: `gpt-5.3`.
+- Default live-drill model: `gpt-5.2`.
 - Use older Codex-capable models such as `gpt-5.2` or `gpt-5.3` for routine drills.
 - Use reasoning effort `low` unless the drill is specifically validating reasoning-heavy behavior.
 - For `opencode`, use OpenAI Codex-family models rather than OpenCode's provider-default or `zen` model family.
-- If an OpenCode drill receives an unqualified model such as `gpt-5.3`, map it to `openai/gpt-5.3-codex`.
+- If an OpenCode drill receives an unqualified model such as `gpt-5.2`, map it to `openai/gpt-5.2-codex`.
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
-node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.3-codex
+node apps/cli/scripts/live-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex
 ```
 
 ## Wrapper Scripts

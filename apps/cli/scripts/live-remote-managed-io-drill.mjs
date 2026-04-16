@@ -33,7 +33,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
 
@@ -238,7 +238,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     console.log('Usage: node apps/cli/scripts/live-remote-managed-io-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full]')
-    console.log('Example: node apps/cli/scripts/live-remote-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.3-codex')
+    console.log('Example: node apps/cli/scripts/live-remote-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.2-codex')
     return
   }
   if (options.providers.length < 1) throw new Error('remote managed I/O drill requires at least one provider')

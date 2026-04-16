@@ -63,7 +63,7 @@ const {
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDERS = ['opencode', 'codex', 'opencode', 'codex', 'opencode', 'codex']
 const DEFAULT_NUMBERS = ['1842', '7315', '4068', '5921', '8473', '2604']
 
@@ -128,7 +128,7 @@ function printHelp() {
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     '  --poll-limit 120',
     '  --poll-interval-ms 2000',

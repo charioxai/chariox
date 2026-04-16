@@ -64,6 +64,10 @@ pub fn default_provider_command_catalogs() -> BTreeMap<String, ProviderCommandCa
     ])
 }
 
+pub(crate) fn provider_requires_managed_io_by_default(provider: &str) -> bool {
+    matches!(provider, "codex" | "opencode" | "default")
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlOperation {

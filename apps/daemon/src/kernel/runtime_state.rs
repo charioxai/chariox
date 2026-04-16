@@ -2965,6 +2965,9 @@ impl KernelRuntimeOwnedState {
         )
         .with_agent_id(agent.id().to_string())
         .with_variant(agent.effort().map(str::to_string));
+        if crate::provider::provider_requires_managed_io_by_default(provider) {
+            request = request.with_managed_io_required();
+        }
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
         }
@@ -6354,6 +6357,9 @@ impl KernelRuntimeState {
             request.model,
         )
         .with_variant(request.variant);
+        if crate::provider::provider_requires_managed_io_by_default(&launch_request.provider) {
+            launch_request = launch_request.with_managed_io_required();
+        }
         if let Some(agent_id) = request.agent_id.clone().or_else(|| {
             self.owned
                 .session_store

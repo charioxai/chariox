@@ -60,6 +60,15 @@ impl TextDocumentDomain {
                     });
                 }
                 if &base[range.start..range.end] != old_text {
+                    if !old_text.is_empty() {
+                        return Self::plan_operation(
+                            base,
+                            &AgentEditOperation::ReplaceText {
+                                old_text: old_text.clone(),
+                                new_text: new_text.clone(),
+                            },
+                        );
+                    }
                     return Err(ArtifactEditError::InvalidOperation {
                         message: "range content does not match old_text in the base snapshot"
                             .to_string(),
@@ -323,4 +332,43 @@ fn push_delta(
         removed_len: end.saturating_sub(start),
         inserted_len: current_end_offset.saturating_sub(current_start_offset),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_range_with_mismatched_nonempty_old_text_falls_back_to_unique_text() {
+        let plan = TextDocumentDomain::plan_operation(
+            "one\nTARGET\nthree\n",
+            &AgentEditOperation::ReplaceRange {
+                range: TextRange::new(0, 0),
+                old_text: "TARGET".to_string(),
+                new_text: "UPDATED".to_string(),
+            },
+        )
+        .expect("unique old_text should recover from a guessed range");
+
+        assert_eq!(plan.range, TextRange::new(4, 10));
+        assert_eq!(
+            TextDocumentDomain::apply_plan("one\nTARGET\nthree\n", &plan).unwrap(),
+            "one\nUPDATED\nthree\n"
+        );
+    }
+
+    #[test]
+    fn replace_range_with_mismatched_repeated_old_text_still_rejects() {
+        let error = TextDocumentDomain::plan_operation(
+            "TARGET\nTARGET\n",
+            &AgentEditOperation::ReplaceRange {
+                range: TextRange::new(0, 0),
+                old_text: "TARGET".to_string(),
+                new_text: "UPDATED".to_string(),
+            },
+        )
+        .expect_err("ambiguous old_text must not recover from a guessed range");
+
+        assert!(matches!(error, ArtifactEditError::InvalidOperation { .. }));
+    }
 }

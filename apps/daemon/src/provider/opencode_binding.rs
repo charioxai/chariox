@@ -252,6 +252,7 @@ pub(super) fn submit_opencode_prompt(
         attachments,
         Some(run.model()),
         run.variant(),
+        run.requires_managed_io(),
     )?;
     state.note_prompt_submitted(message_id);
     Ok(())

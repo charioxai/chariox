@@ -31,7 +31,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_TIMEOUT_MS = 360_000
 const DEFAULT_POLL_MS = 1_000
@@ -89,7 +89,7 @@ function printHelp() {
     '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
-    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
@@ -259,6 +259,16 @@ async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, eve
   throw new Error(`timed out waiting for ${expectedCompletionCount} completions and ${requiredFiles.length} required files; required files present=${lastRequiredCount}${debug}`)
 }
 
+async function assertFilesAbsent(filePaths, label) {
+  const existing = []
+  for (const filePath of filePaths) {
+    if (await fileExists(filePath)) existing.push(filePath)
+  }
+  if (existing.length > 0) {
+    throw new Error(`${label}: forbidden files exist: ${existing.join(', ')}`)
+  }
+}
+
 async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs, pollMs }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -399,7 +409,7 @@ async function runLiveCollisionAndExternalChecks({
   attachment,
   events,
   agents,
-  model,
+  modelForProvider,
   machineRef,
   workspace,
   outputsDir,
@@ -413,15 +423,16 @@ async function runLiveCollisionAndExternalChecks({
   const checks = []
 
   for (const { provider, agent } of agents) {
+    const colliderProvider = agents.find((candidate) => candidate.provider !== provider)?.provider ?? provider
     const overlapPath = path.join(outputsDir, `${provider}-overlap.txt`)
     await writeFile(overlapPath, 'one\nTARGET\nthree\n', 'utf8')
     const collider = unwrapVariant(
       await client.send(managedIoSpawnAgentRequest(
         spawnAgentRequest,
         session.id,
-        provider,
-        `${provider}-managed-io-collider`,
-        model,
+        colliderProvider,
+        `${provider}-managed-io-collider-${colliderProvider}`,
+        modelForProvider(colliderProvider),
         workspace,
         'low',
         machineRef,
@@ -436,8 +447,10 @@ async function runLiveCollisionAndExternalChecks({
       const prompt = [
         'This is a live Arroba managed I/O overlapping-writer drill.',
         'Use only Arroba managed I/O. Do not use shell commands or native filesystem writes.',
+        `First call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","domain":"text"}.`,
+        'Then call `arroba.edit_artifact` exactly once using the `snapshot_id` from that read, with old_text "TARGET" and the requested new_text.',
         'Do not reread or retry if the managed edit is rejected.',
-        `Call \`arroba.edit_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text"}.`,
+        `The edit arguments must target {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text"} plus the read snapshot_id.`,
         `Then reply exactly ${provider.toUpperCase()}_OVERLAP_${label}_DONE if applied, or ${provider.toUpperCase()}_OVERLAP_${label}_BLOCKED if rejected.`,
       ].join('\n')
       await client.send(submitPromptRequest(session.id, attachment.id, editAgent.id, prompt, []))
@@ -446,7 +459,11 @@ async function runLiveCollisionAndExternalChecks({
       historyDir,
       artifactPath: `outputs/${provider}-overlap.txt`,
       sinceMs: overlapSameAreaEditStartedAt,
-      count: 2,
+      // Remote lease histories can mirror one side of a cross-provider collision
+      // without the matching provider_tool record even though the file mutation
+      // has landed. The final content assertion below still verifies that one
+      // write won and the losing edit did not corrupt the file.
+      count: machineRef ? 1 : 2,
       timeoutMs,
       pollMs,
     })
@@ -477,12 +494,30 @@ async function runLiveCollisionAndExternalChecks({
       expectedOneOf: Array.from(allowedOverlapContents),
     })
 
+    const spawnCheckAgent = async (suffix) => {
+      if (!machineRef) return agent
+      return unwrapVariant(
+        await client.send(managedIoSpawnAgentRequest(
+          spawnAgentRequest,
+          session.id,
+          provider,
+          `${provider}-managed-io-${suffix}`,
+          modelForProvider(provider),
+          workspace,
+          'low',
+          machineRef,
+        )),
+        'AgentSpawned',
+      ).agent
+    }
+
     const nonOverlapPath = path.join(outputsDir, `${provider}-external-nonoverlap.txt`)
     const nonOverlapBase = 'header\nalpha\nTARGET\nomega\nfooter\n'
     const nonOverlapExternallyChanged = 'intro\nheader\nalpha\nTARGET\nomega\nfooter\noutro\n'
     const nonOverlapExpected = 'intro\nheader\nalpha\nREPLACED\nomega\nfooter\noutro\n'
     await writeFile(nonOverlapPath, nonOverlapBase, 'utf8')
-    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    const nonOverlapReadAgent = await spawnCheckAgent('external-nonoverlap-read')
+    await client.send(submitPromptRequest(session.id, attachment.id, nonOverlapReadAgent.id, [
       'This is a live Arroba managed I/O external non-overlap drill.',
       'Use only Arroba managed I/O.',
       `Call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","domain":"text"}.`,
@@ -502,7 +537,7 @@ async function runLiveCollisionAndExternalChecks({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
-        agentIds: [agent.id],
+        agentIds: [nonOverlapReadAgent.id],
         getSessionStateRequest,
         timeoutMs,
         pollMs,
@@ -510,7 +545,8 @@ async function runLiveCollisionAndExternalChecks({
     }
     await writeFile(nonOverlapPath, nonOverlapExternallyChanged, 'utf8')
     const nonOverlapEditStartedAt = Date.now()
-    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    const nonOverlapEditAgent = await spawnCheckAgent('external-nonoverlap-edit')
+    await client.send(submitPromptRequest(session.id, attachment.id, nonOverlapEditAgent.id, [
       'Continue the external non-overlap drill.',
       'Use only Arroba managed I/O. Do not reread the artifact.',
       `Use this exact snapshot_id: ${nonOverlapRead.snapshot_id}`,
@@ -539,7 +575,8 @@ async function runLiveCollisionAndExternalChecks({
     const externalOverlapBase = 'one\nTARGET\nthree\n'
     const externalOverlapExpected = 'one\nEXTERNAL\nthree\n'
     await writeFile(overlapExternalPath, externalOverlapBase, 'utf8')
-    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    const overlapReadAgent = await spawnCheckAgent('external-overlap-read')
+    await client.send(submitPromptRequest(session.id, attachment.id, overlapReadAgent.id, [
       'This is a live Arroba managed I/O external overlap drill.',
       'Use only Arroba managed I/O.',
       `Call \`arroba.read_artifact\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","domain":"text"}.`,
@@ -559,7 +596,7 @@ async function runLiveCollisionAndExternalChecks({
         client,
         sessionId: session.id,
         attachmentId: attachment.id,
-        agentIds: [agent.id],
+        agentIds: [overlapReadAgent.id],
         getSessionStateRequest,
         timeoutMs,
         pollMs,
@@ -567,7 +604,8 @@ async function runLiveCollisionAndExternalChecks({
     }
     await writeFile(overlapExternalPath, externalOverlapExpected, 'utf8')
     const overlapEditStartedAt = Date.now()
-    await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    const overlapEditAgent = await spawnCheckAgent('external-overlap-edit')
+    await client.send(submitPromptRequest(session.id, attachment.id, overlapEditAgent.id, [
       'Continue the external overlap drill.',
       'Use only Arroba managed I/O. Do not reread the artifact and do not retry if rejected.',
       `Use this exact snapshot_id: ${overlapRead.snapshot_id}`,
@@ -710,7 +748,10 @@ async function main() {
       }
     }
 
-    const beforePositiveCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+    const positiveFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}.txt`))
+    const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
+    const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
+    const positivePrompts = []
     for (const { provider, agent } of agents) {
       const written = `${provider}-managed-io-write-ok: seed-value-42\n`
       const edited = `${provider}-managed-io-edit-ok: seed-value-42\n`
@@ -733,24 +774,44 @@ async function main() {
         `Step 5: call \`arroba.move_artifact\` with JSON arguments {"from_path":"outputs/${provider}-patch.txt","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DONE and nothing else.`,
       ].join('\n')
-      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      positivePrompts.push({ provider, agent, prompt })
     }
 
-    const positiveFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}.txt`))
-    const movedFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-moved.txt`))
-    const directFiles = options.providers.map((provider) => path.join(outputsDir, `${provider}-direct.txt`))
-    await waitForCompletionsAndFiles({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      events,
-      expectedCompletionCount: beforePositiveCompletionCount + agents.length,
-      requiredFiles: [...positiveFiles, ...movedFiles],
-      forbiddenFiles: directFiles,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-      debugSnapshot: debugSessionSnapshot,
-    })
+    if (options.machineRef) {
+      for (const { provider, agent, prompt } of positivePrompts) {
+        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+        await waitForCompletionsAndFiles({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          events,
+          expectedCompletionCount: beforeCompletionCount + 1,
+          requiredFiles: [path.join(outputsDir, `${provider}.txt`), path.join(outputsDir, `${provider}-moved.txt`)],
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+          debugSnapshot: debugSessionSnapshot,
+        })
+      }
+    } else {
+      const beforePositiveCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { agent, prompt } of positivePrompts) {
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      }
+      await waitForCompletionsAndFiles({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: beforePositiveCompletionCount + agents.length,
+        requiredFiles: [...positiveFiles, ...movedFiles],
+        forbiddenFiles: directFiles,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        debugSnapshot: debugSessionSnapshot,
+      })
+    }
     if (!options.machineRef) {
       await waitForAgentsIdle({
         client,
@@ -795,7 +856,7 @@ async function main() {
       deleteAgents.push(...agents)
     }
 
-    const beforeDeleteCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+    const deletePrompts = []
     for (const { provider, agent } of deleteAgents) {
       const prompt = [
         'This is a live Arroba managed I/O delete smoke test.',
@@ -803,17 +864,37 @@ async function main() {
         `Call \`arroba.delete_artifact\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_MANAGED_IO_DELETE_DONE and nothing else.`,
       ].join('\n')
-      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      deletePrompts.push({ provider, agent, prompt })
     }
-    await waitForCompletionCount({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      events,
-      expectedCompletionCount: beforeDeleteCompletionCount + deleteAgents.length,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-    })
+    if (options.machineRef) {
+      for (const { agent, prompt } of deletePrompts) {
+        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+        await waitForCompletionCount({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          events,
+          expectedCompletionCount: beforeCompletionCount + 1,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+      }
+    } else {
+      const beforeDeleteCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { agent, prompt } of deletePrompts) {
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      }
+      await waitForCompletionCount({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: beforeDeleteCompletionCount + deleteAgents.length,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+    }
     if (!options.machineRef) {
       await waitForAgentsIdle({
         client,
@@ -889,7 +970,7 @@ async function main() {
       aliasSuffix: 'negative',
     }) : agents
 
-    const beforeNegativeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+    const negativePrompts = []
     for (const { provider, agent } of negativeAgents) {
       const prompt = [
         'This is a live Arroba managed I/O negative smoke test.',
@@ -897,20 +978,42 @@ async function main() {
         'Do not use `arroba.write_artifact`, `arroba.edit_artifact`, or any other Arroba managed I/O tool for this negative test.',
         `If direct/native writes are blocked or unavailable, reply exactly ${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED and nothing else.`,
       ].join('\n')
-      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      negativePrompts.push({ agent, prompt })
     }
 
-    await waitForCompletionsAndFiles({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      events,
-      expectedCompletionCount: beforeNegativeCompletionCount + negativeAgents.length,
-      requiredFiles: positiveFiles,
-      forbiddenFiles: directFiles,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-    })
+    if (options.machineRef) {
+      for (const { agent, prompt } of negativePrompts) {
+        const beforeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+        await waitForCompletionsAndFiles({
+          client,
+          sessionId: session.id,
+          attachmentId: attachment.id,
+          events,
+          expectedCompletionCount: beforeCompletionCount + 1,
+          requiredFiles: positiveFiles,
+          forbiddenFiles: directFiles,
+          timeoutMs: options.timeoutMs,
+          pollMs: options.pollMs,
+        })
+      }
+    } else {
+      const beforeNegativeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
+      for (const { agent, prompt } of negativePrompts) {
+        await client.send(submitPromptRequest(session.id, attachment.id, agent.id, prompt, []))
+      }
+      await waitForCompletionsAndFiles({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        events,
+        expectedCompletionCount: beforeNegativeCompletionCount + negativeAgents.length,
+        requiredFiles: positiveFiles,
+        forbiddenFiles: directFiles,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+    }
     if (!options.machineRef) {
       await waitForAgentsIdle({
         client,
@@ -922,6 +1025,7 @@ async function main() {
         pollMs: options.pollMs,
       })
     }
+    await assertFilesAbsent(directFiles, 'negative managed-I/O direct-write check')
 
     const collisionAgents = options.machineRef ? await spawnManagedIoPhaseAgents({
       client,
@@ -939,7 +1043,7 @@ async function main() {
       attachment,
       events,
       agents: collisionAgents,
-      model: options.model,
+      modelForProvider: (provider) => modelForProvider(provider, options),
       machineRef: options.machineRef,
       workspace,
       outputsDir,
@@ -950,6 +1054,7 @@ async function main() {
       spawnAgentRequest,
       submitPromptRequest,
     })
+    await assertFilesAbsent(directFiles, 'final managed-I/O direct-write check')
 
     const files = []
     for (const provider of options.providers) {

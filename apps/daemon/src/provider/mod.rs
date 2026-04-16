@@ -36,11 +36,13 @@ pub(crate) use run_actor::{
 };
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
+pub(crate) use types::provider_requires_managed_io_by_default;
 pub use types::{
-    default_provider_command_catalogs, AgentEndpointMode, ControlCapability, ControlCapabilityMode,
-    ControlOperation, LaunchProviderRequest, ProviderAssistantCompletion, ProviderCommandCatalog,
-    ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource, ProviderCommandDescriptor,
-    ProviderLaunchResult, ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk,
-    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunState, ProviderWriteAccessMode,
-    RuntimeMcpBinding, RuntimeProviderRun,
+    default_provider_command_catalogs, AgentEndpointMode,
+    ControlCapability, ControlCapabilityMode, ControlOperation, LaunchProviderRequest,
+    ProviderAssistantCompletion, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
+    ProviderCommandCatalogSource, ProviderCommandDescriptor, ProviderLaunchResult,
+    ProviderProcessInfo, ProviderProcessStatus, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderResumeState, ProviderRunState, ProviderWriteAccessMode, RuntimeMcpBinding,
+    RuntimeProviderRun,
 };

@@ -662,6 +662,9 @@ pub fn ensure_workflow_provider_run_for_agent(
                 )
                 .with_agent_id(agent.id().to_string())
                 .with_variant(agent.effort().map(str::to_string));
+                if crate::provider::provider_requires_managed_io_by_default(provider) {
+                    request = request.with_managed_io_required();
+                }
                 if let Some(worktree_id) = agent.worktree_id() {
                     request = request.with_working_directory(PathBuf::from(worktree_id));
                 }
@@ -693,6 +696,9 @@ pub fn ensure_workflow_provider_run_for_agent(
             )
             .with_agent_id(agent.id().to_string())
             .with_variant(agent.effort().map(str::to_string));
+            if crate::provider::provider_requires_managed_io_by_default(provider) {
+                request = request.with_managed_io_required();
+            }
             if let Some(worktree_id) = agent.worktree_id() {
                 request = request.with_working_directory(PathBuf::from(worktree_id));
             }

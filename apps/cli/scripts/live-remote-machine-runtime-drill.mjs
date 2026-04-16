@@ -39,7 +39,7 @@ let listSessionsRequest
 let endSessionRequest
 let submitPromptRequest
 
-const DEFAULT_MODEL = 'gpt-5.3'
+const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDER = 'dev-stub'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
@@ -225,7 +225,7 @@ async function main() {
       'Options:',
       `  --provider ${DEFAULT_PROVIDER}`,
       `  --model ${DEFAULT_MODEL}`,
-      '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+      '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.2-codex)',
       `  --workspace ${DEFAULT_WORKSPACE}`,
       `  --worktree ${DEFAULT_WORKTREE}`,
       `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,

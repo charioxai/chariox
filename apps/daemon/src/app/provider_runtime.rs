@@ -1254,6 +1254,9 @@ impl DaemonApp {
         )
         .with_agent_id(agent.id().to_string())
         .with_variant(agent.effort().map(str::to_string));
+        if crate::provider::provider_requires_managed_io_by_default(provider) {
+            request = request.with_managed_io_required();
+        }
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
