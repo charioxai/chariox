@@ -31,7 +31,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_TIMEOUT_MS = 360_000
 const DEFAULT_POLL_MS = 1_000
@@ -41,6 +41,7 @@ function parseArgs(argv) {
     kernel: DEFAULT_KERNEL,
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
+    providerModels: {},
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     spawnDaemon: true,
@@ -55,6 +56,11 @@ function parseArgs(argv) {
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
@@ -83,6 +89,7 @@ function printHelp() {
     '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
@@ -147,11 +154,24 @@ function managedIoSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alia
   }
 }
 
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
+}
+
 async function spawnManagedIoPhaseAgents({
   client,
   sessionId,
   providers,
-  model,
+  modelForProvider,
   workspace,
   machineRef,
   spawnAgentRequest,
@@ -166,7 +186,7 @@ async function spawnManagedIoPhaseAgents({
         sessionId,
         provider,
         `${provider}-managed-io-${aliasSuffix}-${index + 1}`,
-        model,
+        modelForProvider(provider),
         workspace,
         'low',
         machineRef,
@@ -657,7 +677,7 @@ async function main() {
       client,
       sessionId: session.id,
       providers: options.providers,
-      model: options.model,
+      modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
       machineRef: options.machineRef,
       spawnAgentRequest,
@@ -762,7 +782,7 @@ async function main() {
             session.id,
             provider,
             `${provider}-managed-io-delete`,
-            options.model,
+            modelForProvider(provider, options),
             workspace,
             'low',
             options.machineRef,
@@ -862,7 +882,7 @@ async function main() {
       client,
       sessionId: session.id,
       providers: options.providers,
-      model: options.model,
+      modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
       machineRef: options.machineRef,
       spawnAgentRequest,
@@ -907,7 +927,7 @@ async function main() {
       client,
       sessionId: session.id,
       providers: options.providers,
-      model: options.model,
+      modelForProvider: (provider) => modelForProvider(provider, options),
       workspace,
       machineRef: options.machineRef,
       spawnAgentRequest,

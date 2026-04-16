@@ -33,7 +33,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
 
@@ -41,6 +41,7 @@ function parseArgs(argv) {
   const options = {
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
+    providerModels: {},
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
@@ -51,6 +52,11 @@ function parseArgs(argv) {
     if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
@@ -231,7 +237,8 @@ async function runManagedIoChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-managed-io-drill.mjs [--providers opencode,codex] [--model MODEL] [--full]')
+    console.log('Usage: node apps/cli/scripts/live-remote-managed-io-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--full]')
+    console.log('Example: node apps/cli/scripts/live-remote-managed-io-drill.mjs --provider opencode --provider-model opencode=openai/gpt-5.3-codex')
     return
   }
   if (options.providers.length < 1) throw new Error('remote managed I/O drill requires at least one provider')
@@ -340,6 +347,7 @@ async function main() {
       '--history-dir', workerHistoryDir,
       '--providers', options.providers.join(','),
       '--model', options.model,
+      ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
       '--timeout-ms', String(options.timeoutMs),
       '--poll-ms', String(options.pollMs),
       ...(options.full ? [] : ['--positive-only']),
@@ -359,6 +367,7 @@ async function main() {
       workerMachineAlias,
       providers: options.providers,
       model: options.model,
+      providerModels: options.providerModels,
       full: options.full,
       managedIo: result,
     }, null, 2))
