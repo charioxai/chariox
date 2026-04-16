@@ -297,6 +297,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 15. Add unsupported-provider/session-mode reporting when write enforcement cannot be guaranteed.
 16. Extend to `StructuredDocument` domains where safe.
 17. Design later image/audio/video/PDF/vector artifact domains.
+18. M5.6/default policy follow-up: make managed I/O restricted mode the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
 
 ## Current Status
 
@@ -308,7 +309,9 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: provider launch contract for required managed-I/O writes.
 - Landed: Codex required managed-I/O enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
 - Landed: OpenCode required managed-I/O enforcement creates coordinated sessions with `edit`, `bash`, and `task` denied so direct file writes and unmanaged subagents are not exposed; it skips unsafe session resume into coordinated mode.
-- Not landed yet: filesystem watcher, workspace identity change detection, remote coordinated routing, unsupported-mode surfacing beyond provider launch/session planning, and broader artifact domains.
+- Landed: workspace identity monitor boundary with identity-generation tracking and managed-I/O rejection after workspace identity invalidation.
+- Landed: unsupported provider-mode rejection at launch when managed I/O is required but the adapter cannot enforce write blocking.
+- Not landed yet: filesystem watcher, remote coordinated routing, managed-I/O health/status surfacing, default-restricted user policy, and broader artifact domains.
 
 ## Non-Goals
 

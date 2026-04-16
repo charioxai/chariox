@@ -1028,6 +1028,30 @@ fn workspace_coordination_snapshot(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedIoHealthSnapshot {
+    pub active_reservations: usize,
+    pub active_reservation_artifacts: usize,
+    pub workspace_identity:
+        crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot,
+}
+
+impl Default for ManagedIoHealthSnapshot {
+    fn default() -> Self {
+        Self {
+            active_reservations: 0,
+            active_reservation_artifacts: 0,
+            workspace_identity:
+                crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
+                    tracked_provider_runs: 0,
+                    identity_changed_provider_runs: 0,
+                    invalid_provider_runs: 0,
+                    current_generation_total: 0,
+                },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportHealthSnapshot {
     pub active_connections: usize,
     pub active_subscriptions: usize,
@@ -1187,6 +1211,7 @@ pub struct DaemonHealthProjection {
     pub transport: TransportHealthSnapshot,
     pub terminal_stream: TerminalStreamHealthSnapshot,
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
+    pub managed_io: ManagedIoHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
 }
 
@@ -1205,6 +1230,7 @@ impl DaemonHealthProjection {
         transport: TransportHealthSnapshot,
         terminal_stream: TerminalStreamHealthSnapshot,
         workspace_coordination: WorkspaceCoordinationHealthSnapshot,
+        managed_io: ManagedIoHealthSnapshot,
         projection_invariants: ProjectionInvariantHealthSnapshot,
     ) -> Self {
         // Compatibility: legacy clients may still read prompt counts from the
@@ -1228,6 +1254,7 @@ impl DaemonHealthProjection {
             transport,
             terminal_stream,
             workspace_coordination,
+            managed_io,
             projection_invariants,
         }
     }
@@ -1240,9 +1267,10 @@ mod tests {
     use crate::kernel::capability_executor::CapabilityExecutorHealthSnapshot;
     use crate::kernel::projection::{
         ActorQueueSnapshot, AgentRuntimeProjectionHealthSnapshot, AgentRuntimeProjectionStore,
-        DaemonHealthProjection, ProjectionInvariantHealthSnapshot, ProviderCatalogHealthSnapshot,
-        ProviderRunActorHealthSnapshot, SessionProjectionHealthSnapshot, SessionSnapshotProjection,
-        SessionStateProjectionStore, TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
+        DaemonHealthProjection, ManagedIoHealthSnapshot, ProjectionInvariantHealthSnapshot,
+        ProviderCatalogHealthSnapshot, ProviderRunActorHealthSnapshot,
+        SessionProjectionHealthSnapshot, SessionSnapshotProjection, SessionStateProjectionStore,
+        TransportHealthSnapshot, WorkspaceCoordinationHealthSnapshot,
     };
     use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
     use crate::session::CreateSessionRequest;
@@ -1377,6 +1405,16 @@ mod tests {
                 }],
                 active_operation_claims: Vec::new(),
             },
+            ManagedIoHealthSnapshot {
+                active_reservations: 2,
+                active_reservation_artifacts: 1,
+                workspace_identity: crate::kernel::workspace_identity_monitor::WorkspaceIdentityMonitorHealthSnapshot {
+                    tracked_provider_runs: 3,
+                    identity_changed_provider_runs: 1,
+                    invalid_provider_runs: 1,
+                    current_generation_total: 2,
+                },
+            },
             ProjectionInvariantHealthSnapshot {
                 checked_sessions: 1,
                 checked_agents: 3,
@@ -1416,6 +1454,15 @@ mod tests {
         );
         assert_eq!(
             projection.workspace_coordination.worktree_collisions.len(),
+            1
+        );
+        assert_eq!(projection.managed_io.active_reservations, 2);
+        assert_eq!(projection.managed_io.active_reservation_artifacts, 1);
+        assert_eq!(
+            projection
+                .managed_io
+                .workspace_identity
+                .invalid_provider_runs,
             1
         );
         assert_eq!(projection.projection_invariants.checked_agents, 3);

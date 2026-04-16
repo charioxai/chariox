@@ -4687,6 +4687,27 @@ impl KernelRuntimeState {
         self.owned.config_projection.snapshot()
     }
 
+    pub(crate) async fn managed_io_health_snapshot(
+        &self,
+    ) -> crate::kernel::projection::ManagedIoHealthSnapshot {
+        let reservations = self
+            .owned
+            .managed_io_coordinator
+            .lock()
+            .await
+            .active_reservation_snapshots();
+        let active_reservation_artifacts = reservations
+            .iter()
+            .map(|reservation| reservation.artifact_id.clone())
+            .collect::<BTreeSet<_>>()
+            .len();
+        crate::kernel::projection::ManagedIoHealthSnapshot {
+            active_reservations: reservations.len(),
+            active_reservation_artifacts,
+            workspace_identity: self.owned.workspace_identity_monitor.health_snapshot(),
+        }
+    }
+
     async fn with_app_side_effect<R>(&self, operation: impl FnOnce(&mut DaemonApp) -> R) -> R {
         let mut app = self.app.lock().await;
         operation(&mut app)

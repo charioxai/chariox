@@ -1214,6 +1214,7 @@ impl CommandRouter {
             self.terminal_health.snapshot(),
             self.session_projection
                 .workspace_coordination_snapshot(self.workspace_coordinator.active_claims()),
+            self.runtime_state.managed_io_health_snapshot().await,
             self.session_projection
                 .invariant_snapshot(&self.agent_runtime_projection),
         )

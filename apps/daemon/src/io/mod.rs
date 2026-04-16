@@ -12,5 +12,6 @@ pub use text::TextDocumentDomain;
 pub use types::{
     AgentEditIntent, AgentEditOperation, ArtifactContent, ArtifactDomainKind, ArtifactEditError,
     ArtifactEditWarning, ArtifactId, ArtifactReadResult, ArtifactReservationOwner,
-    ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange, WorkspaceIdentity,
+    ArtifactReservationSnapshot, ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange,
+    WorkspaceIdentity,
 };

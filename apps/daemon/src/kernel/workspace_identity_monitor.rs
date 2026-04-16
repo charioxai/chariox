@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 
+use serde::{Deserialize, Serialize};
+
 use crate::io::WorkspaceIdentity;
 
 #[derive(Clone, Debug, Default)]
@@ -30,6 +32,14 @@ pub(crate) struct WorkspaceIdentitySnapshot {
     pub generation: u64,
     pub identity_changed: bool,
     pub valid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceIdentityMonitorHealthSnapshot {
+    pub tracked_provider_runs: usize,
+    pub identity_changed_provider_runs: usize,
+    pub invalid_provider_runs: usize,
+    pub current_generation_total: u64,
 }
 
 impl WorkspaceIdentityMonitor {
@@ -74,6 +84,31 @@ impl WorkspaceIdentityMonitor {
             .expect("workspace identity monitor lock should not be poisoned")
             .provider_runs
             .remove(provider_run_id);
+    }
+
+    pub(crate) fn health_snapshot(&self) -> WorkspaceIdentityMonitorHealthSnapshot {
+        let state = self
+            .state
+            .lock()
+            .expect("workspace identity monitor lock should not be poisoned");
+        let mut identity_changed_provider_runs = 0usize;
+        let mut invalid_provider_runs = 0usize;
+        let mut current_generation_total = 0u64;
+        for record in state.provider_runs.values() {
+            current_generation_total += record.generation;
+            if record.generation > 0 {
+                identity_changed_provider_runs += 1;
+            }
+            if record.current_identity != record.baseline_identity {
+                invalid_provider_runs += 1;
+            }
+        }
+        WorkspaceIdentityMonitorHealthSnapshot {
+            tracked_provider_runs: state.provider_runs.len(),
+            identity_changed_provider_runs,
+            invalid_provider_runs,
+            current_generation_total,
+        }
     }
 }
 
@@ -123,5 +158,23 @@ mod tests {
         assert!(snapshot.valid);
         assert!(snapshot.identity_changed);
         assert_eq!(snapshot.generation, 2);
+    }
+
+    #[test]
+    fn health_snapshot_counts_changed_and_invalid_provider_runs() {
+        let monitor = WorkspaceIdentityMonitor::default();
+        let first = crate::io::WorkspaceIdentity::local("root-a");
+        let second = crate::io::WorkspaceIdentity::local("root-b");
+
+        monitor.observe_provider_run("run-1", "/repo".into(), first.clone());
+        monitor.observe_provider_run("run-1", "/repo".into(), second.clone());
+        monitor.observe_provider_run("run-2", "/repo".into(), first);
+
+        let health = monitor.health_snapshot();
+
+        assert_eq!(health.tracked_provider_runs, 2);
+        assert_eq!(health.identity_changed_provider_runs, 1);
+        assert_eq!(health.invalid_provider_runs, 1);
+        assert_eq!(health.current_generation_total, 1);
     }
 }

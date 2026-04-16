@@ -100,6 +100,13 @@ impl ArtifactReservationOwner {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactReservationSnapshot {
+    pub artifact_id: ArtifactId,
+    pub owner: ArtifactReservationOwner,
+    pub ranges: Vec<TextRange>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactDomainKind {
     TextDocument,

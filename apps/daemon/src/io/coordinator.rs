@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use crate::io::text::{TextDocumentDomain, TextEditPlan};
 use crate::io::types::{
     AgentEditIntent, ArtifactContent, ArtifactDomainKind, ArtifactEditError, ArtifactEditWarning,
-    ArtifactId, ArtifactReadResult, ArtifactReservationOwner, ArtifactSnapshotId, ArtifactVersion,
-    EditResult, TextRange, WorkspaceIdentity,
+    ArtifactId, ArtifactReadResult, ArtifactReservationOwner, ArtifactReservationSnapshot,
+    ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange, WorkspaceIdentity,
 };
 
 #[derive(Debug, Clone)]
@@ -207,6 +207,21 @@ impl ArtifactEditCoordinator {
         if reservations.is_empty() {
             self.active_reservations.remove(&token.artifact_id);
         }
+    }
+
+    pub fn active_reservation_snapshots(&self) -> Vec<ArtifactReservationSnapshot> {
+        self.active_reservations
+            .iter()
+            .flat_map(|(artifact_id, reservations)| {
+                reservations
+                    .iter()
+                    .map(|reservation| ArtifactReservationSnapshot {
+                        artifact_id: artifact_id.clone(),
+                        owner: reservation.owner.clone(),
+                        ranges: reservation.ranges.clone(),
+                    })
+            })
+            .collect()
     }
 
     fn prepare_edit_inner(
