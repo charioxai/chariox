@@ -648,4 +648,71 @@ mod tests {
             )
             .is_ok());
     }
+    #[test]
+    fn reservation_lifecycle_allows_retry_after_release() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let workspace = workspace();
+        let owner_a = ArtifactReservationOwner::new("run-a", Some("agent-a".to_string()), "edit");
+        let owner_b = ArtifactReservationOwner::new("run-b", Some("agent-b".to_string()), "edit");
+
+        let first = coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(0, 10)],
+                owner_a,
+            )
+            .expect("first reservation should be accepted");
+        assert_eq!(coordinator.active_reservation_snapshots().len(), 1);
+
+        let rejected = coordinator.try_reserve_ranges(
+            &workspace,
+            Path::new("src/lib.rs"),
+            vec![TextRange::new(5, 12)],
+            owner_b.clone(),
+        );
+        assert!(matches!(
+            rejected,
+            Err(ArtifactEditError::ActiveReservationConflict { .. })
+        ));
+        assert_eq!(coordinator.active_reservation_snapshots().len(), 1);
+
+        coordinator.release_reservation(first);
+        assert!(coordinator.active_reservation_snapshots().is_empty());
+        assert!(coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(5, 12)],
+                owner_b,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn reservations_are_scoped_per_artifact() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let workspace = workspace();
+        let owner_a = ArtifactReservationOwner::new("run-a", Some("agent-a".to_string()), "edit");
+        let owner_b = ArtifactReservationOwner::new("run-b", Some("agent-b".to_string()), "edit");
+
+        let _first = coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(0, 10)],
+                owner_a,
+            )
+            .expect("first reservation should be accepted");
+
+        assert!(coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/main.rs"),
+                vec![TextRange::new(0, 10)],
+                owner_b,
+            )
+            .is_ok());
+        assert_eq!(coordinator.active_reservation_snapshots().len(), 2);
+    }
 }

@@ -139,6 +139,11 @@ fn opencode_managed_io_permission_rules() -> serde_json::Value {
             "permission": "task",
             "pattern": "*",
             "action": "deny"
+        },
+        {
+            "permission": "external_directory",
+            "pattern": "*",
+            "action": "deny"
         }
     ])
 }
@@ -198,6 +203,11 @@ mod tests {
                 },
                 {
                     "permission": "task",
+                    "pattern": "*",
+                    "action": "deny"
+                },
+                {
+                    "permission": "external_directory",
                     "pattern": "*",
                     "action": "deny"
                 }

@@ -241,13 +241,13 @@ impl CodexClient {
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
-        let (approval_policy, _sandbox, sandbox_policy) =
-            codex_permission_policy(write_access_mode);
+        let (approval_policy, sandbox, sandbox_policy) = codex_permission_policy(write_access_mode);
         let mut params = json!({
             "threadId": thread_id,
             "input": input,
             "approvalPolicy": approval_policy,
             "personality": "pragmatic",
+            "sandbox": sandbox,
             "sandboxPolicy": sandbox_policy,
             "summary": "detailed",
         });

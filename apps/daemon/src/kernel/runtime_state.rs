@@ -7532,15 +7532,44 @@ fn add_managed_io_external_change_notice_payload(
     payload: &mut serde_json::Value,
     notice: Option<crate::io::ArtifactExternalChangeNotice>,
 ) {
-    let Some(notice) = notice else {
+    add_managed_io_external_change_notices_payload(payload, notice.into_iter().collect());
+}
+
+fn add_managed_io_external_change_notices_payload(
+    payload: &mut serde_json::Value,
+    notices: Vec<crate::io::ArtifactExternalChangeNotice>,
+) {
+    if notices.is_empty() {
         return;
-    };
-    payload["external_change"] = serde_json::json!({
+    }
+    let notices = notices
+        .into_iter()
+        .map(managed_io_external_change_notice_payload)
+        .collect::<Vec<_>>();
+    payload["external_changes"] = serde_json::json!(notices);
+    if let Some(notice) = payload["external_changes"].get(0).cloned() {
+        payload["external_change"] = notice;
+    }
+}
+
+fn managed_io_external_change_notice_payload(
+    notice: crate::io::ArtifactExternalChangeNotice,
+) -> serde_json::Value {
+    serde_json::json!({
         "detected": true,
         "path": notice.path.to_string_lossy(),
         "message": notice.message,
         "next_action": "This artifact changed outside Arroba managed I/O after your last read. If the write was rejected, reread and reconcile before retrying; if it was applied with a rebase warning, verify the diff before continuing.",
-    });
+    })
+}
+
+fn managed_io_external_change_notice_for_path(
+    path: PathBuf,
+) -> crate::io::ArtifactExternalChangeNotice {
+    crate::io::ArtifactExternalChangeNotice {
+        path,
+        message: "artifact changed outside Arroba managed I/O while the managed operation was being prepared".to_string(),
+    }
 }
 
 fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
@@ -7912,6 +7941,9 @@ fn apply_managed_patch_operations(
         }
     }
 
+    let external_change_notices = external_change_monitor
+        .external_change_notices(&workspace_identity, final_states.keys().cloned());
+
     for (path, before) in &before_states {
         let latest = match managed_io_read_optional_text(&workspace_root, path) {
             Ok(latest) => latest,
@@ -7927,10 +7959,16 @@ fn apply_managed_patch_operations(
                 coordinator.release_reservation(token);
             }
             external_change_monitor.record_external_change(&workspace_identity, path);
-            return Ok(managed_patch_rejected(
+            let mut notices = external_change_notices.clone();
+            if !notices.iter().any(|notice| notice.path == *path) {
+                notices.push(managed_io_external_change_notice_for_path(path.clone()));
+            }
+            let mut output = managed_patch_rejected(
                 path.clone(),
                 "artifact changed while the managed patch was being prepared; reread and retry",
-            ));
+            );
+            add_managed_io_external_change_notices_payload(&mut output.payload, notices);
+            return Ok(output);
         }
     }
 
@@ -7999,6 +8037,7 @@ fn apply_managed_patch_operations(
         "atomic": true,
         "changes": changes,
     });
+    add_managed_io_external_change_notices_payload(&mut payload, external_change_notices);
     if changes.len() == 1 {
         payload["change"] = changes[0].clone();
         if let Some(path) = changes[0].get("path").cloned() {
@@ -8665,6 +8704,10 @@ mod managed_io_external_change_notice_tests {
         assert!(output.ok);
         assert_eq!(output.payload["external_change"]["detected"], true);
         assert_eq!(
+            output.payload["external_changes"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
             output.payload["warning"]["kind"],
             "rebased_over_non_overlapping_change"
         );
@@ -8672,5 +8715,30 @@ mod managed_io_external_change_notice_tests {
             .as_str()
             .unwrap()
             .contains("-alpha"));
+    }
+    #[test]
+    fn patch_result_includes_external_change_notices() {
+        let mut payload = serde_json::json!({
+            "applied": true,
+            "atomic": true,
+            "changes": [],
+        });
+
+        add_managed_io_external_change_notices_payload(
+            &mut payload,
+            vec![
+                crate::io::ArtifactExternalChangeNotice {
+                    path: PathBuf::from("src/lib.rs"),
+                    message: "changed".to_string(),
+                },
+                crate::io::ArtifactExternalChangeNotice {
+                    path: PathBuf::from("src/main.rs"),
+                    message: "changed too".to_string(),
+                },
+            ],
+        );
+
+        assert_eq!(payload["external_change"]["path"], "src/lib.rs");
+        assert_eq!(payload["external_changes"].as_array().unwrap().len(), 2);
     }
 }

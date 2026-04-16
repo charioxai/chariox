@@ -128,21 +128,32 @@ impl ArtifactExternalChangeMonitor {
         workspace_identity: &WorkspaceIdentity,
         path: &Path,
     ) -> Option<ArtifactExternalChangeNotice> {
+        self.external_change_notices(workspace_identity, vec![path.to_path_buf()])
+            .into_iter()
+            .next()
+    }
+
+    pub(crate) fn external_change_notices(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Vec<ArtifactExternalChangeNotice> {
         self.scan_tracked_artifacts_once();
-        let key = artifact_key(workspace_identity, path);
+        let paths = paths.into_iter().collect::<Vec<_>>();
         let state = self
             .state
             .lock()
             .expect("artifact external change monitor lock should not be poisoned");
-        state
-            .externally_changed_artifacts
-            .contains(&key)
-            .then(|| ArtifactExternalChangeNotice {
-                path: path.to_path_buf(),
-                message:
-                    "artifact changed outside Arroba managed I/O after the last managed observation"
-                        .to_string(),
+        paths
+            .into_iter()
+            .filter_map(|path| {
+                let key = artifact_key(workspace_identity, &path);
+                state
+                    .externally_changed_artifacts
+                    .contains(&key)
+                    .then(|| external_change_notice_for_path(path))
             })
+            .collect()
     }
 
     fn ensure_live_watcher_started(&self) {
@@ -228,6 +239,14 @@ impl ArtifactExternalChangeMonitor {
             live_watcher_scans: state.live_watcher_scans,
             live_watcher_scan_errors: state.live_watcher_scan_errors,
         }
+    }
+}
+
+fn external_change_notice_for_path(path: PathBuf) -> ArtifactExternalChangeNotice {
+    ArtifactExternalChangeNotice {
+        path,
+        message: "artifact changed outside Arroba managed I/O after the last managed observation"
+            .to_string(),
     }
 }
 
@@ -344,5 +363,32 @@ mod tests {
 
         assert_eq!(notice.path, std::path::PathBuf::from("src/lib.rs"));
         assert!(notice.message.contains("outside Arroba managed I/O"));
+    }
+
+    #[test]
+    fn external_change_notices_scan_once_for_multiple_paths() {
+        let monitor = ArtifactExternalChangeMonitor::default();
+        let workspace = crate::io::WorkspaceIdentity::local("repo-a");
+        let root = test_root("multi-notice");
+        let first = root.join("src/lib.rs");
+        let second = root.join("src/main.rs");
+        fs::create_dir_all(first.parent().unwrap()).expect("create parent");
+        fs::write(&first, "alpha\n").expect("write first");
+        fs::write(&second, "one\n").expect("write second");
+
+        monitor.observe_managed_read("run-1", &workspace, &root, "src/lib.rs".as_ref());
+        monitor.observe_managed_read("run-1", &workspace, &root, "src/main.rs".as_ref());
+        fs::write(&first, "external\n").expect("external write");
+
+        let notices = monitor.external_change_notices(
+            &workspace,
+            vec![
+                std::path::PathBuf::from("src/lib.rs"),
+                std::path::PathBuf::from("src/main.rs"),
+            ],
+        );
+
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].path, std::path::PathBuf::from("src/lib.rs"));
     }
 }
