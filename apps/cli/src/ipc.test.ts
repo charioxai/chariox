@@ -265,6 +265,70 @@ test("LocalIpcClient reconnects and resubscribes with the last received event id
   assert.equal(events.some((event) => event.event === "transport_resumed"), true)
 })
 
+test("LocalIpcClient keeps control requests alive when the event stream closes", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      if (frame.type === "subscribe") {
+        socket.send(JSON.stringify({
+          type: "response",
+          request_id: frame.request_id,
+          response: { ok: true },
+          error: null,
+        }))
+        socket.send(JSON.stringify({
+          type: "event",
+          event_id: 1,
+          event: { event: "heartbeat", session_id: frame.session_id },
+        }))
+        setTimeout(() => socket.close(1008, "event stream overloaded"), 10)
+        return
+      }
+
+      if (frame.type === "request") {
+        setTimeout(() => {
+          socket.send(JSON.stringify({
+            type: "response",
+            request_id: frame.request_id,
+            response: { ok: true, echoed: frame.request },
+            error: null,
+          }))
+        }, 50)
+      }
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint)
+  const events: KernelEvent[] = []
+  const dispose = client.onKernelEvent((event) => {
+    events.push(event)
+  })
+  t.after(() => {
+    dispose()
+  })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  await client.subscribeToKernelEvents("session-1", "attachment-1")
+  const responsePromise = client.send<{ ok: boolean; echoed: unknown }>({ op: "state" })
+  await new Promise((resolve) => setTimeout(resolve, 75))
+  const response = await responsePromise
+
+  assert.equal(response.ok, true)
+  assert.deepEqual(response.echoed, { op: "state" })
+  assert.equal(events.some((event) => event.event === "transport_closed"), true)
+})
+
 test("LocalIpcClient does not reconnect only because subscribed app events are quiet", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")

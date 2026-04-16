@@ -111,7 +111,10 @@ type PendingRequest<TResponse> = {
   reject: (error: LocalIpcError) => void
   timeout: NodeJS.Timeout
   relayPrivateKey: Buffer | null
+  lane: KernelSocketLane
 }
+
+type KernelSocketLane = "control" | "event"
 
 export type KernelEvent =
   | {
@@ -220,8 +223,10 @@ export class LocalIpcClient {
   readonly socketPath: string
   private readonly relayAuthToken: string | null
   private readonly relayTarget: RelayTarget | null
-  private websocket: WebSocket | null = null
-  private websocketConnectPromise: Promise<WebSocket> | null = null
+  private controlWebsocket: WebSocket | null = null
+  private eventWebsocket: WebSocket | null = null
+  private controlWebsocketConnectPromise: Promise<WebSocket> | null = null
+  private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private pending = new Map<string, PendingRequest<unknown>>()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
@@ -230,10 +235,14 @@ export class LocalIpcClient {
   private lastReceivedEventId: number | null = null
   private lastKernelEventAtMs = 0
   private kernelEventWatchdog: NodeJS.Timeout | null = null
-  private kernelHeartbeat: NodeJS.Timeout | null = null
-  private missedKernelPongs = 0
-  private suppressNextCloseEvent = false
-  private relayDaemonPublicKey: string | null = null
+  private controlHeartbeat: NodeJS.Timeout | null = null
+  private eventHeartbeat: NodeJS.Timeout | null = null
+  private missedControlPongs = 0
+  private missedEventPongs = 0
+  private suppressNextControlCloseEvent = false
+  private suppressNextEventCloseEvent = false
+  private controlRelayDaemonPublicKey: string | null = null
+  private eventRelayDaemonPublicKey: string | null = null
   private readonly kernelEventStaleMs: number
   private readonly kernelPingIntervalMs: number
   private readonly kernelMaxMissedPongs: number
@@ -272,6 +281,15 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
+    const previousSubscription = this.activeKernelSubscription
+    const resumeFromEventId =
+      previousSubscription?.sessionId === sessionId
+        && previousSubscription.attachmentId === attachmentId
+        ? this.lastReceivedEventId
+        : null
+    if (resumeFromEventId == null) {
+      this.lastReceivedEventId = null
+    }
     this.activeKernelSubscription = {
       sessionId,
       attachmentId,
@@ -280,16 +298,16 @@ export class LocalIpcClient {
     }
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, this.lastReceivedEventId)
+        await this.sendRelaySubscribe(sessionId, attachmentId, resumeFromEventId)
       } else {
         await this.sendWebSocket<Record<string, unknown>>({
           __kernel_transport: {
             type: "subscribe",
             session_id: sessionId,
             attachment_id: attachmentId,
-            resume_from_event_id: this.lastReceivedEventId,
+            resume_from_event_id: resumeFromEventId,
           },
-        })
+        }, "event")
       }
       this.clearReconnectState()
       this.markKernelEventReceived()
@@ -307,7 +325,8 @@ export class LocalIpcClient {
     this.activeKernelSubscription = null
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
-    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+    const socket = this.getWebSocket("event")
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
       return
     }
     if (this.isRelayMode()) {
@@ -320,7 +339,7 @@ export class LocalIpcClient {
         __kernel_transport: {
           type: "unsubscribe",
         },
-      })
+      }, "event")
     }
   }
 
@@ -330,23 +349,19 @@ export class LocalIpcClient {
     }
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
-    this.clearKernelHeartbeat()
-    if (this.websocket && this.websocket.readyState !== WebSocket.CLOSED) {
-      this.suppressNextCloseEvent = true
-      this.websocket.terminate()
-      this.websocket = null
-      this.websocketConnectPromise = null
+    this.clearKernelHeartbeat("event")
+    const socket = this.getWebSocket("event")
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      this.suppressNextEventCloseEvent = true
+      socket.terminate()
+      this.setWebSocket("event", null)
+      this.setWebSocketConnectPromise("event", null)
     }
     this.scheduleReconnect(25)
   }
 
   onKernelEvent(handler: (event: KernelEvent) => void) {
     this.eventHandlers.add(handler)
-    if (this.supportsKernelEvents()) {
-      void this.ensureWebSocket().catch(() => {
-        // The request path will report the connection error with better context.
-      })
-    }
     return () => {
       this.eventHandlers.delete(handler)
     }
@@ -356,23 +371,14 @@ export class LocalIpcClient {
     this.activeKernelSubscription = null
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
-    this.clearKernelHeartbeat()
-    const socket = this.websocket
-    this.websocket = null
-    this.websocketConnectPromise = null
-    this.relayDaemonPublicKey = null
-    if (!socket) {
-      return
-    }
-    if (socket.readyState === WebSocket.CLOSED) {
-      return
-    }
-
-    await new Promise<void>((resolve) => {
-      this.suppressNextCloseEvent = true
-      socket.once("close", () => resolve())
-      socket.close()
-    })
+    this.clearKernelHeartbeat("control")
+    this.clearKernelHeartbeat("event")
+    this.controlRelayDaemonPublicKey = null
+    this.eventRelayDaemonPublicKey = null
+    await Promise.all([
+      this.closeWebSocket("control"),
+      this.closeWebSocket("event"),
+    ])
   }
 
   private sendLocalSocket<TResponse>(request: unknown): Promise<TResponse> {
@@ -463,8 +469,8 @@ export class LocalIpcClient {
     })
   }
 
-  private async sendWebSocket<TResponse>(request: unknown): Promise<TResponse> {
-    const socket = await this.ensureWebSocket()
+  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
+    const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
 
     return new Promise<TResponse>((resolve, reject) => {
@@ -478,11 +484,12 @@ export class LocalIpcClient {
         reject,
         timeout,
         relayPrivateKey: null,
+        lane,
       })
 
       try {
         const relayRequest = this.isRelayMode()
-          ? normalizeRelayRequest(requestId, request, this.relayTarget, this.relayDaemonPublicKey)
+          ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
           : null
         if (relayRequest) {
           const pending = this.pending.get(requestId)
@@ -507,7 +514,8 @@ export class LocalIpcClient {
     attachmentId: string,
     resumeFromEventId: number | null,
   ): Promise<void> {
-    const socket = await this.ensureWebSocket()
+    const lane: KernelSocketLane = "event"
+    const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
     const subscription = this.activeKernelSubscription
     if (!subscription?.relaySubscriptionId) {
@@ -528,6 +536,7 @@ export class LocalIpcClient {
         reject,
         timeout,
         relayPrivateKey: keypair.privateKey,
+        lane,
       })
 
       try {
@@ -551,7 +560,8 @@ export class LocalIpcClient {
   }
 
   private async sendRelayUnsubscribe(subscriptionId: string, privateKey: Buffer): Promise<void> {
-    const socket = await this.ensureWebSocket()
+    const lane: KernelSocketLane = "event"
+    const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
     const publicKeyBase64 = relayPublicKeyFromPrivateKey(privateKey)
 
@@ -566,6 +576,7 @@ export class LocalIpcClient {
         reject,
         timeout,
         relayPrivateKey: privateKey,
+        lane,
       })
 
       try {
@@ -584,15 +595,17 @@ export class LocalIpcClient {
     })
   }
 
-  private async ensureWebSocket(): Promise<WebSocket> {
-    if (this.websocket?.readyState === WebSocket.OPEN) {
-      return this.websocket
+  private async ensureWebSocket(lane: KernelSocketLane = "control"): Promise<WebSocket> {
+    const existing = this.getWebSocket(lane)
+    if (existing?.readyState === WebSocket.OPEN) {
+      return existing
     }
-    if (this.websocketConnectPromise) {
-      return this.websocketConnectPromise
+    const connectPromise = this.getWebSocketConnectPromise(lane)
+    if (connectPromise) {
+      return connectPromise
     }
 
-    this.websocketConnectPromise = new Promise<WebSocket>((resolve, reject) => {
+    const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
       const socket = new WebSocket(this.socketPath)
       let settled = false
 
@@ -601,29 +614,30 @@ export class LocalIpcClient {
           return
         }
         settled = true
-        this.websocketConnectPromise = null
+        this.setWebSocketConnectPromise(lane, null)
         reject(new LocalIpcError(operation, error instanceof Error ? error.message : String(error)))
       }
 
       socket.once("open", () => {
         const finalizeOpen = () => {
           settled = true
-          this.websocket = socket
-          this.websocketConnectPromise = null
-          this.suppressNextCloseEvent = false
-          this.startKernelHeartbeat(socket)
+          this.setWebSocket(lane, socket)
+          this.setWebSocketConnectPromise(lane, null)
+          this.setSuppressNextCloseEvent(lane, false)
+          this.startKernelHeartbeat(socket, lane)
           socket.on("message", (data: WebSocket.RawData) => {
-            this.handleWebSocketMessage(data)
+            this.handleWebSocketMessage(data, lane)
           })
           socket.on("pong", () => {
-            this.missedKernelPongs = 0
+            this.setMissedKernelPongs(lane, 0)
           })
           socket.once("close", (code: number, reason: Buffer) => {
-            const suppressed = this.suppressNextCloseEvent
-            this.suppressNextCloseEvent = false
-            this.rejectPending("kernel websocket closed")
-            this.websocket = null
-            this.clearKernelHeartbeat()
+            const suppressed = this.getSuppressNextCloseEvent(lane)
+            this.setSuppressNextCloseEvent(lane, false)
+            this.rejectPending("kernel websocket closed", lane)
+            this.setWebSocket(lane, null)
+            this.setRelayDaemonPublicKey(lane, null)
+            this.clearKernelHeartbeat(lane)
             const closeMessage = reason.length > 0
               ? reason.toString("utf8")
               : `kernel websocket closed${code ? ` (${code})` : ""}`
@@ -632,21 +646,26 @@ export class LocalIpcClient {
                 event: "transport_closed",
                 message: closeMessage,
               })
-              this.scheduleReconnect()
+              if (lane === "event") {
+                this.scheduleReconnect()
+              }
             }
           })
           socket.once("error", (error: Error) => {
-            const suppressed = this.suppressNextCloseEvent
-            this.suppressNextCloseEvent = false
-            this.rejectPending(error.message)
-            this.websocket = null
-            this.clearKernelHeartbeat()
+            const suppressed = this.getSuppressNextCloseEvent(lane)
+            this.setSuppressNextCloseEvent(lane, false)
+            this.rejectPending(error.message, lane)
+            this.setWebSocket(lane, null)
+            this.setRelayDaemonPublicKey(lane, null)
+            this.clearKernelHeartbeat(lane)
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",
                 message: error.message,
               })
-              this.scheduleReconnect()
+              if (lane === "event") {
+                this.scheduleReconnect()
+              }
             }
           })
           resolve(socket)
@@ -670,7 +689,7 @@ export class LocalIpcClient {
               fail("connect relay transport", "relay did not provide daemon public key")
               return
             }
-            this.relayDaemonPublicKey = frame.daemon_public_key
+            this.setRelayDaemonPublicKey(lane, frame.daemon_public_key)
             socket.off("message", handleRelayHandshakeMessage)
             finalizeOpen()
             return
@@ -694,10 +713,11 @@ export class LocalIpcClient {
       socket.once("error", (error: Error) => fail("connect kernel websocket", error))
     })
 
-    return this.websocketConnectPromise
+    this.setWebSocketConnectPromise(lane, nextConnectPromise)
+    return nextConnectPromise
   }
 
-  private handleWebSocketMessage(data: WebSocket.RawData) {
+  private handleWebSocketMessage(data: WebSocket.RawData, lane: KernelSocketLane) {
     let frame:
       | KernelTransportResponseFrame<unknown>
       | KernelTransportEventFrame<KernelEvent>
@@ -712,7 +732,7 @@ export class LocalIpcClient {
         | RelayEventFrame
         | RelayCloseFrame
     } catch (error) {
-      this.rejectPending(error instanceof Error ? error.message : String(error))
+      this.rejectPending(error instanceof Error ? error.message : String(error), lane)
       return
     }
 
@@ -726,7 +746,7 @@ export class LocalIpcClient {
     }
 
     if ("kind" in frame && frame.kind === "close") {
-      this.rejectPending(frame.reason)
+      this.rejectPending(frame.reason, lane)
       return
     }
 
@@ -742,7 +762,7 @@ export class LocalIpcClient {
         this.markKernelEventReceived()
         this.emitSyntheticEvent(event)
       } catch (error) {
-        this.rejectPending(error instanceof Error ? error.message : String(error))
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
       }
       return
     }
@@ -784,10 +804,13 @@ export class LocalIpcClient {
     pending.resolve(frame.response)
   }
 
-  private rejectPending(message: string) {
-    const pendingEntries = Array.from(this.pending.values())
-    this.pending.clear()
-    for (const pending of pendingEntries) {
+  private rejectPending(message: string, lane?: KernelSocketLane) {
+    const pendingEntries = Array.from(this.pending.entries())
+      .filter(([, pending]) => !lane || pending.lane === lane)
+    for (const [requestId] of pendingEntries) {
+      this.pending.delete(requestId)
+    }
+    for (const [, pending] of pendingEntries) {
       clearTimeout(pending.timeout)
       pending.reject(new LocalIpcError("kernel websocket", message, "connection_closed", true))
     }
@@ -841,47 +864,67 @@ export class LocalIpcClient {
     }
   }
 
-  private startKernelHeartbeat(socket: WebSocket) {
-    this.clearKernelHeartbeat()
-    this.missedKernelPongs = 0
-    this.kernelHeartbeat = setInterval(() => {
-      if (socket !== this.websocket || socket.readyState !== WebSocket.OPEN) {
-        this.clearKernelHeartbeat()
+  private startKernelHeartbeat(socket: WebSocket, lane: KernelSocketLane) {
+    this.clearKernelHeartbeat(lane)
+    this.setMissedKernelPongs(lane, 0)
+    const heartbeat = setInterval(() => {
+      if (socket !== this.getWebSocket(lane) || socket.readyState !== WebSocket.OPEN) {
+        this.clearKernelHeartbeat(lane)
         return
       }
-      if (this.missedKernelPongs >= this.kernelMaxMissedPongs) {
-        this.emitSyntheticEvent({
-          event: "transport_closed",
-          message: "kernel websocket heartbeat missed; reconnecting",
-        })
-        this.suppressNextCloseEvent = true
+      if (this.getMissedKernelPongs(lane) >= this.kernelMaxMissedPongs) {
+        if (lane === "event") {
+          this.emitSyntheticEvent({
+            event: "transport_closed",
+            message: "kernel websocket heartbeat missed; reconnecting",
+          })
+        }
+        this.setSuppressNextCloseEvent(lane, true)
         socket.terminate()
-        this.websocket = null
-        this.scheduleReconnect()
+        this.setWebSocket(lane, null)
+        this.setRelayDaemonPublicKey(lane, null)
+        if (lane === "event") {
+          this.scheduleReconnect()
+        }
         return
       }
-      this.missedKernelPongs += 1
+      this.setMissedKernelPongs(lane, this.getMissedKernelPongs(lane) + 1)
       try {
         socket.ping()
       } catch {
-        this.emitSyntheticEvent({
-          event: "transport_closed",
-          message: "kernel websocket heartbeat failed; reconnecting",
-        })
-        this.suppressNextCloseEvent = true
+        if (lane === "event") {
+          this.emitSyntheticEvent({
+            event: "transport_closed",
+            message: "kernel websocket heartbeat failed; reconnecting",
+          })
+        }
+        this.setSuppressNextCloseEvent(lane, true)
         socket.terminate()
-        this.websocket = null
-        this.scheduleReconnect()
+        this.setWebSocket(lane, null)
+        this.setRelayDaemonPublicKey(lane, null)
+        if (lane === "event") {
+          this.scheduleReconnect()
+        }
       }
     }, this.kernelPingIntervalMs)
+    if (lane === "control") {
+      this.controlHeartbeat = heartbeat
+    } else {
+      this.eventHeartbeat = heartbeat
+    }
   }
 
-  private clearKernelHeartbeat() {
-    if (this.kernelHeartbeat) {
-      clearInterval(this.kernelHeartbeat)
-      this.kernelHeartbeat = null
+  private clearKernelHeartbeat(lane: KernelSocketLane) {
+    const heartbeat = lane === "control" ? this.controlHeartbeat : this.eventHeartbeat
+    if (heartbeat) {
+      clearInterval(heartbeat)
+      if (lane === "control") {
+        this.controlHeartbeat = null
+      } else {
+        this.eventHeartbeat = null
+      }
     }
-    this.missedKernelPongs = 0
+    this.setMissedKernelPongs(lane, 0)
   }
 
   private scheduleReconnect(delayMs = this.reconnectDelayMs) {
@@ -917,7 +960,7 @@ export class LocalIpcClient {
             attachment_id: subscription.attachmentId,
             resume_from_event_id: this.lastReceivedEventId,
           },
-        })
+        }, "event")
       }
       this.clearReconnectState()
       this.markKernelEventReceived()
@@ -929,6 +972,82 @@ export class LocalIpcClient {
     } catch {
       this.scheduleReconnect()
     }
+  }
+
+  private getWebSocket(lane: KernelSocketLane) {
+    return lane === "control" ? this.controlWebsocket : this.eventWebsocket
+  }
+
+  private setWebSocket(lane: KernelSocketLane, socket: WebSocket | null) {
+    if (lane === "control") {
+      this.controlWebsocket = socket
+    } else {
+      this.eventWebsocket = socket
+    }
+  }
+
+  private getWebSocketConnectPromise(lane: KernelSocketLane) {
+    return lane === "control" ? this.controlWebsocketConnectPromise : this.eventWebsocketConnectPromise
+  }
+
+  private setWebSocketConnectPromise(lane: KernelSocketLane, promise: Promise<WebSocket> | null) {
+    if (lane === "control") {
+      this.controlWebsocketConnectPromise = promise
+    } else {
+      this.eventWebsocketConnectPromise = promise
+    }
+  }
+
+  private getRelayDaemonPublicKey(lane: KernelSocketLane) {
+    return lane === "control" ? this.controlRelayDaemonPublicKey : this.eventRelayDaemonPublicKey
+  }
+
+  private setRelayDaemonPublicKey(lane: KernelSocketLane, publicKey: string | null) {
+    if (lane === "control") {
+      this.controlRelayDaemonPublicKey = publicKey
+    } else {
+      this.eventRelayDaemonPublicKey = publicKey
+    }
+  }
+
+  private getSuppressNextCloseEvent(lane: KernelSocketLane) {
+    return lane === "control" ? this.suppressNextControlCloseEvent : this.suppressNextEventCloseEvent
+  }
+
+  private setSuppressNextCloseEvent(lane: KernelSocketLane, value: boolean) {
+    if (lane === "control") {
+      this.suppressNextControlCloseEvent = value
+    } else {
+      this.suppressNextEventCloseEvent = value
+    }
+  }
+
+  private getMissedKernelPongs(lane: KernelSocketLane) {
+    return lane === "control" ? this.missedControlPongs : this.missedEventPongs
+  }
+
+  private setMissedKernelPongs(lane: KernelSocketLane, value: number) {
+    if (lane === "control") {
+      this.missedControlPongs = value
+    } else {
+      this.missedEventPongs = value
+    }
+  }
+
+  private async closeWebSocket(lane: KernelSocketLane): Promise<void> {
+    const socket = this.getWebSocket(lane)
+    this.setWebSocket(lane, null)
+    this.setWebSocketConnectPromise(lane, null)
+    this.setRelayDaemonPublicKey(lane, null)
+    if (!socket || socket.readyState === WebSocket.CLOSED) {
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      this.setSuppressNextCloseEvent(lane, true)
+      socket.once("close", () => resolve())
+      socket.close()
+    })
   }
 }
 
