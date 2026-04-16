@@ -1,7 +1,9 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
+use rand::distributions::{Alphanumeric, DistString};
 
 use super::{OpenCodeClient, ProviderResumeState, RuntimeProviderRun};
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
@@ -139,11 +141,6 @@ fn opencode_managed_io_permission_rules() -> serde_json::Value {
             "permission": "task",
             "pattern": "*",
             "action": "deny"
-        },
-        {
-            "permission": "external_directory",
-            "pattern": "*",
-            "action": "deny"
         }
     ])
 }
@@ -205,11 +202,6 @@ mod tests {
                     "permission": "task",
                     "pattern": "*",
                     "action": "deny"
-                },
-                {
-                    "permission": "external_directory",
-                    "pattern": "*",
-                    "action": "deny"
                 }
             ])
         );
@@ -223,15 +215,30 @@ pub(super) fn submit_opencode_prompt(
     attachments: &[PromptAttachment],
 ) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(run.id(), state.base_url())?;
+    let message_id = next_opencode_message_id();
     client.submit_prompt(
         state.session_id(),
+        &message_id,
         prompt,
         attachments,
         Some(run.model()),
         run.variant(),
     )?;
-    state.note_prompt_submitted();
+    state.note_prompt_submitted(message_id);
     Ok(())
+}
+
+fn next_opencode_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed) & 0x0fff;
+    let encoded_time = timestamp_ms.saturating_mul(0x1000).saturating_add(sequence);
+    let random = Alphanumeric.sample_string(&mut rand::thread_rng(), 14);
+    format!("msg_{encoded_time:012x}{random}")
 }
 
 fn resolve_initial_selection(
