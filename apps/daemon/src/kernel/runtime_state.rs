@@ -7088,6 +7088,10 @@ impl KernelRuntimeState {
                         return Ok(output);
                     }
                 };
+                let external_change_notice = self
+                    .owned
+                    .managed_io_external_changes
+                    .external_change_notice(&workspace_identity, &path);
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
@@ -7126,6 +7130,7 @@ impl KernelRuntimeState {
                         before,
                         after,
                     },
+                    external_change_notice,
                 );
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7255,6 +7260,10 @@ impl KernelRuntimeState {
                         return Ok(output);
                     }
                 };
+                let external_change_notice = self
+                    .owned
+                    .managed_io_external_changes
+                    .external_change_notice(&workspace_identity, &path);
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
@@ -7295,6 +7304,7 @@ impl KernelRuntimeState {
                         before,
                         after,
                     },
+                    external_change_notice,
                 );
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7481,6 +7491,7 @@ enum ManagedPatchOperation {
 fn managed_io_edit_result(
     result: crate::io::EditResult,
     change: ManagedIoChangeContext,
+    external_change_notice: Option<crate::io::ArtifactExternalChangeNotice>,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {
     match result {
         crate::io::EditResult::Applied { new_version } => {
@@ -7489,6 +7500,7 @@ fn managed_io_edit_result(
                 "new_version": new_version.value(),
             });
             add_managed_io_change_payload(&mut payload, change);
+            add_managed_io_external_change_notice_payload(&mut payload, external_change_notice);
             crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
         }
         crate::io::EditResult::AppliedWithWarning {
@@ -7501,19 +7513,34 @@ fn managed_io_edit_result(
                 "warning": managed_io_warning_payload(warning),
             });
             add_managed_io_change_payload(&mut payload, change);
+            add_managed_io_external_change_notice_payload(&mut payload, external_change_notice);
             crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
         }
         crate::io::EditResult::Rejected { reason } => {
-            crate::transport::runtime_tools::RuntimeToolResult {
-                ok: false,
-                payload: serde_json::json!({
-                    "applied": false,
-                    "reason": managed_io_error_payload(reason),
-                    "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through arroba.edit_artifact.",
-                }),
-            }
+            let mut payload = serde_json::json!({
+                "applied": false,
+                "reason": managed_io_error_payload(reason),
+                "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through arroba.edit_artifact.",
+            });
+            add_managed_io_external_change_notice_payload(&mut payload, external_change_notice);
+            crate::transport::runtime_tools::RuntimeToolResult { ok: false, payload }
         }
     }
+}
+
+fn add_managed_io_external_change_notice_payload(
+    payload: &mut serde_json::Value,
+    notice: Option<crate::io::ArtifactExternalChangeNotice>,
+) {
+    let Some(notice) = notice else {
+        return;
+    };
+    payload["external_change"] = serde_json::json!({
+        "detected": true,
+        "path": notice.path.to_string_lossy(),
+        "message": notice.message,
+        "next_action": "This artifact changed outside Arroba managed I/O after your last read. If the write was rejected, reread and reconcile before retrying; if it was applied with a rebase warning, verify the diff before continuing.",
+    });
 }
 
 fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
@@ -8571,5 +8598,79 @@ fn workflow_response_session(
         | LocalDaemonResponse::QueuedWorkflowLaunchesCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod managed_io_external_change_notice_tests {
+    use super::*;
+
+    #[test]
+    fn edit_result_includes_external_change_notice_on_rejection() {
+        let output = managed_io_edit_result(
+            crate::io::EditResult::Rejected {
+                reason: crate::io::ArtifactEditError::Conflict {
+                    path: PathBuf::from("src/lib.rs"),
+                    base_version: crate::io::ArtifactVersion::initial(),
+                    current_version: crate::io::ArtifactVersion::initial().next(),
+                    requested_ranges: vec![crate::io::TextRange::new(0, 5)],
+                    changed_ranges: vec![crate::io::TextRange::new(0, 5)],
+                    message: "overlap".to_string(),
+                },
+            },
+            ManagedIoChangeContext {
+                path: PathBuf::from("src/lib.rs"),
+                before: None,
+                after: None,
+            },
+            Some(crate::io::ArtifactExternalChangeNotice {
+                path: PathBuf::from("src/lib.rs"),
+                message: "changed outside managed I/O".to_string(),
+            }),
+        );
+
+        assert!(!output.ok);
+        assert_eq!(output.payload["external_change"]["detected"], true);
+        assert_eq!(output.payload["external_change"]["path"], "src/lib.rs");
+        assert_eq!(output.payload["reason"]["kind"], "conflict");
+    }
+
+    #[test]
+    fn edit_result_includes_external_change_notice_on_success() {
+        let output = managed_io_edit_result(
+            crate::io::EditResult::AppliedWithWarning {
+                new_version: crate::io::ArtifactVersion::initial().next(),
+                warning: crate::io::ArtifactEditWarning::RebasedOverNonOverlappingChange {
+                    base_version: crate::io::ArtifactVersion::initial(),
+                    applied_version: crate::io::ArtifactVersion::initial().next(),
+                },
+            },
+            ManagedIoChangeContext {
+                path: PathBuf::from("src/lib.rs"),
+                before: Some(ManagedIoTextSnapshot {
+                    existed: true,
+                    text: "alpha\n".to_string(),
+                }),
+                after: Some(ManagedIoTextSnapshot {
+                    existed: true,
+                    text: "beta\n".to_string(),
+                }),
+            },
+            Some(crate::io::ArtifactExternalChangeNotice {
+                path: PathBuf::from("src/lib.rs"),
+                message: "changed outside managed I/O".to_string(),
+            }),
+        );
+
+        assert!(output.ok);
+        assert_eq!(output.payload["external_change"]["detected"], true);
+        assert_eq!(
+            output.payload["warning"]["kind"],
+            "rebased_over_non_overlapping_change"
+        );
+        assert!(output.payload["change"]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("-alpha"));
     }
 }

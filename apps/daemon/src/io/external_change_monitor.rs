@@ -48,6 +48,12 @@ pub struct ArtifactExternalChangeHealthSnapshot {
     pub live_watcher_scan_errors: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactExternalChangeNotice {
+    pub path: PathBuf,
+    pub message: String,
+}
+
 impl ArtifactExternalChangeMonitor {
     pub(crate) fn observe_managed_read(
         &self,
@@ -115,6 +121,28 @@ impl ArtifactExternalChangeMonitor {
             .expect("artifact external change monitor lock should not be poisoned");
         state.external_change_events += 1;
         state.externally_changed_artifacts.insert(key);
+    }
+
+    pub(crate) fn external_change_notice(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        path: &Path,
+    ) -> Option<ArtifactExternalChangeNotice> {
+        self.scan_tracked_artifacts_once();
+        let key = artifact_key(workspace_identity, path);
+        let state = self
+            .state
+            .lock()
+            .expect("artifact external change monitor lock should not be poisoned");
+        state
+            .externally_changed_artifacts
+            .contains(&key)
+            .then(|| ArtifactExternalChangeNotice {
+                path: path.to_path_buf(),
+                message:
+                    "artifact changed outside Arroba managed I/O after the last managed observation"
+                        .to_string(),
+            })
     }
 
     fn ensure_live_watcher_started(&self) {
@@ -296,5 +324,25 @@ mod tests {
         let health = monitor.health_snapshot();
         assert_eq!(health.externally_changed_artifacts, 0);
         assert_eq!(health.external_change_events, 0);
+    }
+
+    #[test]
+    fn external_change_notice_scans_and_reports_tracked_path() {
+        let monitor = ArtifactExternalChangeMonitor::default();
+        let workspace = crate::io::WorkspaceIdentity::local("repo-a");
+        let root = test_root("notice");
+        let file = root.join("src/lib.rs");
+        fs::create_dir_all(file.parent().unwrap()).expect("create parent");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        monitor.observe_managed_read("run-1", &workspace, &root, "src/lib.rs".as_ref());
+        fs::write(&file, "external\n").expect("external write");
+
+        let notice = monitor
+            .external_change_notice(&workspace, "src/lib.rs".as_ref())
+            .expect("external change should be noticed");
+
+        assert_eq!(notice.path, std::path::PathBuf::from("src/lib.rs"));
+        assert!(notice.message.contains("outside Arroba managed I/O"));
     }
 }

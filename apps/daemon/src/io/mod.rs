@@ -10,6 +10,7 @@ pub use coordinator::{
 };
 pub(crate) use external_change_monitor::{
     ArtifactExternalChangeHealthSnapshot, ArtifactExternalChangeMonitor,
+    ArtifactExternalChangeNotice,
 };
 pub use filesystem::{ManagedFileIo, ManagedFileReadRequest, ManagedFileWriteRequest};
 pub use text::TextDocumentDomain;
