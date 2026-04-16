@@ -378,6 +378,12 @@ mod tests {
             .any(|tool| tool["name"] == "arroba.apply_patch"));
         assert!(tools
             .iter()
+            .any(|tool| tool["name"] == "arroba.delete_artifact"));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "arroba.move_artifact"));
+        assert!(tools
+            .iter()
             .any(|tool| tool["name"] == "arroba.write_artifact"));
     }
 
@@ -571,10 +577,21 @@ mod tests {
             read_value["result"]["structuredContent"]["content_text"],
             "alpha\nbeta\n"
         );
+        assert_eq!(
+            read_value["result"]["structuredContent"]["workspace"]["identity_changed"],
+            false
+        );
         let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
             .as_str()
             .expect("snapshot id should be present")
             .to_string();
+        let git_init_status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("init")
+            .status()
+            .expect("git init should start");
+        assert!(git_init_status.success());
 
         let edit_response = handle_json_rpc_value(
             router.clone(),
@@ -605,6 +622,10 @@ mod tests {
             .to_bytes();
         let edit_value: Value = serde_json::from_slice(&edit_body).expect("edit body json");
         assert_eq!(edit_value["result"]["structuredContent"]["applied"], true);
+        assert_eq!(
+            edit_value["result"]["structuredContent"]["workspace"]["identity_changed"],
+            true
+        );
         assert_eq!(
             edit_value["result"]["structuredContent"]["change"]["kind"],
             "update"
@@ -771,6 +792,81 @@ mod tests {
                 .expect("moved file should remain unchanged"),
             "omega\ndelta\n"
         );
+
+        let direct_move_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.move_artifact",
+                    "arguments": {
+                        "from_path": "archive/notes.txt",
+                        "to_path": "final.txt",
+                        "old_text": "omega",
+                        "new_text": "final"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("direct move request should succeed");
+        assert_eq!(direct_move_response.status(), StatusCode::OK);
+        let direct_move_body = direct_move_response
+            .into_body()
+            .collect()
+            .await
+            .expect("direct move body should collect")
+            .to_bytes();
+        let direct_move_value: Value =
+            serde_json::from_slice(&direct_move_body).expect("direct move body json");
+        assert_eq!(
+            direct_move_value["result"]["structuredContent"]["applied"],
+            true
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("final.txt")).expect("direct moved file should read"),
+            "final\ndelta\n"
+        );
+        assert!(!root.join("archive/notes.txt").exists());
+
+        let direct_delete_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": "arroba.delete_artifact",
+                    "arguments": {
+                        "path": "final.txt"
+                    }
+                }
+            }),
+        )
+        .await
+        .expect("direct delete request should succeed");
+        assert_eq!(direct_delete_response.status(), StatusCode::OK);
+        let direct_delete_body = direct_delete_response
+            .into_body()
+            .collect()
+            .await
+            .expect("direct delete body should collect")
+            .to_bytes();
+        let direct_delete_value: Value =
+            serde_json::from_slice(&direct_delete_body).expect("direct delete body json");
+        assert_eq!(
+            direct_delete_value["result"]["structuredContent"]["applied"],
+            true
+        );
+        assert_eq!(
+            direct_delete_value["result"]["structuredContent"]["change"]["kind"],
+            "delete"
+        );
+        assert!(!root.join("final.txt").exists());
     }
 
     #[tokio::test]

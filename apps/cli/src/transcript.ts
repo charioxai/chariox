@@ -430,6 +430,8 @@ function readManagedIoChangeFiles(update: ToolTranscriptUpdate): ApplyPatchFile[
 function isManagedIoTool(tool: unknown) {
   return tool === "arroba.edit_artifact"
     || tool === "arroba.apply_patch"
+    || tool === "arroba.delete_artifact"
+    || tool === "arroba.move_artifact"
     || tool === "arroba.write_artifact"
 }
 

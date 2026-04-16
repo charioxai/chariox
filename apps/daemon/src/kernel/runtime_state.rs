@@ -6814,6 +6814,8 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::APPLY_PATCH_TOOL
+                    | crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
             ) {
                 return self
@@ -6953,6 +6955,25 @@ impl KernelRuntimeState {
                 };
                 let path = PathBuf::from(args.path.clone());
                 let before = managed_io_text_for_diff(&workspace_root, &path, false);
+                let reservation_ranges = managed_io_reservation_ranges_for_operation(
+                    &operation,
+                    before.as_ref(),
+                    crate::io::TextRange::new(0, usize::MAX),
+                );
+                let reservation = match managed_io_try_reserve_ranges(
+                    &mut coordinator,
+                    &workspace_identity,
+                    &path,
+                    reservation_ranges,
+                    provider_run.id(),
+                    tool_name,
+                ) {
+                    Ok(reservation) => reservation,
+                    Err(mut output) => {
+                        add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
+                        return Ok(output);
+                    }
+                };
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
@@ -6966,6 +6987,7 @@ impl KernelRuntimeState {
                         },
                     },
                 );
+                coordinator.release_reservation(reservation);
                 let after = managed_io_result_applied(&result)
                     .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
                     .flatten();
@@ -7004,6 +7026,69 @@ impl KernelRuntimeState {
                     workspace_root.clone(),
                     domain,
                     operations,
+                    format!("{}:{}", provider_run.id(), tool_name),
+                )?;
+                add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
+                Ok(output)
+            }
+            crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedDeleteArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_delete_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_delete_artifact",
+                        message: "managed delete currently supports only text artifacts"
+                            .to_string(),
+                    });
+                }
+                let mut output = apply_managed_patch_operations(
+                    &mut coordinator,
+                    workspace_identity,
+                    workspace_root.clone(),
+                    domain,
+                    vec![ManagedPatchOperation::Delete {
+                        path: PathBuf::from(args.path),
+                    }],
+                    format!("{}:{}", provider_run.id(), tool_name),
+                )?;
+                add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
+                Ok(output)
+            }
+            crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManagedMoveArtifactArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_move_artifact",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let domain =
+                    KernelRuntimeOwnedState::managed_io_domain_from_arg(args.domain.as_deref())?;
+                if domain != crate::io::ArtifactDomainKind::TextDocument {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_move_artifact",
+                        message: "managed move currently supports only text artifacts".to_string(),
+                    });
+                }
+                let mut output = apply_managed_patch_operations(
+                    &mut coordinator,
+                    workspace_identity,
+                    workspace_root.clone(),
+                    domain,
+                    vec![ManagedPatchOperation::Move {
+                        from_path: PathBuf::from(args.from_path),
+                        to_path: PathBuf::from(args.to_path),
+                        old_text: args.old_text,
+                        new_text: args.new_text,
+                    }],
+                    format!("{}:{}", provider_run.id(), tool_name),
                 )?;
                 add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
                 Ok(output)
@@ -7026,6 +7111,20 @@ impl KernelRuntimeState {
                 }
                 let path = PathBuf::from(args.path.clone());
                 let before = managed_io_text_for_diff(&workspace_root, &path, true);
+                let reservation = match managed_io_try_reserve_ranges(
+                    &mut coordinator,
+                    &workspace_identity,
+                    &path,
+                    vec![crate::io::TextRange::new(0, usize::MAX)],
+                    provider_run.id(),
+                    tool_name,
+                ) {
+                    Ok(reservation) => reservation,
+                    Err(mut output) => {
+                        add_managed_io_workspace_payload(&mut output.payload, &workspace_context);
+                        return Ok(output);
+                    }
+                };
                 let result = crate::io::ManagedFileIo::apply_edit(
                     &mut coordinator,
                     crate::io::ManagedFileWriteRequest {
@@ -7041,6 +7140,7 @@ impl KernelRuntimeState {
                         },
                     },
                 );
+                coordinator.release_reservation(reservation);
                 let after = managed_io_result_applied(&result)
                     .then(|| managed_io_text_for_diff(&workspace_root, &path, true))
                     .flatten();
@@ -7204,6 +7304,47 @@ fn managed_io_result_applied(result: &crate::io::EditResult) -> bool {
     )
 }
 
+fn managed_io_reservation_ranges_for_operation(
+    operation: &crate::io::AgentEditOperation,
+    before: Option<&ManagedIoTextSnapshot>,
+    fallback: crate::io::TextRange,
+) -> Vec<crate::io::TextRange> {
+    match operation {
+        crate::io::AgentEditOperation::ReplaceRange { range, .. } => vec![*range],
+        crate::io::AgentEditOperation::ReplaceText { old_text, .. } => before
+            .and_then(|before| before.text.find(old_text))
+            .map(|start| vec![crate::io::TextRange::new(start, start + old_text.len())])
+            .unwrap_or_else(|| vec![fallback]),
+        crate::io::AgentEditOperation::WriteArtifact { .. } => vec![fallback],
+    }
+}
+
+fn managed_io_try_reserve_ranges(
+    coordinator: &mut crate::io::ArtifactEditCoordinator,
+    workspace_identity: &crate::io::WorkspaceIdentity,
+    path: &PathBuf,
+    ranges: Vec<crate::io::TextRange>,
+    provider_run_id: &str,
+    tool_name: &str,
+) -> Result<crate::io::ArtifactReservationToken, crate::transport::runtime_tools::RuntimeToolResult>
+{
+    coordinator
+        .try_reserve_ranges(
+            workspace_identity,
+            path,
+            ranges,
+            format!("{provider_run_id}:{tool_name}"),
+        )
+        .map_err(|reason| crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({
+                "applied": false,
+                "reason": managed_io_error_payload(reason),
+                "next_action": "Another managed writer has reserved the same artifact area. Wait for that write to finish, reread the artifact with arroba.read_artifact, and retry through Arroba managed I/O.",
+            }),
+        })
+}
+
 fn parse_managed_apply_patch(patch_text: &str) -> Result<Vec<ManagedPatchOperation>, DaemonError> {
     let lines = patch_text.lines().collect::<Vec<_>>();
     if lines.first().map(|line| line.trim()) != Some("*** Begin Patch")
@@ -7329,9 +7470,11 @@ fn apply_managed_patch_operations(
     workspace_root: PathBuf,
     domain: crate::io::ArtifactDomainKind,
     operations: Vec<ManagedPatchOperation>,
+    reservation_owner: String,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let mut before_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut final_states: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+    let mut reservation_ranges: BTreeMap<PathBuf, Vec<crate::io::TextRange>> = BTreeMap::new();
 
     for operation in operations {
         match operation {
@@ -7349,6 +7492,10 @@ fn apply_managed_patch_operations(
                         "add file target already exists; reread and retry with an update",
                     ));
                 }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, Some(content));
             }
             ManagedPatchOperation::Update {
@@ -7369,12 +7516,17 @@ fn apply_managed_patch_operations(
                         "update file target does not exist",
                     ));
                 };
-                let Some(updated) = replace_unique_text(&current, &old_text, &new_text) else {
+                let Some((range, updated)) = replace_unique_text(&current, &old_text, &new_text)
+                else {
                     return Ok(managed_patch_rejected(
                         path,
                         "patch old text was not found exactly once in the current artifact",
                     ));
                 };
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(range);
                 final_states.insert(path, Some(updated));
             }
             ManagedPatchOperation::Delete { path } => {
@@ -7391,6 +7543,10 @@ fn apply_managed_patch_operations(
                         "delete file target does not exist",
                     ));
                 }
+                reservation_ranges
+                    .entry(path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, None);
             }
             ManagedPatchOperation::Move {
@@ -7432,7 +7588,9 @@ fn apply_managed_patch_operations(
                     ));
                 }
                 if let (Some(old_text), Some(new_text)) = (old_text, new_text) {
-                    let Some(updated) = replace_unique_text(&source, &old_text, &new_text) else {
+                    let Some((_range, updated)) =
+                        replace_unique_text(&source, &old_text, &new_text)
+                    else {
                         return Ok(managed_patch_rejected(
                             from_path,
                             "move patch old text was not found exactly once in the current artifact",
@@ -7440,15 +7598,54 @@ fn apply_managed_patch_operations(
                     };
                     source = updated;
                 }
+                reservation_ranges
+                    .entry(from_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
+                reservation_ranges
+                    .entry(to_path.clone())
+                    .or_default()
+                    .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(from_path, None);
                 final_states.insert(to_path, Some(source));
             }
         }
     }
 
+    let mut reservations = Vec::new();
+    for (path, ranges) in reservation_ranges {
+        match managed_io_try_reserve_ranges(
+            coordinator,
+            &workspace_identity,
+            &path,
+            ranges,
+            &reservation_owner,
+            "arroba.apply_patch",
+        ) {
+            Ok(token) => reservations.push(token),
+            Err(output) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                return Ok(output);
+            }
+        }
+    }
+
     for (path, before) in &before_states {
-        let latest = managed_io_read_optional_text(&workspace_root, path)?;
+        let latest = match managed_io_read_optional_text(&workspace_root, path) {
+            Ok(latest) => latest,
+            Err(error) => {
+                for token in reservations {
+                    coordinator.release_reservation(token);
+                }
+                return Err(error);
+            }
+        };
         if &latest != before {
+            for token in reservations {
+                coordinator.release_reservation(token);
+            }
             return Ok(managed_patch_rejected(
                 path.clone(),
                 "artifact changed while the managed patch was being prepared; reread and retry",
@@ -7458,6 +7655,9 @@ fn apply_managed_patch_operations(
 
     if let Err(error) = managed_io_write_final_states(&workspace_root, &final_states) {
         let _ = managed_io_write_final_states(&workspace_root, &before_states);
+        for token in reservations {
+            coordinator.release_reservation(token);
+        }
         return Err(error);
     }
 
@@ -7473,6 +7673,9 @@ fn apply_managed_patch_operations(
             }
             None => coordinator.forget_artifact(&workspace_identity, path),
         }
+    }
+    for token in reservations {
+        coordinator.release_reservation(token);
     }
 
     let mut changes = Vec::new();
@@ -7535,16 +7738,21 @@ fn managed_patch_state(
     Ok(current)
 }
 
-fn replace_unique_text(current: &str, old_text: &str, new_text: &str) -> Option<String> {
+fn replace_unique_text(
+    current: &str,
+    old_text: &str,
+    new_text: &str,
+) -> Option<(crate::io::TextRange, String)> {
     let start = current.find(old_text)?;
     if current[start + old_text.len()..].contains(old_text) {
         return None;
     }
+    let range = crate::io::TextRange::new(start, start + old_text.len());
     let mut updated = String::with_capacity(current.len() - old_text.len() + new_text.len());
     updated.push_str(&current[..start]);
     updated.push_str(new_text);
     updated.push_str(&current[start + old_text.len()..]);
-    Some(updated)
+    Some((range, updated))
 }
 
 fn managed_patch_rejected(

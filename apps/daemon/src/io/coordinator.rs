@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::io::text::{TextDocumentDomain, TextEditPlan};
 use crate::io::types::{
     AgentEditIntent, ArtifactContent, ArtifactDomainKind, ArtifactEditError, ArtifactEditWarning,
-    ArtifactId, ArtifactReadResult, ArtifactSnapshotId, ArtifactVersion, EditResult,
+    ArtifactId, ArtifactReadResult, ArtifactSnapshotId, ArtifactVersion, EditResult, TextRange,
     WorkspaceIdentity,
 };
 
@@ -51,10 +51,23 @@ struct SnapshotRecord {
     content: ArtifactContent,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveEditReservation {
+    owner: String,
+    ranges: Vec<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactReservationToken {
+    artifact_id: ArtifactId,
+    owner: String,
+}
+
 #[derive(Debug, Default)]
 pub struct ArtifactEditCoordinator {
     artifacts: BTreeMap<ArtifactId, TrackedArtifact>,
     snapshots: BTreeMap<ArtifactSnapshotId, SnapshotRecord>,
+    active_reservations: BTreeMap<ArtifactId, Vec<ActiveEditReservation>>,
     next_snapshot: u64,
 }
 
@@ -138,6 +151,69 @@ impl ArtifactEditCoordinator {
         self.artifacts.remove(&artifact_id);
         self.snapshots
             .retain(|_, snapshot| snapshot.artifact_id != artifact_id);
+        self.active_reservations.remove(&artifact_id);
+    }
+
+    pub fn try_reserve_ranges(
+        &mut self,
+        workspace_identity: &WorkspaceIdentity,
+        path: &Path,
+        ranges: Vec<TextRange>,
+        owner: impl Into<String>,
+    ) -> Result<ArtifactReservationToken, ArtifactEditError> {
+        let owner = owner.into();
+        let artifact_id = artifact_id_for(workspace_identity, path);
+        let ranges = if ranges.is_empty() {
+            vec![whole_artifact_range()]
+        } else {
+            ranges
+        };
+        if let Some(active) = self.active_reservations.get(&artifact_id) {
+            for reservation in active {
+                if reservation.owner == owner {
+                    continue;
+                }
+                if ranges_overlap(&ranges, &reservation.ranges) {
+                    let tracked_version = self
+                        .artifacts
+                        .get(&artifact_id)
+                        .map(|tracked| tracked.version)
+                        .unwrap_or_else(ArtifactVersion::initial);
+                    return Err(ArtifactEditError::Conflict {
+                        path: path.to_path_buf(),
+                        base_version: tracked_version,
+                        current_version: tracked_version,
+                        requested_ranges: ranges,
+                        changed_ranges: reservation.ranges.clone(),
+                        message: "managed I/O edit range is currently reserved by another writer"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        self.active_reservations
+            .entry(artifact_id.clone())
+            .or_default()
+            .push(ActiveEditReservation {
+                owner: owner.clone(),
+                ranges,
+            });
+        Ok(ArtifactReservationToken { artifact_id, owner })
+    }
+
+    pub fn release_reservation(&mut self, token: ArtifactReservationToken) {
+        let Some(reservations) = self.active_reservations.get_mut(&token.artifact_id) else {
+            return;
+        };
+        if let Some(index) = reservations
+            .iter()
+            .position(|reservation| reservation.owner == token.owner)
+        {
+            reservations.remove(index);
+        }
+        if reservations.is_empty() {
+            self.active_reservations.remove(&token.artifact_id);
+        }
     }
 
     fn prepare_edit_inner(
@@ -341,6 +417,15 @@ fn hash_content(content: &ArtifactContent) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn whole_artifact_range() -> TextRange {
+    TextRange::new(0, usize::MAX)
+}
+
+fn ranges_overlap(left: &[TextRange], right: &[TextRange]) -> bool {
+    left.iter()
+        .any(|left| right.iter().any(|right| left.overlaps(*right)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +577,60 @@ mod tests {
                 reason: ArtifactEditError::Conflict { .. }
             }
         ));
+    }
+
+    #[test]
+    fn edit_reservations_reject_overlapping_writers() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let workspace = workspace();
+        let first = coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(4, 8)],
+                "agent-a",
+            )
+            .expect("first reservation should be accepted");
+
+        let rejected = coordinator.try_reserve_ranges(
+            &workspace,
+            Path::new("src/lib.rs"),
+            vec![TextRange::new(7, 10)],
+            "agent-b",
+        );
+        assert!(matches!(rejected, Err(ArtifactEditError::Conflict { .. })));
+
+        coordinator.release_reservation(first);
+        assert!(coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(7, 10)],
+                "agent-b",
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn edit_reservations_allow_non_overlapping_writers() {
+        let mut coordinator = ArtifactEditCoordinator::new();
+        let workspace = workspace();
+        let _first = coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(0, 3)],
+                "agent-a",
+            )
+            .expect("first reservation should be accepted");
+
+        assert!(coordinator
+            .try_reserve_ranges(
+                &workspace,
+                Path::new("src/lib.rs"),
+                vec![TextRange::new(4, 8)],
+                "agent-b",
+            )
+            .is_ok());
     }
 }

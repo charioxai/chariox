@@ -19,6 +19,10 @@ pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
 pub const APPLY_PATCH_TOOL: &str = "arroba.apply_patch";
 #[allow(dead_code)]
 pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
+#[allow(dead_code)]
+pub const DELETE_ARTIFACT_TOOL: &str = "arroba.delete_artifact";
+#[allow(dead_code)]
+pub const MOVE_ARTIFACT_TOOL: &str = "arroba.move_artifact";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -113,6 +117,27 @@ pub struct ManagedApplyPatchArgs {
     pub domain: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedDeleteArtifactArgs {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedMoveArtifactArgs {
+    pub from_path: String,
+    pub to_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAndSubmitWorkflowRunOutputArgs {
     pub workflow_output_json: String,
@@ -169,12 +194,47 @@ pub fn managed_io_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: APPLY_PATCH_TOOL.to_string(),
-            description: "Apply an apply_patch-style text patch through Arroba managed I/O. Supports add and update hunks with exact old-text context. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
+            description: "Apply an apply_patch-style text patch through Arroba managed I/O. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["patch_text"],
                 "properties": {
                     "patch_text": {"type": "string"},
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: DELETE_ARTIFACT_TOOL.to_string(),
+            description: "Delete a workspace-relative text artifact through Arroba managed I/O.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "domain": {
+                        "type": "string",
+                        "enum": ["text"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: MOVE_ARTIFACT_TOOL.to_string(),
+            description: "Move a workspace-relative text artifact through Arroba managed I/O. Optional old_text/new_text can edit the moved content atomically.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["from_path", "to_path"],
+                "properties": {
+                    "from_path": {"type": "string"},
+                    "to_path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
                     "domain": {
                         "type": "string",
                         "enum": ["text"]
@@ -324,6 +384,8 @@ mod managed_io_tests {
         assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
         assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == DELETE_ARTIFACT_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == MOVE_ARTIFACT_TOOL));
     }
 
     #[test]
@@ -363,5 +425,31 @@ mod managed_io_tests {
 
         assert!(args.patch_text.contains("*** Begin Patch"));
         assert_eq!(args.domain.as_deref(), Some("text"));
+    }
+
+    #[test]
+    fn managed_delete_args_accept_path_shape() {
+        let args = serde_json::from_value::<ManagedDeleteArtifactArgs>(serde_json::json!({
+            "path": "src/lib.rs"
+        }))
+        .expect("managed delete args should parse");
+
+        assert_eq!(args.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn managed_move_args_accept_path_shape() {
+        let args = serde_json::from_value::<ManagedMoveArtifactArgs>(serde_json::json!({
+            "from_path": "src/old.rs",
+            "to_path": "src/new.rs",
+            "old_text": "old",
+            "new_text": "new"
+        }))
+        .expect("managed move args should parse");
+
+        assert_eq!(args.from_path, "src/old.rs");
+        assert_eq!(args.to_path, "src/new.rs");
+        assert_eq!(args.old_text.as_deref(), Some("old"));
+        assert_eq!(args.new_text.as_deref(), Some("new"));
     }
 }

@@ -4,7 +4,8 @@ mod text;
 mod types;
 
 pub use coordinator::{
-    ArtifactEditCoordinator, ArtifactReadRequest, ArtifactWriteRequest, PreparedArtifactEdit,
+    ArtifactEditCoordinator, ArtifactReadRequest, ArtifactReservationToken, ArtifactWriteRequest,
+    PreparedArtifactEdit,
 };
 pub use filesystem::{ManagedFileIo, ManagedFileReadRequest, ManagedFileWriteRequest};
 pub use text::TextDocumentDomain;
