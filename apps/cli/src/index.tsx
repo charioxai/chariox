@@ -542,6 +542,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     ? sessionPromptDraftEntry(initialPreferences, initialBinding.session.id)
     : ""
   const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
+  const [themeRevision, setThemeRevision] = createSignal(0)
   const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
   const [sessionState, setSessionState] = createSignal(initialSession)
   const [attachmentState, setAttachmentState] = createSignal<RuntimeAttachment | null>(initialBinding?.attachment ?? null)
@@ -1242,8 +1243,11 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     if (currentState.themeId !== update.normalizedState.themeId) {
       const nextThemeId = applyTheme(update.normalizedState.themeId)
       transcriptSyntax = createTranscriptSyntaxStyle()
+      setThemeRevision((revision) => revision + 1)
       void saveUiPreferences({ theme: nextThemeId })
       setPreferencesState((current) => mergeUiPreferences(current, { theme: nextThemeId }))
+      applyResponseLayout()
+      renderCommandCenter()
     }
     if (update.shouldPersistProviderPreferences) {
       void saveProviderPreferences(update.nextProvider, {
@@ -1884,6 +1888,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     })
   }
   const promptAreaBackground = () => (
+    themeRevision(),
     isAttached()
       ? (workflowScreenShowing() ? theme.backgroundElement : theme.backgroundPanel)
       : theme.backgroundElement
@@ -6777,6 +6782,7 @@ function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
       width={dimensions().width}
       height={dimensions().height}
       fatalError={fatalError() !== null}
+      themeRevision={themeRevision()}
       responsePaneRows={responsePaneRows}
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}

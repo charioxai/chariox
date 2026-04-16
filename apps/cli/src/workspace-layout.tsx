@@ -10,6 +10,7 @@ type WorkspaceLayoutProps = {
   width: number
   height: number
   fatalError: boolean
+  themeRevision: number
   responsePaneRows: () => number[][]
   promptPlaceholder: string
   promptInputMaxHeight: number
@@ -56,6 +57,10 @@ type WorkspaceLayoutProps = {
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
+  const palette = () => {
+    props.themeRevision
+    return theme
+  }
   const renderPaneSlot = (paneIndex: number | undefined) => {
     if (paneIndex === undefined) {
       return null
@@ -68,8 +73,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             flexBasis={0}
             flexDirection="column"
             border={false}
-            borderColor={theme.borderSubtle}
-            backgroundColor={theme.backgroundPanel}
+            borderColor={palette().borderSubtle}
+            backgroundColor={palette().backgroundPanel}
           >
             <box
               ref={props.onHistoryLoadingBoxRef}
@@ -87,8 +92,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 visible: true,
                 paddingLeft: 0,
                 trackOptions: {
-                  backgroundColor: theme.backgroundElement,
-                  foregroundColor: theme.border,
+                  backgroundColor: palette().backgroundElement,
+                  foregroundColor: palette().border,
                 },
               }}
             />
@@ -112,8 +117,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             flexShrink={0}
             flexDirection="column"
             border={false}
-            borderColor={theme.borderSubtle}
-            backgroundColor={theme.backgroundElement}
+            borderColor={palette().borderSubtle}
+            backgroundColor={palette().backgroundElement}
             paddingLeft={0}
             paddingRight={0}
             paddingTop={0}
@@ -134,8 +139,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 visible: true,
                 paddingLeft: 0,
                 trackOptions: {
-                  backgroundColor: theme.backgroundElement,
-                  foregroundColor: theme.border,
+                  backgroundColor: palette().backgroundElement,
+                  foregroundColor: palette().border,
                 },
               }}
             />
@@ -167,7 +172,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       gap={0}
       visible={false}
     >
-      <text ref={(value) => onJunctionRef(0, value)} fg={theme.borderSubtle}>{" "}</text>
+      <text ref={(value) => onJunctionRef(0, value)} fg={palette().borderSubtle}>{" "}</text>
       <box
         ref={(value) => onHorizontalRef(0, value)}
         height={1}
@@ -175,11 +180,11 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         flexGrow={1}
         flexBasis={0}
         border={false}
-        borderColor={theme.borderSubtle}
+        borderColor={palette().borderSubtle}
         customBorderChars={PaneGridBorderChars}
         visible={false}
       />
-      <text ref={(value) => onJunctionRef(1, value)} fg={theme.borderSubtle}>{" "}</text>
+      <text ref={(value) => onJunctionRef(1, value)} fg={palette().borderSubtle}>{" "}</text>
       <box
         ref={(value) => onHorizontalRef(1, value)}
         height={1}
@@ -187,11 +192,11 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         flexGrow={1}
         flexBasis={0}
         border={false}
-        borderColor={theme.borderSubtle}
+        borderColor={palette().borderSubtle}
         customBorderChars={PaneGridBorderChars}
         visible={false}
       />
-      <text ref={(value) => onJunctionRef(2, value)} fg={theme.borderSubtle}>{" "}</text>
+      <text ref={(value) => onJunctionRef(2, value)} fg={palette().borderSubtle}>{" "}</text>
     </box>
   )
 
@@ -205,7 +210,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       flexGrow={0}
       flexShrink={0}
       border={false}
-      borderColor={theme.borderSubtle}
+      borderColor={palette().borderSubtle}
       customBorderChars={PaneGridBorderChars}
       visible={false}
     />
@@ -216,12 +221,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       width={props.width}
       height={props.height}
       flexDirection="column"
-      backgroundColor={theme.background}
+      backgroundColor={palette().background}
       onMouseUp={props.onRootMouseUp}
     >
       <box
         flexGrow={1}
-        backgroundColor={theme.backgroundPanel}
+        backgroundColor={palette().backgroundPanel}
         onMouseUp={props.onResponseSurfaceMouseUp}
       >
         <box
@@ -293,8 +298,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             <textarea
               ref={props.onPromptInputRef}
               placeholder={props.promptPlaceholder}
-              textColor={theme.text}
-              focusedTextColor={theme.text}
+              textColor={palette().text}
+              focusedTextColor={palette().text}
               minHeight={1}
               maxHeight={props.promptInputMaxHeight}
               keyBindings={props.promptKeyBindings}
@@ -304,18 +309,18 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             />
           </box>
           <box flexDirection="row" overflow="hidden">
-            <text ref={props.onPromptMetaProviderTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaProviderDividerTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaModelTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaModelDividerTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaVariantTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsageDividerTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsageTokensTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsageBarOpenTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsageBarFilledTextRef} fg={theme.primary}>{""}</text>
-            <text ref={props.onPromptMetaUsageBarEmptyTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsageBarCloseTextRef} fg={theme.textMuted}>{""}</text>
-            <text ref={props.onPromptMetaUsagePercentTextRef} fg={theme.textMuted}>{""}</text>
+            <text ref={props.onPromptMetaProviderTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaProviderDividerTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaModelTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaModelDividerTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaVariantTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsageDividerTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsageTokensTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsageBarOpenTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsageBarFilledTextRef} fg={palette().primary}>{""}</text>
+            <text ref={props.onPromptMetaUsageBarEmptyTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsageBarCloseTextRef} fg={palette().textMuted}>{""}</text>
+            <text ref={props.onPromptMetaUsagePercentTextRef} fg={palette().textMuted}>{""}</text>
           </box>
         </box>
       </box>
