@@ -44,15 +44,24 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     spawnDaemon: true,
+    machineRef: null,
+    historyDir: null,
+    keepArtifactsOnFailure: false,
+    positiveOnly: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--kernel') options.kernel = argv[++i]
+    else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
+    else if (arg === '--machine-ref') options.machineRef = argv[++i]
+    else if (arg === '--history-dir') options.historyDir = argv[++i]
+    else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--positive-only') options.positiveOnly = true
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -71,11 +80,16 @@ function printHelp() {
     '',
     'Options:',
     `  --kernel ${DEFAULT_KERNEL}`,
+    '  --provider PROVIDER',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
+    '  --machine-ref MACHINE_ID_OR_ALIAS (spawn agents on a remote worker machine)',
+    '  --history-dir PATH (session history dir when using --no-spawn-daemon)',
+    '  --keep-artifacts-on-failure',
+    '  --positive-only (stop after the managed read/write/edit/apply_patch/move/delete smoke)',
   ].join('\n'))
 }
 
@@ -118,6 +132,21 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
 
+function managedIoSpawnAgentRequest(spawnAgentRequest, sessionId, provider, alias, model, worktreeId, effort, machineRef) {
+  if (!machineRef) return spawnAgentRequest(sessionId, provider, alias, model, worktreeId, effort)
+  return {
+    SpawnAgent: {
+      session_id: sessionId,
+      provider,
+      alias,
+      model,
+      effort,
+      worktree_id: worktreeId,
+      machine_ref: machineRef,
+    },
+  }
+}
+
 async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
@@ -151,7 +180,7 @@ async function assertFileContent(filePath, expected) {
   return actual
 }
 
-async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs }) {
+async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot }) {
   const started = Date.now()
   let lastRequiredCount = 0
   while (Date.now() - started < timeoutMs) {
@@ -175,7 +204,8 @@ async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, eve
     }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for ${expectedCompletionCount} completions and ${requiredFiles.length} required files; required files present=${lastRequiredCount}`)
+  const debug = debugSnapshot ? `; debug=${JSON.stringify(await debugSnapshot())}` : ''
+  throw new Error(`timed out waiting for ${expectedCompletionCount} completions and ${requiredFiles.length} required files; required files present=${lastRequiredCount}${debug}`)
 }
 
 async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs, pollMs }) {
@@ -305,6 +335,7 @@ async function runLiveCollisionAndExternalChecks({
   events,
   agents,
   model,
+  machineRef,
   workspace,
   outputsDir,
   historyDir,
@@ -320,7 +351,16 @@ async function runLiveCollisionAndExternalChecks({
     const overlapPath = path.join(outputsDir, `${provider}-overlap.txt`)
     await writeFile(overlapPath, 'one\nTARGET\nthree\n', 'utf8')
     const collider = unwrapVariant(
-      await client.send(spawnAgentRequest(session.id, provider, `${provider}-managed-io-collider`, model, workspace, 'low')),
+      await client.send(managedIoSpawnAgentRequest(
+        spawnAgentRequest,
+        session.id,
+        provider,
+        `${provider}-managed-io-collider`,
+        model,
+        workspace,
+        'low',
+        machineRef,
+      )),
       'AgentSpawned',
       'AgentSpawned',
     ).agent
@@ -524,6 +564,7 @@ async function main() {
   let daemonChild = null
   let kernelUrl = options.kernel
   const startedAt = Date.now()
+  let succeeded = false
   if (options.spawnDaemon) {
     const ports = makePorts()
     kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
@@ -566,12 +607,48 @@ async function main() {
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const agent = unwrapVariant(
-        await client.send(spawnAgentRequest(session.id, provider, `${provider}-managed-io-${index + 1}`, options.model, workspace, 'low')),
+        await client.send(managedIoSpawnAgentRequest(
+          spawnAgentRequest,
+          session.id,
+          provider,
+          `${provider}-managed-io-${index + 1}`,
+          options.model,
+          workspace,
+          'low',
+          options.machineRef,
+        )),
         'AgentSpawned',
       ).agent
       agents.push({ provider, agent })
     }
+    const debugSessionSnapshot = async () => {
+      const state = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+      const currentSession = state.session ?? state
+      const promptStates = currentSession.prompt_states ?? {}
+      return {
+        events: events.reduce((counts, event) => {
+          counts[event.event] = (counts[event.event] ?? 0) + 1
+          return counts
+        }, {}),
+        lastTerminalOutput: events
+          .filter((event) => event.event === 'terminal_output')
+          .slice(-3)
+          .map((event) => String(event.text ?? event.data ?? event.output ?? '').slice(0, 500)),
+        agents: (currentSession.agents ?? []).map((agent) => ({
+          id: agent.id,
+          alias: agent.alias,
+          state: agent.state,
+          is_processing: agent.is_processing,
+          provider_run_id: agent.provider_run_id ?? null,
+          prompt: {
+            active: promptStates[agent.id]?.active_prompt != null,
+            queued: (promptStates[agent.id]?.queued_prompts ?? []).length,
+          },
+        })),
+      }
+    }
 
+    const beforePositiveCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
     for (const { provider, agent } of agents) {
       const written = `${provider}-managed-io-write-ok: seed-value-42\n`
       const edited = `${provider}-managed-io-edit-ok: seed-value-42\n`
@@ -605,21 +682,24 @@ async function main() {
       sessionId: session.id,
       attachmentId: attachment.id,
       events,
-      expectedCompletionCount: agents.length,
+      expectedCompletionCount: beforePositiveCompletionCount + agents.length,
       requiredFiles: [...positiveFiles, ...movedFiles],
       forbiddenFiles: directFiles,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
+      debugSnapshot: debugSessionSnapshot,
     })
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: agents.map(({ agent }) => agent.id),
-      getSessionStateRequest,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-    })
+    if (!options.machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: agents.map(({ agent }) => agent.id),
+        getSessionStateRequest,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+    }
     for (const provider of options.providers) {
       await assertFileContent(
         path.join(outputsDir, `${provider}.txt`),
@@ -631,8 +711,30 @@ async function main() {
       }
     }
 
+    const deleteAgents = []
+    if (options.machineRef) {
+      for (const { provider } of agents) {
+        const deleteAgent = unwrapVariant(
+          await client.send(managedIoSpawnAgentRequest(
+            spawnAgentRequest,
+            session.id,
+            provider,
+            `${provider}-managed-io-delete`,
+            options.model,
+            workspace,
+            'low',
+            options.machineRef,
+          )),
+          'AgentSpawned',
+        ).agent
+        deleteAgents.push({ provider, agent: deleteAgent })
+      }
+    } else {
+      deleteAgents.push(...agents)
+    }
+
     const beforeDeleteCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
-    for (const { provider, agent } of agents) {
+    for (const { provider, agent } of deleteAgents) {
       const prompt = [
         'This is a live Arroba managed I/O delete smoke test.',
         'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
@@ -646,23 +748,72 @@ async function main() {
       sessionId: session.id,
       attachmentId: attachment.id,
       events,
-      expectedCompletionCount: beforeDeleteCompletionCount + agents.length,
+      expectedCompletionCount: beforeDeleteCompletionCount + deleteAgents.length,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
     })
-    await waitForAgentsIdle({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentIds: agents.map(({ agent }) => agent.id),
-      getSessionStateRequest,
-      timeoutMs: options.timeoutMs,
-      pollMs: options.pollMs,
-    })
+    if (!options.machineRef) {
+      await waitForAgentsIdle({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        agentIds: deleteAgents.map(({ agent }) => agent.id),
+        getSessionStateRequest,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      })
+    }
     for (const provider of options.providers) {
       if (await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`))) {
         throw new Error(`managed delete left file behind: outputs/${provider}-delete-me.txt`)
       }
+    }
+
+    if (options.positiveOnly) {
+      const files = []
+      for (const provider of options.providers) {
+        const filePath = path.join(outputsDir, `${provider}.txt`)
+        files.push({
+          provider,
+          relativePath: `outputs/${provider}.txt`,
+          content: await readFile(filePath, 'utf8'),
+          movedRelativePath: `outputs/${provider}-moved.txt`,
+          movedContent: await readFile(path.join(outputsDir, `${provider}-moved.txt`), 'utf8'),
+          patchSourceFileExists: await fileExists(path.join(outputsDir, `${provider}-patch.txt`)),
+          deletedFileExists: await fileExists(path.join(outputsDir, `${provider}-delete-me.txt`)),
+          directWriteFileExists: await fileExists(path.join(outputsDir, `${provider}-direct.txt`)),
+        })
+      }
+      const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+      const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+      console.log(JSON.stringify({
+        status: 'ok',
+        mode: 'managed-io-live-drill',
+        kernelUrl,
+        machineRef: options.machineRef,
+        workspace,
+        providers: options.providers,
+        model: options.model,
+        durationMs: Date.now() - startedAt,
+        agents: agents.map(({ provider, agent }) => ({
+          id: agent.id,
+          alias: agent.alias,
+          provider,
+        })),
+        completionCount: events.filter((event) => event.event === 'assistant_message_completed').length,
+        terminalEventCount: events.filter((event) => event.event === 'terminal_output').length,
+        files,
+        collisionAndExternalChecks: [],
+        providerProcesses: processes.map((process) => ({
+          processId: process.process_id,
+          provider: process.provider,
+          pid: process.pid ?? null,
+          ownerRunIds: process.owner_provider_run_ids || [],
+        })),
+        focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
+      }, null, 2))
+      succeeded = true
+      return
     }
 
     const beforeNegativeCompletionCount = events.filter((event) => event.event === 'assistant_message_completed').length
@@ -704,9 +855,10 @@ async function main() {
       events,
       agents,
       model: options.model,
+      machineRef: options.machineRef,
       workspace,
       outputsDir,
-      historyDir: path.join(rootDir, 'history'),
+      historyDir: options.historyDir ?? path.join(rootDir, 'history'),
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       getSessionStateRequest,
@@ -735,6 +887,7 @@ async function main() {
       status: 'ok',
       mode: 'managed-io-live-drill',
       kernelUrl,
+      machineRef: options.machineRef,
       workspace,
       providers: options.providers,
       model: options.model,
@@ -756,14 +909,20 @@ async function main() {
       })),
       focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
     }, null, 2))
+    succeeded = true
   } finally {
     if (sessionId) {
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }
     await client.close().catch(() => {})
     await terminateChild(daemonChild)
-    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    if (succeeded || !options.keepArtifactsOnFailure) {
+      await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
+      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    } else {
+      console.error(`managed I/O drill artifacts kept at ${rootDir}`)
+      console.error(`managed I/O drill transient CLI modules kept at ${runtimeDir}`)
+    }
   }
 }
 

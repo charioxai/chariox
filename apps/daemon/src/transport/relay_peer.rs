@@ -52,6 +52,8 @@ pub enum RelayPeerRequest {
         provider: String,
         model: Option<String>,
         effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_id: Option<String>,
     },
     DestroyLeasedAgent {
         leased_agent_id: String,

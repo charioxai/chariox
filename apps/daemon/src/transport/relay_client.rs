@@ -602,9 +602,10 @@ async fn handle_daemon_peer_request(
             provider,
             model,
             effort,
+            worktree_id,
         } => {
             let leased_agent = router
-                .relay_create_leased_agent(&lease_id, &provider, model, effort)
+                .relay_create_leased_agent(&lease_id, &provider, model, effort, worktree_id)
                 .await;
             match leased_agent {
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentSpawned { leased_agent },
@@ -2062,6 +2063,7 @@ mod tests {
                 provider: "opencode".to_string(),
                 model: Some("kimi2.5".to_string()),
                 effort: Some("medium".to_string()),
+                worktree_id: None,
             },
         )
         .await

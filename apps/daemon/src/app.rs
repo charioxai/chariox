@@ -761,6 +761,7 @@ impl DaemonApp {
                     provider: agent.provider().to_string(),
                     model: agent.model().map(ToOwned::to_owned),
                     effort: agent.effort().map(ToOwned::to_owned),
+                    worktree_id: agent.worktree_id().map(ToOwned::to_owned),
                 },
             )) {
                 Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,

@@ -75,6 +75,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider: &str,
         model: Option<String>,
         effort: Option<String>,
+        worktree_id: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
         let lease = self
             .app
@@ -89,13 +90,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 adapter_key: provider.to_string(),
             });
         }
-        let worktree = std::env::current_dir()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "resolve leased agent working directory",
-                message: error.to_string(),
-            })?
-            .display()
-            .to_string();
+        let worktree = match worktree_id {
+            Some(worktree) => worktree,
+            None => std::env::current_dir()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "resolve leased agent working directory",
+                    message: error.to_string(),
+                })?
+                .display()
+                .to_string(),
+        };
         let session = self.app.sessions.create_session(
             CreateSessionRequest::new(format!("remote-lease:{}", lease.home_session_id), worktree)
                 .with_hidden(true),

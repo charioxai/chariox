@@ -65,7 +65,7 @@ Terminology:
 
 - Freeform local multi-agent: **pass** with `opencode,codex` after the router bootstrap lock fix.
 - Local managed I/O: **pass** with `opencode,codex`; agents read `seed.txt`, create provider-specific output files through `arroba.write_artifact`, edit/apply-patch/move/delete through managed tools, fail if direct/native write attempts create forbidden files, serialize same-area agent collisions to one winning write, rebase stale non-overlapping external changes, and reject stale overlapping external changes. The drill owns and tears down its daemon, session, isolated workspace, session history, and transient CLI module cache.
-- Remote managed I/O: **scripted, pending full run**. The drill owns relay/home/worker daemon lifecycle, leases agents on the worker machine, runs the same managed-I/O positive/negative/collision/external-change assertions through the home kernel, and cleans transient daemons, session history, workspace files, and CLI module cache.
+- Remote managed I/O: **scripted, pending full run**. The drill owns relay/home/worker daemon lifecycle, leases agents on the worker machine, runs the managed read/write/edit/apply-patch/move/delete smoke through the home kernel, and cleans transient daemons, session history, workspace files, and CLI module cache. The full remote negative/collision/external-change drill remains separate from the local full drill.
 - Local workflow catalog: **pass** with spawned local daemon and `opencode,codex`.
   - `simple-chain`
   - `validated-increment-chain`

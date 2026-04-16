@@ -189,12 +189,28 @@ mod tests {
         let lease = RemoteLeaseRuntime::new(&mut app)
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
+        let worktree = std::env::temp_dir().join(format!(
+            "arroba-leased-agent-worktree-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(&lease.id, "opencode", Some("kimi2.5".to_string()), None)
+            .create_leased_agent(
+                &lease.id,
+                "opencode",
+                Some("kimi2.5".to_string()),
+                None,
+                Some(worktree.display().to_string()),
+            )
             .expect("leased agent should be created");
         assert_eq!(leased_agent.lease_id, lease.id);
         assert_eq!(leased_agent.home_agent_id, "agent-home-1");
         assert_eq!(leased_agent.provider, "opencode");
+        let backing_session = app
+            .sessions()
+            .get_session(&leased_agent.backing_session_id)
+            .expect("backing session should exist");
+        assert_eq!(backing_session.worktree_id(), worktree.display().to_string());
         assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
 
         let removed = RemoteLeaseRuntime::new(&mut app)
@@ -212,7 +228,7 @@ mod tests {
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None)
+            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None, None)
             .expect("leased agent should be created");
 
         let hidden_backing_session = app
@@ -262,7 +278,7 @@ mod tests {
             .create_execution_lease("home-kernel", "session-1", "agent-home-1")
             .expect("execution lease should be created");
         let leased_agent = RemoteLeaseRuntime::new(&mut app)
-            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None)
+            .create_leased_agent(&lease.id, "dev-stub", Some("sonnet".to_string()), None, None)
             .expect("leased agent should be created");
 
         let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
