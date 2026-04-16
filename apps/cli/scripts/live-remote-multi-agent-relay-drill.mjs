@@ -42,7 +42,7 @@ let pumpTerminalOutputRequest
 let endSessionRequest
 
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
 
@@ -50,6 +50,7 @@ function parseArgs(argv) {
   const options = {
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
+    providerModels: {},
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
   }
@@ -58,6 +59,11 @@ function parseArgs(argv) {
     if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--help') options.help = true
@@ -121,6 +127,19 @@ function spawnProcess(command, args, options) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
+}
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
   try {
@@ -233,7 +252,7 @@ function remoteSpawnAgentRequest(sessionId, provider, alias, model, machineRef) 
       provider,
       alias,
       model,
-      effort: 'medium',
+      effort: 'low',
       worktree_id: repoRoot,
       machine_ref: machineRef,
     },
@@ -247,7 +266,7 @@ function localSpawnAgentRequest(sessionId, provider, alias, model) {
       provider,
       alias,
       model,
-      effort: 'medium',
+      effort: 'low',
       worktree_id: repoRoot,
       machine_ref: null,
     },
@@ -257,7 +276,7 @@ function localSpawnAgentRequest(sessionId, provider, alias, model) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs [--providers opencode,codex] [--model MODEL]')
+    console.log('Usage: node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL]')
     return
   }
   if (options.providers.length < 2) {
@@ -394,14 +413,14 @@ async function main() {
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const localSidecar = unwrapVariant(
-        await remoteClient.send(localSpawnAgentRequest(session.id, provider, `local-${provider}`, options.model)),
+        await remoteClient.send(localSpawnAgentRequest(session.id, provider, `local-${provider}`, modelForProvider(provider, options))),
         'AgentSpawned',
       ).agent
       localSidecars.push(localSidecar)
 
       const spawnClient = index % 2 === 0 ? localClient : remoteClient
       const remoteAgent = unwrapVariant(
-        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, options.model, workerMachineId)),
+        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, modelForProvider(provider, options), workerMachineId)),
         'AgentSpawned',
       ).agent
       remoteAgents.push(remoteAgent)
@@ -472,6 +491,7 @@ async function main() {
       sessionId: session.id,
       providers: options.providers,
       model: options.model,
+      providerModels: options.providerModels,
       machinesVisible: machines.map((machine) => ({
         machineId: machine.machine_id,
         machineAlias: machine.machine_alias,

@@ -29,7 +29,7 @@ const {
 } = requests
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_INTERVAL_SECONDS = 1
 const DEFAULT_PROVIDERS = [
   'opencode',
@@ -50,6 +50,7 @@ function parseArgs(argv) {
     workspace: repoRoot,
     worktree: repoRoot,
     model: DEFAULT_MODEL,
+    providerModels: {},
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
     policy: 'skip',
     providers: DEFAULT_PROVIDERS,
@@ -64,6 +65,11 @@ function parseArgs(argv) {
     else if (arg === '--workspace') options.workspace = argv[++index]
     else if (arg === '--worktree') options.worktree = argv[++index]
     else if (arg === '--model') options.model = argv[++index]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++index].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--interval-seconds') options.intervalSeconds = Number(argv[++index])
     else if (arg === '--policy') options.policy = argv[++index]
     else if (arg === '--providers') options.providers = argv[++index].split(',').map((v) => v.trim()).filter(Boolean)
@@ -89,6 +95,7 @@ function printHelp() {
     `  --workspace ${repoRoot}`,
     `  --worktree ${repoRoot}`,
     `  --model ${DEFAULT_MODEL}`,
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
     `  --interval-seconds ${DEFAULT_INTERVAL_SECONDS}`,
     '  --policy skip|queue',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -97,6 +104,19 @@ function printHelp() {
     '  --dry-run',
     '  --spawn-daemon',
   ].join('\n'))
+}
+
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
 }
 
 function deriveSpawnedKernelUrl() {
@@ -201,21 +221,23 @@ async function main() {
     const nodeIds = []
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
+      const providerModel = modelForProvider(provider, options)
       const agent = unwrap(
         await client.send(
           spawnAgentRequest(
             session.id,
             provider,
             `watchdog-${provider}-${index + 1}`,
-            options.model,
+            providerModel,
             options.worktree,
+            'low',
           ),
         ),
         'AgentSpawned',
       ).agent
       agentIds.push(agent.id)
       await client.send(
-        launchProviderRunRequest(session.id, provider, provider, options.model, 'default', agent.id),
+        launchProviderRunRequest(session.id, provider, provider, providerModel, 'low', agent.id),
       )
     }
 

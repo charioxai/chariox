@@ -63,7 +63,7 @@ const {
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_PROVIDERS = ['opencode', 'codex', 'opencode', 'codex', 'opencode', 'codex']
 const DEFAULT_NUMBERS = ['1842', '7315', '4068', '5921', '8473', '2604']
 
@@ -79,6 +79,7 @@ function parseArgs(argv) {
     workspace: DEFAULT_WORKSPACE,
     worktree: DEFAULT_WORKTREE,
     model: DEFAULT_MODEL,
+    providerModels: {},
     providers: DEFAULT_PROVIDERS,
     pollLimit: 120,
     pollIntervalMs: 2000,
@@ -98,6 +99,11 @@ function parseArgs(argv) {
     else if (arg === '--workspace') options.workspace = argv[++index]
     else if (arg === '--worktree') options.worktree = argv[++index]
     else if (arg === '--model') options.model = argv[++index]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++index].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--providers') options.providers = argv[++index].split(',').map((v) => v.trim()).filter(Boolean)
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++index])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++index])
@@ -122,6 +128,7 @@ function printHelp() {
     `  --workspace ${DEFAULT_WORKSPACE}`,
     `  --worktree ${DEFAULT_WORKTREE}`,
     `  --model ${DEFAULT_MODEL}`,
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     '  --poll-limit 120',
     '  --poll-interval-ms 2000',
@@ -129,6 +136,19 @@ function printHelp() {
     '  --spawn-daemon',
     '  --no-early-pass',
   ].join('\n'))
+}
+
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
 }
 
 function validateConnectionOptions(options) {
@@ -857,6 +877,7 @@ async function main() {
     const nodeIds = []
     for (let index = 0; index < scenario.providers.length; index += 1) {
       const provider = scenario.providers[index]
+      const providerModel = modelForProvider(provider, options)
       const agentWorktree = typeof scenario.agentWorktree === 'function'
         ? scenario.agentWorktree(index, options)
         : options.worktree
@@ -868,13 +889,13 @@ async function main() {
               session_id: session.id,
               provider,
               alias: `a${index + 1}`,
-              model: scenario.model,
-              effort: 'medium',
+              model: providerModel,
+              effort: 'low',
               worktree_id: agentWorktree,
               machine_ref: options.machineRef,
             },
           }
-        : spawnAgentRequest(session.id, provider, `a${index + 1}`, scenario.model, agentWorktree, 'medium')
+        : spawnAgentRequest(session.id, provider, `a${index + 1}`, providerModel, agentWorktree, 'low')
       const agent = unwrap(
         await client.send(spawnRequest),
         'AgentSpawned',
@@ -883,7 +904,7 @@ async function main() {
       if (!options.machineRef) {
         logStep('launch_provider', { index, provider, agentId: agent.id })
         const launchResponse = await client.send(
-          launchProviderRunRequest(session.id, provider, 'default', scenario.model, 'medium', agent.id),
+          launchProviderRunRequest(session.id, provider, 'default', providerModel, 'low', agent.id),
         )
         const providerRun = unwrap(launchResponse, 'ProviderRunLaunchAccepted')?.provider_run
         if (!providerRun?.id) {

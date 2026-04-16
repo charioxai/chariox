@@ -32,7 +32,7 @@ async function loadCliModules(runtimeDir) {
 }
 
 const DEFAULT_KERNEL = 'ws://127.0.0.1:43284'
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_TIMEOUT_MS = 240_000
 const DEFAULT_POLL_MS = 1_000
@@ -44,6 +44,7 @@ function parseArgs(argv) {
     worktree: repoRoot,
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
+    providerModels: {},
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     spawnDaemon: true,
@@ -55,6 +56,11 @@ function parseArgs(argv) {
     else if (arg === '--worktree') options.worktree = argv[++i]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
@@ -74,6 +80,7 @@ function printHelp() {
     `  --worktree ${repoRoot}`,
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
+    '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
@@ -118,6 +125,19 @@ async function terminateChild(child, signal = 'SIGTERM') {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
+}
 
 async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, worktree) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -219,7 +239,7 @@ async function main() {
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const agent = unwrapVariant(
-        await client.send(spawnAgentRequest(session.id, provider, `${provider}-${index + 1}`, options.model, options.worktree, 'medium')),
+        await client.send(spawnAgentRequest(session.id, provider, `${provider}-${index + 1}`, modelForProvider(provider, options), options.worktree, 'low')),
         'AgentSpawned',
       ).agent
       agents.push(agent)

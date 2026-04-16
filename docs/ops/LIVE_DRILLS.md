@@ -2,6 +2,8 @@
 
 This is the post-M4.5 gate before starting new feature work. The M4.5 ownership points are closed; confidence now comes from live behavior across local providers, workflows, and relay-backed remote machines.
 
+Script-level policy lives in `apps/cli/scripts/README.md`: live drills default to older Codex-capable models such as `gpt-5.3`, low effort, and OpenCode runs use OpenAI Codex-family models instead of OpenCode provider-default or `zen` models.
+
 Terminology:
 
 - **Freeform multi-agent mode** means a normal multi-agent session with no workflow scheduler. Agents can be focused, prompted, and observed independently, but no workflow graph owns turn progression.
@@ -99,7 +101,7 @@ Point-2 fixes proven by the local workflow catalog:
 Point-3 evidence:
 
 ```
-node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex --model gpt-5.4 --timeout-ms 240000 --poll-ms 1000
+node apps/cli/scripts/live-remote-multi-agent-relay-drill.mjs --providers opencode,codex --model gpt-5.3 --timeout-ms 240000 --poll-ms 1000
 ```
 
 Observed result: both providers were visible on the worker machine, both providers had local sidecar agents and remote leased worker agents, both local and relayed clients observed four assistant completions, the relayed client observed `transport_closed` and `transport_resumed`, and both remote worker agents completed prompts after relay restart.
@@ -107,13 +109,13 @@ Observed result: both providers were visible on the worker machine, both provide
 Point-4 evidence:
 
 ```
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario validated-increment-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario simple-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario console-increment-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-budgeted-final-run-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 600 --poll-interval-ms 250
-node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-with-intermediate-output-chain --providers opencode,codex --model gpt-5.4 --poll-limit 700 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario validated-increment-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario simple-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario console-increment-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario final-run-output-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-output-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-budgeted-final-run-output-chain --providers opencode,codex --model gpt-5.3 --poll-limit 600 --poll-interval-ms 250
+node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs --scenario cyclic-final-run-with-intermediate-output-chain --providers opencode,codex --model gpt-5.3 --poll-limit 700 --poll-interval-ms 250
 ```
 
 Observed result: the remote workflow catalog completed through the relay with worker-machine leased agents. The closing cyclic intermediate-output run completed with validated intermediate output and final workflow output from `workflow-node-run-2`, final output `{"value":1843}`, no failure events, and status `Completed`.

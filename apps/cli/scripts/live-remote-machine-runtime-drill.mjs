@@ -39,7 +39,7 @@ let listSessionsRequest
 let endSessionRequest
 let submitPromptRequest
 
-const DEFAULT_MODEL = 'default'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_PROVIDER = 'dev-stub'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
@@ -49,6 +49,7 @@ const DEFAULT_POLL_MS = 1_000
 function parseArgs(argv) {
   const options = {
     model: DEFAULT_MODEL,
+    providerModels: {},
     provider: DEFAULT_PROVIDER,
     workspace: DEFAULT_WORKSPACE,
     worktree: DEFAULT_WORKTREE,
@@ -58,6 +59,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--provider') options.provider = argv[++i]
     else if (arg === '--workspace') options.workspace = argv[++i]
     else if (arg === '--worktree') options.worktree = argv[++i]
@@ -67,6 +73,19 @@ function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`)
   }
   return options
+}
+
+function modelForProvider(provider, options) {
+  const explicit = options.providerModels[provider]
+  if (explicit) return explicit
+  if (provider === 'opencode' && !options.model.includes('/')) return `openai/${opencodeCodexModel(options.model)}`
+  return options.model
+}
+
+function opencodeCodexModel(model) {
+  if (model.endsWith('-codex')) return model
+  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
+  return model
 }
 
 function makePorts() {
@@ -200,7 +219,18 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-machine-runtime-drill.mjs [options]')
+    console.log([
+      'Usage: node apps/cli/scripts/live-remote-machine-runtime-drill.mjs [options]',
+      '',
+      'Options:',
+      `  --provider ${DEFAULT_PROVIDER}`,
+      `  --model ${DEFAULT_MODEL}`,
+      '  --provider-model PROVIDER=MODEL (for example opencode=openai/gpt-5.3-codex)',
+      `  --workspace ${DEFAULT_WORKSPACE}`,
+      `  --worktree ${DEFAULT_WORKTREE}`,
+      `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
+      `  --poll-ms ${DEFAULT_POLL_MS}`,
+    ].join('\n'))
     return
   }
 
@@ -319,13 +349,14 @@ async function main() {
       throw new Error(`no worker kernel on ${workerMachineId} advertises provider ${options.provider}`)
     }
 
+    const providerModel = modelForProvider(options.provider, options)
     const spawned = unwrapVariant(await client.send({
       SpawnAgent: {
         session_id: sessionId,
         alias: 'remote-reviewer',
         provider: options.provider,
-        model: options.model,
-        effort: 'medium',
+        model: providerModel,
+        effort: 'low',
         worktree_id: null,
         machine_ref: workerMachineId,
       },
@@ -386,6 +417,7 @@ async function main() {
       sessionId,
       workerMachineId,
       remoteAgentId: remoteAgent.id,
+      providerModel,
       remoteExecution: remoteAgent.remote_execution ?? null,
       selectedKernel: {
         kernelId: selectedKernel.kernel_id,

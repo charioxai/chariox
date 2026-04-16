@@ -39,7 +39,7 @@ let listRemoteMachinesRequest
 
 const DEFAULT_SCENARIO = 'validated-increment-chain'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.3'
 const DEFAULT_POLL_LIMIT = 120
 const DEFAULT_POLL_INTERVAL_MS = 2000
 
@@ -48,6 +48,7 @@ function parseArgs(argv) {
     scenario: DEFAULT_SCENARIO,
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
+    providerModels: {},
     pollLimit: DEFAULT_POLL_LIMIT,
     pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
     noEarlyPass: false,
@@ -58,6 +59,11 @@ function parseArgs(argv) {
     else if (arg === '--provider') options.providers = [argv[++i]]
     else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
     else if (arg === '--poll-limit') options.pollLimit = Number(argv[++i])
     else if (arg === '--poll-interval-ms') options.pollIntervalMs = Number(argv[++i])
     else if (arg === '--no-early-pass') options.noEarlyPass = true
@@ -240,7 +246,7 @@ async function runWorkflowChild(args, cwd) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--providers opencode,codex] [--model MODEL] [--no-early-pass]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workflow-runtime-drill.mjs [--scenario validated-increment-chain] [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--no-early-pass]')
     return
   }
   if (options.providers.length < 1) {
@@ -346,6 +352,7 @@ async function main() {
       '--machine-ref', workerMachineId,
       '--providers', options.providers.join(','),
       '--model', options.model,
+      ...Object.entries(options.providerModels).flatMap(([provider, model]) => ['--provider-model', `${provider}=${model}`]),
       '--workspace', repoRoot,
       '--worktree', repoRoot,
       '--poll-limit', String(options.pollLimit),
@@ -367,6 +374,7 @@ async function main() {
       scenario: options.scenario,
       providers: options.providers,
       model: options.model,
+      providerModels: options.providerModels,
       workflow: result,
     }, null, 2))
   } finally {
