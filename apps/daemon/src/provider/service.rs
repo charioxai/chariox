@@ -387,6 +387,12 @@ impl ProviderProcessService {
                 adapter_key: request.adapter_key.clone(),
             }
         })?;
+        if request.requires_managed_io() && !adapter.supports_managed_io_write_enforcement() {
+            return Err(DaemonError::ProviderManagedIoUnsupported {
+                adapter_key: request.adapter_key.clone(),
+                message: "this adapter cannot guarantee that provider-session writes are restricted to Arroba managed I/O tools".to_string(),
+            });
+        }
 
         let run_id = self.next_run_id();
         let launch_result = adapter.connect(&request)?;
@@ -1105,6 +1111,7 @@ impl Default for ProviderProcessService {
 #[cfg(test)]
 mod tests {
     use crate::config::DaemonConfig;
+    use crate::error::DaemonError;
     use crate::provider::opencode_binding::OpenCodeRunSelection;
     use crate::provider::{
         AgentEndpointMode, ProviderLaunchResult, ProviderResumeState, RuntimeProviderRun,
@@ -1163,6 +1170,28 @@ mod tests {
         assert_eq!(run.adapter_key(), "dev-stub");
         assert_eq!(session.active_provider_run_id(), Some(run.id()));
         assert_eq!(session.status(), SessionStatus::Active);
+    }
+
+    #[test]
+    fn rejects_managed_io_when_adapter_cannot_enforce_writes() {
+        let mut sessions = sessions();
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session should be created");
+        let mut providers = ProviderProcessService::new();
+
+        let error = providers
+            .start_run_provider_only(
+                launch_request(session.id(), "sonnet").with_managed_io_required(),
+            )
+            .expect_err("dev-stub cannot enforce managed I/O writes");
+
+        match error {
+            DaemonError::ProviderManagedIoUnsupported { adapter_key, .. } => {
+                assert_eq!(adapter_key, "dev-stub");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

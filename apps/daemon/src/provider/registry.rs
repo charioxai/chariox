@@ -8,6 +8,9 @@ pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
     fn connect(&self, request: &LaunchProviderRequest)
         -> Result<ProviderLaunchResult, DaemonError>;
+    fn supports_managed_io_write_enforcement(&self) -> bool {
+        false
+    }
     fn park(&self, run: &RuntimeProviderRun);
     fn resume(&self, run: &RuntimeProviderRun);
     fn terminate(&self, run: &RuntimeProviderRun);
@@ -154,6 +157,10 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         Self::KEY
     }
 
+    fn supports_managed_io_write_enforcement(&self) -> bool {
+        true
+    }
+
     fn connect(
         &self,
         request: &LaunchProviderRequest,
@@ -186,6 +193,10 @@ static CODEX_ADAPTER: CodexAdapter = CodexAdapter;
 impl AgentEndpointAdapter for CodexAdapter {
     fn key(&self) -> &'static str {
         Self::KEY
+    }
+
+    fn supports_managed_io_write_enforcement(&self) -> bool {
+        true
     }
 
     fn connect(

@@ -177,6 +177,11 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
+    #[error("provider adapter `{adapter_key}` does not support required managed I/O write enforcement: {message}")]
+    ProviderManagedIoUnsupported {
+        adapter_key: String,
+        message: String,
+    },
     #[error("provider adapter `{adapter_key}` could not resolve executable `{executable}`")]
     ProviderExecutableNotFound {
         adapter_key: String,
